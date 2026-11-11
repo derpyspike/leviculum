@@ -556,8 +556,8 @@ struct Cli {
     #[arg(long, value_name = "on|off", requires = "port")]
     ble: Option<String>,
 
-    /// The serial port of the board --home, --region, --regions or --wifi talks
-    /// to, such as /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 for the
+    /// The serial port of the board --home, --region, --regions, --wifi
+    /// or --ble talks to, such as /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 for the
     /// M9's CH340K. Opening it resets the board; the session waits for its
     /// boot.
     #[arg(long, value_name = "TTY", requires = "port_user")]
