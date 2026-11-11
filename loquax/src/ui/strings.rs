@@ -807,6 +807,8 @@ leviculum_ui::catalogue! {
     M9BarWayCableOne = "m9_bar_way_cable_one", "Mailbox over cable · %1$d station", "Postfach über Kabel · %1$d Station";
     M9BarWayWifi = "m9_bar_way_wifi", "Mailbox over WiFi · %1$d stations", "Postfach über WLAN · %1$d Stationen";
     M9BarWayWifiOne = "m9_bar_way_wifi_one", "Mailbox over WiFi · %1$d station", "Postfach über WLAN · %1$d Station";
+    M9BarWayBle = "m9_bar_way_ble", "Mailbox over Bluetooth · %1$d stations", "Postfach über Bluetooth · %1$d Stationen";
+    M9BarWayBleOne = "m9_bar_way_ble_one", "Mailbox over Bluetooth · %1$d station", "Postfach über Bluetooth · %1$d Station";
     M9BarNoWay = "m9_bar_no_way", "No way to mailbox", "Kein Weg zum Postfach";
     // The same without the mailbox's name, for a bar the long form does
     // not fit beside its title (at the default type, "Chats" leaves 27
@@ -817,6 +819,8 @@ leviculum_ui::catalogue! {
     M9BarCableOne = "m9_bar_cable_one", "Cable · %1$d station", "Kabel · %1$d Station";
     M9BarWifi = "m9_bar_wifi", "WiFi · %1$d stations", "WLAN · %1$d Stationen";
     M9BarWifiOne = "m9_bar_wifi_one", "WiFi · %1$d station", "WLAN · %1$d Station";
+    M9BarBle = "m9_bar_ble", "Bluetooth · %1$d stations", "Bluetooth · %1$d Stationen";
+    M9BarBleOne = "m9_bar_ble_one", "Bluetooth · %1$d station", "Bluetooth · %1$d Station";
 }
 
 /// [`leviculum_ui::strings::format`] over Loquax's catalogue.

@@ -128,6 +128,12 @@ fn the_top_bar_says_the_way_to_the_mailbox() {
             hops,
         })
     };
+    let ble = |hops| {
+        Some(Way {
+            medium: Medium::Bluetooth,
+            hops,
+        })
+    };
     let fetched = Word::Fetched { taken: 3, of: None };
     // (word, way, [wide en, wide de], [narrow en, narrow de])
     let cases = [
@@ -185,6 +191,26 @@ fn the_top_bar_says_the_way_to_the_mailbox() {
                 "Postfach über WLAN · 2 Stationen",
             ],
             ["WiFi · 2 stations", "WLAN · 2 Stationen"],
+        ),
+        // 1480: the room rung, a mailbox or a relaying neighbour on the
+        // Columba BLE mesh.
+        (
+            Word::Connected,
+            ble(1),
+            [
+                "Mailbox over Bluetooth · 1 station",
+                "Postfach über Bluetooth · 1 Station",
+            ],
+            ["Bluetooth · 1 station", "Bluetooth · 1 Station"],
+        ),
+        (
+            Word::Connected,
+            ble(2),
+            [
+                "Mailbox over Bluetooth · 2 stations",
+                "Postfach über Bluetooth · 2 Stationen",
+            ],
+            ["Bluetooth · 2 stations", "Bluetooth · 2 Stationen"],
         ),
         (
             Word::Unreachable,

@@ -768,6 +768,9 @@ pub enum Medium {
     /// The WLAN the board joined (1479): its AutoInterface, the LAN rung
     /// of the reachability ladder, a mailbox in the same network.
     Wifi,
+    /// Bluetooth (1480): the Columba BLE mesh, a mailbox's daemon or a
+    /// relaying neighbour in the same room.
+    Bluetooth,
 }
 
 /// The board's path to its home (1478): the medium of its first hop and
@@ -788,6 +791,8 @@ impl Way {
             (Medium::Cable, false) => StrId::M9BarWayCable,
             (Medium::Wifi, true) => StrId::M9BarWayWifiOne,
             (Medium::Wifi, false) => StrId::M9BarWayWifi,
+            (Medium::Bluetooth, true) => StrId::M9BarWayBleOne,
+            (Medium::Bluetooth, false) => StrId::M9BarWayBle,
         };
         Text::Key(id, alloc::vec![Arg::Int(i64::from(self.hops))])
     }
@@ -801,6 +806,8 @@ impl Way {
             (Medium::Cable, false) => StrId::M9BarCable,
             (Medium::Wifi, true) => StrId::M9BarWifiOne,
             (Medium::Wifi, false) => StrId::M9BarWifi,
+            (Medium::Bluetooth, true) => StrId::M9BarBleOne,
+            (Medium::Bluetooth, false) => StrId::M9BarBle,
         };
         Text::Key(id, alloc::vec![Arg::Int(i64::from(self.hops))])
     }
