@@ -538,6 +538,7 @@ pub fn fill_store_for(home: &Path, me: [u8; 16]) -> Store {
                     stored.peer,
                     &message.fields,
                     message.at.map(|at| at.unix_secs),
+                    None,
                 );
                 writes.extend(read.fixes.into_iter().map(|fix| {
                     StoreWrite::Position(loquax::telemetry::Fix {

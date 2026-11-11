@@ -264,7 +264,7 @@ renderer can serve. Two findings the spike settles beyond the choice:
   atlas (embedded-graphics-unicodefonts 0.2.0, the 6x10 mapping) covers
   Latin, Greek, Cyrillic and the box/geometric runs, but not U+2713,
   U+2714 or U+25F7 — the tick ladder does not render. The model already
-  carries the switch (`ascii`, `loquax/src/ui.rs:1200`); the M9 frontend
+  carries the switch (`ascii`, `loquax/src/ui.rs:1206`); the M9 frontend
   sets it, which closes gui-toolkit's open glyph question without a
   custom font.
 - **mousefood's own frame is redundant on the M9.** Its `framebuffer`
@@ -487,12 +487,12 @@ halves stay: the store in flash, the scancodes, the send over the mesh.
 - **The chat in cells** (`lines_at`, `loquax-m9/src/chat.rs:57`). The
   scene's chat set as the terminal sets a conversation: a bubble wrapped
   to three quarters of the 53 cells (`block_cap`,
-  `loquax/src/ui/layout.rs:433`), tinted with a margin cell either side,
+  `loquax/src/ui/layout.rs:437`), tinted with a margin cell either side,
   ours flush right, theirs flush left, the time and the mark's ASCII rung
   closing its last row, a blank row between two groups. The day line and
   a group's note line (who joined or left) are the terminal's own
-  (`date_line`, `loquax/src/ui/layout.rs:403`, and `note_line`,
-  `loquax/src/ui/layout.rs:387`, public since this slice). A group's chat
+  (`date_line`, `loquax/src/ui/layout.rs:407`, and `note_line`,
+  `loquax/src/ui/layout.rs:391`, public since this slice). A group's chat
   names the writer above a group of bubbles, which is how a digest's
   lines read (each a bubble under its writer, the model's work), and a
   line that came after newer ones says "arrived late" under it. Quotes,
@@ -518,7 +518,7 @@ halves stay: the store in flash, the scancodes, the send over the mesh.
   screen of one pane shows the pane the keys are in. That builds the Wide
   scene and drops its chat: the list's peak then carries the chat's.
 - **The list's cursor is the reader's** (1546, `list_top`,
-  `loquax/src/ui.rs:2640`). The model keeps the selected peer and the line
+  `loquax/src/ui.rs:2646`). The model keeps the selected peer and the line
   it stands on; while it stays selected, a pull or an arrival that sorts
   rows in above it moves the window, not the cursor. A key moves the line
   by as many rows as the selection moved in the order. Before, the window
@@ -1028,7 +1028,7 @@ grows by 17,248 B to 944,768 B (`just build-m9`).
 board needs: `Create` (`/group`), `Add` (`/groupadd`), `Delete`
 (`/groupdelete`, its `Ok` the group it deleted), and `State`, the
 member's Join, Leave or the admin's Remove, which the model makes a state
-message to the group (`group_state`, `loquax/src/ui/groups.rs:1626`) and
+message to the group (`group_state`, `loquax/src/ui/groups.rs:1644`) and
 the home sends as any message (`/send`). `ask_of`
 (`loquax-m9/src/group.rs:363`) turns the model's effect into that verb,
 with the board's fresh client id; a plain message is no group's ask.
@@ -1189,7 +1189,7 @@ its cells when the screen leaves the map (`leave_map`,
 its cells are blank.
 
 **The pins are the model's**, as on every target (`map_pins`,
-`loquax/src/ui.rs:6715`): the shares the store kept, a `lev.position`
+`loquax/src/ui.rs:6753`): the shares the store kept, a `lev.position`
 announce, and the board's own fix. That last one is new in the core:
 the shell's own fix (`UiEvent::OwnFix`, from the receiver or typed by
 hand) is now our pin where it is newer than our last share, so a board
@@ -1198,7 +1198,7 @@ places them in the picture's cells (`map::place`), the M9 asks for the
 ASCII markers: the atlas has `●` but not the chosen pin's `◉`. Each pin
 is set in the atlas on the bar's colours, the chosen one reversed, an
 old one's and a nearby node's muted. Where the picture is, the M9 tells
-the model (`map_picture`, `loquax/src/ui.rs:1386`): the fit, the pan's
+the model (`map_picture`, `loquax/src/ui.rs:1392`): the fit, the pan's
 step and the pins' cells go by its 53 x 21 cells, not by the terminal's
 conversation pane.
 
@@ -2064,7 +2064,7 @@ plus decode under 100 ms for the long chat, window 16's to prove.
 
 **An invitation keeps its row.** A group the reader is invited to that
 no message reached has the invitation's listing, "Einladung", from when
-the invitation came (`UiModel::listing_for`, `loquax/src/ui.rs:2367`);
+the invitation came (`UiModel::listing_for`, `loquax/src/ui.rs:2373`);
 the index keeps the group's name from the invitation, so both boots
 name and list it alike.
 
@@ -2181,7 +2181,7 @@ the model, the model asks the cursor chat's page
 (`behind_the_list`, `loquax-m9/src/home.rs:292`), so no read mark is
 queued — `route` takes marks only from `take_marks`, and the hidden
 fold queues none. The summary write beside it is the touched row with
-its unread as it was (`UiModel::row`, `loquax/src/ui.rs:2431`, the
+its unread as it was (`UiModel::row`, `loquax/src/ui.rs:2437`, the
 a80038c2 rule); the cursor moves because the folded page gives the
 chat its real activity and the list re-sorts under a selection that
 follows the chat. A preload, not an open: nothing to stop for 1562/1564.
@@ -2481,7 +2481,7 @@ the same order.
 Two blocks of the rebuild grew with the ring whatever the chats were,
 and both went: the batch's note scope held one peer per folded entry
 (8192 x 16 B), now each conversation once (`Batch::fold`,
-`loquax/src/ui.rs:3711`); and every received message left a toast that a
+`loquax/src/ui.rs:3725`); and every received message left a toast that a
 board, which never ticks, never aged out, now at most `TOAST_KEEP`
 (`loquax/src/ui.rs:199`). The model after a rebuild holds about 470 KB
 less on the host. `a_rebuild_of_short_chats_asks_for_no_block_that_grows_with_the_ring`
@@ -2541,7 +2541,7 @@ keys were never deaf. One Back frame was lost on the line before core 0
 took it (`keys_rx=` stayed at 41; why the frame went is the UART FIFO
 during an erase, 1613). The walker's next Enter then came inside the
 open chat, where the shared key table's Enter opens the message under
-the cursor (1076), its detail view (`loquax/src/ui.rs:5821`). The M9
+the cursor (1076), its detail view (`loquax/src/ui.rs:5835`). The M9
 draws no detail view and its `[PAGE]` line called it `chat`, so the next
 Back closed what nobody saw, and every Enter and Back after it did the
 same: each one a `KEY` line the UI core wrote itself, no page change. The

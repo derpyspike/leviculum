@@ -139,7 +139,9 @@ impl Summary {
         }
         let mut disorder = false;
         for (index, message) in messages.iter().enumerate().skip(from) {
-            if message.is_report() && super::message_fix(peer, message).is_some() {
+            // Presence alone: the summary keeps the report's row, not who
+            // it names, so no group is asked (1696).
+            if message.is_report() && super::message_fix(peer, message, None).is_some() {
                 if self.reports.len() > super::liveness::CADENCE_GAPS {
                     self.reports.remove(0);
                 }

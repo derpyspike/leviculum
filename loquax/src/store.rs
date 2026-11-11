@@ -1690,7 +1690,9 @@ impl Store {
             let Some(fields) = unpack_fields(&packed) else {
                 continue;
             };
-            let read = crate::telemetry::read(self.identity, &fields, sent);
+            // Our own messages: a group's home stamps the copies it
+            // distributes, never the one its writer keeps here (1696).
+            let read = crate::telemetry::read(self.identity, &fields, sent, None);
             if let Some(fix) = crate::telemetry::shown_fix(&read) {
                 let mut fix = fix.clone();
                 // Who got it: the conversation, not who measured.

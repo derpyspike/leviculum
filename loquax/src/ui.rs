@@ -1060,17 +1060,22 @@ impl Conversation {
     /// The newest reports' fixes, newest first, the few the liveness is
     /// judged from: by the summary's indices (1463), or a walk when it
     /// is behind.
+    ///
+    /// A conversation holds no group of its own, so a copy's writer is not
+    /// vouched for here (1696) and its fix is read under the source. Only
+    /// the fix times and the share mark are read of these, never `peer`:
+    /// that is [`UiModel::message_fix`]'s business, which knows the groups.
     pub fn report_fixes(&self) -> Vec<Fix> {
         match self.summary.reports(&self.messages) {
             Some(newest) => newest
-                .filter_map(|i| message_fix(self.peer, &self.messages[i]))
+                .filter_map(|i| message_fix(self.peer, &self.messages[i], None))
                 .collect(),
             None => self
                 .messages
                 .iter()
                 .rev()
                 .filter(|m| m.is_report())
-                .filter_map(|m| message_fix(self.peer, m))
+                .filter_map(|m| message_fix(self.peer, m, None))
                 .take(liveness::CADENCE_GAPS + 1)
                 .collect(),
         }
@@ -1078,10 +1083,11 @@ impl Conversation {
 
     /// The newest report with a position: the row that says whether the
     /// position is alive (1209). A report without one says so and no more.
+    /// Only its presence is read: see [`Conversation::report_fixes`].
     pub fn newest_fix_report(&self) -> Option<usize> {
         self.messages
             .iter()
-            .rposition(|m| m.is_report() && message_fix(self.peer, m).is_some())
+            .rposition(|m| m.is_report() && message_fix(self.peer, m, None).is_some())
     }
 
     /// Where the list orders the conversation (1209): at its newest
@@ -2963,6 +2969,7 @@ impl<B> UiModel<B> {
             tracks: Some(&self.voice_tracks),
             lang: self.lang,
             names: Some(&self.names),
+            groups: Some(&self.groups),
             transfers: Some(&self.transfers),
         }
     }
@@ -2988,6 +2995,13 @@ impl<B> UiModel<B> {
         }
         hash.word(conversation.notes.len() as u64);
         hash.word(conversation.earlier as u64);
+        // A copy's position and writer line are read under the writer the
+        // conversation's group vouches for (1696): a membership that comes
+        // or goes moves them.
+        if let Some(group) = self.group(&conversation.peer) {
+            hash.word(group.epoch);
+            hash.word(group.members.len() as u64);
+        }
         if let Some(rule) = conversation.new_rule {
             hash.word(rule.at as u64);
             hash.word(rule.count as u64);
@@ -6670,7 +6684,16 @@ fn take_telemetry<B>(
     }
     let source = conversation.peer;
     let key = message.activity;
-    let read = telemetry::read(source, &message.fields, model.now.map(|now| now.unix_secs));
+    // Whoever vouches for the writer: the group this device knows the
+    // message's source to be, and its membership naming the sender. A copy
+    // field in a person's message names nobody (1696).
+    let writer = groups::copy_writer(&message.fields, model.group(&source));
+    let read = telemetry::read(
+        source,
+        &message.fields,
+        model.now.map(|now| now.unix_secs),
+        writer,
+    );
     let mut effects = Vec::new();
     for unreadable in &read.unreadable {
         effects.push(UiEffect::Log(telemetry::unreadable_line(
@@ -6688,24 +6711,39 @@ fn take_telemetry<B>(
 
 /// The fix a message from `peer` carries, the one its position line names
 /// ([`telemetry::shown_fix`]): a report's, and a text's that came with a
-/// telemetry field. `None` for one of ours, which is our position and not
-/// the peer's, and for a message without a readable position.
-pub fn message_fix(peer: [u8; 16], message: &Message) -> Option<Fix> {
+/// telemetry field. `group` is the group this device knows `peer` to be
+/// ([`groups::copy_writer`]); without it a `lev.group_copy` names nobody,
+/// and the position is `peer`'s (1696). `None` for one of ours, which is
+/// our position and not the peer's, and for a message without a readable
+/// position.
+pub fn message_fix(
+    peer: [u8; 16],
+    message: &Message,
+    group: Option<&groups::GroupInfo>,
+) -> Option<Fix> {
     if message.outbound || !telemetry::has_telemetry(&message.fields) {
         return None;
     }
     let received = message.at.map(|at| at.unix_secs);
-    let read = telemetry::read(peer, &message.fields, received);
+    let writer = groups::copy_writer(&message.fields, group);
+    let read = telemetry::read(peer, &message.fields, received, writer);
     telemetry::shown_fix(&read).cloned()
 }
 
 /// The fix a message of ours carries, measured by `own`: a position we
-/// shared (1201). `None` for any other message.
+/// shared (1201). `None` for any other message. Ours are nobody's copy: a
+/// group's home stamps the copies it distributes, never the message a
+/// writer keeps (1696).
 pub fn own_fix(own: [u8; 16], message: &Message) -> Option<Fix> {
     if !message.outbound || !telemetry::has_telemetry(&message.fields) {
         return None;
     }
-    let read = telemetry::read(own, &message.fields, message.at.map(|at| at.unix_secs));
+    let read = telemetry::read(
+        own,
+        &message.fields,
+        message.at.map(|at| at.unix_secs),
+        None,
+    );
     telemetry::shown_fix(&read).cloned()
 }
 
@@ -6785,7 +6823,7 @@ impl<B> UiModel<B> {
             // A position we shared (1201) is ours: its line shows where we
             // were, measured by us.
             true => self.address.and_then(|own| own_fix(own, message)),
-            false => message_fix(conversation.peer, message),
+            false => message_fix(conversation.peer, message, self.group(&conversation.peer)),
         }
     }
 
@@ -14663,6 +14701,69 @@ pub(crate) mod tests {
         );
     }
 
+    /// 1696: only a group this device knows speaks for its members'
+    /// positions. A copy field in a person's message books its position
+    /// under that person, never under the name it carries; a copy from a
+    /// group whose membership names the writer books it under the writer
+    /// (1687).
+    #[test]
+    fn only_a_known_group_books_a_copy_position_under_its_writer() {
+        use leviculum_lxmf::lev::{GroupCopy, Lev};
+
+        const GROUP: [u8; 16] = [0x60; 16];
+        const MALLORY: [u8; 16] = [0x3a; 16];
+        let copy = |sender: [u8; 16]| {
+            let mut fields: Vec<leviculum_lxmf::Field> = Lev {
+                group_copy: Some(GroupCopy {
+                    sender,
+                    sent_ms: 1_793_015_000_000,
+                    epoch: 1,
+                }),
+                ..Lev::default()
+            }
+            .fields()
+            .to_vec();
+            fields.extend(report_of(&fix_at(52_000_000, 13_000_000, two_pm() - 60)));
+            fields
+        };
+
+        let mut model = UiModel::<Field>::new(&[PEER, OTHER]);
+        clock(&mut model, 26, 14, 0);
+        arrive(&mut model, MALLORY, 1, "", copy(OTHER));
+        assert!(
+            !model.positions.contains_key(&OTHER),
+            "a stranger's copy moved another's pin: {:?}",
+            model.positions.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            model.positions[&MALLORY].location.latitude_e6, 52_000_000,
+            "the pin lands under the signed source"
+        );
+
+        // The same copy from a group this device knows, its membership
+        // naming the writer: under the writer, as 1687 had it.
+        model.groups.insert(
+            GROUP,
+            groups::GroupInfo {
+                members: vec![groups::GroupMember {
+                    address: OTHER,
+                    name: "Other".into(),
+                    admin: false,
+                    joined: true,
+                    left: false,
+                }],
+                ..groups::GroupInfo::new(GROUP)
+            },
+        );
+        arrive(&mut model, GROUP, 2, "", copy(OTHER));
+        assert!(
+            !model.positions.contains_key(&GROUP),
+            "no pin for the group"
+        );
+        assert_eq!(model.positions[&OTHER].location.latitude_e6, 52_000_000);
+        assert_eq!(model.positions[&OTHER].via, GROUP);
+    }
+
     #[test]
     fn a_broken_blob_is_kept_with_its_message_and_logged() {
         let mut model = UiModel::<Field>::new(&[PEER]);
@@ -17209,7 +17310,7 @@ pub(crate) mod tests {
             *fields, expected,
             "the Telemeter and the receipt mark alone"
         );
-        let read = telemetry::read(OTHER, fields, None);
+        let read = telemetry::read(OTHER, fields, None, None);
         assert_eq!(read.fixes.len(), 1, "{read:?}");
         assert_eq!(read.fixes[0].location, location);
         let fix = model.message_fix(0, 0).expect("our bubble names the fix");

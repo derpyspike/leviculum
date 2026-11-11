@@ -564,7 +564,7 @@ pub fn fill_store_of(home: &Path, own: &Identity) -> Filled {
                 },
             });
             if !row.outbound {
-                let read = loquax::telemetry::read(peer, &row.fields, Some(row.at));
+                let read = loquax::telemetry::read(peer, &row.fields, Some(row.at), None);
                 writes.extend(read.fixes.into_iter().map(|fix| {
                     StoreWrite::Position(loquax::telemetry::Fix {
                         message: Some(key),
@@ -630,7 +630,7 @@ pub fn fill_run_of(home: &Path, own: &Identity) -> Filled {
         };
         let key = loquax::store::key_of(10_000 + j as i64);
         let id = [0x84 ^ j as u8; 32];
-        let fixes = loquax::telemetry::read(peer, &fields, Some(at)).fixes;
+        let fixes = loquax::telemetry::read(peer, &fields, Some(at), None).fixes;
         writes.push(StoreWrite::Message {
             peer,
             message: loquax::ui::Message {

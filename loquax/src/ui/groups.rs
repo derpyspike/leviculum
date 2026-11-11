@@ -301,6 +301,22 @@ pub fn is_state(body: &str, fields: &[Field]) -> bool {
         })
 }
 
+/// The writer a group's copy of a member's message is read under (1696):
+/// the copy's `sender`, when the message's signed source is a group this
+/// device knows and that group's membership names the sender. `None` for
+/// every other message: a `lev.group_copy` in a person's message is that
+/// person's word about somebody else, and the signed source alone stands.
+///
+/// `info` is the group the source is, as the chat takes it to draw a copy
+/// under its writer ([`copy_of`] with the conversation's peer's `info`,
+/// [`crate::ui::chat`]). One thing stricter here: a position says where
+/// somebody stands, so the membership must name the sender, not only a
+/// name in the home's text.
+pub fn copy_writer(fields: &[Field], info: Option<&GroupInfo>) -> Option<[u8; 16]> {
+    let copy = Lev::from_fields(fields)?.group_copy?;
+    info?.member(&copy.sender).map(|_| copy.sender)
+}
+
 /// The writer of a group's copy and the text the home put after its
 /// `"Name: "` prefix (study 3.1): `(writer, name, text)`. None for a
 /// message that is no copy.
@@ -3385,6 +3401,46 @@ mod tests {
         assert_eq!(bodies, ["Anna: Brot\nBob: Danke"]);
     }
 
+    /// 1696: a copy's writer stands only where a group this device knows
+    /// vouches for it — the message's signed source is the group and its
+    /// membership names the sender. A copy field in a person's message, or
+    /// one naming someone the membership does not list, names nobody, and
+    /// the signed source alone stands.
+    #[test]
+    fn only_a_known_groups_membership_vouches_for_a_copy_writer() {
+        const CAROL: [u8; 16] = [0x05; 16];
+        const MALLORY: [u8; 16] = [0x3a; 16];
+        let model = in_familie(false);
+        let info = model.group(&GROUP).expect("the group");
+        assert_eq!(
+            copy_writer(&lev_fields(copy_at(ANNA, 10)), Some(info)),
+            Some(ANNA),
+            "a member"
+        );
+        assert_eq!(
+            copy_writer(&lev_fields(copy_at(CAROL, 11)), Some(info)),
+            None,
+            "no member of it"
+        );
+        assert_eq!(
+            copy_writer(&lev_fields(copy_at(ANNA, 10)), None),
+            None,
+            "the source is no group this device knows"
+        );
+        assert_eq!(
+            copy_writer(&lev_fields(Lev::default()), Some(info)),
+            None,
+            "no copy field"
+        );
+        // A person's message, whatever it says of somebody else.
+        let mut person = reader(&[MALLORY]);
+        arrive(&mut person, MALLORY, 12, "hi", copy_at(ANNA, 10));
+        assert_eq!(
+            copy_writer(&lev_fields(copy_at(ANNA, 10)), person.group(&MALLORY)),
+            None
+        );
+    }
+
     /// 1388: the bubble takes the writer from `0x02` and strips exactly
     /// the name the membership gives them, so a name with a colon and a
     /// line that starts with one stay whole; a photo without words, whose
@@ -3486,6 +3542,44 @@ mod tests {
             .map(|b| b.body)
             .collect();
         assert_eq!(bodies, ["Photo from a:b"]);
+    }
+
+    /// 1696: a person's message that carries a copy field and the home's
+    /// sentence for a photo draws no writer over it. The terminal names a
+    /// writer over media only in a chat whose source is a group this
+    /// device knows (1388), as the chat draws a copy under its writer only
+    /// there: the sentence is the sender's text, and that is all it is.
+    #[test]
+    fn a_strangers_sentence_draws_no_writer_over_its_photo() {
+        const MALLORY: [u8; 16] = [0x3a; 16];
+        let mut model = reader(&[MALLORY]);
+        let mut fields = lev_fields(copy_at(ANNA, 12));
+        fields.extend(crate::ui::photos::photo_fields("webp", vec![1, 2, 3]));
+        update(
+            &mut model,
+            UiEvent::Engine(OutboxEvent::Received {
+                sent_at: 0,
+                message_id: [31; 32],
+                source: MALLORY,
+                title: Vec::new(),
+                body: b"Photo from Anna".to_vec(),
+                fields,
+                verified: true,
+            }),
+        );
+        let rows: Vec<String> = super::super::view(&model)
+            .messages
+            .iter()
+            .map(|row| row.cells.iter().map(|c| c.ch).collect::<String>())
+            .collect();
+        assert!(
+            rows.iter().any(|row| row.contains("Photo from Anna")),
+            "the sender's own words: {rows:#?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.trim_start().starts_with("Anna:")),
+            "a writer nobody vouched for: {rows:#?}"
+        );
     }
 
     fn ended(epoch: u64, list: &[([u8; 16], &str, u64)]) -> Lev {

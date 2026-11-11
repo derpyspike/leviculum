@@ -85,6 +85,10 @@ pub struct Draw<'a> {
     /// The reader's names, for a relayed post's writer (1482); none draws
     /// a relay's posts as they came.
     pub names: Option<&'a crate::names::Names>,
+    /// The groups this device knows (1696): the conversation's peer looked
+    /// up here is what may vouch for a copy's writer, as the chat looks it
+    /// up ([`super::groups::copy_writer`]).
+    pub groups: Option<&'a super::groups::Groups>,
     /// The bubbles' bytes under way (1662); none draws no bar.
     pub transfers: Option<&'a super::transfer::Transfers>,
 }
@@ -532,6 +536,9 @@ fn block(
 ) -> Block {
     let peer = conversation.peer;
     let message = &conversation.messages[index];
+    // The group this device knows the conversation to be, if any: it alone
+    // may vouch for the writer of a copy (1696).
+    let group = draw.groups.and_then(|groups| groups.get(&peer));
     let narrow = width < NARROW;
     let cap = block_cap(width);
     let mut rows = Vec::new();
@@ -542,7 +549,7 @@ fn block(
             // The scene's one sentence (1449 item 5, walk 1 finding 11):
             // `Live position` while the newest report is alive, else when
             // the fix was taken; the coordinates are the Info's.
-            match super::message_fix(peer, message) {
+            match super::message_fix(peer, message, group) {
                 Some(fix) => {
                     let now = draw.now.map(|now| now.unix_secs);
                     let alive = conversation.newest_fix_report() == Some(index)
@@ -555,14 +562,21 @@ fn block(
                 }
                 None => {
                     let received = message.at.map(|at| at.unix_secs);
-                    telemetry::report_line(&telemetry::read(peer, &message.fields, received))
+                    telemetry::report_line(&telemetry::read(
+                        peer,
+                        &message.fields,
+                        received,
+                        super::groups::copy_writer(&message.fields, group),
+                    ))
                 }
             }
         }
         (false, mark) => {
             // A group's copy without words names its writer as every copy
-            // does here, not with the home's sentence (1388).
-            let body = super::groups::stand_in_line(&message.body, &message.fields)
+            // does here, not with the home's sentence (1388) — only from a
+            // group this device knows, as the chat draws one (1696).
+            let body = group
+                .and_then(|_| super::groups::stand_in_line(&message.body, &message.fields))
                 .or_else(|| {
                     relayed.and_then(|names| {
                         super::relayed::terminal_line(names, draw.lang, conversation, message)
@@ -577,7 +591,10 @@ fn block(
     };
     // A text that came with a position says so under it, in a report's
     // words: `Enter` on it opens the map there.
-    let body = match (message.is_report(), super::message_fix(peer, message)) {
+    let body = match (
+        message.is_report(),
+        super::message_fix(peer, message, group),
+    ) {
         (false, Some(fix)) => format!(
             "{body}\n{} {}",
             telemetry::REPORT_MARK,

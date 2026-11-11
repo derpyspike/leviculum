@@ -3218,7 +3218,7 @@ mod tests {
     #[test]
     fn a_position_argument_is_a_reports_telemeter() {
         let fields = position_fields("52.516275,-13.3777").expect("a place");
-        let read = loquax::telemetry::read([0; 16], &fields, None);
+        let read = loquax::telemetry::read([0; 16], &fields, None, None);
         let fix = loquax::telemetry::shown_fix(&read).expect("a fix");
         assert_eq!(
             (fix.location.latitude_e6, fix.location.longitude_e6),
