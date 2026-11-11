@@ -31,6 +31,7 @@ pub mod infouf2;
 pub mod manifest;
 pub mod maps;
 pub mod media;
+pub mod media_sector;
 pub mod mgmt;
 pub mod name;
 pub mod pn_list;
