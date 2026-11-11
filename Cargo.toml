@@ -48,6 +48,12 @@ members = [
     # compiles the port and runs its host tests; not a default member —
     # only the ESP firmware links it.
     "leviculum-trouble",
+    # The patched TrouBLE 0.8.0 it builds on (vendor/trouble-host/
+    # LEVICULUM-PATCH.md). A member for the nmea0183 reason: the patch's
+    # regressions are unit tests in its library, and `cargo test
+    # --workspace` is what runs them. Its upstream hardware suites are
+    # not carried (the patch file's vendoring delta says why).
+    "vendor/trouble-host",
 ]
 
 # leviculum-ffi is a gnu-target cdylib (built via the `build-ffi` alias). It is

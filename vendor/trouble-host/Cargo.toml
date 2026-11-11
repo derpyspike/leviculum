@@ -188,25 +188,9 @@ subrating = []
 name = "trouble_host"
 path = "src/lib.rs"
 
-[[test]]
-name = "common"
-path = "tests/common.rs"
 
-[[test]]
-name = "gatt"
-path = "tests/gatt.rs"
 
-[[test]]
-name = "gatt_derive"
-path = "tests/gatt_derive.rs"
 
-[[test]]
-name = "l2cap"
-path = "tests/l2cap.rs"
-
-[[test]]
-name = "service_attribute_macro"
-path = "tests/service_attribute_macro.rs"
 
 [dependencies.aes]
 version = "0.8.2"

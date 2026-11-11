@@ -70,3 +70,14 @@ is not running leaves its request queued until it runs.
 `Cargo.toml.orig`, `Cargo.lock`, `.cargo-ok`, `.cargo_vcs_info.json`. The
 integration tests under `tests/` need two Zephyr HCI UART adapters and are
 not part of any recipe here.
+
+## Leviculum's vendoring delta (1480)
+
+The upstream `tests/` directory and its `[[test]]` declarations are not
+carried: those suites drive two real HCI controllers
+(`common::find_controllers`) and can never run on this tree's hosts or
+its forge, while the integ census (`scripts/check-standard-integ.py`)
+rightly refuses test targets nothing runs. The patch's own regressions
+live in the library (`src/host.rs`, the raw-H4 completed-packets
+routing; `src/periodic.rs`, the sync table) and run as unit tests —
+the crate is a workspace member for exactly that.
