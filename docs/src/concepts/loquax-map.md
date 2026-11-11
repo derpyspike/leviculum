@@ -35,7 +35,7 @@ the writer, not the group, where the message's source is a group this
 device knows and the writer it names is a member, `groups::copy_writer`,
 `loquax/src/ui/groups.rs:315`), the screen model keeps each peer's latest
 and hands every one to the store (`take_telemetry`,
-`loquax/src/ui.rs:6670`), and the store keeps the fields whole in its
+`loquax/src/ui.rs:6712`), and the store keeps the fields whole in its
 `fields` column (`loquax/src/store.rs:3800`) and the positions in a table of
 their own (`SCHEMA_V2`, `loquax/src/store.rs:203`). The sender's timestamp
 is still not carried: `OutboxEvent`, the screen's `Message` and every type

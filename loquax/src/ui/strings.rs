@@ -685,6 +685,9 @@ leviculum_ui::catalogue! {
     HomeJoining = "home_joining", "Joining your mailbox", "Verbinde mit deinem Postfach";
     HomeFetched = "home_fetched", "Fetched %1$d of %2$d", "%1$d von %2$d abgeholt";
     HomeFetchedSome = "home_fetched_some", "Fetched %1$d", "%1$d abgeholt";
+    // A first sync or a catch-up runs (1697): older messages are being
+    // loaded, said with the pull's own numbers, never a bare spinner.
+    HomeCatchUp = "home_catch_up", "Loading older messages: %1$d of %2$d", "Lade ältere Nachrichten: %1$d von %2$d";
     HomeUnreachable = "home_unreachable", "Mailbox unreachable", "Postfach nicht erreichbar";
     // Linking a device (1264): the phone holds no mailbox to link to.
     LinkOnComputer = "link_on_computer", "Your mailbox is on a computer. Link the other device there.", "Dein Postfach ist auf einem Computer. Verbinde das andere Gerät dort.";

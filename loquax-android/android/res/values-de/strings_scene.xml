@@ -539,6 +539,7 @@
     <string name="home_joining">Verbinde mit deinem Postfach</string>
     <string name="home_fetched">%1$d von %2$d abgeholt</string>
     <string name="home_fetched_some">%1$d abgeholt</string>
+    <string name="home_catch_up">Lade ältere Nachrichten: %1$d von %2$d</string>
     <string name="home_unreachable">Postfach nicht erreichbar</string>
     <string name="link_on_computer">Dein Postfach ist auf einem Computer. Verbinde das andere Gerät dort.</string>
     <string name="move_on_computer">Dein Postfach ist auf einem Computer. Dein neues Handy verbindest du dort.</string>

@@ -3157,6 +3157,10 @@ pub enum UiEvent {
         key: u64,
         transfer: transfer::Transfer,
     },
+    /// How far a client's catch-up pull came (1697): the engine took in
+    /// `done` of the pull's `total` entries. The mailbox's state line says
+    /// it while older messages load, and [`UiEvent::FetchDone`] clears it.
+    PullProgress { done: u64, total: u64 },
     /// The fetch finished: how many messages were new, or why it failed.
     FetchDone(Result<usize, String>),
     /// The propagation node `node` answered [`UiEffect::AskPn`] (1409):
@@ -4110,7 +4114,26 @@ fn fold<B: InputBuffer + Default>(model: &mut UiModel<B>, event: UiEvent) -> Vec
         UiEvent::Profile { open } => model.show_profile(open),
         UiEvent::Info(at) => model.show_info(at),
         UiEvent::ProfileFacts(facts) => {
+            // A catch-up under way outlives a facts refresh (1697): the
+            // shell rebuilds the facts from the link's state and would
+            // say "connected" over the count; the count goes with the
+            // pull's end ([`UiEvent::FetchDone`]) or with a mailbox that
+            // stopped answering.
+            let counting = match &model.profile.mailbox {
+                profile::Mailbox::Away {
+                    word: Some(word @ crate::home::board::Word::CatchingUp { .. }),
+                    ..
+                } => Some(*word),
+                _ => None,
+            };
             model.profile = *facts;
+            if let (Some(counting), profile::Mailbox::Away { word, .. }) =
+                (counting, &mut model.profile.mailbox)
+            {
+                if !matches!(word, Some(crate::home::board::Word::Unreachable)) {
+                    *word = Some(counting);
+                }
+            }
             Vec::new()
         }
         UiEvent::MailboxTold(told) => {
@@ -4229,6 +4252,14 @@ fn fold<B: InputBuffer + Default>(model: &mut UiModel<B>, event: UiEvent) -> Vec
             }
             Vec::new()
         }
+        UiEvent::PullProgress { done, total } => {
+            // The quiet line in the mailbox's own state (1697): never a
+            // second place, and gone with the pull's end.
+            if let profile::Mailbox::Away { word, .. } = &mut model.profile.mailbox {
+                *word = Some(crate::home::board::Word::CatchingUp { done, of: total });
+            }
+            Vec::new()
+        }
         UiEvent::FetchDone(result) => {
             let synced = result.is_ok();
             let mut effects = on_fetch_done(model, result);
@@ -4311,6 +4342,17 @@ pub fn position_fields(location: leviculum_lxmf::telemetry::Location) -> Vec<Fie
 /// messages, and the first failure in a row, not every retry's.
 fn on_fetch_done<B>(model: &mut UiModel<B>, result: Result<usize, String>) -> Vec<UiEffect> {
     model.fetching = false;
+    // The catch-up line goes with the pull (1697): settled it is gone,
+    // and a mailbox that stopped answering says so in the same place,
+    // with the words it always had.
+    if let profile::Mailbox::Away { word, .. } = &mut model.profile.mailbox {
+        if matches!(word, Some(crate::home::board::Word::CatchingUp { .. })) {
+            *word = match result.is_ok() {
+                true => None,
+                false => Some(crate::home::board::Word::Unreachable),
+            };
+        }
+    }
     // A pull ended: the next began after every petname and peer state the
     // home took so far, and brings nothing older than them (1635, 1640).
     model.owed_petnames.fetch_done();
@@ -10712,6 +10754,104 @@ pub(crate) mod tests {
                 // Beside the chat the start read it before the page came.
                 false => assert_eq!(model.conversations[0].unread, 0, "beside, paged"),
             }
+        }
+    }
+
+    /// 1697 C, measured: what the list does when history arrives during a
+    /// catch-up. On a list apart (the phone's facade, the M9) the cursor
+    /// rule of 1546 holds the selected row on its screen line while the
+    /// arriving rows reorder around it, as long as the window can scroll;
+    /// where the list's end pins the window ("the line gives way only
+    /// where the list ends"), the row drifts at most one line per arrival
+    /// and never leaves the screen or the selection. The order itself
+    /// moves (newest write first is the list's design, as on any
+    /// messenger); what holds still is the reader's place.
+    #[test]
+    fn history_arriving_during_a_catch_up_keeps_the_selected_row_on_its_line() {
+        let peers: [[u8; 16]; 8] = core::array::from_fn(|i| [0xd0 + i as u8; 16]);
+        let id = |p: usize, n: u8| {
+            let mut id = [0u8; 32];
+            id[0] = 0xd0 + p as u8;
+            id[1] = n;
+            id
+        };
+        let mut model = UiModel::<Field>::new(&[]);
+        model.home_client = true;
+        model.list_apart = true;
+        model.history = true;
+        let visible = 3;
+        model.viewing = Viewing {
+            list_rows: visible,
+            apart: true,
+            ..Viewing::default()
+        };
+        // Eight conversations, oldest first, so the order is P7..P0.
+        for (p, peer) in peers.iter().enumerate() {
+            engine(
+                &mut model,
+                OutboxEvent::Received {
+                    message_id: id(p, 0),
+                    source: *peer,
+                    title: Vec::new(),
+                    body: b"history".to_vec(),
+                    fields: Vec::new(),
+                    verified: true,
+                    sent_at: 100 + p as i64,
+                },
+            );
+        }
+        // The reader stands on P4's row and the window settles on it.
+        let _ = update(&mut model, UiEvent::Open { peer: peers[4] });
+        let place = |model: &UiModel<Field>| {
+            let order = model.order();
+            let at = order
+                .iter()
+                .position(|&i| model.conversations[i].peer == peers[4])
+                .expect("the reader's row is listed");
+            let (_, _, top) = model.list_window(&order);
+            (at, top.expect("a list apart knows its top"))
+        };
+        let (at, top) = place(&model);
+        let line = at - top;
+        assert!(at >= top && line < visible, "the reader's row is on screen");
+        // The catch-up goes on: other peers' history bumps their rows
+        // above the selection, one conversation at a time.
+        let mut was_at = at;
+        for (n, p) in [0usize, 1, 2, 3].into_iter().enumerate() {
+            engine(
+                &mut model,
+                OutboxEvent::Received {
+                    message_id: id(p, 1),
+                    source: peers[p],
+                    title: Vec::new(),
+                    body: b"more history".to_vec(),
+                    fields: Vec::new(),
+                    verified: true,
+                    sent_at: 200 + n as i64,
+                },
+            );
+            let (now_at, now_top) = place(&model);
+            assert_eq!(now_at, was_at + 1, "each bump moves the row down the order");
+            was_at = now_at;
+            match now_at + visible <= peers.len() {
+                // The window can scroll: the row keeps its line exactly.
+                true => assert_eq!(
+                    now_at - now_top,
+                    line,
+                    "the selected row keeps its line while rows move around it"
+                ),
+                // The list's end pins the window: the line gives way, at
+                // most one line per arrival, and the row stays on screen.
+                false => assert!(
+                    now_at - now_top <= line + (now_at + visible - peers.len())
+                        && now_at - now_top < visible,
+                    "at the list's end the row drifts bounded, never off screen"
+                ),
+            }
+            assert_eq!(
+                model.conversations[model.selected].peer, peers[4],
+                "the selection stays on the reader's conversation"
+            );
         }
     }
 

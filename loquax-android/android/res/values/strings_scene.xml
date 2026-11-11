@@ -539,6 +539,7 @@
     <string name="home_joining">Joining your mailbox</string>
     <string name="home_fetched">Fetched %1$d of %2$d</string>
     <string name="home_fetched_some">Fetched %1$d</string>
+    <string name="home_catch_up">Loading older messages: %1$d of %2$d</string>
     <string name="home_unreachable">Mailbox unreachable</string>
     <string name="link_on_computer">Your mailbox is on a computer. Link the other device there.</string>
     <string name="move_on_computer">Your mailbox is on a computer. Your new phone joins it there.</string>

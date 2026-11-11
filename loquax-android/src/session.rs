@@ -3296,8 +3296,16 @@ impl Inner {
             let home = self.home.clone();
             let done = self.finished_tx.clone();
             let wake = Arc::clone(&self.wake);
+            let (told, woken) = (self.finished_tx.clone(), Arc::clone(&self.wake));
             self.runtime.spawn(async move {
-                let end = runner::pull(&mut tap, &client, &home, BUDGET).await;
+                // How far a catch-up came (1697): the mailbox's state
+                // line, folded on the next turn.
+                let mut progress = move |event: UiEvent| {
+                    let _ = told.send(Finished::Event(event));
+                    woken.notify_one();
+                };
+                let end =
+                    runner::pull_watching(&mut tap, &client, &home, BUDGET, &mut progress).await;
                 // The history it imported, read here, off the session's
                 // lock (1464): the store's read was the pull end's turn.
                 let stored = match end.imported {
@@ -3330,8 +3338,9 @@ impl Inner {
     ) {
         self.pulling = false;
         runner::settle_pull(&self.home, end.cursor);
-        // Once a pull settled, what arrives is live mail (1429).
-        if end.cursor.is_some() {
+        // Once a pull settled whole, what arrives is live mail (1429). A
+        // partial pull moved the cursor and stays history (1697).
+        if end.settled {
             self.model.history = false;
         }
         if let Some(stored) = stored {

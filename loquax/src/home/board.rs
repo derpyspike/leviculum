@@ -656,6 +656,10 @@ pub enum Word {
     /// A pull took `taken` entries of the archive; `of` is how many there
     /// were in all when the home said so (`wire::Page::left`).
     Fetched { taken: u64, of: Option<u64> },
+    /// A first sync or a catch-up is being taken in (1697): the engine got
+    /// through `done` of the pull's `of` entries. The phone's and the
+    /// desktop's word while older messages load; the words say so.
+    CatchingUp { done: u64, of: u64 },
     /// The last ask got through and nothing is being pulled.
     Connected,
     /// The last ask found no path, no link or no answer.
@@ -682,6 +686,10 @@ impl Word {
             Self::Fetched { taken, of: None } => {
                 Text::Key(StrId::HomeFetchedSome, alloc::vec![Arg::Int(count(taken))])
             }
+            Self::CatchingUp { done, of } => Text::Key(
+                StrId::HomeCatchUp,
+                alloc::vec![Arg::Int(count(done)), Arg::Int(count(of))],
+            ),
             Self::Connected => Text::key(StrId::MailboxConnected),
             Self::Unreachable => Text::key(StrId::HomeUnreachable),
             Self::CodeRefused => Text::key(StrId::JoinRefused),
@@ -696,7 +704,7 @@ impl Word {
     pub fn bar(self) -> Text {
         Text::key(match self {
             Self::Joining => StrId::M9BarConnecting,
-            Self::Fetched { .. } => StrId::M9BarFetching,
+            Self::Fetched { .. } | Self::CatchingUp { .. } => StrId::M9BarFetching,
             Self::Connected => StrId::M9BarConnected,
             Self::Unreachable => StrId::M9BarDisconnected,
             Self::CodeRefused | Self::Refused => StrId::M9BarRefused,

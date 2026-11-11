@@ -171,6 +171,10 @@ struct FetchEnd {
     /// On a client of a home node: the cursor to save, once the events the
     /// pull caused are in the store ([`loquax::home::client::Pull::cursor`]).
     cursor: Option<u64>,
+    /// On a client of a home node: whether the engine got through
+    /// everything the pull brought (1697). Only a settled pull ends the
+    /// first sync's history; a partial one still moves the cursor.
+    settled: bool,
     /// On a client of a home node: the imported history rows the pull wrote
     /// to the store ([`runner::PullEnd::imported`]).
     imported: usize,
@@ -1093,8 +1097,14 @@ impl Shell {
                 let tap = self.fanout.tap();
                 let context = self.job_context();
                 let done = self.done_tx.clone();
+                let told = self.done_tx.clone();
                 let task = tokio::spawn(async move {
-                    let end = fetch(tap, context).await;
+                    // How far a catch-up came (1697), folded as it comes,
+                    // before the fetch's end.
+                    let mut progress = move |event: UiEvent| {
+                        let _ = told.send(Finished::Event(event));
+                    };
+                    let end = fetch(tap, context, &mut progress).await;
                     let _ = done.send(Finished::Fetch(end));
                 });
                 self.fetch_task = Some((task, reason));
@@ -1315,8 +1325,10 @@ impl Shell {
         // poll that handed the runner its fence; only now may the cursor
         // pass it.
         runner::settle_pull(&self.context.home, end.cursor);
-        // Once a pull settled, what arrives is live mail (1429).
-        if end.cursor.is_some() {
+        // Once a pull settled whole, what arrives is live mail (1429). A
+        // partial pull moved the cursor and stays history (1697): the
+        // rest of the archive is still owed and nobody read it here.
+        if end.settled && self.model.history {
             self.model.history = false;
             self.model.changed_outside();
         }
@@ -1603,26 +1615,40 @@ async fn send(
     }
 }
 
-/// One mailbox drain, exactly as `loquax fetch` runs it.
-async fn fetch(tap: Tap, context: RunContext) -> FetchEnd {
+/// One mailbox drain, exactly as `loquax fetch` runs it. `progress` hears
+/// how far a client's catch-up came (1697), folded as it comes.
+async fn fetch(
+    tap: Tap,
+    context: RunContext,
+    progress: &mut (dyn FnMut(UiEvent) + Send),
+) -> FetchEnd {
     let started = tokio::time::Instant::now();
     let mut watched = Watched { tap, node: None };
-    let (result, cursor, imported) = match &context.client {
+    let (result, cursor, settled, imported) = match &context.client {
         Some(client) => {
-            let end = runner::pull(&mut watched, client, &context.home, context.timeout).await;
+            let end = runner::pull_watching(
+                &mut watched,
+                client,
+                &context.home,
+                context.timeout,
+                progress,
+            )
+            .await;
             (
                 end.result.map_err(FetchError::SyncFailed),
                 end.cursor,
+                end.settled,
                 end.imported,
             )
         }
-        None => (drain(&mut watched, context).await, None, 0),
+        None => (drain(&mut watched, context).await, None, false, 0),
     };
     FetchEnd {
         result,
         node: watched.node,
         elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         cursor,
+        settled,
         imported,
     }
 }

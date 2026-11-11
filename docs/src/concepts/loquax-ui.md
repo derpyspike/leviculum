@@ -1117,6 +1117,7 @@ golden without its German twin.
 | A send's two legs in the toast | | `tui_toast_two_legs.frame` | `tui_toast_two_legs_de.frame` | | | |
 | History, drafts and an import | | `tui_history.frames`, `tui_draft.frames`, `tui_ugly.frames` | `tui_history_de.frames`, `tui_draft_de.frames`, `tui_ugly_de.frames` | | | |
 | The profile | `gui-profile-light.png` | `tui_profile.frames` | `tui_profile_de.frames` | | `profile-words.json` | `scene-profile.json` |
+| A catch-up counting in the mailbox's state line (1697) | | `tui_profile_catchup.frames` | `tui_profile_catchup_de.frames` | | | |
 | Groups: new, invited, the chat, its members | `gui-group-new.png`, `gui-group-invitation.png`, `gui-group-chat.png`, `gui-group-members.png` | | | `m9-group.png`, `m9-fw-groups.png`, `m9-fw-invite.png`, `m9-fw-members.png`, `m9-fw-admin.png`, `m9-fw-ask.png`, `m9-fw-name.png`, `m9-fw-pick.png` | | `scene-group-list.json`, `scene-group-new-name.json`, `scene-group-new-pick.json`, `scene-group-invitation.json`, `scene-group-invited-chat.json`, `scene-group-chat.json`, `scene-group-members.json`, `scene-group-members-leave.json` |
 | A group's one and two ticks | `gui-group-ticks.png` | `tui-group-ticks.txt` | `tui-group-ticks-de.txt` | `m9-group-ticks.png` | `group-ticks.json` | `scene-group-ticks.json` |
 | A relayed group | `gui-relay-group.png` | `tui-relay-group.txt` | `tui-relay-group-de.txt` | | `relay-group.json` | `scene-relay-group.json` |
