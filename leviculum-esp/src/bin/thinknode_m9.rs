@@ -475,15 +475,22 @@ fn kb_drain() -> (Vec<kbraw::Press>, u32, u32) {
 // cross-core critical section, and the keyboard queue [`KB_PRESSES`],
 // which the UI side drains directly.
 //
-// The executor is NO executor: each core runs one blocking loop, and
-// the queues are plain `VecDeque`s under `critical_section` (esp-hal's
-// multicore implementation is a cross-core spinlock). Why: the
-// community port's interrupt executor crashed on this board
-// (`thinknode-m9.md`, "The loop"), esp-rtos would add a scheduler and a
-// stack per task against a measured stack budget, and after 1463 the
-// data flow is already message-shaped — pages, answers and key presses
-// in, asks out — so two loops with queues give the decoupling without a
-// new machine to trust. Flash stays on core 0; esp-storage's AutoPark
+// The executor is NO executor OF OURS: each core runs one blocking
+// loop, and the queues are plain `VecDeque`s under `critical_section`
+// (esp-hal's multicore implementation is a cross-core spinlock). Why:
+// the community port's interrupt executor crashed on this board
+// (`thinknode-m9.md`, "The loop"), a scheduler would add a stack per
+// task against a measured stack budget, and after 1463 the data flow
+// is already message-shaped — pages, answers and key presses in, asks
+// out — so two loops with queues give the decoupling without a new
+// machine to trust. Since 1480 esp-rtos DOES run on core 0, exactly as
+// far as the BLE radio blobs force it — they refuse to exist without a
+// preemptive scheduler — and no further: this loop is the scheduler's
+// main task and runs on as before, every future of ours is still
+// polled from it (`leviculum_esp::ble`), and only the blobs' own tasks
+// preempt it, their stacks paid from the BLE heap region rather than
+// this budget. A board whose media record switches BLE off never
+// starts the scheduler. Flash stays on core 0; esp-storage's AutoPark
 // parks the UI core for each write or erase (the flash routines run
 // with the cache off, which core 1 executes through), and core 0 holds
 // the critical section across each one, so the UI core is never parked
