@@ -1957,6 +1957,36 @@ fn home_keeps_petname(session: &Session, home: &Path, peer: [u8; 16], want: Opti
     }
 }
 
+/// Wait until the phone's store owes nothing for one word any more
+/// (1635, 1640), reading `session`'s events meanwhile: the home took it
+/// and the phone folded the home's answer, which is what the assertion
+/// after the stop reads. The home's journal alone says only that the
+/// home took it: its answer reaches the phone's pump a turn later, and a
+/// stop in between keeps the word owed in the store — the module's own
+/// rules ([`loquax::ui::owed`]) make it settle on that answer, not on
+/// the home's journal. Waiting on the journal alone made the `taken`
+/// cases depend on that turn's timing under the suite's load.
+fn the_phone_owes_nothing(
+    session: &Session,
+    store: &Path,
+    settled: impl Fn(&loquax::store::Store) -> bool,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let kept = loquax::store::Store::open_read_only(store, session.address())
+            .expect("the phone's store")
+            .expect("there");
+        if settled(&kept) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the phone never recorded what its home took"
+        );
+        let _ = session.next_event(Duration::from_millis(200));
+    }
+}
+
 /// 1635: the reader names a peer "Mum", the home node keeps it, and the
 /// reader clears the name again. `taken` says whether the home node took
 /// the clearing before the session stopped; without it the home is
@@ -1976,6 +2006,7 @@ async fn a_cleared_petname_across_a_restart(taken: bool) {
     let home_dir = home.path().to_path_buf();
     let phone = tempfile::tempdir().expect("app dir");
     let dir = phone.path().display().to_string();
+    let phone_store = phone.path().join(loquax::store::STORE_FILE);
     let first = Start {
         dir: dir.clone(),
         code: Some(format!("{code}@127.0.0.1:{port}")),
@@ -2012,6 +2043,9 @@ async fn a_cleared_petname_across_a_restart(taken: bool) {
             .expect("clear");
         if taken {
             home_keeps_petname(&session, &at, peer, None);
+            the_phone_owes_nothing(&session, &phone_store, |kept| {
+                !kept.owed_petnames().expect("owed").contains_key(&peer)
+            });
             kill();
         }
         let address = session.address();
@@ -2165,6 +2199,7 @@ async fn an_unpinned_peer_across_a_restart(taken: bool) {
     let home_dir = home.path().to_path_buf();
     let phone = tempfile::tempdir().expect("app dir");
     let dir = phone.path().display().to_string();
+    let phone_store = phone.path().join(loquax::store::STORE_FILE);
     let first = Start {
         dir: dir.clone(),
         code: Some(format!("{code}@127.0.0.1:{port}")),
@@ -2201,6 +2236,9 @@ async fn an_unpinned_peer_across_a_restart(taken: bool) {
             .expect("unpin");
         if taken {
             home_keeps_pin(&session, &at, peer, false);
+            the_phone_owes_nothing(&session, &phone_store, |kept| {
+                !kept.owed_peer_states().expect("owed").contains_key(&peer)
+            });
             kill();
         }
         let address = session.address();
