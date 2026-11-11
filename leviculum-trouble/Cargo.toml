@@ -1,0 +1,54 @@
+[package]
+name = "leviculum-trouble"
+version = "0.1.0"
+edition = "2021"
+authors = ["Lew Palm"]
+license = "AGPL-3.0-or-later"
+description = "Columba v2.2 over the TrouBLE host, generic over the HCI transport (ESP32-S3 today, any bt-hci controller tomorrow)"
+
+[dependencies]
+# The patched TrouBLE 0.8.0 (vendor/trouble-host/LEVICULUM-PATCH.md): the
+# registry host reports completed packets without the connection handle,
+# so a drain wait could not be routed to its link. The vendored host names
+# the connection, and `columba.rs`'s event handler routes each completion
+# to that connection's drain slot alone.
+trouble-host = { path = "../vendor/trouble-host", default-features = false, features = [
+    "peripheral",
+    "central",
+    "scan",
+    "gatt",
+    "derive",
+    "default-packet-pool",
+    "connection-params-update",
+] }
+# The HCI vocabulary of the vendored TrouBLE; the transport trait itself is
+# bt-hci-transport 0.1, which esp-radio's `BleConnector` implements too, so
+# one controller serves both version lines.
+bt-hci = "0.10"
+embassy-sync = "0.8"
+embassy-futures = "0.1"
+embassy-time = "0.5"
+embedded-io = "0.7"
+heapless = { version = "0.9", default-features = false }
+static_cell = "2"
+# The protocol decisions, host-tested: the advertisement records, the dial
+# rule, the duplicate rule, the pacing, the drain router.
+leviculum-ble-tx = { path = "../leviculum-nrf/ble-tx" }
+# The fragment framing and the node-facing types.
+leviculum-core = { path = "../leviculum-core", default-features = false }
+# `size_of::<Vec<u8>>` on the 32-bit boards, for the heap-model asserts.
+leviculum-heap-budget = { path = "../leviculum-nrf/heap-budget" }
+# The carrier-off drop run (`media::log_tx_drop`).
+leviculum-media-state = { path = "../leviculum-nrf/media-state" }
+# The `LN-<hex8>` fallback and the operator-name truncation (`name`).
+leviculum-node-name = { path = "../leviculum-nrf/node-name" }
+# The byte-exact log line shape with the trailing ` t=<ms>` stamp.
+leviculum-log-line = { path = "../leviculum-nrf/log-line" }
+
+[dev-dependencies]
+# Host-side `critical_section::Impl` so `CriticalSectionRawMutex` links in
+# `cargo test`; the firmware brings its own (esp-hal's), and two
+# implementations are a link error, so this stays a dev-dependency.
+critical-section = { version = "1", features = ["std"] }
+# A host time driver for the ` t=<ms>` stamp in the log tests.
+embassy-time = { version = "0.5", features = ["std"] }

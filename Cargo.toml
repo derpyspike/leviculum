@@ -43,6 +43,11 @@ members = [
     # no host binary links it, only the nRF firmware does, through the
     # `[patch.crates-io]` in leviculum-nrf/Cargo.toml.
     "vendor/nmea0183",
+    # Columba over the TrouBLE host (1480): the ESP32-S3's BLE backend,
+    # generic over the HCI transport. A member so `cargo test --workspace`
+    # compiles the port and runs its host tests; not a default member —
+    # only the ESP firmware links it.
+    "leviculum-trouble",
 ]
 
 # leviculum-ffi is a gnu-target cdylib (built via the `build-ffi` alias). It is
