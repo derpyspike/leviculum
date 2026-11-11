@@ -61,9 +61,10 @@
     </intent>
   </queries>
 
-  <!-- The jackdaw (1289, 1336): an adaptive icon in mipmap-anydpi-v26 and
-       a PNG per density, written by scripts/render-icon.py. It is round
-       already, so the round icon is the same one. -->
+  <!-- Nessa with the speech bubble (1690): an adaptive icon in
+       mipmap-anydpi-v26 and a PNG per density, written by
+       scripts/nessa-render.py from assets/nessa/nessa-R3-b.svg. It is
+       round already, so the round icon is the same one. -->
   <!-- LoquaxApp arms the guard against blocking library calls on the UI
        thread in a debuggable build (1446, Engine.java). -->
   <application a:name='network.leviculum.loquax.LoquaxApp'

@@ -1,5 +1,7 @@
 # Leviculum
 
+![Nessa, the suite's lioness](images/nessa-head.png)
+
 Leviculum is a Rust implementation of the [Reticulum](https://reticulum.network/) network stack. It is wire-compatible with the Python reference implementation and runs on Linux, macOS, and embedded devices.
 
 ## Reading this handbook

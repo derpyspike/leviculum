@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='utf-8'?>
-<!-- Written by loquax-android/scripts/render-icon.py: the adaptive
-     icon's ground, leviculum_ui::pixel::LIGHT.accent. -->
+<!-- Written by scripts/nessa-render.py from assets/nessa/nessa-R3-b.svg:
+     the adaptive icon's ground, her ink. -->
 <resources>
-    <color name="ic_launcher_background">#3a7d44</color>
+    <color name="ic_launcher_background">#2b1d14</color>
 </resources>

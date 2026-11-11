@@ -91,11 +91,13 @@ if ! command -v zbarimg >/dev/null 2>&1; then
     echo "[install-ci] Hint: sudo apt install zbar-tools (the device walk's QR step)"
 fi
 
-# Icon dependency: resvg renders the Loquax icon to PNG (1289, 1336,
-# loquax-android/scripts/render-icon.py); only that script needs it.
+# Icon dependency: resvg renders the suite's icons and the M9's splash from
+# assets/nessa/nessa-R3-b.svg (1690, scripts/nessa-render.py). `just
+# nessa-check` skips without it and says so, so a host without resvg still
+# passes the guards; with it, the render is held to the SVG.
 if ! command -v resvg >/dev/null 2>&1; then
     echo "[install-ci] Note: icon dependency 'resvg' not found"
-    echo "[install-ci] Hint: sudo apt install resvg (renders the Loquax icon)"
+    echo "[install-ci] Hint: sudo apt install resvg (renders the suite's icons)"
 fi
 
 # Optional test dependency: lintian is the Debian-policy authority

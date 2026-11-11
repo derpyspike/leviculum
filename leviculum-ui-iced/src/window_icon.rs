@@ -1,8 +1,8 @@
-//! The suite's window icon, the jackdaw (1336): the picture a desktop
-//! shows for the window in its task bar and switcher. Rendered from the
-//! one geometry by `loquax-android/scripts/render-icon.py`, which writes
-//! `assets/window-icon.png`; a program passes [`window_icon`] to its
-//! `window::Settings`.
+//! The suite's window icon, Nessa with the speech bubble (1690): the
+//! picture a desktop shows for the window in its task bar and switcher.
+//! Rendered from `assets/nessa/nessa-R3-b.svg` by `scripts/nessa-render.py`,
+//! which writes `assets/window-icon.png`; a program passes [`window_icon`]
+//! to its `window::Settings`.
 
 use iced::window::{icon, Icon};
 

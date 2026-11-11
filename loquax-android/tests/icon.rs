@@ -1,9 +1,9 @@
-//! The app's icon, the jackdaw (1336), as the tree carries it: a legacy
-//! `ic_launcher.png` for every mipmap density at its size, the adaptive
-//! icon over its three layers, the manifest naming it, and the Linux
-//! package's 256 px PNG. `scripts/render-icon.py` writes all of them; its
-//! `--check` holds them to the script's bytes, this test to what Android
-//! and the package need.
+//! The app's icon, Nessa with the speech bubble (1690), as the tree carries
+//! it: a legacy `ic_launcher.png` for every mipmap density at its size, the
+//! adaptive icon over its three layers, the manifest naming it, and the
+//! Linux package's 256 px PNG. `scripts/nessa-render.py` writes all of them;
+//! its `--check` (`just nessa-check`) holds them to `assets/nessa/nessa-R3-b.svg`,
+//! this test to what Android and the package need.
 
 use std::path::{Path, PathBuf};
 

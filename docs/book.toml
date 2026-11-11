@@ -5,6 +5,10 @@ language = "en"
 src = "src"
 
 [output.html]
+# Nessa with the speech bubble: the browser tab's picture. Written by
+# scripts/nessa-render.py from assets/nessa/nessa-R3-b.svg, like every other
+# copy of her (1690).
+favicon = "images/nessa-favicon.png"
 # Served under https://leviculum.network/docs/ (scripts/build-docs-tarball.sh,
 # packaging/site/lev-unpack-docs). mdbook uses this only for 404.html, whose
 # links and assets must resolve from whatever path the miss happened at.

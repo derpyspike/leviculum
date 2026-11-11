@@ -40,6 +40,9 @@ assets = [
     ["../target/lnflash/deb-payload/**/*", "usr/share/lnflash/", "644"],
     # Rendered from docs/src/man/ by scripts/md2man.py in build-lnflash-deb.sh.
     ["../target/man/lnflash.1", "usr/share/man/man1/lnflash.1", "644"],
+    # Nessa with the bolt (1690). lnflash has no launcher entry yet — it is
+    # a root command line — but the picture belongs to the package it names.
+    ["../packaging/lnflash/lnflash.png", "usr/share/icons/hicolor/256x256/apps/lnflash.png", "644"],
     ["README.md", "usr/share/doc/lnflash/README.md", "644"],
     ["../packaging/lintian/lnflash", "usr/share/lintian/overrides/lnflash", "644"],
     # Codeberg #288: both halves, the host binary and the firmware images.
