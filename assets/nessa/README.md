@@ -51,7 +51,7 @@ into `target/tmp` and compares bytes. `just nessa-check` runs the check, in
 | 512 px PNG | the whole figure | `figure-512.png` |
 | desktop icons, 256 px | head + speech bubble, head + sign | `packaging/loquax/loquax.png`, `packaging/lnomad/lnomad.png`, `packaging/lnflash/lnflash.png` |
 | the window icon, 128 px | head + speech bubble | `leviculum-ui-iced/assets/window-icon.png` |
-| the handbook's pictures | head, figure, 32 px favicon | `docs/src/images/nessa-{head,figure,favicon}.png` |
+| the handbook's pictures and its tab | head, figure, the round mark | `docs/src/images/nessa-{head,figure}.png`, `docs/src/favicon.svg` |
 | the M9's splash, 1 bit a pixel | `loquax-m9/assets/splash-head.svg` | `loquax-m9/assets/splash-head.{png,1bpp}` |
 
 The website's pages (`site/pages/`) link the handbook's copies at

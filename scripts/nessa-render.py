@@ -49,7 +49,7 @@ The products, by the thing that shows them:
     assets/nessa/head.svg
     assets/nessa/head-256.png
     docs/src/images/nessa-head.png    the handbook's and the site's picture of her
-    docs/src/images/nessa-favicon.png the handbook's tab
+    docs/src/favicon.svg              the handbook's tab (mdbook's only slot)
 
   The whole figure (website)
     assets/nessa/figure-512.png
@@ -447,6 +447,10 @@ def sources(groups):
             lambda name, fill: name == "head" and fill in SILHOUETTE_FILLS,
         ),
         RES / "values" / "ic_launcher.xml": background_colour(),
+        # mdbook copies a favicon from the book's source root and nowhere
+        # else (0.4.48 has no key for it), so the handbook's tab is the
+        # round mark as an SVG: a 16 px tab wants the vector.
+        ROOT / "docs" / "src" / "favicon.svg": composed_svg(groups, "loquax"),
     }
 
 
@@ -463,7 +467,6 @@ def rasters(groups, round_pictures):
         ASSETS / "head-256.png": (ASSETS / "head.svg", 256),
         ASSETS / "figure-512.png": (SOURCE, 512),
         ROOT / "docs" / "src" / "images" / "nessa-head.png": (ASSETS / "head.svg", 256),
-        ROOT / "docs" / "src" / "images" / "nessa-favicon.png": (ASSETS / "loquax.svg", 32),
         ROOT / "docs" / "src" / "images" / "nessa-figure.png": (SOURCE, 512),
         ROOT / "packaging" / "loquax" / "loquax.png": (ICON / "loquax.svg", 256),
         ROOT / "packaging" / "lnomad" / "lnomad.png": (round_pictures["lnomad"], 256),
