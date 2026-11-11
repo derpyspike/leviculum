@@ -755,18 +755,21 @@ impl UiLog {
     }
 }
 
-/// The UI core's stack: 96 KiB since 1480 (120 KiB since 1595 before
-/// it), 32 KiB over the build script's floor (the board's measured peak
-/// plus 16 KiB, 65,504 B since 1594; the most the UI core ever took was
-/// 48,784 B, window 20). This array is a static in internal RAM, and
-/// core 0's stack is what the linker leaves of that RAM (the ELF's
-/// `.stack` section, the build's `STACK_HEADROOM stack=`), so every KiB
-/// taken off here is core 0's — and 1480's BLE stack (the radio blobs'
-/// heap, their IRAM code, the scheduler) is paid for out of exactly
-/// this trade: 24 KiB came from here, the rest from the blob heap's
-/// sizing (`leviculum_esp::ble::BLE_INTERNAL_HEAP_BYTES`).
-const UI_STACK: usize = 96 * 1024;
-const _: () = assert!(UI_STACK >= 65_504 + 32 * 1024);
+/// The UI core's stack: 88 KiB since 1480 (120 KiB since 1595 before
+/// it), 24.6 KiB over the build script's floor (the board's measured
+/// peak plus 16 KiB, 65,504 B since 1594; the most the UI core ever
+/// took was 48,784 B, window 20 — 41 KiB under this array). This array
+/// is a static in internal RAM, and core 0's stack is what the linker
+/// leaves of that RAM (the ELF's `.stack` section, the build's
+/// `STACK_HEADROOM stack=`), so every KiB taken off here is core 0's —
+/// and 1480's BLE stack (the radio blobs' heap and IRAM code, the
+/// scheduler, the host's statics) is paid for out of exactly this
+/// trade: 32 KiB came from here, the rest from the blob heap's sizing
+/// (`leviculum_esp::ble::BLE_INTERNAL_HEAP_BYTES`). The binding floor
+/// is the BENCH image, whose inject machinery costs core 0 another
+/// ~8 KiB of statics over the release image's.
+const UI_STACK: usize = 88 * 1024;
+const _: () = assert!(UI_STACK >= 65_504 + 24 * 1024);
 
 static mut APP_CORE_STACK: Stack<UI_STACK> = Stack::new();
 
