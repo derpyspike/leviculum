@@ -29,11 +29,11 @@ use esp_alloc::{HeapRegion, MemoryCapability};
 use esp_hal::peripherals::{BT, FROM_CPU_INTR0};
 use esp_hal::timer::timg::Timer;
 use esp_radio::ble::controller::BleConnector;
+use leviculum_trouble::ble::columba;
+pub use leviculum_trouble::ble::PeerEvent;
 use leviculum_trouble::ble::{
     build_stack, channels, run_columba, BleChannels, BleInterface, Resources, StackCell,
 };
-pub use leviculum_trouble::ble::PeerEvent;
-use leviculum_trouble::ble::columba;
 
 use crate::handheld::BLE_IFACE;
 use crate::time_driver::poll_once;
@@ -118,10 +118,7 @@ pub fn start(
     let connector = match BleConnector::new(bt, esp_radio::ble::Config::default()) {
         Ok(connector) => connector,
         Err(e) => {
-            log.line(
-                "[BLE ] ",
-                format_args!("off reason=controller err={:?}", e),
-            );
+            log.line("[BLE ] ", format_args!("off reason=controller err={:?}", e));
             return None;
         }
     };
