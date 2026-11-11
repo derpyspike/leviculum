@@ -22,6 +22,7 @@ use esp_hal::peripherals::FLASH;
 use esp_storage::{FlashStorage, FlashStorageError};
 use leviculum_core::identity::Identity;
 use leviculum_core::identity_store::{self, ENCODED_SIZE_ALIGNED as IDENTITY_SIZE};
+use leviculum_core::media_switches::{self, MediaSwitches};
 use leviculum_core::wifi_credentials::{self, WifiCredentials};
 use loquax::home::board::store::{Sectors, SECTOR as STORE_SECTOR};
 use loquax::home::record::{slots, ClientRecord, RecordError};
@@ -157,6 +158,8 @@ pub const CLIENT_B_LABEL: &str = "loquax_client_b";
 pub const MESSAGES_LABEL: &str = "messages";
 /// The partition the WLAN credentials live in (1479).
 pub const WIFI_LABEL: &str = "wifi";
+/// The partition the media opt-outs live in (1480).
+pub const MEDIA_LABEL: &str = "media";
 /// The partition the map regions `lnflash --region` wrote live in (1477),
 /// a `leviculum_map::area`.
 pub const REGIONS_LABEL: &str = "regions";
@@ -259,6 +262,8 @@ pub struct Stores<'d> {
     regions: Result<(u32, u32), NoRegion>,
     /// The WLAN credentials (1479).
     wifi: Slot,
+    /// The media opt-outs (1480).
+    media: Slot,
 }
 
 impl<'d> Stores<'d> {
@@ -277,9 +282,10 @@ impl<'d> Stores<'d> {
         // for the op's whole window.
         let mut flash = unsafe { FlashStorage::new(flash).multicore_ignore() };
         let mut table = Aligned([0u8; PARTITION_TABLE_MAX_LEN]);
-        let (identity, client, client_b, messages, regions, wifi) =
+        let (identity, client, client_b, messages, regions, wifi, media) =
             match partitions::read_partition_table(&mut flash, &mut table.0) {
                 Err(_) => (
+                    Err(NoRegion::NoTable),
                     Err(NoRegion::NoTable),
                     Err(NoRegion::NoTable),
                     Err(NoRegion::NoTable),
@@ -294,6 +300,7 @@ impl<'d> Stores<'d> {
                     let mut messages = Err(NoRegion::NoEntry);
                     let mut regions = Err(NoRegion::NoEntry);
                     let mut wifi = Err(NoRegion::NoEntry);
+                    let mut media = Err(NoRegion::NoEntry);
                     for entry in table.iter() {
                         let found = match entry.label_as_str() {
                             IDENTITY_LABEL => &mut identity,
@@ -302,6 +309,7 @@ impl<'d> Stores<'d> {
                             MESSAGES_LABEL => &mut messages,
                             REGIONS_LABEL => &mut regions,
                             WIFI_LABEL => &mut wifi,
+                            MEDIA_LABEL => &mut media,
                             _ => continue,
                         };
                         *found = if entry.raw_type() != TYPE_DATA {
@@ -321,6 +329,7 @@ impl<'d> Stores<'d> {
                         messages,
                         regions,
                         wifi.map(|(offset, _)| offset),
+                        media.map(|(offset, _)| offset),
                     )
                 }
             };
@@ -332,6 +341,7 @@ impl<'d> Stores<'d> {
             messages,
             regions,
             wifi: Slot(wifi),
+            media: Slot(media),
         }
     }
 
@@ -413,6 +423,23 @@ impl<'d> Stores<'d> {
         let mut record = Aligned([0u8; wifi_credentials::RECORD_LEN]);
         self.read(self.wifi, &mut record.0)?;
         Ok(WifiCredentials::decode(&record.0))
+    }
+
+    /// Where the media opt-outs live (1480).
+    pub fn media_slot(&self) -> Slot {
+        self.media
+    }
+
+    /// The media opt-outs (1480): everything on where `lnflash --ble`
+    /// wrote nothing — an erased sector, an older table, a read error —
+    /// because media are on by default and only a checked record may
+    /// switch one off. Read only, the board never writes it.
+    pub fn load_media(&mut self) -> MediaSwitches {
+        let mut record = Aligned([0u8; media_switches::RECORD_LEN]);
+        if self.read(self.media, &mut record.0).is_err() {
+            return MediaSwitches::all_on();
+        }
+        MediaSwitches::decode(&record.0).unwrap_or(MediaSwitches::all_on())
     }
 
     /// Where the message store lives.

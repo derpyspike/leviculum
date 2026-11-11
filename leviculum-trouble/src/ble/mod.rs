@@ -85,7 +85,13 @@ impl<T> HciTransport for T where T: Transport<Error: From<ReadHciError<Infallibl
 /// The board's HCI transport wrapped as a controller. The slot count is the
 /// HCI command/event queue depth TrouBLE's own Pico 2 W example uses.
 pub type Controller<T> = ExternalController<T, 10>;
-type Resources = HostResources<DefaultPacketPool, MAX_LINKS, L2CAP_CHANNELS>;
+/// The host's tables, allocated by the firmware: on the M9 they go into
+/// PSRAM through its heap, because internal DRAM is the scarce bank the
+/// radio blobs and both cores' stacks share, and nothing in here is
+/// touched while the cache is off (no BLE code runs then — core 0's
+/// interrupts are masked for the flash op and the blobs' tasks with
+/// them).
+pub type Resources = HostResources<DefaultPacketPool, MAX_LINKS, L2CAP_CHANNELS>;
 /// The host stack, `'static` for the tasks.
 pub type BleStack<T> = Stack<'static, Controller<T>, DefaultPacketPool>;
 /// The host stack's runner, what [`run_host`] drives.
@@ -562,14 +568,14 @@ pub fn own_address(identity_hash: &[u8; 16]) -> Address {
 /// Bring the host up over the board's HCI transport in `cell` and say so.
 pub fn build_stack<T: HciTransport>(
     cell: &'static StackCell<T>,
+    resources: &'static mut Resources,
     transport: T,
     identity_hash: &[u8; 16],
 ) -> &'static BleStack<T> {
-    static RESOURCES: StaticCell<Resources> = StaticCell::new();
     let controller: Controller<T> = ExternalController::new(transport);
     let address = own_address(identity_hash);
     let stack: &'static BleStack<T> = cell.init(
-        trouble_host::new(controller, RESOURCES.init(Resources::new()))
+        trouble_host::new(controller, resources)
             .set_random_address(address)
             .build(),
     );

@@ -36,6 +36,7 @@
 
 extern crate alloc;
 
+pub mod ble;
 pub mod boards;
 pub mod corepark;
 pub mod flash;

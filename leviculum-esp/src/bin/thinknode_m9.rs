@@ -45,6 +45,11 @@
 //! [FLASH] identity=<offset|none/why> client=<offset|none/why> messages=<offset|none/why> t=<ms>  (1414, 1476)
 //! [MAP] regions=firenze:image,world:image[,<name>:area:<bytes>|,<name>:damaged][ area=<error>] area=<offset|none/why> world_bytes=<n> t=<ms>  (1477; again with the banner)
 //! [WIFI] creds=<set ssid_bytes=<n> secured=<0|1>|none> slot=<offset|none/why>[ error=<why>] radio=off t=<ms>  (1479: the WLAN lnflash --wifi wrote, never its passphrase)
+//! [BLE ] off reason=<config|controller|no-identity> ... t=<ms>   (1480: the carrier held down — the record lnflash --ble off wrote, a refused controller — radio dark)
+//! [BLE ] up addr=<static random> periph_links=3 central_links=1 t=<ms>   (the TrouBLE host over esp-radio, from the backend's ring)
+//! [BLE ] heap used=<n> free=<n> of=<n> t=<ms>   (what the radio blobs took from the internal region, the cost line)
+//! [BLE ] columba=up periph_links=3 central_links=1 mtu=564 slot=<offset|none/why> t=<ms>  (the protocol tasks joined into the loop's poll)
+//! [BLE ] ADV adv_bytes=31 ... / BLE_CONN_PARAMS ... / BLE_LINK_DOWN ...   (the Columba lines, the nRF's shapes, as the links live)
 //! [IDENTITY] identity=<hash> probe=none lxmf=none source=<flash|generated> stored=<yes|no> t=<ms>
 //! [CENSUS] node held=<n> box=<n> links=8 max_answer=262144 t=<ms>
 //! [NODE] state=up iface=serial hw_mtu=564 serial_mux=1 t=<ms>
@@ -750,15 +755,17 @@ impl UiLog {
     }
 }
 
-/// The UI core's stack: 120 KiB since 1595, 54 KiB over the build
-/// script's floor (the board's measured peak plus 16 KiB, 65,504 B since
-/// 1594). Window 20's least `ui_stack_free` was 139,632 B of 184 KiB, the
-/// most the UI core ever took 48,784 B; core 0 sat at 29,864 B free after
-/// the join. This array is a static in internal RAM, and core 0's stack
-/// is what the linker leaves of that RAM (the ELF's `.stack` section,
-/// the build's `STACK_HEADROOM stack=`), so the 64 KiB taken off here are
-/// core 0's.
-const UI_STACK: usize = 120 * 1024;
+/// The UI core's stack: 96 KiB since 1480 (120 KiB since 1595 before
+/// it), 32 KiB over the build script's floor (the board's measured peak
+/// plus 16 KiB, 65,504 B since 1594; the most the UI core ever took was
+/// 48,784 B, window 20). This array is a static in internal RAM, and
+/// core 0's stack is what the linker leaves of that RAM (the ELF's
+/// `.stack` section, the build's `STACK_HEADROOM stack=`), so every KiB
+/// taken off here is core 0's — and 1480's BLE stack (the radio blobs'
+/// heap, their IRAM code, the scheduler) is paid for out of exactly
+/// this trade: 24 KiB came from here, the rest from the blob heap's
+/// sizing (`leviculum_esp::ble::BLE_INTERNAL_HEAP_BYTES`).
+const UI_STACK: usize = 96 * 1024;
 const _: () = assert!(UI_STACK >= 65_504 + 32 * 1024);
 
 static mut APP_CORE_STACK: Stack<UI_STACK> = Stack::new();
@@ -1836,6 +1843,11 @@ fn main() -> ! {
         ),
     }
 
+    // The media opt-outs `lnflash --ble` wrote (1480): on by default,
+    // only a checked record switches a carrier off. Read here beside the
+    // WLAN record; said and acted on at the BLE bring-up below.
+    let media = stores.load_media();
+
     // The true random source: the SoC's RNG with the ADC's noise. Kept for
     // the life of the image; `Trng` refuses to exist without it.
     let _entropy = TrngSource::new(p.RNG, p.ADC1);
@@ -2113,6 +2125,45 @@ fn main() -> ! {
         }
     }
 
+    // BLE (1480): Columba over the TrouBLE host on esp-radio's
+    // controller, the same protocol the nRF boards speak through the
+    // SoftDevice. On by default; `lnflash --ble off` wrote the record
+    // that keeps the radio dark. The scheduler the radio blobs need
+    // starts inside `ble::start`, on TIMG0's second timer, and core 0's
+    // loop goes on as its main task.
+    let mut ble = if !media.ble() {
+        log.line(
+            "[BLE ] ",
+            format_args!("off reason=config slot={}", stores.media_slot()),
+        );
+        None
+    } else {
+        let identity_hash = *node.node.identity().hash();
+        match leviculum_esp::ble::start(
+            group0.timer1,
+            p.FROM_CPU_INTR0,
+            p.BT,
+            identity_hash,
+            &mut log,
+        ) {
+            Some((ble, iface)) => {
+                node.enable_ble(iface);
+                log.line(
+                    "[BLE ] ",
+                    format_args!(
+                        "columba=up periph_links={} central_links={} mtu={} slot={}",
+                        leviculum_trouble::ble::PERIPH_LINKS,
+                        leviculum_trouble::ble::CENTRAL_LINKS,
+                        leviculum_trouble::ble::INTERFACE_MTU,
+                        stores.media_slot()
+                    ),
+                );
+                Some(ble)
+            }
+            None => None,
+        }
+    };
+
     // The client session's pull (1363's census, measured here since 1414):
     // thirty 200-byte messages in LoRa pages, and the batch the board runs
     // with on what it measured. On this core's stack: the pull runs here.
@@ -2374,6 +2425,30 @@ fn main() -> ! {
                 log.line("[LORA] ", format_args!("init failed step={step} err={err}"))
             }
             None => {}
+        }
+        if let Some(ble) = ble.as_mut() {
+            // The BLE host's turn (1480): one poll of every Columba
+            // task, then what the links delivered into the node — peer
+            // transitions first, in their channel's order — and the
+            // backend's log lines onto the UART.
+            stall::stage(Core::Io, Stage::Ble);
+            ble.poll();
+            while let Some(event) = ble.take_peer_event() {
+                match event {
+                    leviculum_esp::ble::PeerEvent::Up(peer) => {
+                        node.ble_peer_up(peer, uptime_ms(), &mut stores, &mut log)
+                    }
+                    leviculum_esp::ble::PeerEvent::Lost(peer) => {
+                        node.ble_peer_lost(peer, uptime_ms(), &mut stores, &mut log)
+                    }
+                }
+                wdt.feed();
+            }
+            while let Some((peer, packet)) = ble.take_incoming() {
+                node.ble_packet(peer, &packet, uptime_ms(), &mut stores, &mut log);
+                wdt.feed();
+            }
+            ble.drain_log(&mut log);
         }
         stall::stage(Core::Io, Stage::Host);
         let now = uptime_ms();
