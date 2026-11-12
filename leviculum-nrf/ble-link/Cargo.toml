@@ -1,0 +1,47 @@
+[package]
+name = "leviculum-ble-link"
+version = "0.1.0"
+edition = "2021"
+authors = ["Lew Palm"]
+license = "AGPL-3.0-or-later"
+description = "The BLE link's node side, executor-free: the seam trait and its events, the carrier gate, the pacing value, the link and drain tables, the fan-out loop and the BLE Interface — one crate every BLE backend shares"
+
+# Order 1715: what `leviculum-firmware`'s `ble_link` module was, cut out
+# so the TrouBLE backend (`leviculum-trouble`, root workspace) can stand
+# behind the same seam without pulling the orchestration stratum's
+# embassy-executor dependency. `leviculum-firmware` re-exports this crate
+# as `ble_link` and `seams::{BleLink, BleLinkEvent}`, so the nRF side
+# keeps its paths.
+#
+# Executor-free on purpose, and kept so by what this manifest may name:
+# embassy-sync, embassy-time and the policy crates — never
+# embassy-executor, never a HAL. The embassy versions are the
+# leviculum-nrf workspace pins (docs/src/firmware/embassy-pins.md).
+# leviculum-trouble links this crate's embassy-sync 0.7 types while its
+# vendored trouble-host keeps embassy-sync 0.8 for the host's own
+# internals; the two never exchange an embassy-sync type, which is the
+# same coexistence leviculum-ble-tx's 0.7 drain signals have always had
+# there.
+[dependencies]
+embassy-sync = "0.7"
+embassy-time = "0.5"
+leviculum-core = { path = "../../leviculum-core", default-features = false }
+# The protocol decisions this crate performs the node half of: the
+# carrier steps, the queue verdicts, the drain router, the aims.
+leviculum-ble-tx = { path = "../ble-tx" }
+# MAX_LINKS, QUEUE_DEPTH and INTERFACE_MTU are terms of the boot heap
+# budget (#388); the channel statics here are sized by that arithmetic.
+leviculum-heap-budget = { path = "../heap-budget" }
+# The carrier-off drop run the interface counts instead of logging per
+# packet.
+leviculum-media-state = { path = "../media-state" }
+
+[features]
+# The seam's host fake for an embedder's own tests
+# (`leviculum-firmware`'s every-seam-has-a-fake proof).
+fakes = []
+
+[dev-dependencies]
+embassy-futures = "0.1"
+embassy-time = { version = "0.5", features = ["mock-driver"] }
+critical-section = { version = "1", features = ["std"] }

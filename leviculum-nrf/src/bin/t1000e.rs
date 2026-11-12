@@ -601,7 +601,7 @@ async fn main(spawner: Spawner) {
     let serial_ctl_tx = serial.outgoing_tx;
     let mut serial_iface = EmbeddedInterface::new(serial.outgoing_tx);
     let mut lora_iface = LoRaInterface::new(lora_channels.outgoing_tx);
-    let mut ble_iface = BleInterface::new(ble_channels.outgoing_tx);
+    let mut ble_iface = BleInterface::new(InterfaceId(2), ble_channels.outgoing_tx);
     let ifac_configs: BTreeMap<usize, IfacConfig> = BTreeMap::new();
 
     // Boot blink, then the LED and the buzzer are the feedback grammar's

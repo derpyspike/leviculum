@@ -14,6 +14,11 @@ description = "The board firmware's orchestration stratum: the node loop and the
 # in `src/`). The embassy crates are at the workspace pins,
 # docs/src/firmware/embassy-pins.md.
 [dependencies]
+# The BLE seam's node side (1715): the trait, the events, the carrier
+# gate, the channels and the BLE `Interface`, re-exported unchanged as
+# `ble_link` and `seams::{BleLink, BleLinkEvent}` so the nRF side keeps
+# its paths while the TrouBLE backend shares the same crate.
+leviculum-ble-link = { path = "../ble-link" }
 embassy-executor = "0.9"
 embassy-time = "0.5"
 embassy-sync = "0.7"
@@ -94,3 +99,5 @@ ignored = ["embassy-executor"]
 [dev-dependencies]
 embassy-time = { version = "0.5", features = ["mock-driver"] }
 critical-section = { version = "1", features = ["std"] }
+# The BLE seam's host fake, for the every-seam-has-a-fake proof.
+leviculum-ble-link = { path = "../ble-link", features = ["fakes"] }
