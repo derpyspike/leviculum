@@ -43,8 +43,8 @@ never for another member, since nothing records who may collect for
 whom, 1702, 1728), the
 screen model keeps each peer's latest
 and hands every one to the store (`take_telemetry`,
-`loquax/src/ui.rs:6734`), and the store keeps the fields whole in its
-`fields` column (`loquax/src/store.rs:3838`) and the positions in a table of
+`loquax/src/ui.rs:6823`), and the store keeps the fields whole in its
+`fields` column (`loquax/src/store.rs:3892`) and the positions in a table of
 their own (`SCHEMA_V2`, `loquax/src/store.rs:203`). The sender's timestamp
 is still not carried: `OutboxEvent`, the screen's `Message` and every type
 the model folds derive `Eq`, which an `f64` cannot, so carrying it is a

@@ -456,8 +456,11 @@ Additions (decided):
      and a collector's row in a copy counts only for that copy's writer,
      never for another member (order 1728, the first of its two
      options: Sideband gives a row no word of who may collect for whom,
-     so a member's row about someone else is that member's claim). What
-     stays: the home of
+     so a member's row about someone else is that member's claim). A
+     membership whose signature is not verified waits for its verdict as
+     a position does and changes nothing of the group meanwhile (1744);
+     the M9, which checks no signature, takes the home's verdict
+     (`KIND_VOUCHED`). What stays: the home of
      a group the reader joined can write anyone into its membership,
      and its copies then speak for them; joining a group is trusting its
      home that far.

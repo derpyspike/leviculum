@@ -31,7 +31,7 @@ What enforces it today:
   takes `enable_transport(false)` before the shared instance, the TCP leaf
   and the own-node mode are chosen.
 - The Mailbox is a propagation client and nothing more:
-  `enable_propagation_client` (`loquax/src/engine.rs:1888`). Loquax does not
+  `enable_propagation_client` (`loquax/src/engine.rs:1894`). Loquax does not
   link the propagation node's crate, `leviculum-lxmf-node`, except as a
   dev-dependency for its tests (`loquax/Cargo.toml`, under
   `[dev-dependencies]`); the propagation node on a home host is `lnpnd`,
@@ -80,7 +80,7 @@ What enforces it today:
   (`NotAdmitted`) before it is read when the link's identity is not an
   admitted device: the gate in `route` (`loquax/src/home/server.rs:151`),
   through `refuse_unless_admitted` (`loquax/src/home/server.rs:222`), which
-  asks `is_admitted` (`loquax/src/store.rs:2986`). A link that was not
+  asks `is_admitted` (`loquax/src/store.rs:3040`). A link that was not
   identified gets status 1 before that. Each handler keeps its own check
   as a second line.
 - Every refusal says so in the log with the device's hash: the free-text

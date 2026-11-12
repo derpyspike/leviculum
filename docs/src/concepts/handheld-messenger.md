@@ -40,7 +40,7 @@ map as decided on 2026-10-25, and what is open.
   frontend (`loquax tui` under its old name), slice one ([Loquax: the user interface](loquax-ui.md), "Built
   2026-10-25"): the first frontend on the shared widgets, over a screen
   model that lives in the `no_std` core. Its frontend already
-  talks to the backend only through `Outbox` (`loquax/src/outbox.rs:547`),
+  talks to the backend only through `Outbox` (`loquax/src/outbox.rs:552`),
   but the crate is `std`. It depends on `leviculum-std` and tokio
   (`loquax/Cargo.toml:289`, `loquax/Cargo.toml:293`), since 2026-10-25 behind its `std` feature,
   and `just loquax-core-no-std` holds the core to `no_std` (green since
@@ -804,13 +804,13 @@ bytes, and its MDU is 431 (`LORA_LINK_MDU`,
 `loquax/src/home/ask.rs:139`). A response longer than that goes as a
 resource (`leviculum-core/src/node/mod.rs:1843`), which is an
 advertisement, its parts and a proof. The home's own page bound is
-64 KiB of messages (`SYNC_PAGE_BYTES`, `loquax/src/home.rs:370`). So
+64 KiB of messages (`SYNC_PAGE_BYTES`, `loquax/src/home.rs:385`). So
 the client asks smaller pages: `/sync [cursor, page]`, a second element
 that a home from before reads past. The board asks `LORA_PAGE_BYTES`
 (`loquax/src/home/ask.rs:146`), 412 B, the longest answer that still fits
 one response packet once the response frame (1 + 18 bytes) is around
 it. The home cuts the page to that, keeping at least one entry, and
-says `more` (`fit_page`, `loquax/src/home/wire.rs:421`; the server's
+says `more` (`fit_page`, `loquax/src/home/wire.rs:447`; the server's
 `sync`, `loquax/src/home/server.rs:1444`). A message larger than a page
 still comes alone, as a resource.
 
@@ -1028,7 +1028,7 @@ grows by 17,248 B to 944,768 B (`just build-m9`).
 board needs: `Create` (`/group`), `Add` (`/groupadd`), `Delete`
 (`/groupdelete`, its `Ok` the group it deleted), and `State`, the
 member's Join, Leave or the admin's Remove, which the model makes a state
-message to the group (`group_state`, `loquax/src/ui/groups.rs:1765`) and
+message to the group (`group_state`, `loquax/src/ui/groups.rs:1792`) and
 the home sends as any message (`/send`). `ask_of`
 (`loquax-m9/src/group.rs:363`) turns the model's effect into that verb,
 with the board's fresh client id; a plain message is no group's ask.
@@ -1189,7 +1189,7 @@ its cells when the screen leaves the map (`leave_map`,
 its cells are blank.
 
 **The pins are the model's**, as on every target (`map_pins`,
-`loquax/src/ui.rs:6826`): the shares the store kept, a `lev.position`
+`loquax/src/ui.rs:6929`): the shares the store kept, a `lev.position`
 announce, and the board's own fix. That last one is new in the core:
 the shell's own fix (`UiEvent::OwnFix`, from the receiver or typed by
 hand) is now our pin where it is newer than our last share, so a board
@@ -1517,13 +1517,19 @@ client that joins with it. A text that is no code is refused
 
 **The join, the pull, the screen.** The client of 1414 now hands every
 pulled page to the board's loop, which folds it into the model the
-screen draws (`board::fold`, `loquax/src/home/board.rs:965`; the
+screen draws (`board::fold`, `loquax/src/home/board.rs:967`; the
 board's `take_in` without an engine: a message the home took in, one of
 the home's devices sent, a mark, a name). A board that is a device of a
 home draws that model from boot: its chats list and its chats come from
 the archive, and a line typed in a chat is the home's `/send`, queued
 ahead of the next pull. The board checks no signature (it holds no
-sender's identity), so received messages show unverified. The top bar
+sender's identity); it reads the home's (1744): a board asks its
+`/sync` with the word `vouched` after `board`, and a home that knows the
+word serves a received message whose signature it verified as
+`KIND_VOUCHED`, which the fold takes as verified. Every other received
+message shows unverified, and a group's copy or membership among them
+speaks for nobody, on the board as on every device. A home from before
+reads past the word and serves every message as it came. The top bar
 says the home at its right end (`board::Word`,
 `loquax/src/home/board.rs:653`): "Joining your mailbox", "Fetched N of
 M", "Mailbox unreachable", "You. Your mailbox is connected.", and for a
@@ -2481,7 +2487,7 @@ the same order.
 Two blocks of the rebuild grew with the ring whatever the chats were,
 and both went: the batch's note scope held one peer per folded entry
 (8192 x 16 B), now each conversation once (`Batch::fold`,
-`loquax/src/ui.rs:3733`); and every received message left a toast that a
+`loquax/src/ui.rs:3740`); and every received message left a toast that a
 board, which never ticks, never aged out, now at most `TOAST_KEEP`
 (`loquax/src/ui.rs:199`). The model after a rebuild holds about 470 KB
 less on the host. `a_rebuild_of_short_chats_asks_for_no_block_that_grows_with_the_ring`
