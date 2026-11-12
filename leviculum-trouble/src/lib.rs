@@ -17,9 +17,10 @@
 //!   executor task or polled from a loop; every future here tolerates a
 //!   no-op waker, it only costs latency,
 //! - it drains [`log::LOG_RING`] to its debug surface,
-//! - it reads packets and peer transitions from [`ble::channels`] and
-//!   feeds its node; outbound it sends through the [`ble::BleInterface`]
-//!   it registered with the node.
+//! - it reads packets and peer transitions from `leviculum_ble_link`'s
+//!   channels and feeds its node; outbound it sends through the
+//!   [`ble::BleInterface`] it registered with the node (both re-exported
+//!   here, owned by that crate since 1715).
 //!
 //! No executor, no chip, no scheduler is named anywhere in this crate:
 //! that is the embedding firmware's half, and the reason the M9's

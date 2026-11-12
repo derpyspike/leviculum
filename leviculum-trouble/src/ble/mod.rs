@@ -160,7 +160,7 @@ pub(crate) fn link_out(slot_index: usize) -> &'static PacketQueue {
 /// This backend's side of [`leviculum_ble_link::BleLink`]: what the
 /// orchestration asks of the links below it. The same resolution the
 /// nRF's `SoftDeviceLink` performs — the registry plans
-/// ([`columba::plan_fanout`]), the drain table says which links are
+/// (`columba::plan_fanout`), the drain table says which links are
 /// still claimed, `leviculum_ble_tx::resolve_fanout` decides.
 ///
 /// `try_send`, never `send`: a link whose queue is full — a peer that
