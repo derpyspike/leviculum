@@ -27,12 +27,16 @@ use crate::mapnames::{self, Typesetter};
 use crate::picture::Painter;
 use crate::ui::map::{MapPin, MapSetup};
 
+/// What the marks beside the map's text grow by ([`mapnames::RATIO`],
+/// 1700): a pin's label became the chat's body, and every size drawn with
+/// it keeps the part of it it had.
+pub use crate::mapnames::RATIO;
 /// A marker's diameter in logical pixels; times the scale on screen.
-pub const MARKER: f32 = 10.0;
-/// A label's text size in logical pixels.
-pub const LABEL: f32 = 14.0;
+pub const MARKER: f32 = 10.0 * RATIO;
+/// A label's text size in logical pixels: the chat's body (1700).
+pub const LABEL: f32 = crate::ui::type_ramp::BODY;
 /// The space between a marker and the label beside it.
-pub const GAP: f32 = 4.0;
+pub const GAP: f32 = 4.0 * RATIO;
 /// A label's line, as a multiple of its text size: iced's default.
 pub const LINE: f32 = 1.3;
 /// How far, in logical pixels either way, the pointer goes from where the
@@ -111,7 +115,7 @@ pub fn paint(
     names_after: Option<Vec<Box2>>,
     type_: &mut Typesetter,
 ) -> Picture {
-    let percent = (scale * 100.0).round().max(1.0) as u32;
+    let percent = line_percent(scale);
     // Straight into RGBA, the edges smoothed as a tile at rest has them
     // (1422).
     let drawn = painter.draw_rgba(view, Ink::Colour, style, percent, true);
@@ -132,6 +136,8 @@ pub fn paint(
         names: set,
     }
 }
+
+pub use crate::tiles::line_percent;
 
 /// The boxes the pins of `placed` cover, their markers and their names,
 /// in screen pixels: what the map's names are placed after.
@@ -310,21 +316,29 @@ fn labelled(
     out
 }
 
-/// The pin under the screen pixel `(x, y)`, its marker or its label, the
-/// topmost where they overlap.
+/// The pin under the screen pixel `(x, y)`: its marker or its label, the
+/// topmost where they overlap; else the nearest marker whose reach holds
+/// the pixel, a box as wide as the chat's smallest button (1700,
+/// [`crate::ui::type_ramp::LEAST_BUTTON`]).
 pub fn hit(placed: &[Placed], x: f32, y: f32, scale: f32) -> Option<[u8; 16]> {
-    let radius = MARKER * scale / 2.0 + 2.0 * scale;
+    let radius = MARKER * scale / 2.0 + 2.0 * RATIO * scale;
+    let reach = radius.max(crate::ui::type_ramp::LEAST_BUTTON / 2.0 * scale);
     let line = LABEL * LINE * scale;
+    let on = |p: &&Placed| {
+        let on_marker = (p.x - x).abs() <= radius && (p.y - y).abs() <= radius;
+        let on_label = p.label.as_ref().is_some_and(|(lx, ly, _)| {
+            (*lx..*lx + p.width).contains(&x) && (*ly..*ly + line).contains(&y)
+        });
+        on_marker || on_label
+    };
+    if let Some(p) = placed.iter().rev().find(on) {
+        return Some(p.peer);
+    }
+    let away = |p: &Placed| (p.x - x).abs().max((p.y - y).abs());
     placed
         .iter()
-        .rev()
-        .find(|p| {
-            let on_marker = (p.x - x).abs() <= radius && (p.y - y).abs() <= radius;
-            let on_label = p.label.as_ref().is_some_and(|(lx, ly, _)| {
-                (*lx..*lx + p.width).contains(&x) && (*ly..*ly + line).contains(&y)
-            });
-            on_marker || on_label
-        })
+        .filter(|p| away(p) <= reach)
+        .min_by(|a, b| away(a).total_cmp(&away(b)))
         .map(|p| p.peer)
 }
 
@@ -442,7 +456,7 @@ pub fn draw_pins(
             h,
             pin.x,
             pin.y,
-            radius + 1.5 * scale,
+            radius + 1.5 * RATIO * scale,
             ink.ring,
             1.0,
         );
@@ -454,8 +468,8 @@ pub fn draw_pins(
             continue;
         };
         let (gx0, gx1) = (
-            (x - 2.0 * scale).floor(),
-            (x + pin.width + 2.0 * scale).ceil(),
+            (x - 2.0 * RATIO * scale).floor(),
+            (x + pin.width + 2.0 * RATIO * scale).ceil(),
         );
         let (gy0, gy1) = (y.floor(), (y + line).ceil());
         for py in gy0 as i64..gy1 as i64 {
@@ -474,7 +488,7 @@ pub fn draw_pins(
 
 /// The low battery's size in logical pixels, its body without the nub
 /// (1386).
-pub const BATTERY: (f32, f32) = (11.0, 6.0);
+pub const BATTERY: (f32, f32) = (11.0 * RATIO, 6.0 * RATIO);
 
 /// Where the low battery sits from a marker's centre, its body's top left
 /// corner in screen pixels: centred above the marker, clear of the label
@@ -482,7 +496,7 @@ pub const BATTERY: (f32, f32) = (11.0, 6.0);
 pub fn battery_at(x: f32, y: f32, scale: f32) -> (f32, f32) {
     (
         x - BATTERY.0 / 2.0 * scale,
-        y - (MARKER / 2.0 + BATTERY.1 + 3.0) * scale,
+        y - (MARKER / 2.0 + BATTERY.1 + 3.0 * RATIO) * scale,
     )
 }
 
@@ -496,8 +510,8 @@ pub fn draw_battery(rgba: &mut [u8], w: u32, h: u32, x: f32, y: f32, scale: f32,
     };
     let (x0, y0) = battery_at(x, y, scale);
     let (bw, bh) = (BATTERY.0 * scale, BATTERY.1 * scale);
-    let nub = (1.5 * scale).max(1.0);
-    let t = scale.max(1.0).round();
+    let nub = (1.5 * RATIO * scale).max(1.0);
+    let t = (RATIO * scale).max(1.0).round();
     let fill = |rgba: &mut [u8], x0: f32, y0: f32, x1: f32, y1: f32, c: [u8; 3], a: f64| {
         for py in y0.round() as i64..y1.round() as i64 {
             for px in x0.round() as i64..x1.round() as i64 {
@@ -538,16 +552,16 @@ pub fn draw_battery(rgba: &mut [u8], w: u32, h: u32, x: f32, y: f32, scale: f32,
 }
 
 /// A track's line width in logical pixels (1385).
-pub const TRACK_WIDTH: f32 = 3.0;
+pub const TRACK_WIDTH: f32 = 3.0 * RATIO;
 /// An outlier's dot's radius in logical pixels.
-pub const DOT_RADIUS: f32 = 2.0;
+pub const DOT_RADIUS: f32 = 2.0 * RATIO;
 /// A place's opacity: faint, under everything else.
 pub const PLACE_ALPHA: f32 = 0.22;
 /// A late segment's dash and gap in logical pixels (1386).
-pub const DASH: (f32, f32) = (6.0, 4.0);
+pub const DASH: (f32, f32) = (6.0 * RATIO, 4.0 * RATIO);
 /// The wedge's length and half width in logical pixels, beyond the
 /// marker's ring.
-pub const WEDGE: (f32, f32) = (8.0, 5.0);
+pub const WEDGE: (f32, f32) = (8.0 * RATIO, 5.0 * RATIO);
 
 /// One track's coverage, the strongest a pixel gets, so two segments
 /// meeting at a fix do not darken it: the track is blended once.
@@ -697,7 +711,7 @@ pub fn draw_time_zones(
     let world_px = 4_294_967_296.0 / view.unit();
     let (fw, fh) = (f64::from(w), f64::from(h));
     let mut cover = Cover::new(w, h);
-    let width = 1.5 * scale;
+    let width = 1.5 * RATIO * scale;
     let step = 1.5 * f64::from(scale);
     for line in outline::lines(timezones::BORDERS) {
         let [west, north, east, south] = line.bbox;
@@ -754,7 +768,7 @@ pub fn draw_tracks(
     // The places of every track first, under every line.
     for t in tracks {
         for p in &t.places {
-            cover.disc(at(p.at), f32::from(p.radius) * scale, PLACE_ALPHA);
+            cover.disc(at(p.at), f32::from(p.radius) * RATIO * scale, PLACE_ALPHA);
         }
         cover.blend(rgba, colour(t.hue, dark));
     }
@@ -762,7 +776,7 @@ pub fn draw_tracks(
         true => ([0x18, 0x18, 0x18], [0xe6, 0xe6, 0xe6]),
         false => ([0xff, 0xff, 0xff], [0x10, 0x10, 0x10]),
     };
-    let size = LABEL * 0.85 * scale;
+    let size = crate::ui::type_ramp::SECONDARY * scale;
     for t in tracks {
         for p in &t.places {
             let Some(words) = &p.label else {
@@ -770,7 +784,10 @@ pub fn draw_tracks(
             };
             let (x, y) = at(p.at);
             let mask = type_.mask(words, size, 0, false);
-            let centre = (x, y + f64::from(f32::from(p.radius) * scale + size * 0.7));
+            let centre = (
+                x,
+                y + f64::from(f32::from(p.radius) * RATIO * scale + size * 0.7),
+            );
             mapnames::paint_faded(rgba, w, h, &mask, centre, 0.0, ground, 0.6);
             mapnames::paint_faded(rgba, w, h, &mask, centre, 0.0, text, 0.7);
         }
@@ -798,7 +815,7 @@ pub fn draw_tracks(
             }
         }
         for d in &t.dwells {
-            let r = f32::from(d.radius) * scale;
+            let r = f32::from(d.radius) * RATIO * scale;
             cover.disc(at(d.at), r, d.age.alpha() * 0.45);
             // Its rim at the full step, so a blob reads as a stay.
             let c = at(d.at);
@@ -807,7 +824,7 @@ pub fn draw_tracks(
                 let a0 = k as f64 / steps as f64 * core::f64::consts::TAU;
                 let a1 = (k + 1) as f64 / steps as f64 * core::f64::consts::TAU;
                 let p = |a: f64| (c.0 + f64::from(r) * a.cos(), c.1 + f64::from(r) * a.sin());
-                cover.line(p(a0), p(a1), 1.5 * scale, d.age.alpha());
+                cover.line(p(a0), p(a1), 1.5 * RATIO * scale, d.age.alpha());
             }
         }
         for d in &t.dots {
@@ -817,7 +834,7 @@ pub fn draw_tracks(
             let c = at(wedge.at);
             let b = f64::from(wedge.bearing).to_radians();
             let (ux, uy) = (b.sin(), -b.cos());
-            let base = f64::from(MARKER * scale / 2.0 + 2.5 * scale);
+            let base = f64::from(MARKER * scale / 2.0 + 2.5 * RATIO * scale);
             let (len, half) = (f64::from(WEDGE.0 * scale), f64::from(WEDGE.1 * scale));
             let root = (c.0 + ux * base, c.1 + uy * base);
             let tip = (root.0 + ux * len, root.1 + uy * len);
@@ -827,7 +844,7 @@ pub fn draw_tracks(
             for k in 0..=n {
                 let s = -half + 2.0 * half * f64::from(k) / f64::from(n);
                 let p = (root.0 - uy * s, root.1 + ux * s);
-                cover.line(p, tip, 1.5 * scale, 1.0);
+                cover.line(p, tip, 1.5 * RATIO * scale, 1.0);
             }
         }
         cover.blend(rgba, hue);
@@ -877,6 +894,8 @@ pub fn draw_radar(
         px[3] = 0xff;
     }
     let ink = radar_ink(theme);
+    // The marks' sizes, grown with the text (1700).
+    let mark = RATIO * scale;
     let c = at(radar.centre);
     let mut cover = Cover::new(w, h);
     for &r in &radar.rings {
@@ -886,23 +905,20 @@ pub fn draw_radar(
             let a0 = k as f64 / steps as f64 * core::f64::consts::TAU;
             let a1 = (k + 1) as f64 / steps as f64 * core::f64::consts::TAU;
             let p = |a: f64| (c.0 + px * a.sin(), c.1 - px * a.cos());
-            cover.line(p(a0), p(a1), scale, 0.55);
+            cover.line(p(a0), p(a1), mark, 0.55);
         }
     }
-    let arm = f64::from(6.0 * scale);
-    cover.line((c.0 - arm, c.1), (c.0 + arm, c.1), 1.5 * scale, 1.0);
-    cover.line((c.0, c.1 - arm), (c.0, c.1 + arm), 1.5 * scale, 1.0);
+    let arm = f64::from(6.0 * mark);
+    cover.line((c.0 - arm, c.1), (c.0 + arm, c.1), 1.5 * mark, 1.0);
+    cover.line((c.0, c.1 - arm), (c.0, c.1 + arm), 1.5 * mark, 1.0);
     // North: an arrow up at the top right, "N" under it.
-    let size = LABEL * 0.85 * scale;
-    let (nx, top) = (
-        f64::from(w) - f64::from(18.0 * scale),
-        f64::from(8.0 * scale),
-    );
-    let long = f64::from(14.0 * scale);
-    cover.line((nx, top), (nx, top + long), 1.5 * scale, 1.0);
-    let barb = f64::from(4.0 * scale);
-    cover.line((nx, top), (nx - barb, top + barb), 1.5 * scale, 1.0);
-    cover.line((nx, top), (nx + barb, top + barb), 1.5 * scale, 1.0);
+    let size = crate::ui::type_ramp::SECONDARY * scale;
+    let (nx, top) = (f64::from(w) - f64::from(18.0 * mark), f64::from(8.0 * mark));
+    let long = f64::from(14.0 * mark);
+    cover.line((nx, top), (nx, top + long), 1.5 * mark, 1.0);
+    let barb = f64::from(4.0 * mark);
+    cover.line((nx, top), (nx - barb, top + barb), 1.5 * mark, 1.0);
+    cover.line((nx, top), (nx + barb, top + barb), 1.5 * mark, 1.0);
     cover.blend(rgba, ink);
     let north = type_.mask("N", size, 0, false);
     let below = top + long + f64::from(size * LINE) / 2.0;
@@ -912,7 +928,7 @@ pub fn draw_radar(
         let words = crate::ui::radar::distance(f64::from(r));
         let mask = type_.mask(&words, size, 0, false);
         let centre = (c.0, c.1 - px);
-        let half_w = mask.w as f64 / 2.0 + f64::from(2.0 * scale);
+        let half_w = mask.w as f64 / 2.0 + f64::from(2.0 * mark);
         let half_h = f64::from(size * LINE) / 2.0;
         for py in (centre.1 - half_h).floor() as i64..(centre.1 + half_h).ceil() as i64 {
             for qx in (centre.0 - half_w).floor() as i64..(centre.0 + half_w).ceil() as i64 {
@@ -923,7 +939,7 @@ pub fn draw_radar(
     }
     let note = radar.note();
     let mask = type_.mask(&note, size, 0, false);
-    let pad = f64::from(6.0 * scale);
+    let pad = f64::from(6.0 * mark);
     let centre = (
         pad + mask.w as f64 / 2.0,
         pad + f64::from(size * LINE) / 2.0,
@@ -990,4 +1006,89 @@ pub fn render(
         type_,
     );
     Rendered { picture, placed }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::chat::size;
+
+    /// 1700: a pin's label is the chat's body text, and what is drawn
+    /// with it (the marker, the gap, the battery, a track's width) keeps
+    /// the part of it it had beside the 14 px label before.
+    #[test]
+    fn a_pins_label_is_the_chats_body_and_its_marks_keep_their_proportion() {
+        assert_eq!(LABEL, size::BODY);
+        let part = |v: f32, was: f32| (v / LABEL - was / 14.0).abs() < 1e-3;
+        assert!(part(MARKER, 10.0), "{MARKER}");
+        assert!(part(GAP, 4.0), "{GAP}");
+        assert!(part(BATTERY.0, 11.0) && part(BATTERY.1, 6.0), "{BATTERY:?}");
+        assert!(part(TRACK_WIDTH, 3.0), "{TRACK_WIDTH}");
+        assert!(part(DOT_RADIUS, 2.0), "{DOT_RADIUS}");
+        assert!(part(WEDGE.0, 8.0) && part(WEDGE.1, 5.0), "{WEDGE:?}");
+        assert!(part(DASH.0, 6.0) && part(DASH.1, 4.0), "{DASH:?}");
+    }
+
+    fn placed(peer: u8, x: f32, y: f32) -> Placed {
+        Placed {
+            peer: [peer; 16],
+            x,
+            y,
+            label: None,
+            width: 0.0,
+            stale: false,
+            nearby: false,
+            selected: false,
+            low_battery: false,
+            own: false,
+        }
+    }
+
+    /// 1700: a pin answers a click as far out as the chat's smallest
+    /// button reaches, a bar's icon (24 px with 8 around,
+    /// `leviculum_ui_iced::control::icon_action`): 40 logical pixels
+    /// across, times the screen's scale; and where two pins' reaches
+    /// overlap, the nearer one is hit.
+    #[test]
+    fn a_pin_is_hit_as_far_as_the_chats_smallest_button_reaches() {
+        let one = [placed(1, 100.0, 100.0)];
+        for scale in [1.0f32, 2.0] {
+            let reach = 40.0 / 2.0 * scale;
+            for (dx, dy) in [
+                (reach - 1.0, 0.0),
+                (0.0, reach - 1.0),
+                (-(reach - 1.0), 0.0),
+            ] {
+                assert_eq!(
+                    hit(&one, 100.0 + dx, 100.0 + dy, scale),
+                    Some([1; 16]),
+                    "{dx},{dy} at {scale}"
+                );
+            }
+            assert_eq!(
+                hit(&one, 100.0 + reach + 2.0, 100.0, scale),
+                None,
+                "at {scale}"
+            );
+        }
+        // Two pins 24 apart: a click 4 px from the lower one is that one,
+        // though the upper one's reach covers it too.
+        let two = [placed(1, 100.0, 100.0), placed(2, 124.0, 100.0)];
+        assert_eq!(hit(&two, 104.0, 100.0, 1.0), Some([1; 16]));
+        assert_eq!(hit(&two, 120.0, 100.0, 1.0), Some([2; 16]));
+    }
+
+    /// 1700: the map's lines widen with its names, by the ratio the
+    /// pin's label grew from 14 px to the chat's body.
+    #[test]
+    fn the_maps_lines_widen_with_its_names() {
+        let ratio = size::BODY / 14.0;
+        for scale in [1.0f32, 1.5, 2.0, 2.75] {
+            assert_eq!(
+                line_percent(scale),
+                (scale * ratio * 100.0).round() as u32,
+                "{scale}"
+            );
+        }
+    }
 }

@@ -27,6 +27,7 @@
 //! halos and the paint) is this module's, `no_std` with `alloc` under the
 //! `mapnames` feature, the cosmic-text [`Typesetter`] under `screenmap`.
 
+use crate::ui::type_ramp as ramp;
 use alloc::string::String;
 #[cfg(feature = "screenmap")]
 use alloc::string::ToString;
@@ -135,23 +136,26 @@ pub const FIRA_SANS_REGULAR: &[u8] = include_bytes!("../fonts/FiraSans-Regular.t
 
 /// The most a street's straight run may turn at a vertex, in degrees.
 pub const STRAIGHT_DEG: f64 = 12.0;
+/// What the map's sizes beside its text grow by
+/// ([`crate::ui::type_ramp::MAP_RATIO`], 1700).
+pub use crate::ui::type_ramp::MAP_RATIO as RATIO;
 /// The halo's width in logical pixels.
-pub const HALO: f32 = 1.5;
+pub const HALO: f32 = 1.5 * RATIO;
 /// The space around a name no other may enter, in logical pixels.
-pub const MARGIN: f32 = 3.0;
+pub const MARGIN: f32 = 3.0 * RATIO;
 /// How far apart two names of one street stand, in logical pixels.
-pub const REPEAT: f32 = 300.0;
+pub const REPEAT: f32 = 300.0 * RATIO;
 
-/// A name's text size in logical pixels, by what it names.
+/// A name's text size in logical pixels, by what it names: a step of the
+/// chat's type ramp (1700), road names its caption, the least the chat
+/// draws, places, parks and waters its secondary line.
 pub fn size_of(kind: LabelKind) -> f32 {
     match kind {
-        LabelKind::Country => 17.0,
-        LabelKind::City => 16.0,
-        LabelKind::Sea => 15.0,
-        LabelKind::Town => 14.0,
-        LabelKind::District | LabelKind::Village => 13.0,
-        LabelKind::MajorRoad | LabelKind::SecondaryRoad | LabelKind::MinorRoad => 11.0,
-        _ => 12.0,
+        LabelKind::Country => ramp::TITLE,
+        LabelKind::City => ramp::NAME,
+        LabelKind::Sea | LabelKind::Town => ramp::BODY,
+        LabelKind::MajorRoad | LabelKind::SecondaryRoad | LabelKind::MinorRoad => ramp::CAPTION,
+        _ => ramp::SECONDARY,
     }
 }
 
@@ -1454,6 +1458,48 @@ fn blend_level(px: &mut [u8], colour: [u8; 3], a: u8) {
 #[cfg(all(test, feature = "screenmap"))]
 mod tests {
     use super::*;
+
+    /// 1700: the map's names take their sizes from the chat's type ramp:
+    /// road names the chat's caption (a bubble's time), place, park and
+    /// water names its secondary line, and no name below the chat's
+    /// smallest text; the halo keeps its proportion to the text.
+    #[test]
+    fn the_maps_names_are_sized_from_the_chats_ramp() {
+        use crate::ui::chat::size;
+        for road in [
+            LabelKind::MajorRoad,
+            LabelKind::SecondaryRoad,
+            LabelKind::MinorRoad,
+        ] {
+            assert_eq!(size_of(road), size::META, "{road:?}");
+        }
+        for place in [
+            LabelKind::District,
+            LabelKind::Village,
+            LabelKind::Suburb,
+            LabelKind::Neighbourhood,
+            LabelKind::Park,
+            LabelKind::Water,
+        ] {
+            assert_eq!(size_of(place), size::ROW_LAST, "{place:?}");
+        }
+        assert_eq!(size_of(LabelKind::Town), size::BODY);
+        assert_eq!(size_of(LabelKind::City), size::ROW_NAME);
+        assert_eq!(size_of(LabelKind::Country), size::BAR_NAME);
+        for kind in LabelKind::ALL {
+            assert!(
+                size_of(kind) >= size::META,
+                "{kind:?} below the chat's smallest text"
+            );
+        }
+        // The halo was 1.5 around a 14 px pin label; it stays that part.
+        assert!((HALO / size::BODY - 1.5 / 14.0).abs() < 1e-3, "{HALO}");
+        assert!((MARGIN / size::BODY - 3.0 / 14.0).abs() < 1e-3, "{MARGIN}");
+        assert!(
+            (REPEAT / size::BODY - 300.0 / 14.0).abs() < 1e-2,
+            "{REPEAT}"
+        );
+    }
 
     /// 1154: the halo widened by row spans is the max over the whole
     /// disc, byte for byte, at the widths the densities give and at the
