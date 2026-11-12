@@ -7360,6 +7360,72 @@ mod tests {
         map::tests::same_as("gui-map-pins.png", &shoot(&app, w, h), w, h);
     }
 
+    /// The colour at `(x, y)` of `rgb`, rows `w` pixels wide.
+    fn colour_at(rgb: &[u8], w: u32, x: u32, y: u32) -> [u8; 3] {
+        let i = ((y * w + x) * 3) as usize;
+        [rgb[i], rgb[i + 1], rgb[i + 2]]
+    }
+
+    /// The minimal case of 1699: a picture a canvas draws past its own
+    /// edge stays inside the canvas; the box beside it keeps its ground.
+    #[test]
+    fn a_canvas_picture_stays_inside_its_canvas() {
+        struct Past;
+        impl canvas::Program<Message> for Past {
+            type State = ();
+            fn draw(
+                &self,
+                _state: &(),
+                renderer: &Renderer,
+                _theme: &Theme,
+                bounds: Rectangle,
+                _cursor: mouse::Cursor,
+            ) -> Vec<Geometry> {
+                let mut frame = Frame::new(renderer, bounds.size());
+                let blue: Vec<u8> = [0u8, 0, 255, 255].repeat(100 * 100);
+                frame.draw_image(
+                    Rectangle::new(Point::new(-30.0, -10.0), Size::new(100.0, 100.0)),
+                    canvas::Image::new(Handle::from_rgba(100, 100, blue)),
+                );
+                vec![frame.into_geometry()]
+            }
+        }
+        let side: Element<'_, Message> = container(Space::new())
+            .width(Length::Fixed(40.0))
+            .height(Length::Fill)
+            .style(|_: &Theme| container::Style {
+                background: Some(iced::Background::Color(Color::from_rgb8(255, 0, 0))),
+                ..container::Style::default()
+            })
+            .into();
+        let past = Canvas::new(Past).width(Length::Fill).height(Length::Fill);
+        let (w, h) = (120, 60);
+        let rgb = leviculum_ui_iced::headless::render(
+            row![side, past].into(),
+            &Theme::Light,
+            Color::BLACK,
+            Color::WHITE,
+            w,
+            h,
+        )
+        .expect("a renderer");
+        for y in [0, 30, 59] {
+            assert_eq!(colour_at(&rgb, w, 5, y), [255, 0, 0], "the box at 5,{y}");
+            assert_eq!(colour_at(&rgb, w, 39, y), [255, 0, 0], "the box at 39,{y}");
+            assert_eq!(
+                colour_at(&rgb, w, 41, y),
+                [0, 0, 255],
+                "the picture at 41,{y}"
+            );
+        }
+        // The picture ends 70 pixels into the canvas, at 110.
+        assert_eq!(
+            colour_at(&rgb, w, 115, 30),
+            [255, 255, 255],
+            "past the picture"
+        );
+    }
+
     /// A click on a pin selects it and opens its card, a click on the
     /// empty map deselects it and the card goes, a drag keeps it (1430);
     /// the keys step the pins as before.
