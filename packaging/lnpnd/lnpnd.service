@@ -42,6 +42,19 @@ ExecStart=/usr/bin/lnpnd --config /etc/lnpnd --data-dir /var/lib/lnpnd
 Restart=on-failure
 RestartSec=10
 
+# Memory (1750): the propagation growth soak (order 1515) held lnpnd on
+# mimalloc at 105 MB resident with 304 668 messages stored, 98 MB of it the
+# store index; 384 MB is that peak more than three times over.
+MemoryMax=384M
+MemorySwapMax=64M
+# A unit that reaches MemoryMax= is OOM-killed inside its own cgroup, so
+# only this service dies: systemd marks it `oom-kill`, which Restart=
+# on-failure counts as a failure, and the start limit above still ends a
+# loop. MemorySwapMax= as well, because a memory limit alone does not bound
+# swap: on miauhaus a 400 MB MemoryMax= on the mailbox held while 832 MB of
+# it sat in swap (1750). 64 MB of swap lets the kernel page out what a
+# long-idle daemon never touches again and no more.
+
 # Hardening, mirroring lnsd.service / lblogd.service. Two writable paths:
 # the data directory (message store, peer table, client state), and the
 # config directory — lnpnd keeps its lxmd-format layout there, which

@@ -32,6 +32,21 @@ ExecStart=/usr/bin/loquax mailbox run --config /etc/reticulum
 Restart=on-failure
 RestartSec=10
 
+# Memory (1750): the mailbox's live heap on miauhaus was 9 MB, its two
+# embedded nodes are held to the local-client table caps (about 10 MB each
+# at the ceiling, docs/src/concepts/loquax-mailbox.md section 3), and on
+# mimalloc the cross-thread pattern that grew it to 1.2 GB stays flat
+# (loquax/tests/alloc_retention.rs). 256 MB is about ten times that.
+MemoryMax=256M
+MemorySwapMax=64M
+# A unit that reaches MemoryMax= is OOM-killed inside its own cgroup, so
+# only this service dies: systemd marks it `oom-kill`, which Restart=
+# on-failure counts as a failure, and the start limit above still ends a
+# loop. MemorySwapMax= as well, because a memory limit alone does not bound
+# swap: on miauhaus a 400 MB MemoryMax= on the mailbox held while 832 MB of
+# it sat in swap (1750). 64 MB of swap lets the kernel page out what a
+# long-idle daemon never touches again and no more.
+
 # State: the identity, the archive, the admitted devices. 0700, the
 # identity is the user's address. StateDirectory makes it, owned by the
 # service user, before every start; postinst makes it too, so the admin
