@@ -48,7 +48,7 @@ drive (`stand_down_for_rx`, `leviculum-nrf/src/sx1262.rs:984`).
 
 The `leviculum-nrf` workspace has 38 members besides the firmware crate,
 every one of them pure and host-testable: `screen`, `sd-policy`,
-`gnss-time`, `gnss-presence`, `gnss-init`, `telemetry-policy`, `ble-tx`,
+`gnss-time`, `gnss-presence`, `gnss-init`, `telemetry-policy`, `ble-tx`, `ble-link`,
 `announce-policy`, `queue-budget`, `log-line`, `tx-spacing`, `rx-arming`,
 `persist-ack`, `boot-trace`, `boot-count`, `channel-access`,
 `media-state`, `record-log`, `pn-store`, `store-spike`, `qspi-bitbang`,
