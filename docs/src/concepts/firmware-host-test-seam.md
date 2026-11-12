@@ -54,7 +54,8 @@ every one of them pure and host-testable: `screen`, `sd-policy`,
 `media-state`, `record-log`, `pn-store`, `store-spike`, `qspi-bitbang`,
 `battery-scale`, `settle-budget`, `drop-budget`, `heap-budget`,
 `node-name`, `sync-batch`, `upload-proof`, `mute-lease`, `qspi-selftest`,
-`qspi-boot`, `usb-policy`, `time-floor`, `motion`, `feedback`, `serial-mux`, `rtc-pcf8563`, `firmware` (`members`, `leviculum-nrf/Cargo.toml:14`). Before
+`qspi-boot`, `usb-policy`, `time-floor`, `motion`, `feedback`,
+`serial-mux`, `rtc-pcf8563` and `firmware` (`members`, `leviculum-nrf/Cargo.toml:14`). Before
 `heap-budget` and `node-name` joined them they carried **806 host assertions across 61 test targets** —
 measured 2026-09-25 by the host-triple lines of `lint-nrf`
 (`Justfile:80`). `mute-lease` is the
