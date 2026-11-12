@@ -2,6 +2,10 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 #![allow(clippy::needless_lifetimes)]
+#![allow(clippy::manual_async_fn)]
+#![allow(rustdoc::broken_intra_doc_links)]
+#![allow(rustdoc::private_intra_doc_links)]
+#![allow(rustdoc::redundant_explicit_links)]
 #![doc = include_str!(concat!("../", env!("CARGO_PKG_README")))]
 #![warn(missing_docs)]
 

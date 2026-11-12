@@ -151,7 +151,7 @@ pub type AdvHint = [u8; IDENTITY_HINT_LEN];
 
 /// Register the GATT service and log the advertisement's budget, before
 /// the firmware spawns one peripheral task per incoming link slot and
-/// the central half ([`columba_tasks!`](crate::columba_tasks)).
+/// the central half ([`run_columba`](crate::ble::run_columba)).
 pub fn start(identity_hash: [u8; 16]) -> (&'static ReticulumServer<'static>, AdvHint) {
     LIVE_PEERS.lock(|peers| peers.borrow_mut().set_local_identity(identity_hash));
     let hint = identity_hint(&identity_hash);
