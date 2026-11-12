@@ -444,13 +444,10 @@ pub fn bottom<B: InputBuffer>(
 
 /// The phone's logical pixel on the panel (1565): the label pass's sizes,
 /// halo, margin and repeat ([`loquax::mapnames`]) are the phone's times
-/// this, so a street's name is 17.6 px to the em, Fira Sans's x-height
-/// (527 of 1000) 9.3 px, the 9 to 10 px the order asked for. Since the
-/// names took the chat's type ramp (1700) a street's name is the ramp's
-/// caption, 12 where it was 11, so this is 1.6 x 11 / 12 and the street
-/// keeps its 17.6 px; the other names keep their ramp steps above it.
+/// this, so a street's name is 11 x 1.6 = 17.6 px to the em, Fira Sans's
+/// x-height (527 of 1000) 9.3 px, the 9 to 10 px the order asked for.
 /// The lines keep the panel's own widths.
-pub const SCALE: f32 = 1.6 * 11.0 / 12.0;
+pub const SCALE: f32 = 1.6;
 
 /// What the label pass did, for the board's `[MAP]` line.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

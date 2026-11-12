@@ -6,7 +6,7 @@
 //! ([`measure`]), as iced sets the label on the canvas.
 
 pub use loquax::screenmap::{
-    area, battery_at, hit, pin_hue, Placed, BATTERY, DRAG, LABEL, LINE, MARKER, OWN_DOT, RATIO,
+    area, battery_at, hit, pin_hue, Placed, BATTERY, DRAG, LABEL, LINE, MARKER, OWN_DOT,
 };
 
 /// What the model's map functions are told in the window
@@ -469,15 +469,8 @@ pub(super) mod tests {
                 println!("z{zoom} {who}: {names:?}");
                 // A country's name is the table's first, so it is placed
                 // wherever there is room; at z6 on the phone's letters a
-                // place name has grown larger than the country's box, and
-                // since the names took the chat's sizes (1700) at z2 too:
-                // 480 x 320 pixels at 2.75 are 175 x 116 of the phone's
-                // logical pixels, a quarter of its map, and the two cities
-                // placed before it leave a 55-pixel country no room. The
-                // phone still names what fits there.
-                if scale > 1.0 {
-                    assert!(!names.is_empty(), "z{zoom} {who}: no name at all");
-                } else {
+                // place name has grown larger than the country's box.
+                if !(zoom == 6 && scale > 1.0) {
                     assert!(
                         names.iter().any(|n| n.kind == LabelKind::Country),
                         "z{zoom} {who}: no country's name in {names:?}"

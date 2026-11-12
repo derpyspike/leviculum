@@ -222,17 +222,8 @@ pub struct Frame {
 impl Frame {
     /// The line widths, per cent of the zoom's.
     fn percent(&self) -> u32 {
-        line_percent(self.scale)
+        (self.scale * 100.0).round().max(1.0) as u32
     }
-}
-
-/// The map's line widths at `scale`, per cent of the zoom's: the screen's
-/// scale times [`MAP_RATIO`](crate::ui::type_ramp::MAP_RATIO), so the
-/// lines widen with the names (1700).
-pub fn line_percent(scale: f32) -> u32 {
-    (scale * crate::ui::type_ramp::MAP_RATIO * 100.0)
-        .round()
-        .max(1.0) as u32
 }
 
 /// A frame composed.
@@ -1539,7 +1530,7 @@ mod tests {
             &Viewport::new(centre, z, w, h),
             Ink::Colour,
             Style::PC,
-            line_percent(1.0),
+            100,
             true,
         );
         let mut differ = 0usize;
@@ -1740,7 +1731,7 @@ mod tests {
     fn not_held(cache: &TileCache, view: &ExactView, zoom: u8) -> Vec<Rect> {
         let grid = Grid::of(view, zoom);
         let spans = grid.spans(view);
-        let keys = grid.keys(Style::PC, line_percent(1.0));
+        let keys = grid.keys(Style::PC, 100);
         (0..keys.len())
             .filter(|&i| keys[i].is_some_and(|k| !cache.holds(&k)))
             .filter_map(|i| grid.rect(&spans, i))
@@ -1968,7 +1959,7 @@ mod tests {
             "the step out first after a pinch out"
         );
         let out: Vec<TileKey> = Grid::of(&view, 14)
-            .keys(Style::PC, line_percent(1.0))
+            .keys(Style::PC, 100)
             .into_iter()
             .flatten()
             .collect();
@@ -1980,11 +1971,7 @@ mod tests {
         let p = plan(&f, None, true, (15, 15));
         assert_eq!(zooms(&p), [(15, false), (15, true)], "the regions' zooms");
         let grid = Grid::of(&view, 15);
-        let held: Vec<TileKey> = grid
-            .keys(Style::PC, line_percent(1.0))
-            .into_iter()
-            .flatten()
-            .collect();
+        let held: Vec<TileKey> = grid.keys(Style::PC, 100).into_iter().flatten().collect();
         assert!(
             p.wants.iter().all(|w| !held.contains(&w.key)),
             "none on screen"
@@ -2057,7 +2044,7 @@ mod tests {
         let view = ExactView::new(duomo(), 15 * MILLI, 512, 512);
         let f = frame(view, 15);
         let shown: Vec<TileKey> = Grid::of(&view, 15)
-            .keys(Style::PC, line_percent(1.0))
+            .keys(Style::PC, 100)
             .into_iter()
             .flatten()
             .collect();
@@ -2078,7 +2065,7 @@ mod tests {
         cache.compose(&frame(moved, 15));
         let ahead: Vec<TileKey> = p.wants[..3].iter().map(|w| w.key).collect();
         let now: Vec<TileKey> = Grid::of(&moved, 15)
-            .keys(Style::PC, line_percent(1.0))
+            .keys(Style::PC, 100)
             .into_iter()
             .flatten()
             .collect();

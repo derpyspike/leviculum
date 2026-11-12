@@ -116,11 +116,9 @@ fn picture(home: &Path, theme: MapTheme) -> Vec<u8> {
     // edges show a sub-pixel shift that integer ones hide (1422).
     let at = ExactView::new(project(LatLon::from_degrees(LAT, LON)), 16_000, W, H).on_whole_pixel();
     let view = Viewport::new(at.centre, 16, W, H);
-    // Smoothed, as a frame at rest draws its tiles (1422), the lines as
-    // wide as a frame at a density of one draws them (1700).
-    let percent = loquax::tiles::line_percent(1.0);
+    // Smoothed, as a frame at rest draws its tiles (1422).
     painter
-        .draw_rgba(&view, Ink::Colour, Style::PC.in_theme(theme), percent, true)
+        .draw_rgba(&view, Ink::Colour, Style::PC.in_theme(theme), 100, true)
         .rgba
 }
 

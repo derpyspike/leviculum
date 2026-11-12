@@ -179,7 +179,6 @@ pub mod strings;
 pub mod summary;
 pub mod tracks;
 pub mod transfer;
-pub mod type_ramp;
 pub mod verbs;
 pub mod viewload;
 pub mod voice;

@@ -1106,32 +1106,28 @@ pub const DARK: Colours = Colours {
 };
 
 /// The sizes of a pixel screen, in the phone's dp and sp, which the
-/// window takes as logical pixels (loquax-ui.md, "Pixel screens"); the
-/// text sizes are steps of the type ramp the map names its sizes from
-/// too ([`crate::ui::type_ramp`], 1700).
+/// window takes as logical pixels (loquax-ui.md, "Pixel screens").
 pub mod size {
-    use crate::ui::type_ramp as ramp;
-
     /// The list's row: its least height, its avatar, the gap after it.
     pub const ROW_MIN: f32 = 80.0;
     pub const ROW_AVATAR: f32 = 56.0;
     pub const ROW_GAP: f32 = 16.0;
     /// The list's name, last line, time and unread count.
-    pub const ROW_NAME: f32 = ramp::NAME;
-    pub const ROW_LAST: f32 = ramp::SECONDARY;
+    pub const ROW_NAME: f32 = 18.0;
+    pub const ROW_LAST: f32 = 15.0;
     pub const ROW_TIME: f32 = 13.0;
-    pub const BADGE_TEXT: f32 = ramp::CAPTION;
+    pub const BADGE_TEXT: f32 = 12.0;
     /// The unread count's pill: its height and its corner.
     pub const BADGE: f32 = 22.0;
     pub const BADGE_CORNER: f32 = 11.0;
     /// The chat's top bar, its avatar and its name.
     pub const BAR: f32 = 64.0;
     pub const BAR_AVATAR: f32 = 40.0;
-    pub const BAR_NAME: f32 = ramp::TITLE;
+    pub const BAR_NAME: f32 = 20.0;
     /// A bubble's body, its time and mark, its corner and a grouped
     /// bubble's inner one, and the part of the chat it may be wide.
-    pub const BODY: f32 = ramp::BODY;
-    pub const META: f32 = ramp::CAPTION;
+    pub const BODY: f32 = 17.0;
+    pub const META: f32 = 12.0;
     pub const CORNER: f32 = 18.0;
     pub const CORNER_GROUPED: f32 = 6.0;
     pub const BUBBLE_PART: f32 = 0.8;
@@ -1147,7 +1143,7 @@ pub mod size {
     /// the round send button.
     pub const COMPOSE_MIN: f32 = 48.0;
     pub const COMPOSE_CORNER: f32 = 24.0;
-    pub const COMPOSE_TEXT: f32 = ramp::BODY;
+    pub const COMPOSE_TEXT: f32 = 17.0;
     pub const SEND: f32 = 48.0;
 }
 
@@ -1160,39 +1156,6 @@ mod tests {
     use leviculum_lxmf::reaction::Reaction;
 
     const PEER: [u8; 16] = [0x3f; 16];
-
-    /// 1700: the chat's text sizes are the type ramp's, the one source
-    /// the map names its sizes from too, and the caption is the least
-    /// of them.
-    #[test]
-    fn the_chats_text_sizes_are_the_type_ramps() {
-        use crate::ui::type_ramp as ramp;
-        assert_eq!(size::BAR_NAME, ramp::TITLE);
-        assert_eq!(size::ROW_NAME, ramp::NAME);
-        assert_eq!(size::BODY, ramp::BODY);
-        assert_eq!(size::COMPOSE_TEXT, ramp::BODY);
-        assert_eq!(size::ROW_LAST, ramp::SECONDARY);
-        assert_eq!(size::META, ramp::CAPTION);
-        assert_eq!(size::BADGE_TEXT, ramp::CAPTION);
-        for s in [
-            size::ROW_NAME,
-            size::ROW_LAST,
-            size::ROW_TIME,
-            size::BADGE_TEXT,
-            size::BAR_NAME,
-            size::BODY,
-            size::META,
-            size::DAY,
-            size::PILL,
-            size::COMPOSE_TEXT,
-        ] {
-            assert!(s >= ramp::CAPTION, "{s} below the caption");
-        }
-        const { assert!(ramp::TITLE > ramp::NAME) };
-        const { assert!(ramp::NAME > ramp::BODY) };
-        const { assert!(ramp::BODY > ramp::SECONDARY) };
-        const { assert!(ramp::SECONDARY > ramp::CAPTION) };
-    }
 
     #[test]
     fn initials_are_first_and_last_word() {

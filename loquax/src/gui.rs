@@ -3919,10 +3919,7 @@ impl canvas::Program<Message> for MapCanvas<'_> {
             };
             let centre = to(pin.x, pin.y);
             let radius = map::MARKER / 2.0;
-            frame.fill(
-                &Path::circle(centre, radius + 1.5 * map::RATIO),
-                Color::WHITE,
-            );
+            frame.fill(&Path::circle(centre, radius + 1.5), Color::WHITE);
             frame.fill(&Path::circle(centre, radius), ink);
             // A battery below a fifth (1386), as the phone's frame draws it.
             if pin.low_battery {
@@ -3963,10 +3960,9 @@ impl canvas::Program<Message> for MapCanvas<'_> {
                 let line = map::LABEL * map::LINE;
                 // A light ground under the text, so a name reads on any
                 // street.
-                let pad = 2.0 * map::RATIO;
                 frame.fill_rectangle(
-                    Point::new(at.x - pad, at.y),
-                    Size::new(width + 2.0 * pad, line),
+                    Point::new(at.x - 2.0, at.y),
+                    Size::new(width + 4.0, line),
                     Color::from_rgba8(0xff, 0xff, 0xff, 0.75),
                 );
                 frame.fill_text(canvas::Text {
