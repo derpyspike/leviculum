@@ -1442,9 +1442,6 @@ pub struct UiModel<B> {
     /// the config): the shell scales by it before
     /// [`UiEvent::SendPhoto`].
     pub photo_size: photos::PhotoSize,
-    /// The reader's text size (1700, `text_size` in the config): one
-    /// value for the chat and the map, which the window scales by.
-    pub text_size: type_ramp::TextSize,
     /// The voice message that plays (1222): its bubble shows the pause
     /// button, every other the play button.
     pub playing: Option<voice::Playing>,
@@ -1688,7 +1685,6 @@ impl<B: InputBuffer + Default> UiModel<B> {
             pn_asker: crate::pn_status::Asker::default(),
             pn_round: 0,
             photo_size: photos::PhotoSize::default(),
-            text_size: type_ramp::TextSize::default(),
             playing: None,
             bar: compose::Bar::default(),
             recording: recording::Recording::default(),
@@ -3309,8 +3305,6 @@ pub enum UiEvent {
     },
     /// The reader's photo size (1220), set: the settings page's row.
     PhotoSize(photos::PhotoSize),
-    /// The reader's text size (1700), set: the window's Appearance page.
-    TextSize(type_ramp::TextSize),
     /// The profile (1443), opened or closed: [`intent::Intent::Profile`],
     /// and Back from it.
     Profile { open: bool },
@@ -4160,13 +4154,6 @@ fn fold<B: InputBuffer + Default>(model: &mut UiModel<B>, event: UiEvent) -> Vec
             model.photo_size = size;
             vec![UiEffect::Remember {
                 key: "photo_size",
-                value: size.word(),
-            }]
-        }
-        UiEvent::TextSize(size) => {
-            model.text_size = size;
-            vec![UiEffect::Remember {
-                key: "text_size",
                 value: size.word(),
             }]
         }

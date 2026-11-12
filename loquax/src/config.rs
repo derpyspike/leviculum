@@ -25,9 +25,7 @@
 //! palette's `read receipts` write it (1233). `photo_size`, `small`,
 //! `phone` (the default) or `original` (1220): how far a photo is scaled
 //! before it goes (`crate::photo`), which the settings' Chats page
-//! writes. `text_size`, `small`, `normal` (the default) or `large`
-//! (1700): the reader's text size, one value for the chat and the map,
-//! which the window's Appearance page writes. `browse_tab`, `on` (the default since 1618) or `off` (1337,
+//! writes. `browse_tab`, `on` (the default since 1618) or `off` (1337,
 //! 1369): whether the phone, the window and the terminal open the pages
 //! Explore lists; off is the opt-out.
 //! `explore_az`, `off` (the default) or `on` (1578): whether the Explore
@@ -203,8 +201,6 @@ pub struct Config {
     pub explore_az: Option<bool>,
     /// `photo_size`, when the file sets it; unset is `phone`.
     pub photo_size: Option<crate::ui::photos::PhotoSize>,
-    /// `text_size`, when the file sets it; unset is `normal` (1700).
-    pub text_size: Option<crate::ui::type_ramp::TextSize>,
     /// `map_drawing.<context>` lines: each context and the drawing
     /// remembered for it, in file order, a later line for a context
     /// replacing an earlier one.
@@ -405,16 +401,6 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
                     line: index + 1,
                     key: "photo_size",
                     detail: alloc::format!("{word:?} is not small, phone or original"),
-                },
-            )?);
-        }
-        if key.trim() == "text_size" {
-            let word = value.trim().trim_matches('"');
-            config.text_size = Some(crate::ui::type_ramp::TextSize::from_word(word).ok_or_else(
-                || ConfigError::BadValue {
-                    line: index + 1,
-                    key: "text_size",
-                    detail: alloc::format!("{word:?} is not small, normal or large"),
                 },
             )?);
         }
@@ -787,25 +773,6 @@ mod tests {
             Err(ConfigError::BadValue {
                 line: 1,
                 key: "photo_size",
-                ..
-            })
-        ));
-    }
-
-    /// 1700: the reader's text size, one value for the chat and the map.
-    #[test]
-    fn text_size_parses_and_a_typo_is_an_error() {
-        use crate::ui::type_ramp::TextSize;
-        assert_eq!(parse_str("").expect("empty").text_size, None);
-        let large = parse_str("text_size = large\n").expect("large");
-        assert_eq!(large.text_size, Some(TextSize::Large));
-        let small = parse_str("text_size = \"small\"\n").expect("small");
-        assert_eq!(small.text_size, Some(TextSize::Small));
-        assert!(matches!(
-            parse_str("text_size = huge\n"),
-            Err(ConfigError::BadValue {
-                line: 1,
-                key: "text_size",
                 ..
             })
         ));

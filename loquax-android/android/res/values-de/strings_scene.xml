@@ -449,10 +449,6 @@
     <string name="photo_phone">Handy (empfohlen)</string>
     <string name="photo_original">Originalgröße</string>
     <string name="photo_unreadable">Dieses Foto ließ sich nicht zeigen.</string>
-    <string name="text_size">Schriftgröße</string>
-    <string name="text_small">Klein</string>
-    <string name="text_normal">Normal</string>
-    <string name="text_large">Groß</string>
     <string name="scene_file">Datei %1$s, %2$s</string>
     <string name="attach_file">Datei</string>
     <string name="scene_open_file">Datei öffnen</string>

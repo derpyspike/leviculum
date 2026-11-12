@@ -539,7 +539,7 @@ impl App {
                     |_| Message::Intent(Intent::Theme),
                     t,
                 );
-                column![switch, self.text_size_rows(t)].into()
+                column![switch].into()
             }
             Section::Chats => self.photo_rows(t),
             Section::Notifications => {
@@ -1394,30 +1394,6 @@ impl App {
             rows = rows.push(link(
                 &format!("{mark} {}", self.word(words)),
                 Message::Intent(Intent::PhotoSize(size)),
-                t,
-            ));
-        }
-        rows.into()
-    }
-
-    /// The reader's text size (1700): small, normal or large, one value
-    /// for the chat and the map, the one in force marked as the photo
-    /// size's is.
-    fn text_size_rows(&self, t: Colours) -> Element<'_, Message> {
-        use loquax::ui::type_ramp::TextSize;
-        let mut rows = column![text(self.word(StrId::TextSize))
-            .size(16)
-            .color(colour(t.text))]
-        .spacing(4)
-        .padding([12, 16]);
-        for size in TextSize::ALL {
-            let mark = match self.seen.text_size == size {
-                true => "●",
-                false => "○",
-            };
-            rows = rows.push(link(
-                &format!("{mark} {}", self.word(size.words())),
-                Message::TextSize(size),
                 t,
             ));
         }
