@@ -93,8 +93,10 @@ use crate::shell::{self, local_now, Shell, ShellOptions, PUMP_MS, TICK_MS};
 /// The tabs' bar under a narrow window, in logical pixels: what the Browse
 /// tab's page leaves it (1369).
 const COMPACT_TABS: f32 = 72.0;
-/// The map bar's height: a line of 13 pixel text and its padding (1441).
-const MAP_BAR: f32 = 21.0;
+/// The map bar's height (1441): a line of 13 pixel text and its padding,
+/// and since 1699 the More button's hit area, as tall as the window's
+/// other buttons, with its padding.
+const MAP_BAR: f32 = 32.0;
 /// The window's size when it opens.
 const WINDOW: (f32, f32) = (1100.0, 720.0);
 /// From this width on the window is Wide (1218): the rail, the list and
@@ -120,8 +122,12 @@ pub struct Seen {
     /// Whether going to a place loads its region (`map_autoload`).
     pub autoload: bool,
     /// How the map is drawn: the PC's finish in the table `map_theme`
-    /// names, light for `auto`: the map keeps its own toggle (1133).
+    /// names, light for `auto`: the map keeps its own toggle (1133). The
+    /// window turns an `auto` map with its own theme ([`App::map_style`]).
     pub style: Style,
+    /// The config's `map_theme`, `None` when unset: `auto` follows the
+    /// window's theme, which the shell does not know (1699).
+    pub map_flag: Option<leviculum_ui::theme::ThemeFlag>,
     /// The list and the open chat (1218): the scene at
     /// [`LayoutClass::Wide`], which the window draws in the class its
     /// width gives ([`Scene::in_class`]).
@@ -224,6 +230,7 @@ impl Seen {
             maps,
             autoload: model.map_autoload,
             style: Style::SCREEN.in_theme(map_theme(model.map_theme, None)),
+            map_flag: model.map_theme,
             scene: model.scene(LayoutClass::Wide),
             now: model.now,
             receipts: model.reading.on,
@@ -1152,6 +1159,7 @@ impl App {
                 maps: 0,
                 autoload: false,
                 style: Style::SCREEN,
+                map_flag: None,
                 scene: empty.clone(),
                 now: None,
                 receipts: true,
@@ -1246,6 +1254,24 @@ impl App {
         match self.dark() {
             true => Theme::Dark,
             false => Theme::Light,
+        }
+    }
+
+    /// How the map is drawn in this window (1699): the shell's style,
+    /// whose `auto` is light for want of a screen, turned to the window's
+    /// theme when the config says `auto` or names a theme; unset keeps the
+    /// shell's light.
+    fn map_style(&self) -> Style {
+        let screen = match self.dark() {
+            true => leviculum_ui::theme::Theme::Dark,
+            false => leviculum_ui::theme::Theme::Light,
+        };
+        match self.seen.map_flag {
+            Some(flag) => self
+                .seen
+                .style
+                .in_theme(map_theme(Some(flag), Some(screen))),
+            None => self.seen.style,
         }
     }
 
@@ -2603,7 +2629,7 @@ impl App {
             view: self.glide.map_or(self.view, |g| g.to),
             margin: (w / MARGIN_PART, h / MARGIN_PART),
             moving: self.moving(),
-            style: self.seen.style,
+            style: self.map_style(),
             scale: self.scale,
             pins,
             tracks: self.tracks(),
@@ -3236,16 +3262,42 @@ impl App {
         // (1441): a notice or a credit too long for it wrapped to a second
         // line, which took the map 17 pixels of height while a pan loaded
         // its tiles, and the map's frame was drawn anew at the new size.
-        let line = |words: String| text(words).size(13).wrapping(text::Wrapping::None);
+        let t = self.tokens();
+        let line = |words: String| {
+            text(words)
+                .size(13)
+                .color(chat::colour(t.text))
+                .wrapping(text::Wrapping::None)
+        };
+        // The rail says Chats and Map on a wide window, so the bar does
+        // not say them again (1699); the compact window's tabs are below
+        // it, and it keeps them there as before.
+        let lead: Element<'_, Message> = match self.class() {
+            LayoutClass::Compact => row![
+                pressable(
+                    "Chats".to_string(),
+                    Message::Intent(Intent::Tab(TabId::Chats)),
+                    chat::colour(t.text),
+                    Color::TRANSPARENT,
+                    chat::colour(t.selected_row),
+                )
+                .padding([2, 6]),
+                // "Map", or "Map · This week" when the tracks' window is
+                // not the default (1419): why older lines show.
+                line(self.seen.track_window.title(self.lang)),
+                line("  ".to_string()),
+            ]
+            .align_y(iced::Alignment::Center)
+            .into(),
+            // Only the window, when it is not the default: why older
+            // lines show.
+            LayoutClass::Wide => match self.seen.track_window.title_word() {
+                Some(word) => line(format!("{}  ", word.text(self.lang))).into(),
+                None => Space::new().into(),
+            },
+        };
         let bar = row![
-            button(text("Chats").size(13))
-                .on_press(Message::Intent(Intent::Tab(TabId::Chats)))
-                .padding([0, 6])
-                .style(button::text),
-            // "Map", or "Map · This week" when the tracks' window is not
-            // the default (1419): why older lines show.
-            line(self.seen.track_window.title(self.lang)),
-            line("  ".to_string()),
+            lead,
             // Always on screen: the region's credit, or the outline's.
             line(credit),
             container(line(
@@ -3264,17 +3316,43 @@ impl App {
                 false => String::new(),
             }),
             // The map's menu (1419): the time window, rarely needed, is
-            // in it and not on the map.
-            button(text(StrId::Menu.text(self.lang)).size(13))
-                .on_press(Message::MapMenu)
-                .padding([0, 6])
-                .style(match self.map_menu {
-                    true => button::primary,
-                    false => button::text,
-                }),
+            // in it and not on the map. Its only door, so a button and
+            // not a word (1699): the window's ink on a ground of its own
+            // with a line round it, as tall as the window's other buttons;
+            // the chosen row's ground while the menu is open.
+            {
+                let (ink, hover) = (chat::colour(t.text), chat::colour(t.bar));
+                let ground = match self.map_menu {
+                    true => over_colour(t.selected_row, t.panel),
+                    false => chat::colour(t.panel),
+                };
+                pressable(
+                    StrId::Menu.text(self.lang).to_string(),
+                    Message::MapMenu,
+                    ink,
+                    ground,
+                    hover,
+                )
+                .padding([5, 16])
+                .style(move |_: &Theme, status| button::Style {
+                    border: iced::border::rounded(8)
+                        .color(chat::colour(t.dim))
+                        .width(1.0),
+                    ..press_style(ink, ground, hover, status)
+                })
+            },
         ]
+        .align_y(iced::Alignment::Center)
         .padding([2, 8])
         .height(MAP_BAR);
+        // The bar on the rail's ground (1699): before, it had none of its
+        // own and showed whatever was drawn under it.
+        let bar = container(bar)
+            .width(Length::Fill)
+            .style(move |_: &Theme| container::Style {
+                background: Some(iced::Background::Color(chat::colour(t.bar))),
+                ..container::Style::default()
+            });
         // The picture is a canvas of its own under the pins' canvas: iced
         // draws a canvas's images above its fills, which would hide the
         // markers. On a canvas it is drawn where the view moved it since
@@ -3335,45 +3413,45 @@ impl App {
             .color(chat::colour(t.text_secondary));
         // The locations list (1430): everyone with a position, over the
         // map's left edge, only on demand.
-        let locations = button(text(StrId::Locations.text(self.lang)).size(13))
-            .on_press(Message::Locations)
+        // A row (1699): the window's ink on the menu's ground, the
+        // chosen one on the selected row's ground as the rail's tab, the
+        // ink the same, so it reads as the others do.
+        let entry = |words: &str, on: Message, chosen: bool| {
+            pressable(
+                words.to_string(),
+                on,
+                chat::colour(t.text),
+                match chosen {
+                    true => over_colour(t.selected_row, t.background),
+                    false => Color::TRANSPARENT,
+                },
+                over_colour(t.selected_row, t.background),
+            )
             .padding([2, 8])
             .width(Length::Fill)
-            .style(button::text);
+        };
+        let locations = entry(StrId::Locations.text(self.lang), Message::Locations, false);
         let choices = TrackWindow::CHOICES
             .iter()
             .fold(column![locations, heading].spacing(2), |list, &w| {
-                let style = match self.seen.track_window == w {
-                    true => button::primary,
-                    false => button::text,
-                };
-                list.push(
-                    button(text(w.label().text(self.lang)).size(13))
-                        .on_press(Message::TrackWindow(w))
-                        .padding([2, 8])
-                        .width(Length::Fill)
-                        .style(style),
-                )
+                list.push(entry(
+                    w.label().text(self.lang),
+                    Message::TrackWindow(w),
+                    self.seen.track_window == w,
+                ))
             })
-            .push(
-                button(text(StrId::FitWindow.text(self.lang)).size(13))
-                    .on_press(Message::Intent(Intent::Map(MapCmd::FitWindow)))
-                    .padding([2, 8])
-                    .width(Length::Fill)
-                    .style(button::text),
-            )
+            .push(entry(
+                StrId::FitWindow.text(self.lang),
+                Message::Intent(Intent::Map(MapCmd::FitWindow)),
+                false,
+            ))
             // The time zone view (1684): one entry that turns it on and
             // off, marked while it is on.
-            .push(
-                button(text(StrId::TimeZones.text(self.lang)).size(13))
-                    .on_press(Message::TimeZones)
-                    .padding([2, 8])
-                    .width(Length::Fill)
-                    .style(match self.time_zones {
-                        true => button::primary,
-                        false => button::text,
-                    }),
-            )
+            .push(entry(
+                StrId::TimeZones.text(self.lang),
+                Message::TimeZones,
+                self.time_zones,
+            ))
             .width(Length::Fixed(200.0));
         // The background's ground with a line round it, so the menu
         // stands off the map under it.
@@ -3453,11 +3531,17 @@ impl App {
         ]
         .spacing(10)
         .align_y(iced::Alignment::Center);
+        // The actions in the accent, as the window's other links (1699):
+        // they act, and before they were drawn grey like disabled ones.
         let act = |id: StrId, on: Message| {
-            button(text(id.text(self.lang)).size(13))
-                .on_press(on)
-                .padding([2, 10])
-                .style(button::text)
+            pressable(
+                id.text(self.lang).to_string(),
+                on,
+                chat::colour(t.accent),
+                Color::TRANSPARENT,
+                over_colour(t.selected_row, t.background),
+            )
+            .padding([2, 10])
         };
         let actions = match (card.own, card.nearby) {
             (true, _) => row![],
@@ -3514,10 +3598,15 @@ impl App {
                 Some(d) => d.clone(),
                 None => card.age.clone(),
             };
-            let style = match Some(card.peer) == self.selected {
-                true => button::primary,
-                false => button::text,
+            // The selected one on the selected row's ground, as the menu's
+            // chosen row (1699): iced's primary put the window's dark ink
+            // on its blue, and drew both faded before a redraw event.
+            let ground = match Some(card.peer) == self.selected {
+                true => over_colour(t.selected_row, t.background),
+                false => Color::TRANSPARENT,
             };
+            let hover = over_colour(t.selected_row, t.background);
+            let ink = chat::colour(t.text);
             list.push(
                 button(
                     column![
@@ -3529,7 +3618,7 @@ impl App {
                 .on_press(Message::Located(card.peer))
                 .padding([3, 6])
                 .width(Length::Fill)
-                .style(style),
+                .style(move |_: &Theme, status| press_style(ink, ground, hover, status)),
             )
         });
         let body = column![heading, chat::soft(scrollable(rows))]
@@ -3557,6 +3646,51 @@ fn clipped<'a>(words: &str, size: f32, width: f32, ink: Color) -> Element<'a, Me
     .width(Length::Fixed(width))
     .clip(true)
     .into()
+}
+
+/// A button of `words` at 13 pixels (1699): `ink` on `ground`, `hover`'s
+/// ground under the pointer. Its look does not depend on iced's own
+/// styles, which draw a button whose status the widget has not yet set
+/// (a view drawn before its first redraw event, every headless render) as
+/// a disabled one: half its ink and half its ground
+/// (iced_widget 0.14.2 `button.rs`, `status.unwrap_or(Status::Disabled)`).
+/// These buttons always act, so they always look it.
+fn pressable<'a>(
+    words: String,
+    on: Message,
+    ink: Color,
+    ground: Color,
+    hover: Color,
+) -> button::Button<'a, Message> {
+    button(text(words).size(13).color(ink))
+        .on_press(on)
+        .style(move |_: &Theme, status| press_style(ink, ground, hover, status))
+}
+
+/// [`pressable`]'s style: `hover`'s ground under the pointer or a press,
+/// `ground` otherwise, whatever else the status says.
+fn press_style(ink: Color, ground: Color, hover: Color, status: button::Status) -> button::Style {
+    button::Style {
+        background: Some(iced::Background::Color(match status {
+            button::Status::Hovered | button::Status::Pressed => hover,
+            button::Status::Active | button::Status::Disabled => ground,
+        })),
+        text_color: ink,
+        border: iced::border::rounded(6),
+        ..button::Style::default()
+    }
+}
+
+/// The token `argb` laid over the opaque token `ground` by its alpha: a
+/// see-through token as the ground a word is read against.
+fn over_colour(argb: u32, ground: u32) -> Color {
+    let (top, under) = (chat::colour(argb), chat::colour(ground));
+    let a = top.a;
+    Color::from_rgb(
+        a * top.r + (1.0 - a) * under.r,
+        a * top.g + (1.0 - a) * under.g,
+        a * top.b + (1.0 - a) * under.b,
+    )
 }
 
 /// The frame on screen, where the view moved it.
@@ -3648,7 +3782,7 @@ impl canvas::Program<Message> for PictureCanvas<'_> {
         // Only the strips the frame leaves, a pixel into it against the
         // snapped edge, so the ground costs no second pass under the map.
         let [r, g, b] =
-            leviculum_mapfill::frame::rgb888(self.app.seen.style.theme.palette().background);
+            leviculum_mapfill::frame::rgb888(self.app.map_style().theme.palette().background);
         for strip in uncovered(whole, covered) {
             frame.fill_rectangle(strip.position(), strip.size(), Color::from_rgb8(r, g, b));
         }
@@ -3921,6 +4055,7 @@ mod tests {
             maps,
             autoload: false,
             style: Style::SCREEN,
+            map_flag: None,
             scene: crate::shell::Model::new(&[]).scene(LayoutClass::Wide),
             now: None,
             receipts: true,
@@ -4558,6 +4693,7 @@ mod tests {
             maps: 0,
             autoload: false,
             style: Style::SCREEN,
+            map_flag: None,
             scene: model.scene(LayoutClass::Wide),
             now: model.now,
             receipts: model.reading.on,
@@ -7366,6 +7502,144 @@ mod tests {
         [rgb[i], rgb[i + 1], rgb[i + 2]]
     }
 
+    /// A token's colour as the renderer writes it.
+    fn rgb_of(argb: u32) -> [u8; 3] {
+        [(argb >> 16) as u8, (argb >> 8) as u8, argb as u8]
+    }
+
+    /// A token's colour laid over `ground` by its alpha.
+    fn over(argb: u32, ground: [u8; 3]) -> [u8; 3] {
+        let a = f64::from((argb >> 24) as u8) / 255.0;
+        let [r, g, b] = rgb_of(argb);
+        let mix =
+            |c: u8, under: u8| (a * f64::from(c) + (1.0 - a) * f64::from(under)).round() as u8;
+        [mix(r, ground[0]), mix(g, ground[1]), mix(b, ground[2])]
+    }
+
+    /// Whether two colours are the same but for the blend's rounding.
+    fn near(a: [u8; 3], b: [u8; 3]) -> bool {
+        a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 1)
+    }
+
+    /// The WCAG contrast of two sRGB colours, 1 to 21.
+    fn contrast(a: [u8; 3], b: [u8; 3]) -> f64 {
+        let lum = |c: [u8; 3]| {
+            let ch = |v: u8| {
+                let v = f64::from(v) / 255.0;
+                match v <= 0.04045 {
+                    true => v / 12.92,
+                    false => ((v + 0.055) / 1.055).powf(2.4),
+                }
+            };
+            0.2126 * ch(c[0]) + 0.7152 * ch(c[1]) + 0.0722 * ch(c[2])
+        };
+        let (x, y) = (lum(a), lum(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    /// What `rect` of `rgb` shows: its ground, the colour most of its
+    /// pixels have, and its ink's contrast against that ground, the
+    /// strongest pixel's; `None` for the ink where all is ground.
+    fn ground_and_ink(rgb: &[u8], w: u32, rect: Rectangle) -> ([u8; 3], Option<f64>) {
+        let mut counts = std::collections::HashMap::new();
+        // The whole pixels inside it, none of its neighbour's edge.
+        let (x0, y0) = (rect.x.ceil() as u32, rect.y.ceil() as u32);
+        let (x1, y1) = (
+            (rect.x + rect.width).floor() as u32,
+            (rect.y + rect.height).floor() as u32,
+        );
+        let pixels: Vec<[u8; 3]> = (y0..y1)
+            .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+            .map(|(x, y)| colour_at(rgb, w, x, y))
+            .collect();
+        for p in &pixels {
+            *counts.entry(*p).or_insert(0u32) += 1;
+        }
+        let ground = counts
+            .into_iter()
+            .max_by_key(|&(_, n)| n)
+            .map(|(c, _)| c)
+            .expect("a rectangle with pixels");
+        let ink = pixels
+            .iter()
+            .filter(|p| **p != ground)
+            .map(|p| contrast(*p, ground))
+            .fold(None, |best: Option<f64>, c| {
+                Some(best.map_or(c, |b| b.max(c)))
+            });
+        (ground, ink)
+    }
+
+    /// The bounds of the node at `path` from the window's layout root.
+    fn node_at(node: &iced::advanced::layout::Node, path: &[usize]) -> Rectangle {
+        use iced::advanced::Layout;
+        let mut at = Layout::new(node);
+        for &i in path {
+            at = at.children().nth(i).expect("the node on the path");
+        }
+        at.bounds()
+    }
+
+    /// The bounds of the children of the node at `path`.
+    fn children_at(node: &iced::advanced::layout::Node, path: &[usize]) -> Vec<Rectangle> {
+        use iced::advanced::Layout;
+        let mut at = Layout::new(node);
+        for &i in path {
+            at = at.children().nth(i).expect("the node on the path");
+        }
+        at.children().map(|c| c.bounds()).collect()
+    }
+
+    /// 1699: the map frame is drawn an eighth past every edge of its
+    /// canvas, and before the fix its picture was not clipped to the
+    /// canvas, so the frame covered the rail and the map's bar beside
+    /// it. Read from the pixels, not a golden: the rail's ground is the
+    /// bar token, the Map tab's pill is the selected row's, every tab's
+    /// icon stands on its own ground in ink, and the map's bottom bar has
+    /// the bar token's ground.
+    #[test]
+    fn the_windows_map_keeps_its_rail_and_its_bar() {
+        let (w, h) = (900, 560);
+        let (mut app, _rx) = florence_two("Anna", None, w, h);
+        app.apply(Message::Select(ANNA));
+        let (shown, _) = run(&mut app);
+        assert!(shown.is_some(), "a frame of Florence at rest");
+        let rgb = shoot(&app, w, h);
+        let t = app.tokens();
+        let bar = rgb_of(t.bar);
+        for (x, y) in [(5, 300), (66, 300), (5, h - 5), (66, 230)] {
+            assert_eq!(
+                colour_at(&rgb, w, x, y),
+                bar,
+                "the rail's ground at {x},{y}"
+            );
+        }
+        let node = leviculum_ui_iced::headless::layout(app.view(), w, h).expect("a renderer");
+        let tabs = children_at(&node, &[0, 0]);
+        assert_eq!(tabs.len(), 3, "Chats, Map, Explore");
+        for (i, tab) in tabs.iter().enumerate() {
+            let ground = match i {
+                1 => over(t.selected_row, bar),
+                _ => bar,
+            };
+            let pill = colour_at(&rgb, w, tab.x as u32 + 4, tab.center_y() as u32);
+            assert!(
+                near(pill, ground),
+                "tab {i}'s ground: {pill:?}, not {ground:?}"
+            );
+            let icon = Rectangle::new(Point::new(tab.x, tab.y + 8.0), Size::new(tab.width, 26.0));
+            let (under, ink) = ground_and_ink(&rgb, w, icon);
+            assert!(
+                near(under, ground),
+                "tab {i}'s icon on {under:?}, not {ground:?}"
+            );
+            assert!(ink.is_some_and(|c| c >= 3.0), "tab {i}'s icon: {ink:?}");
+        }
+        let bottom = node_at(&node, &[1, 1]);
+        let (ground, _) = ground_and_ink(&rgb, w, bottom);
+        assert_eq!(ground, bar, "the map's bottom bar's ground");
+    }
+
     /// The minimal case of 1699: a picture a canvas draws past its own
     /// edge stays inside the canvas; the box beside it keeps its ground.
     #[test]
@@ -7424,6 +7698,147 @@ mod tests {
             [255, 255, 255],
             "past the picture"
         );
+    }
+
+    /// 1699 3a: `map_theme = auto` follows the window, as the terminal
+    /// follows its own: a dark window asks a dark frame, a light one a
+    /// light frame; unset and `light` stay light in a dark window.
+    #[test]
+    fn an_auto_map_follows_the_windows_theme() {
+        use leviculum_mapfill::style::MapTheme;
+        use leviculum_ui::theme::ThemeFlag;
+        let (w, h) = (900, 560);
+        let (mut app, _rx) = florence_two("Anna", None, w, h);
+        let theme = |app: &App| app.order().expect("an order").style.theme;
+        for (flag, dark, want) in [
+            (Some(ThemeFlag::Auto), true, MapTheme::Dark),
+            (Some(ThemeFlag::Auto), false, MapTheme::Light),
+            (None, true, MapTheme::Light),
+            (Some(ThemeFlag::Light), true, MapTheme::Light),
+            (Some(ThemeFlag::Dark), false, MapTheme::Dark),
+        ] {
+            app.seen.map_flag = flag;
+            app.system_dark = dark;
+            assert_eq!(app.dark(), dark);
+            assert_eq!(theme(&app), want, "{flag:?} in a dark window: {dark}");
+        }
+        // The window's toggle turns an auto map with it.
+        app.seen.map_flag = Some(ThemeFlag::Auto);
+        app.system_dark = false;
+        let _ = app.update(Message::Intent(Intent::Theme));
+        assert!(app.dark());
+        assert_eq!(theme(&app), MapTheme::Dark);
+    }
+
+    /// 1699 3b, 3c, 3e: every word of the map's bottom bar, every row of
+    /// its menu (the chosen one too) and every action of the pin card is
+    /// read against its own ground at 4.5:1 at least, measured from the
+    /// rendered pixels, in both themes; More is a button with its own
+    /// ground and a hit area like the window's other buttons, not a word.
+    #[test]
+    fn the_maps_words_read_against_their_ground() {
+        let (w, h) = (900, 560);
+        for dark in [false, true] {
+            let (mut app, _rx) = florence_two("Anna", None, w, h);
+            app.system_dark = dark;
+            app.apply(Message::Select(ANNA));
+            let _ = run(&mut app);
+            let _ = app.update(Message::MapMenu);
+            assert!(app.map_menu);
+            let rgb = shoot(&app, w, h);
+            let node = leviculum_ui_iced::headless::layout(app.view(), w, h).expect("a renderer");
+            let read = |what: &str, rect: Rectangle| {
+                let (_, ink) = ground_and_ink(&rgb, w, rect);
+                if let Some(c) = ink {
+                    assert!(c >= 4.5, "{what} in dark {dark}: {c:.2}:1 at {rect:?}");
+                }
+                ink
+            };
+            let bar = node_at(&node, &[1, 1]);
+            // The bar is its ground's container over the row of words.
+            let words = children_at(&node, &[1, 1, 0]);
+            let inked = words
+                .iter()
+                .filter(|r| r.width >= 1.0)
+                .filter_map(|r| read("a word of the bar", *r))
+                .count();
+            assert!(inked >= 2, "the credit and More at least: {inked}");
+            let more = *words.last().expect("More");
+            let (more_ground, more_ink) = ground_and_ink(&rgb, w, more);
+            assert!(more_ink.is_some(), "More has words");
+            let (bar_ground, _) = ground_and_ink(&rgb, w, bar);
+            assert_ne!(
+                more_ground, bar_ground,
+                "More stands on a ground of its own"
+            );
+            assert!(
+                more.height >= 26.0 && more.width >= 56.0,
+                "More's hit area: {more:?}"
+            );
+            let stack = children_at(&node, &[1, 0, 0]);
+            let menu_path = [1, 0, 0, stack.len() - 1, 0, 0];
+            let rows = children_at(&node, &menu_path);
+            assert!(rows.len() >= 9, "the menu's rows: {}", rows.len());
+            for (i, row) in rows.iter().enumerate() {
+                assert!(
+                    read("a row of the menu", *row).is_some(),
+                    "row {i} has words"
+                );
+            }
+            let card = children_at(&node, &[1, 0, 0, 3, 0, 0]);
+            let actions = children_at(&node, &[1, 0, 0, 3, 0, 0, card.len() - 1]);
+            assert_eq!(actions.len(), 3, "Chat, Navigate, Share mine");
+            for action in actions {
+                assert!(read("an action of the card", action).is_some());
+            }
+            // The locations list over the map's left edge, Anna's row
+            // selected: each row's words read on its ground.
+            let _ = app.update(Message::MapMenu);
+            let _ = app.update(Message::Locations);
+            assert!(app.locations);
+            let rgb = shoot(&app, w, h);
+            let node = leviculum_ui_iced::headless::layout(app.view(), w, h).expect("a renderer");
+            let rows = children_at(&node, &[1, 0, 0, 4, 0, 0, 1]);
+            assert_eq!(rows.len(), 1, "the list's scrollable");
+            let rows = children_at(&node, &[1, 0, 0, 4, 0, 0, 1, 0]);
+            assert_eq!(rows.len(), 2, "Anna and Ben");
+            for row in rows {
+                // The name, at the row's top, against the row's ground.
+                let name = Rectangle::new(row.position(), Size::new(row.width, 20.0));
+                let (_, ink) = ground_and_ink(&rgb, w, name);
+                assert!(
+                    ink.is_some_and(|c| c >= 4.5),
+                    "a row of the list in dark {dark}: {ink:?}"
+                );
+            }
+        }
+    }
+
+    /// 1699 3d: on a wide window the rail says Chats and Map, so the
+    /// map's bar does not say them again; on a compact one, whose tabs
+    /// are elsewhere, it keeps them.
+    #[test]
+    fn the_maps_bar_says_chats_and_map_only_when_compact() {
+        for (w, h, said) in [(900u32, 560u32, false), (600, 700, true)] {
+            let (mut app, _rx) = chat_window();
+            app.window = Size::new(w as f32, h as f32);
+            let _ = app.update(Message::Intent(Intent::ShowMap { peer: None }));
+            assert_eq!(app.screen, Screen::Map);
+            let rgb = shoot(&app, w, h);
+            let node = leviculum_ui_iced::headless::layout(app.view(), w, h).expect("a renderer");
+            let bar_path: &[usize] = match app.class() {
+                LayoutClass::Wide => &[1, 1],
+                LayoutClass::Compact => &[0, 1],
+            };
+            let bar = node_at(&node, bar_path);
+            let lead = Rectangle::new(bar.position(), Size::new(110.0, bar.height));
+            let (_, ink) = ground_and_ink(&rgb, w, lead);
+            assert_eq!(
+                ink.is_some(),
+                said,
+                "{w} x {h}: words at the bar's start {ink:?}"
+            );
+        }
     }
 
     /// A click on a pin selects it and opens its card, a click on the
