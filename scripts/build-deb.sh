@@ -310,13 +310,32 @@ if [ "$ARCH" = amd64 ]; then
     fi
 fi
 
+# Every packaged binary on mimalloc (1750), read off the bytes for the same
+# reason as below: without its own allocator a binary runs on its libc's
+# malloc, which under cargo zigbuild for a musl triple (arm64, armhf) is Zig's
+# SmpAllocator, and the Loquax Mailbox on miauhaus kept 68.5 MB of free lists
+# over 9 MB live on it. Checked here, before LEVICULUM_ALLOC=system rebuilds
+# the two daemons below, so it holds in both modes; scripts/check-allocator.py
+# holds the list, and its source half in `just guards` keeps it whole.
+release_dir="$TARGET/$TRIPLE/release"
+alloc_paths=()
+for bin in "${BINS[@]}"; do
+    alloc_paths+=("$release_dir/$bin")
+done
+if [ -n "$DESKTOP_TRIPLE" ]; then
+    alloc_paths+=("$TARGET/$DESKTOP_TRIPLE/release/loquax")
+fi
+if [ "$ARCH" = amd64 ]; then
+    alloc_paths+=("$V3_TARGET/$DESKTOP_TRIPLE/release/loquax")
+fi
+python3 -I scripts/check-allocator.py --binary "${alloc_paths[@]}"
+
 # The allocator is read off the bytes, like the heap-accounting marker below:
 # an arm64 binary cannot be run here. lnsd and lnpnd log `Allocator: mimalloc`
 # at startup only when they were built on mimalloc, so a package that would
 # ship either daemon on the wrong allocator fails here instead of on a field
 # node a day later, as resident memory nobody can account for.
 mimalloc_marker='Allocator: mimalloc'
-release_dir="$TARGET/$TRIPLE/release"
 if [ "$LEVICULUM_ALLOC" = system ]; then
     "${build_cmd[@]}" --release --target "$TRIPLE" "${LNSD_SYSTEM_ARGS[@]}"
     "${build_cmd[@]}" --release --target "$TRIPLE" "${LNPND_SYSTEM_ARGS[@]}"
