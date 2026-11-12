@@ -456,8 +456,15 @@ pub fn conn_link_up(slot_index: usize, addr: PeerAddr) {
 
 /// Clear a connection's address at teardown. A departure is not a new
 /// neighbour, so the strict phase runs on (#504).
+///
+/// The session's defragmenter dies with the link, so its census entry
+/// ([`crate::link::defrag_held_set`]) goes to zero here, in both roles
+/// and both backends: the TrouBLE backend never zeroed it, and a peer
+/// that left mid-fragment kept its half packet in the heap census until
+/// the slot was reused (1715, found by the scripted-controller test).
 pub fn conn_link_down(slot_index: usize) {
     LIVE_PEERS.lock(|peers| peers.borrow_mut().conn_down(slot_index));
+    crate::link::defrag_held_set(slot_index, 0);
     note_phase_event(PhaseEvent::ConnDown);
 }
 
