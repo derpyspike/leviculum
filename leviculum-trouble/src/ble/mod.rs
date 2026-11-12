@@ -70,7 +70,7 @@ pub use notify::{BLE_TX_DRAIN_UNROUTED, BLE_TX_DRAIN_WAITS, BLE_TX_DROPPED, BLE_
 // modules keep their `super::` paths — exactly the shape of
 // `leviculum-nrf/src/ble/mod.rs`'s re-import block.
 pub use leviculum_ble_link::{BleChannels, BleInterface, BleLinkEvent, TX_DRAIN};
-pub(crate) use leviculum_ble_link::{carrier_off, carrier_on, tx_gap_ms, CarrierWaiter};
+pub(crate) use leviculum_ble_link::{carrier_off, carrier_on, CarrierWaiter};
 
 /// Incoming (peripheral-role) link slots: a phone and two boards, the
 /// nRF's #372 count.
@@ -115,10 +115,6 @@ pub type BleStack<T> = Stack<'static, Controller<T>, DefaultPacketPool>;
 pub type BleRunner<T> = Runner<'static, Controller<T>, DefaultPacketPool>;
 /// The cell the firmware's bring-up places its stack in.
 pub type StackCell<T> = StaticCell<BleStack<T>>;
-
-pub(crate) fn link_handle_at(slot: usize) -> Option<u16> {
-    TX_DRAIN.handle_at(slot)
-}
 
 /// Links holding a drain slot right now (the `ble_links=` status field).
 pub fn links_claimed() -> usize {

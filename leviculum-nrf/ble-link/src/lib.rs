@@ -31,6 +31,7 @@
 extern crate alloc;
 
 pub mod log;
+pub mod session;
 pub mod traffic;
 
 mod link;

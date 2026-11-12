@@ -1121,6 +1121,7 @@ dependencies = [
  "heapless 0.9.3",
  "leviculum-announce-policy",
  "leviculum-battery-scale",
+ "leviculum-ble-link",
  "leviculum-ble-tx",
  "leviculum-boot-count",
  "leviculum-boot-trace",

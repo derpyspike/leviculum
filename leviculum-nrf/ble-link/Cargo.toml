@@ -23,6 +23,7 @@ description = "The BLE link's node side, executor-free: the seam trait and its e
 # same coexistence leviculum-ble-tx's 0.7 drain signals have always had
 # there.
 [dependencies]
+embassy-futures = "0.1"
 embassy-sync = "0.7"
 embassy-time = "0.5"
 leviculum-core = { path = "../../leviculum-core", default-features = false }
@@ -40,8 +41,13 @@ leviculum-media-state = { path = "../media-state" }
 # The seam's host fake for an embedder's own tests
 # (`leviculum-firmware`'s every-seam-has-a-fake proof).
 fakes = []
+# A/B switches for the two fallback-class ledgers (the nRF crate
+# forwards its ble-dial-ledger-off / ble-churn-penalty-off here): OFF
+# records nothing and holds nothing, bit-identical to a board with no
+# ledger.
+dial-ledger-off = []
+churn-penalty-off = []
 
 [dev-dependencies]
-embassy-futures = "0.1"
 embassy-time = { version = "0.5", features = ["mock-driver"] }
 critical-section = { version = "1", features = ["std"] }

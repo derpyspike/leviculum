@@ -146,7 +146,7 @@ const _: () = assert!(MAX_LINKS >= CONN_COUNT as usize);
 pub use leviculum_firmware::ble_link::HVN_DRAIN;
 pub(crate) use leviculum_firmware::ble_link::{
     carrier, carrier_off, carrier_on, defrag_held_set, deliver, session_held_moved,
-    session_held_reset, session_held_sub, tx_gap_ms, CarrierWaiter,
+    session_held_reset, session_held_sub, CarrierWaiter,
 };
 pub(crate) use leviculum_firmware::seams::BleLinkEvent;
 

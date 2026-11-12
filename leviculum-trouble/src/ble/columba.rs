@@ -14,31 +14,26 @@
 //! table, the fan-out, the fragment pump — lives in [`super`] and
 //! [`super::notify`] and carries no Columba knowledge.
 
-use core::cell::{Cell, RefCell};
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::cell::Cell;
+use core::sync::atomic::Ordering;
 
 use embassy_futures::select::{select, select3, select4, Either, Either3, Either4};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::semaphore::{FairSemaphore, Semaphore};
 use embassy_sync::signal::Signal;
-use leviculum_ble_link::BleLinkEvent;
 use embassy_time::{Duration, Instant, Timer};
 use leviculum_ble_tx::{
-    addr_value, admit, advertise_pass_pause_ms, connect_failure_condemns, dial_preference,
+    addr_value, advertise_pass_pause_ms, connect_failure_condemns, dial_preference,
     dial_stage_failure, disconnect_settle_ms, drain_table_refusal, fragment_mtu, identity_hint,
     judge_read_identity, judge_supervision_timeout, manufacturer_data_with_hint,
     parse_peer_advertisement, refused_dial, scan_pass_pause_ms, with_free_slots, AdvReport,
-    AdvertisePass, CandidateTable, ChurnLedger, ChurnPolicy, ConnParams, ConnParamsAsk,
-    ConnParamsLine, ConnParamsReq, ConnParamsReqLine, ConnectDecision, DeadEnds, DialBackoff,
-    DialFailure, DialLedger, DialRefusedLine, DialStage, DisconnectReason, DrainSlot, Exclusion,
-    LedgerPolicy, Ledgers, LinkDownLine, LinkPhase, LinkRole, LinkUp, LinkVerdict, Local, Origin,
-    PeerAddr, PeerRegistry, PhaseEvent, PhaseNeighbours, ReadIdentity, ScanMode, ScanPass,
-    ScanPhase, StageError, TxGap, ADV_BYTES_USED, CAP_PERIPHERAL_ONLY, DEAD_END_SLOTS,
-    DEAD_END_TTL_MS, DIAL_BACKOFF_SLOTS, GATT_VALUE_MAX, IDENTITY_HINT_LEN, LEGACY_AD_CAPACITY,
-    MANUFACTURER_DATA_HINT_LEN, PERIPH_SLOTS, PHASE_NEIGHBOUR_SLOTS, SCAN_WINDOW_COLLECT_MS,
-    WINDOW_CANDIDATES,
+    AdvertisePass, CandidateTable, ConnParams, ConnParamsAsk, ConnParamsLine, ConnParamsReq,
+    ConnParamsReqLine, ConnectDecision, DialFailure, DialStage, DisconnectReason, DrainSlot,
+    Exclusion, LinkDownLine, LinkPhase, LinkRole, Local, Origin, PeerAddr, PhaseEvent,
+    ReadIdentity, ScanPass, StageError, TxGap, ADV_BYTES_USED, CAP_PERIPHERAL_ONLY,
+    GATT_VALUE_MAX, IDENTITY_HINT_LEN, LEGACY_AD_CAPACITY, MANUFACTURER_DATA_HINT_LEN,
+    PERIPH_SLOTS, SCAN_WINDOW_COLLECT_MS, WINDOW_CANDIDATES,
 };
 use leviculum_core::framing::ble::{
     self as ble_framing, BleDefragmenter, DefragResult, FRAGMENT_HEADER_SIZE, KEEPALIVE_BYTE,
@@ -89,35 +84,13 @@ const SERVICE_UUID: Uuid = Uuid::new_long(RETICULUM_SVC_UUID_LE);
 /// side of the connection decision (zero: we can initiate).
 const LOCAL_CAPS: u8 = 0;
 
-/// Peripheral link slots currently spent on a session, for the
-/// advertised free-slot count (#375 item 3). Not a gate.
-static PERIPH_BUSY: AtomicU8 = AtomicU8::new(0);
 const _: () = assert!(PERIPH_LINKS == PERIPH_SLOTS as usize);
-
-struct PeripheralSlot;
-
-impl PeripheralSlot {
-    fn claim() -> Self {
-        PERIPH_BUSY.fetch_add(1, Ordering::Relaxed);
-        Self
-    }
-}
-
-impl Drop for PeripheralSlot {
-    fn drop(&mut self) {
-        PERIPH_BUSY.fetch_sub(1, Ordering::Relaxed);
-    }
-}
-
-fn free_peripheral_slots() -> u8 {
-    PERIPH_SLOTS.saturating_sub(PERIPH_BUSY.load(Ordering::Relaxed))
-}
 
 /// The v0.3.0 capability record this node advertises right now (the
 /// record stays with the flag cleared rather than being dropped; see the
 /// nRF module for why).
 fn capability_record(hint: [u8; IDENTITY_HINT_LEN]) -> [u8; MANUFACTURER_DATA_HINT_LEN] {
-    manufacturer_data_with_hint(with_free_slots(LOCAL_CAPS, free_peripheral_slots()), &hint)
+    manufacturer_data_with_hint(with_free_slots(LOCAL_CAPS, session::free_peripheral_slots()), &hint)
 }
 
 /// The advertising PDU as it stands at this instant: flags, the service
@@ -171,7 +144,7 @@ pub type AdvHint = [u8; IDENTITY_HINT_LEN];
 /// attribute-table layout change in the service macro, caught by the
 /// first bench boot rather than a field panic.
 pub fn start(identity_hash: [u8; 16]) -> Option<(&'static ReticulumServer<'static>, AdvHint)> {
-    LIVE_PEERS.lock(|peers| peers.borrow_mut().set_local_identity(identity_hash));
+    session::set_local_identity(identity_hash);
     let hint = identity_hint(&identity_hash);
     const _: () = assert!(ADV_BYTES_USED == LEGACY_AD_CAPACITY);
     static SERVER: StaticCell<ReticulumServer<'static>> = StaticCell::new();
@@ -208,7 +181,7 @@ pub fn start(identity_hash: [u8; 16]) -> Option<(&'static ReticulumServer<'stati
             scan_len,
             u8::from(capability_record(hint)[3] & CAP_PERIPHERAL_ONLY != 0),
             PERIPH_LINKS,
-            free_peripheral_slots(),
+            session::free_peripheral_slots(),
         ),
     );
     Some((server, hint))
@@ -459,47 +432,6 @@ async fn ask_for_a_survivable_timeout<T: HciTransport>(
     );
 }
 
-/// Run one inbound frame through a link's defragmenter, and say so when
-/// that cost a partial packet (#373).
-fn process_logged(
-    d: &mut BleDefragmenter,
-    data: &[u8],
-    now_ms: u64,
-    slot_index: usize,
-) -> DefragResult {
-    let before = d.abandoned_count();
-    let result = d.process(data, now_ms);
-    if matches!(result, DefragResult::Error) {
-        d.abandon();
-    }
-    let after = d.abandoned_count();
-    if after != before {
-        crate::log::log_fmt(
-            "[BLE ] ",
-            format_args!(
-                "BLE_RX_ABANDON slot={} lost={} total={}",
-                slot_index,
-                after.saturating_sub(before),
-                after,
-            ),
-        );
-    }
-    result
-}
-
-/// Hold the next packet back until this connection's inter-packet gap
-/// (#376) has elapsed.
-async fn serve_tx_gap(gap: &TxGap, conn_handle: u16) {
-    let wait_ms = gap.wait_ms(Instant::now().as_millis(), super::tx_gap_ms());
-    if wait_ms > 0 {
-        crate::log::log_fmt(
-            "[BLE ] ",
-            format_args!("BLE_TX_GAP conn={} waited_ms={}", conn_handle, wait_ms),
-        );
-        Timer::after(Duration::from_millis(wait_ms)).await;
-    }
-}
-
 /// Per-connection event loop: inbound writes (handshake, keepalive,
 /// fragments), outbound packets and keepalives as notifications, the
 /// carrier switch and the link expiry.
@@ -522,7 +454,7 @@ async fn gatt_events(
         return conn.raw().att_mtu();
     };
     let peer = peer_addr(&conn.raw().peer_address());
-    conn_link_up(slot_index, peer);
+    session::conn_link_up(slot_index, peer);
 
     let defrag: Cell<BleDefragmenter> = Cell::new(BleDefragmenter::new(super::REASSEMBLY_LIMITS));
     let handshake_done: Cell<bool> = Cell::new(false);
@@ -626,7 +558,7 @@ async fn gatt_events(
                             tx_ready.wait().await;
                         }
                     }
-                    serve_tx_gap(&tx_gap, conn_handle).await;
+                    session::serve_tx_gap(&tx_gap, conn_handle).await;
                     let fragments =
                         ble_framing::fragment_packet(&packet, fragment_mtu(conn.raw().att_mtu()));
                     if !notify_fragments(
@@ -670,7 +602,7 @@ async fn gatt_events(
         inbound,
         outbound,
         super::carrier_off(CarrierWaiter::Session(slot_index)),
-        link_over(slot_index, conn_handle),
+        session::link_over(slot_index, conn_handle),
     )
     .await
     {
@@ -684,13 +616,13 @@ async fn gatt_events(
         Either4::Fourth(end) => {
             if matches!(end, LinkEnd::Expired(_)) {
                 if let Some(peer_id) = link_peer.get() {
-                    note_peer_leave(&peer_id, peer, "expiry_peripheral");
+                    session::note_peer_leave(&peer_id, peer, "expiry_peripheral");
                 }
             }
             if matches!(end, LinkEnd::HandshakeOverdue(_)) {
-                note_dial_failure(peer.value, DialFailure::NoHandshake);
+                session::note_dial_failure(peer.value, DialFailure::NoHandshake);
             }
-            log_link_end("peripheral", slot_index, conn_handle, end);
+            session::log_link_end("peripheral", slot_index, conn_handle, &end);
             conn.raw().disconnect();
         }
         Either4::First(_) | Either4::Second(_) => {}
@@ -710,8 +642,8 @@ async fn gatt_events(
     )
     .await;
 
-    peer_link_down(slot_index);
-    conn_link_down(slot_index);
+    session::peer_link_down(slot_index);
+    session::conn_link_down(slot_index);
     super::TX_DRAIN.release(conn_handle);
     att_mtu_seen.get()
 }
@@ -744,21 +676,22 @@ fn on_rx_write(
         );
         let mut peer_id = [0u8; 16];
         peer_id.copy_from_slice(data);
-        if !peer_link_up(
+        if !session::peer_link_up(
             slot_index,
             conn_handle,
             peer,
             peer_id,
             Origin::Incoming,
             att_mtu,
+            move_queued,
         ) {
-            note_dead_end(peer_value, "dup_refused");
+            session::note_dead_end(peer_value, "dup_refused");
             refused.set(true);
             return;
         }
         link_peer.set(Some(peer_id));
         handshake_done.set(true);
-        note_dial_success(peer_value);
+        session::note_dial_success(peer_value);
         last_keepalive.set(Instant::now());
         let mut hold = tx_hold.get();
         hold.note_handshake();
@@ -779,15 +712,15 @@ fn on_rx_write(
         );
         refused.set(true);
     } else if data.len() < FRAGMENT_HEADER_SIZE {
-        note_heard(slot_index);
+        session::note_heard(slot_index);
     } else {
         // Real payload: liveness AND the active-use evidence the
         // duplicate rule consults (#360); a keepalive feeds only the
         // liveness clock.
-        note_data(slot_index);
+        session::note_data(slot_index);
         let now = Instant::now().as_millis();
         let mut d = defrag.replace(BleDefragmenter::new(super::REASSEMBLY_LIMITS));
-        let result = process_logged(&mut d, data, now, slot_index);
+        let result = session::process_logged(&mut d, data, now, slot_index);
         let frags = d.last_completed_fragments();
         defrag.set(d);
         if let DefragResult::Complete(packet) = result {
@@ -799,199 +732,17 @@ fn on_rx_write(
     }
 }
 
-// --- Link registry (both roles) ---
+// --- Link registry (both roles): leviculum_ble_link::session since 1715 ---
 
-static LIVE_PEERS: BlockingMutex<CriticalSectionRawMutex, RefCell<PeerRegistry<MAX_LINKS>>> =
-    BlockingMutex::new(RefCell::new(PeerRegistry::new()));
+pub(crate) use leviculum_ble_link::session::{
+    live_peer_count, BLE_LINKS_DISPLACED, BLE_LINKS_REFUSED, BLE_PRE_HANDSHAKE_REFUSED,
+};
+use leviculum_ble_link::session::{self, LinkEnd, PeripheralSlot};
 
-pub(crate) static BLE_LINKS_DISPLACED: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(0);
-pub(crate) static BLE_LINKS_REFUSED: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(0);
-pub(crate) static BLE_PRE_HANDSHAKE_REFUSED: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(0);
-
-static DISPLACE_WAKES: [Signal<CriticalSectionRawMutex, u16>; MAX_LINKS] =
-    [const { Signal::new() }; MAX_LINKS];
-
-async fn displaced(slot_index: usize, conn_handle: u16) {
-    let wake = &DISPLACE_WAKES[slot_index];
-    loop {
-        if wake.wait().await == conn_handle {
-            return;
-        }
-    }
-}
-
-async fn link_silent(slot_index: usize) -> LinkEnd {
-    loop {
-        let now_ms = Instant::now().as_millis();
-        match LIVE_PEERS.lock(|peers| peers.borrow().link_verdict(slot_index, now_ms)) {
-            LinkVerdict::Wait(ms) => Timer::after_millis(ms).await,
-            LinkVerdict::Expired(ms) => return LinkEnd::Expired(ms),
-            LinkVerdict::HandshakeOverdue(ms) => return LinkEnd::HandshakeOverdue(ms),
-        }
-    }
-}
-
-enum LinkEnd {
-    Displaced,
-    Expired(u64),
-    HandshakeOverdue(u64),
-}
-
-fn log_link_end(role: &str, slot_index: usize, conn_handle: u16, end: LinkEnd) {
-    match end {
-        LinkEnd::Expired(silence_ms) => crate::log::log_fmt(
-            "[BLE ] ",
-            format_args!(
-                "BLE_LINK_EXPIRE role={} slot={} conn={} silence_ms={}",
-                role, slot_index, conn_handle, silence_ms
-            ),
-        ),
-        LinkEnd::HandshakeOverdue(waited_ms) => crate::log::log_fmt(
-            "[BLE ] ",
-            format_args!(
-                "BLE_HANDSHAKE_TIMEOUT role={} slot={} conn={} waited_ms={}",
-                role, slot_index, conn_handle, waited_ms
-            ),
-        ),
-        LinkEnd::Displaced => {}
-    }
-}
-
-async fn link_over(slot_index: usize, conn_handle: u16) -> LinkEnd {
-    match select(displaced(slot_index, conn_handle), link_silent(slot_index)).await {
-        Either::First(()) => LinkEnd::Displaced,
-        Either::Second(end) => end,
-    }
-}
-
-fn peer_link_up(
-    slot_index: usize,
-    conn_handle: u16,
-    peer: PeerAddr,
-    peer_id: [u8; 16],
-    origin: Origin,
-    att_mtu: u16,
-) -> bool {
-    let peer_value = peer.value;
-    let now_ms = Instant::now().as_millis();
-    let up = LIVE_PEERS.lock(|peers| {
-        peers
-            .borrow_mut()
-            .link_up(slot_index, peer_id, origin, att_mtu, now_ms)
-    });
-    match up {
-        LinkUp::Refused {
-            old_slot,
-            rule,
-            old_silence_ms,
-            old_data_silence_ms,
-            old_usable_mtu,
-            new_usable_mtu,
-        } => {
-            BLE_LINKS_REFUSED.fetch_add(1, Ordering::Relaxed);
-            note_phase_event(PhaseEvent::LinkRefused);
-            let old_conn = super::link_handle_at(old_slot).unwrap_or(u16::MAX);
-            crate::log::log_fmt(
-                "[BLE ] ",
-                format_args!(
-                    "BLE_LINK_DUP peer={:02x}{:02x}{:02x}{:02x} addr={:012x} action=refuse rule={} origin={} old_conn={} new_conn={} old_mtu={} new_mtu={} old_silence_ms={} old_data_silence_ms={}",
-                    peer_id[0], peer_id[1], peer_id[2], peer_id[3],
-                    peer_value, rule.as_str(), origin_str(origin), old_conn, conn_handle,
-                    old_usable_mtu, new_usable_mtu, old_silence_ms,
-                    leviculum_ble_tx::DataSilence(old_data_silence_ms),
-                ),
-            );
-            return false;
-        }
-        LinkUp::Displaced {
-            old_slot,
-            rule,
-            old_silence_ms,
-            old_data_silence_ms,
-            old_usable_mtu,
-            new_usable_mtu,
-        } => {
-            displace_old_link(DisplacedOld {
-                old_slot,
-                new_slot: slot_index,
-                new_conn: conn_handle,
-                peer,
-                peer_id,
-                origin,
-                rule,
-                old_silence_ms,
-                old_data_silence_ms,
-                old_usable_mtu,
-                new_usable_mtu,
-            });
-            let _ = meet_link(&peer_id);
-            note_phase_event(PhaseEvent::LinkDisplaced);
-        }
-        LinkUp::Accepted { first } => {
-            if first {
-                let _ = leviculum_ble_link::deliver(BleLinkEvent::PeerUp {
-                    identity: peer_id,
-                    role: origin.our_role(),
-                });
-            }
-            note_phase_event(PhaseEvent::LinkAccepted(meet_link(&peer_id)));
-        }
-    }
-    true
-}
-
-/// Real payload arrived on the link: the liveness clock and the payload
-/// clock the duplicate rule reads (#360).
-fn note_data(slot_index: usize) {
-    let now_ms = Instant::now().as_millis();
-    LIVE_PEERS.lock(|peers| peers.borrow_mut().note_data(slot_index, now_ms));
-}
-
-fn note_heard(slot_index: usize) {
-    let now_ms = Instant::now().as_millis();
-    LIVE_PEERS.lock(|peers| peers.borrow_mut().note_heard(slot_index, now_ms));
-}
-
-fn origin_str(origin: Origin) -> &'static str {
-    match origin {
-        Origin::Incoming => "incoming",
-        Origin::Outgoing => "outgoing",
-    }
-}
-
-struct DisplacedOld {
-    old_slot: usize,
-    new_slot: usize,
-    new_conn: u16,
-    peer: PeerAddr,
-    peer_id: [u8; 16],
-    origin: Origin,
-    rule: leviculum_ble_tx::DupRule,
-    old_silence_ms: u64,
-    old_data_silence_ms: Option<u64>,
-    old_usable_mtu: u16,
-    new_usable_mtu: u16,
-}
-
-fn displace_old_link(displaced: DisplacedOld) {
-    let DisplacedOld {
-        old_slot,
-        new_slot,
-        new_conn,
-        peer,
-        peer_id,
-        origin,
-        rule,
-        old_silence_ms,
-        old_data_silence_ms,
-        old_usable_mtu,
-        new_usable_mtu,
-    } = displaced;
-    let peer_value = peer.value;
-    let old_conn = super::link_handle_at(old_slot).unwrap_or(u16::MAX);
+/// The backend's half of a displacement (session::peer_link_up): move
+/// the old slot's queued packets onto the new link's queue, answering
+/// (moved, dropped) for the BLE_LINK_REPLACED line.
+fn move_queued(old_slot: usize, new_slot: usize) -> (usize, usize) {
     let old_queue = super::link_out(old_slot);
     let new_queue = super::link_out(new_slot);
     let mut moved = 0usize;
@@ -1003,53 +754,13 @@ fn displace_old_link(displaced: DisplacedOld) {
             dropped += 1;
         }
     }
-    BLE_LINKS_DISPLACED.fetch_add(1, Ordering::Relaxed);
-    note_peer_leave(&peer_id, peer, "replaced");
-    crate::log::log_fmt(
-        "[BLE ] ",
-        format_args!(
-            "BLE_LINK_REPLACED peer={:02x}{:02x}{:02x}{:02x} addr={:012x} rule={} origin={} old_conn={} new_conn={} old_mtu={} new_mtu={} old_silence_ms={} old_data_silence_ms={} moved={} dropped={}",
-            peer_id[0], peer_id[1], peer_id[2], peer_id[3],
-            peer_value, rule.as_str(), origin_str(origin), old_conn, new_conn,
-            old_usable_mtu, new_usable_mtu, old_silence_ms,
-            leviculum_ble_tx::DataSilence(old_data_silence_ms), moved, dropped,
-        ),
-    );
-    DISPLACE_WAKES[old_slot].signal(old_conn);
+    (moved, dropped)
 }
 
-fn peer_link_down(slot_index: usize) {
-    let lost = LIVE_PEERS.lock(|peers| peers.borrow_mut().link_down(slot_index));
-    if let Some((identity, origin)) = lost {
-        let _ = leviculum_ble_link::deliver(BleLinkEvent::PeerLost {
-            identity,
-            role: origin.our_role(),
-        });
-    }
-}
-
-fn conn_link_up(slot_index: usize, peer: PeerAddr) {
-    let now_ms = Instant::now().as_millis();
-    LIVE_PEERS.lock(|peers| peers.borrow_mut().conn_up(slot_index, peer.value, now_ms));
-    let neighbour = PHASE_NEIGHBOURS.lock(|seen| seen.borrow_mut().meet_conn(peer));
-    note_phase_event(PhaseEvent::ConnUp(neighbour));
-}
-
-fn conn_link_down(slot_index: usize) {
-    LIVE_PEERS.lock(|peers| peers.borrow_mut().conn_down(slot_index));
-    note_phase_event(PhaseEvent::ConnDown);
-}
-
-fn meet_link(identity: &[u8; 16]) -> leviculum_ble_tx::Neighbour {
-    PHASE_NEIGHBOURS.lock(|seen| seen.borrow_mut().meet_link(identity))
-}
-
-pub(crate) fn live_peer_count() -> usize {
-    LIVE_PEERS.lock(|peers| peers.borrow().peer_count())
-}
-
+/// Map the core's link statement onto link slots (the fan-out's one
+/// question, asked by `TroubleLink::send`).
 pub(crate) fn plan_fanout(aim: leviculum_ble_tx::TxAim) -> leviculum_ble_tx::TxFanout {
-    LIVE_PEERS.lock(|peers| leviculum_ble_tx::plan_fanout(&peers.borrow(), aim))
+    session::plan_fanout(aim)
 }
 
 // --- The central half: scan, decide, initiate ---
@@ -1134,205 +845,6 @@ impl EventHandler for Reports {
     }
 }
 
-static SCAN_PHASE: BlockingMutex<CriticalSectionRawMutex, Cell<ScanPhase>> =
-    BlockingMutex::new(Cell::new(ScanPhase::new()));
-static PHASE_NEIGHBOURS: BlockingMutex<
-    CriticalSectionRawMutex,
-    RefCell<PhaseNeighbours<PHASE_NEIGHBOUR_SLOTS>>,
-> = BlockingMutex::new(RefCell::new(PhaseNeighbours::new()));
-const _: () = assert!(PHASE_NEIGHBOUR_SLOTS == MAX_LINKS + DEAD_END_SLOTS);
-const _: () = assert!(DEAD_END_SLOTS == 2 * MAX_LINKS);
-
-fn note_phase_event(event: PhaseEvent) {
-    let now_ms = Instant::now().as_millis();
-    SCAN_PHASE.lock(|clock| {
-        let mut phase = clock.get();
-        phase.note(event, now_ms);
-        clock.set(phase);
-    });
-}
-
-fn scan_mode_now() -> ScanMode {
-    let now_ms = Instant::now().as_millis();
-    let poll = SCAN_PHASE.lock(|clock| {
-        let mut phase = clock.get();
-        let poll = phase.poll(now_ms);
-        clock.set(phase);
-        poll
-    });
-    if let Some(elapsed_ms) = poll.announce_ms {
-        PHASE_NEIGHBOURS.lock(|seen| seen.borrow_mut().clear());
-        crate::log::log_fmt(
-            "[BLE ] ",
-            format_args!("BLE_SCAN_FALLBACK after_ms={elapsed_ms}"),
-        );
-    }
-    poll.mode
-}
-
-static DEAD_ENDS: BlockingMutex<CriticalSectionRawMutex, RefCell<DeadEnds>> =
-    BlockingMutex::new(RefCell::new(DeadEnds::new()));
-static DIAL_BACKOFF: BlockingMutex<
-    CriticalSectionRawMutex,
-    RefCell<DialBackoff<DIAL_BACKOFF_SLOTS>>,
-> = BlockingMutex::new(RefCell::new(DialBackoff::new()));
-static DIAL_LEDGER: BlockingMutex<CriticalSectionRawMutex, Cell<DialLedger>> =
-    BlockingMutex::new(Cell::new(DialLedger::new()));
-static CHURN_LEDGER: BlockingMutex<CriticalSectionRawMutex, Cell<ChurnLedger>> =
-    BlockingMutex::new(Cell::new(ChurnLedger::new()));
-const LEDGER_POLICY: LedgerPolicy = LedgerPolicy::MEASURED;
-const CHURN_POLICY: ChurnPolicy = ChurnPolicy::MEASURED;
-static DIAL_HELD_LOGGED_FOR: BlockingMutex<CriticalSectionRawMutex, Cell<Option<u64>>> =
-    BlockingMutex::new(Cell::new(None));
-static CHURN_HELD_LOGGED_FOR: BlockingMutex<CriticalSectionRawMutex, Cell<Option<u64>>> =
-    BlockingMutex::new(Cell::new(None));
-
-fn note_dead_end(addr: u64, reason: &str) {
-    let now_ms = Instant::now().as_millis();
-    DEAD_ENDS.lock(|table| table.borrow_mut().note(addr, now_ms));
-    crate::log::log_fmt(
-        "[BLE ] ",
-        format_args!(
-            "BLE_DIAL_DEAD_END addr={addr:012x} reason={reason} ttl_s={}",
-            DEAD_END_TTL_MS / 1_000
-        ),
-    );
-}
-
-fn note_dial_failure(addr: u64, failure: DialFailure) {
-    let now_ms = Instant::now().as_millis();
-    let booked = DIAL_BACKOFF.lock(|b| b.borrow_mut().note_failure(addr, failure, now_ms));
-    crate::log::log_fmt(
-        "[BLE ] ",
-        format_args!(
-            "BLE_DIAL_BACKOFF addr={addr:012x} failure={} strikes={} backoff_ms={} until_ms={}",
-            failure.as_str(),
-            booked.strikes,
-            booked.until_ms.saturating_sub(now_ms),
-            booked.until_ms,
-        ),
-    );
-}
-
-fn note_dial_success(addr: u64) {
-    DIAL_BACKOFF.lock(|b| b.borrow_mut().note_success(addr));
-}
-
-fn note_dial_outcome(peer_id: &[u8; 16], session_ms: Option<u64>, reason: &str) {
-    let now_ms = Instant::now().as_millis();
-    let noted = DIAL_LEDGER.lock(|cell| {
-        let mut ledger = cell.get();
-        let noted = ledger.note(LEDGER_POLICY, peer_id, session_ms, now_ms);
-        cell.set(ledger);
-        noted
-    });
-    if noted.armed {
-        crate::log::log_fmt(
-            "[BLE ] ",
-            format_args!(
-                "BLE_DIAL_LEDGER armed identity={:02x}{:02x}{:02x}{:02x} run={} reason={} session_ms={} pause_ms={}",
-                peer_id[0], peer_id[1], peer_id[2], peer_id[3], noted.run, reason,
-                SessionLen(session_ms), LEDGER_POLICY.pause_ms,
-            ),
-        );
-    }
-}
-
-fn note_peer_leave(peer_id: &[u8; 16], peer: PeerAddr, reason: &str) {
-    let now_ms = Instant::now().as_millis();
-    let noted = CHURN_LEDGER.lock(|cell| {
-        let mut ledger = cell.get();
-        let noted = ledger.note_departure(CHURN_POLICY, peer, peer_id, now_ms);
-        cell.set(ledger);
-        noted
-    });
-    if let Some(noted) = noted.filter(|noted| noted.armed) {
-        crate::log::log_fmt(
-            "[BLE ] ",
-            format_args!(
-                "BLE_CHURN_LEDGER armed identity={:02x}{:02x}{:02x}{:02x} run={} reason={} window_ms={} cooldown_ms={}",
-                peer_id[0], peer_id[1], peer_id[2], peer_id[3], noted.run, reason,
-                CHURN_POLICY.window_ms, CHURN_POLICY.cooldown_ms,
-            ),
-        );
-    }
-}
-
-fn log_dial_held(until_ms: u64, now_ms: u64) {
-    let fresh = DIAL_HELD_LOGGED_FOR.lock(|cell| {
-        if cell.get() == Some(until_ms) {
-            return false;
-        }
-        cell.set(Some(until_ms));
-        true
-    });
-    if fresh {
-        crate::log::log_fmt(
-            "[BLE ] ",
-            format_args!(
-                "BLE_DIAL_LEDGER held run={} until_ms={} now_ms={}",
-                LEDGER_POLICY.wasted_run, until_ms, now_ms
-            ),
-        );
-    }
-}
-
-fn log_churn_held(until_ms: u64, now_ms: u64) {
-    let fresh = CHURN_HELD_LOGGED_FOR.lock(|cell| {
-        if cell.get() == Some(until_ms) {
-            return false;
-        }
-        cell.set(Some(until_ms));
-        true
-    });
-    if fresh {
-        crate::log::log_fmt(
-            "[BLE ] ",
-            format_args!(
-                "BLE_CHURN_LEDGER held run={} until_ms={} now_ms={}",
-                CHURN_POLICY.leave_run, until_ms, now_ms
-            ),
-        );
-    }
-}
-
-struct SessionLen(Option<u64>);
-
-impl core::fmt::Display for SessionLen {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self.0 {
-            Some(ms) => write!(f, "{ms}"),
-            None => f.write_str("refused"),
-        }
-    }
-}
-
-struct IdentityHint(Option<[u8; IDENTITY_HINT_LEN]>);
-
-impl core::fmt::Display for IdentityHint {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self.0 {
-            Some(hint) => write!(
-                f,
-                "{:02x}{:02x}{:02x}{:02x}",
-                hint[0], hint[1], hint[2], hint[3]
-            ),
-            None => f.write_str("unknown"),
-        }
-    }
-}
-
-struct FreeSlots(Option<u8>);
-
-impl core::fmt::Display for FreeSlots {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self.0 {
-            Some(free) => write!(f, "{free}"),
-            None => f.write_str("unknown"),
-        }
-    }
-}
-
 /// Scan until one advertisement wins an initiate decision, keep
 /// collecting for one window, then return the best candidate.
 async fn find_peer_to_initiate<T: HciTransport>(
@@ -1371,30 +883,18 @@ async fn find_peer_to_initiate<T: HciTransport>(
             identity_hint: parsed.identity_hint,
         };
         let peer_value = adv.addr.value;
-        let mode = scan_mode_now();
+        let mode = session::scan_mode_now();
         let now_ms = Instant::now().as_millis();
-        let held = DIAL_BACKOFF.lock(|b| b.borrow_mut().sighted(peer_value, now_ms));
-        let dial = DIAL_LEDGER.lock(Cell::get);
-        let churn = CHURN_LEDGER.lock(Cell::get);
-        let admission = LIVE_PEERS.lock(|peers| {
-            DEAD_ENDS.lock(|dead| {
-                admit(
-                    Local {
-                        caps: LOCAL_CAPS,
-                        addr: own_addr_value,
-                    },
-                    &adv,
-                    mode,
-                    &peers.borrow(),
-                    &dead.borrow(),
-                    Ledgers {
-                        dial: &dial,
-                        churn: &churn,
-                    },
-                    now_ms,
-                )
-            })
-        });
+        let held = session::backoff_sighted(peer_value, now_ms);
+        let admission = session::admit_scan(
+            Local {
+                caps: LOCAL_CAPS,
+                addr: own_addr_value,
+            },
+            &adv,
+            mode,
+            now_ms,
+        );
         let decision = admission.decision;
         let free_slots = parsed.free_slots();
         if last_logged != Some((peer_value, decision)) {
@@ -1406,8 +906,8 @@ async fn find_peer_to_initiate<T: HciTransport>(
                     peer_value,
                     u8::from(parsed.caps.is_some()),
                     parsed.caps.unwrap_or(0),
-                    FreeSlots(free_slots),
-                    IdentityHint(parsed.identity_hint),
+                    session::FreeSlots(free_slots),
+                    session::IdentityHint(parsed.identity_hint),
                     decision.as_str(),
                     dial_preference(decision, free_slots).as_str(),
                     u8::from(decision.initiate()),
@@ -1415,15 +915,13 @@ async fn find_peer_to_initiate<T: HciTransport>(
             );
         }
         match admission.outcome {
-            Ok(()) if held.is_some() => {
-                if let Some(hold) =
-                    DIAL_BACKOFF.lock(|b| b.borrow_mut().announce(peer_value, now_ms))
-                {
+            Ok(()) if held => {
+                if let Some(hold) = session::backoff_announce(peer_value, now_ms) {
                     crate::log::log_fmt(
                         "[BLE ] ",
                         format_args!(
                             "BLE_SCAN_DECISION addr={:012x} hint={} rule=backoff until_ms={} in_ms={} strikes={} initiate=0",
-                            peer_value, IdentityHint(parsed.identity_hint), hold.until_ms,
+                            peer_value, session::IdentityHint(parsed.identity_hint), hold.until_ms,
                             hold.until_ms.saturating_sub(now_ms), hold.strikes,
                         ),
                     );
@@ -1432,16 +930,16 @@ async fn find_peer_to_initiate<T: HciTransport>(
             }
             // The address that refused our last dial sits one advertising
             // interval out (815), as on the nRF.
-            Ok(()) if SCAN_PHASE.lock(|clock| clock.get().skips(peer_value, now_ms)) => {
+            Ok(()) if session::phase_skips(peer_value, now_ms) => {
                 return false;
             }
             Ok(()) => {}
             Err(Exclusion::LedgerHeld { until_ms }) => {
-                log_dial_held(until_ms, now_ms);
+                session::log_dial_held(until_ms, now_ms);
                 return false;
             }
             Err(Exclusion::ChurnHeld { until_ms }) => {
-                log_churn_held(until_ms, now_ms);
+                session::log_churn_held(until_ms, now_ms);
                 return false;
             }
             Err(
@@ -1516,7 +1014,7 @@ async fn central_link<T: HciTransport>(
                 ),
             );
             if connect_failure_condemns(decision) {
-                note_dead_end(peer_value, "fallback_connect");
+                session::note_dead_end(peer_value, "fallback_connect");
             }
             return Some(DialFailure::Transport);
         }
@@ -1543,7 +1041,7 @@ async fn central_link<T: HciTransport>(
     // packets into this slot. The drain claim is also its sole owner.
     let outgoing_rx = super::link_out(slot_index).receiver();
     while outgoing_rx.try_receive().is_ok() {}
-    conn_link_up(slot_index, typed_peer);
+    session::conn_link_up(slot_index, typed_peer);
     let session_from: Cell<Option<Instant>> = Cell::new(None);
     let link_peer: Cell<Option<[u8; 16]>> = Cell::new(None);
     let down: Cell<Option<u8>> = Cell::new(None);
@@ -1649,19 +1147,20 @@ async fn central_link<T: HciTransport>(
                 "[BLE ] ",
                 format_args!("BLE_LINK_SELF addr={peer_value:012x} action=disconnect"),
             );
-            note_dead_end(peer_value, "self_link");
+            session::note_dead_end(peer_value, "self_link");
             return None;
         }
-        if !peer_link_up(
+        if !session::peer_link_up(
             slot_index,
             conn_handle,
             typed_peer,
             peer_id,
             Origin::Outgoing,
             conn.att_mtu(),
+            move_queued,
         ) {
-            note_dead_end(peer_value, "dup_refused");
-            note_dial_outcome(&peer_id, None, "dup_refused_outgoing");
+            session::note_dead_end(peer_value, "dup_refused");
+            session::note_dial_outcome(&peer_id, None, "dup_refused_outgoing");
             return None;
         }
         link_peer.set(Some(peer_id));
@@ -1690,7 +1189,7 @@ async fn central_link<T: HciTransport>(
             }
         },
         super::carrier_off(CarrierWaiter::Session(slot_index)),
-        link_over(slot_index, conn_handle),
+        session::link_over(slot_index, conn_handle),
     )
     .await
     {
@@ -1705,11 +1204,11 @@ async fn central_link<T: HciTransport>(
         Either3::Third(end) => {
             if matches!(end, LinkEnd::Expired(_)) {
                 if let Some(peer_id) = link_peer.get() {
-                    note_peer_leave(&peer_id, typed_peer, "expiry_central");
+                    session::note_peer_leave(&peer_id, typed_peer, "expiry_central");
                 }
             }
             let overdue = matches!(end, LinkEnd::HandshakeOverdue(_));
-            log_link_end("central", slot_index, conn_handle, end);
+            session::log_link_end("central", slot_index, conn_handle, &end);
             overdue.then_some(DialFailure::NoHandshake)
         }
     };
@@ -1727,7 +1226,7 @@ async fn central_link<T: HciTransport>(
     if let (Some(peer_id), Some(from)) = (link_peer.get(), session_from.get()) {
         let session_ms = from.elapsed().as_millis();
         lived_ms = Some(session_ms);
-        note_dial_outcome(&peer_id, Some(session_ms), "session_end");
+        session::note_dial_outcome(&peer_id, Some(session_ms), "session_end");
         crate::log::log_fmt(
             "[BLE ] ",
             format_args!(
@@ -1736,13 +1235,13 @@ async fn central_link<T: HciTransport>(
             ),
         );
     }
-    peer_link_down(slot_index);
-    conn_link_down(slot_index);
+    session::peer_link_down(slot_index);
+    session::conn_link_down(slot_index);
     // A dial the peer refused buys one advertising interval, not a whole
     // strict-phase bound (815, lnsd's 810).
     if let Some(lived_ms) = lived_ms {
         if refused_dial(Origin::Outgoing, heard.get(), lived_ms) {
-            note_dial_refused(peer_value, lived_ms);
+            session::note_dial_refused(peer_value, lived_ms);
         }
     }
     super::TX_DRAIN.release(conn_handle);
@@ -1774,27 +1273,6 @@ async fn serve_peer_requests(
     }
 }
 
-/// Our dial at `peer_value` ended in the peer's refusal ([`refused_dial`]):
-/// the strict phase lasts one advertising interval from now and the address
-/// sits it out ([`ScanPhase::note_refused`]).
-fn note_dial_refused(peer_value: u64, lived_ms: u64) {
-    let now_ms = Instant::now().as_millis();
-    SCAN_PHASE.lock(|clock| {
-        let mut phase = clock.get();
-        phase.note_refused(peer_value, now_ms);
-        clock.set(phase);
-    });
-    crate::log::log_fmt(
-        "[BLE ] ",
-        format_args!(
-            "{}",
-            DialRefusedLine {
-                addr: peer_value,
-                lived_ms,
-            }
-        ),
-    );
-}
 
 fn stage_failure<E>(stage: DialStage, error: &BleHostError<E>) -> DialFailure {
     let error = match error {
@@ -1872,8 +1350,8 @@ async fn run_central_session<T: HciTransport>(
             Err(_) => return Some(DialFailure::NoHandshake),
         }
         handshaked.set(true);
-        note_dial_success(peer_value);
-        note_heard(slot_index);
+        session::note_dial_success(peer_value);
+        session::note_heard(slot_index);
         last_keepalive.set(Instant::now());
         crate::log::log_fmt(
             "[BLE ] ",
@@ -1893,13 +1371,13 @@ async fn run_central_session<T: HciTransport>(
                 let data = notification.as_ref();
                 heard.set(true);
                 if data.len() < FRAGMENT_HEADER_SIZE {
-                    note_heard(slot_index);
+                    session::note_heard(slot_index);
                     continue;
                 }
-                note_data(slot_index);
+                session::note_data(slot_index);
                 let now = Instant::now().as_millis();
                 let mut d = defrag.replace(BleDefragmenter::new(super::REASSEMBLY_LIMITS));
-                let result = process_logged(&mut d, data, now, slot_index);
+                let result = session::process_logged(&mut d, data, now, slot_index);
                 let frags = d.last_completed_fragments();
                 defrag.set(d);
                 if let DefragResult::Complete(packet) = result {
@@ -1917,7 +1395,7 @@ async fn run_central_session<T: HciTransport>(
                     Timer::at(last_keepalive.get() + Duration::from_millis(KEEPALIVE_INTERVAL_MS));
                 match select(outgoing_rx.receive(), keepalive_deadline).await {
                     Either::First(packet) => {
-                        serve_tx_gap(&tx_gap, conn_handle).await;
+                        session::serve_tx_gap(&tx_gap, conn_handle).await;
                         let fragments =
                             ble_framing::fragment_packet(&packet, fragment_mtu(conn.att_mtu()));
                         if !write_fragments(
@@ -1999,7 +1477,7 @@ pub async fn central<T: HciTransport>(
         .await
         {
             Either::First(Ok(Some((peer, decision, seen)))) => {
-                note_phase_event(if decision == ConnectDecision::InitiateFallback {
+                session::note_phase_event(if decision == ConnectDecision::InitiateFallback {
                     PhaseEvent::FallbackTarget
                 } else {
                     PhaseEvent::StrictTarget
@@ -2021,7 +1499,7 @@ pub async fn central<T: HciTransport>(
                 if let Some(failure) =
                     central_link(stack, server, &identity_hash, peer, decision).await
                 {
-                    note_dial_failure(peer_value, failure);
+                    session::note_dial_failure(peer_value, failure);
                 }
                 ScanPass::Dialled
             }

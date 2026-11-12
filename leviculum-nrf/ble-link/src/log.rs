@@ -44,7 +44,10 @@ pub(crate) fn log_fmt(prefix: &'static str, args: core::fmt::Arguments<'_>) {
     }
 }
 
-#[allow(dead_code)] // the session module (condition 2 of 1715) takes it below
+/// For a line that must reach the boot scrollback. No line in this
+/// crate needs it today; the level exists so an embedder's sink match
+/// is complete and a future boot-critical line costs no API change.
+#[allow(dead_code)]
 pub(crate) fn log_fmt_critical(prefix: &'static str, args: core::fmt::Arguments<'_>) {
     if let Some(sink) = SINK.lock(|cell| cell.get()) {
         sink(prefix, args, Level::Critical);
