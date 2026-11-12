@@ -905,8 +905,8 @@ falls from 5.9:1 to 4.3:1.
 
 1. `--no-color`, or `NO_COLOR` set and not empty: monochrome.
 2. `--color truecolor|256|16`: that tier. `lnomad` had the flag with two
-   values (`lnomad/src/main.rs:65`); `loquax` has it now
-   (`loquax/src/main.rs:454`), and both have `16`.
+   values (`lnomad/src/main.rs:75`); `loquax` has it now
+   (`loquax/src/main.rs:464`), and both have `16`.
 3. `COLORTERM` is `truecolor` or `24bit`: truecolor (the rule
    `resolve_depth` had before 1042).
 4. `TERM` contains `256color`: 256. `xterm-256color`, `tmux-256color` and
@@ -949,7 +949,7 @@ first rung it is.
   (`loquax/src/config.rs:367`, which holds `key = value` lines), `auto` the
   default;
 - `--theme auto|dark|light` on the command line over the key, as `lnomad`
-  has it (`lnomad/src/main.rs:57`);
+  has it (`lnomad/src/main.rs:67`);
 - a terminal that does not answer in time and sets no `COLORFGBG` gives
   dark, as in `lnomad`;
 - a palette action `theme` toggles for the session, the way `t` calls

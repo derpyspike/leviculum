@@ -20,6 +20,7 @@
 //! `--via propagated` return so a script can tell the two successes apart
 //! (`loquax/src/send.rs`, `EXIT_PROPAGATED`).
 
+mod alloc_probe;
 #[cfg(any(feature = "tui", feature = "gui"))]
 mod browsing;
 mod cpu;
@@ -183,6 +184,15 @@ enum SubCommand {
     #[cfg(feature = "tui")]
     #[command(subcommand, alias = "home")]
     Mailbox(MailboxCommand),
+    /// The mailbox's cross-thread allocation pattern against this binary's
+    /// allocator, printing the resident set before and after (1750;
+    /// `src/alloc_probe.rs`). For the retention test, not for people.
+    #[command(hide = true)]
+    AllocProbe {
+        /// Batches to allocate on one thread and free on another.
+        #[arg(long, default_value_t = 20_000)]
+        rounds: u32,
+    },
 }
 
 /// The phones' port of a mailbox on its own node (1354): where a daemon's
@@ -1134,16 +1144,54 @@ fn gui_args(args: &Args) -> GuiArgs {
 
 /// Measured live heap for the mailbox census, under the default-off
 /// `heap-accounting` feature (order 1585): lnpnd's shim
-/// (`lnpnd/src/main.rs`), counting and forwarding to `System`.
-#[cfg(feature = "heap-accounting")]
+/// (`lnpnd/src/main.rs`), counting and forwarding to `System` when the
+/// build has no mimalloc.
+#[cfg(all(
+    feature = "heap-accounting",
+    not(all(feature = "alloc-mimalloc", not(target_os = "android")))
+))]
 #[global_allocator]
 static ALLOC: leviculum_std::heap_accounting::CountingAllocator =
     leviculum_std::heap_accounting::CountingAllocator;
+
+/// mimalloc, under the default `alloc-mimalloc` feature, as lnsd and lnpnd
+/// run it (1750). Built by cargo zigbuild for a musl triple, loquax ran on
+/// Zig's libc malloc, whose SmpAllocator never returns a slab and parks a
+/// free from another thread on that thread's list: the mailbox on miauhaus
+/// held 68.5 MB on free lists over 9 MB live six minutes after a restart.
+/// Counted, in the same shim, under `heap-accounting`. Not on Android, where
+/// the dependency is not built and bionic's allocator serves the process.
+#[cfg(all(
+    feature = "heap-accounting",
+    feature = "alloc-mimalloc",
+    not(target_os = "android")
+))]
+#[global_allocator]
+static ALLOC: leviculum_std::heap_accounting::CountingOver<mimalloc::MiMalloc> =
+    leviculum_std::heap_accounting::CountingOver(mimalloc::MiMalloc);
+
+#[cfg(all(
+    not(feature = "heap-accounting"),
+    feature = "alloc-mimalloc",
+    not(target_os = "android")
+))]
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+/// The allocator this build installed, for `alloc-probe` and the mailbox's
+/// startup line; read by the retention test and by `check-allocator.py`
+/// off the bytes.
+#[cfg(all(feature = "alloc-mimalloc", not(target_os = "android")))]
+const ALLOCATOR: &str = "mimalloc";
+#[cfg(not(all(feature = "alloc-mimalloc", not(target_os = "android"))))]
+const ALLOCATOR: &str = "system";
 
 /// The starter first (1469): on an x86-64-v3 CPU the packaged baseline
 /// build hands the process to the v3 build before a thread or a runtime
 /// exists ([`cpu`]); everything else is [`messenger`].
 fn main() -> ExitCode {
+    // Before the heap grows: mimalloc on a kernel with THP `always` (1750).
+    leviculum_std::proc_memory::decline_huge_pages();
     cpu::start();
     messenger()
 }
@@ -1221,6 +1269,7 @@ async fn messenger() -> ExitCode {
         SubCommand::Announce(args) => run_announce(args).await,
         SubCommand::Fetch(fetch) => run_fetch_command(fetch).await,
         SubCommand::Address => run_address(),
+        SubCommand::AllocProbe { rounds } => alloc_probe::run(ALLOCATOR, rounds),
         #[cfg(feature = "history")]
         SubCommand::Import(import) => run_import(import),
         #[cfg(feature = "history")]
@@ -2105,6 +2154,9 @@ async fn run_daemon(args: RunArgs) -> ExitCode {
     // The journal under systemd: loquax's own lines (archived, admitted,
     // refused) and every warning. `RUST_LOG` replaces the filter.
     leviculum_std::event_log::install_global_subscriber("warn,loquax=info");
+    // As lnsd and lnpnd say theirs: which allocator holds the mailbox's heap
+    // is the first question a resident set nobody can account for asks.
+    tracing::info!("Allocator: {ALLOCATOR}");
     let home = match identity::home_dir() {
         Ok(home) => home,
         Err(error) => return failure(error, "no-home"),

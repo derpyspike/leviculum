@@ -158,7 +158,17 @@ restart-after-upgrade = true
 # `just loquax-core-no-std` checks it for the firmware target
 # (docs/src/concepts/loquax-architecture.md, "the core must not know it has a
 # terminal"). Green since 993, and in `just guards`.
-default = ["std"]
+default = ["std", "alloc-mimalloc"]
+# The binary's allocator, as lnsd's (leviculum-cli/Cargo.toml, #437). Built by
+# cargo zigbuild for a musl triple (the arm64 and armhf terminal builds and the
+# static tarballs) loquax ran on Zig's libc malloc, whose SmpAllocator never
+# returns a 64-KiB slab and parks a free from another thread on that thread's
+# list: the mailbox on miauhaus held 68.5 MB on free lists over 9 MB live six
+# minutes after a restart and 1.2 GB after 37 h (1750). The glibc desktop
+# build takes it too, so the window and the mailbox run one allocator on
+# every Linux. Android keeps bionic's (the dependency is not built there);
+# the library crates that leave the defaults (the boards) never see it.
+alloc-mimalloc = ["std", "dep:mimalloc"]
 std = [
     "dep:leviculum-std",
     "dep:clap",
@@ -397,6 +407,12 @@ rand_core.workspace = true
 # decodes it into; the mailbox rule reads it to tell a node on this device
 # from one elsewhere.
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
+
+# `alloc-mimalloc` only, a default feature; see it. Not on Android, where the
+# app is a library inside the JVM's process and bionic's allocator serves it.
+# The same line as lnsd's, so the workspace links one mimalloc.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+mimalloc = { version = "0.1", optional = true, default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

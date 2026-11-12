@@ -90,6 +90,9 @@ heap-accounting = ["leviculum-std/heap-accounting"]
 # by musl's mallocng under ~26 000 allocations a second. With
 # `heap-accounting` as well, the counting shim wraps mimalloc
 # (`heap_accounting::CountingOver`), so the census still reports live bytes.
+# Every other packaged tool of this crate installs it too since 1750: built
+# by cargo zigbuild for a musl triple, a binary without it runs on Zig's libc
+# malloc, which keeps every slab (scripts/check-allocator.py).
 alloc-mimalloc = ["dep:mimalloc"]
 
 [dependencies]

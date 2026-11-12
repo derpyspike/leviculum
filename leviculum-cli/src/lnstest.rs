@@ -3,6 +3,15 @@
 //! This provides various utility commands for interacting with Reticulum.
 //! Equivalent to rnstatus, rnpath, etc. in the Python implementation.
 
+/// mimalloc, as lnsd has it (`src/lnsd.rs`, #437), under the same default
+/// `alloc-mimalloc` feature: built by cargo zigbuild for a musl triple (the
+/// arm64 and armhf packages) this binary would otherwise run on Zig's libc
+/// malloc, whose SmpAllocator never returns a slab and strands every
+/// cross-thread free (1750). `scripts/check-allocator.py` holds the list.
+#[cfg(feature = "alloc-mimalloc")]
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::net::SocketAddr;
@@ -1028,8 +1037,17 @@ async fn event_loop(mut event_rx: EventReceiver, state: Arc<Mutex<SessionState>>
     }
 }
 
+/// Huge pages off before the runtime's worker threads first touch the heap
+/// (1750): `#[tokio::main]` builds the runtime ahead of `main`'s first line,
+/// which measured 11.6 MB resident for `lnsd --version` where the same
+/// switch before the runtime gave 7.9 MB.
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    leviculum_std::proc_memory::decline_huge_pages();
+    tokio_main()
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn tokio_main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // Initialize logging: RUST_LOG env takes precedence, then -v flag.

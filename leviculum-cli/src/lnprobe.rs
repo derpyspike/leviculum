@@ -6,6 +6,15 @@
 //! sends probe packets and reports round-trip time and hop count from
 //! the delivery proofs the probed destination returns.
 
+/// mimalloc, as lnsd has it (`src/lnsd.rs`, #437), under the same default
+/// `alloc-mimalloc` feature: built by cargo zigbuild for a musl triple (the
+/// arm64 and armhf packages) this binary would otherwise run on Zig's libc
+/// malloc, whose SmpAllocator never returns a slab and strands every
+/// cross-thread free (1750). `scripts/check-allocator.py` holds the list.
+#[cfg(feature = "alloc-mimalloc")]
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -112,6 +121,8 @@ fn log_filter(verbose: u8) -> &'static str {
 }
 
 fn main() {
+    // Before the heap grows: mimalloc on a kernel with THP `always` (1750).
+    leviculum_std::proc_memory::decline_huge_pages();
     let args = Args::parse();
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,

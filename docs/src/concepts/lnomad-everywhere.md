@@ -610,7 +610,7 @@ desktop's colour scheme on Linux and a screenshot over a live node.
 - **`leviculum-micron` is `no_std` always** (`leviculum-micron/src/lib.rs:25`):
   a parser has no use for a file or a clock, and its `std` paths were
   `BTreeMap`, `Cow` and `mem::take`.
-- **lnomad has a default `std` feature** (`lnomad/Cargo.toml:78`;
+- **lnomad has a default `std` feature** (`lnomad/Cargo.toml:83`;
   `lnomad/src/lib.rs:36`), and `ble`, `serial`, `tui` and `gui` imply it.
   Behind it: the modules `fetch`, `browser`, `transfer`, `cli` and
   `identify`; the file halves of `download` (the metadata name, the

@@ -247,8 +247,17 @@ fn failure(message: impl std::fmt::Display) -> ExitCode {
     ExitCode::FAILURE
 }
 
+/// Huge pages off before the runtime's worker threads first touch the heap
+/// (1750): `#[tokio::main]` builds the runtime ahead of `main`'s first line,
+/// which measured 11.6 MB resident for `lnsd --version` where the same
+/// switch before the runtime gave 7.9 MB.
+fn main() -> ExitCode {
+    leviculum_std::proc_memory::decline_huge_pages();
+    tokio_main()
+}
+
 #[tokio::main]
-async fn main() -> ExitCode {
+async fn tokio_main() -> ExitCode {
     let args = Args::parse();
 
     if args.exampleconfig {

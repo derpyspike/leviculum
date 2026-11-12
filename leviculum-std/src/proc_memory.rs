@@ -535,6 +535,47 @@ pub fn host_ram_bytes() -> Option<u64> {
         .and_then(parse_mem_total)
 }
 
+/// Turns transparent huge pages off for this process, before its heap
+/// grows (1750). Called first thing in `main` by every shipped binary that
+/// runs mimalloc.
+///
+/// mimalloc commits the start of its arena eagerly, and on a kernel whose
+/// `transparent_hugepage/enabled` is `always` the first touch of that
+/// region faults a whole 2-MiB page in where a 4-KiB one was asked for: a
+/// zigbuild loquax on mimalloc sat at 12.1 MB resident before its first
+/// round of `alloc-probe` and 8.7 MB peak for `--version`, against 4.1 MB
+/// and 2.8 MB on the libc allocator, and at 4.7 MB with mimalloc's
+/// `MIMALLOC_ALLOW_THP=0` (measured 2026-11-12 on schneckenschreck, THP
+/// `always`). That option is read from the environment once, when mimalloc
+/// starts, which a unit file can set and a desktop launch cannot; the
+/// process flag it sets, `PR_SET_THP_DISABLE`, is what this sets, and it
+/// covers every fault from here on. A small daemon gains nothing a huge
+/// page buys and pays megabytes per process for it.
+///
+/// Returns whether the kernel took it; a kernel without the call (before
+/// 3.15) leaves the process as it was, which is the old behaviour.
+#[cfg(target_os = "linux")]
+pub fn decline_huge_pages() -> bool {
+    // SAFETY: PR_SET_THP_DISABLE takes the flag in arg2 and zeros after it;
+    // it touches no memory of this process. glibc's and musl's `prctl` both
+    // read four further `unsigned long`s, so each is passed as one.
+    unsafe {
+        libc::prctl(
+            libc::PR_SET_THP_DISABLE,
+            1 as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+        ) == 0
+    }
+}
+
+/// Elsewhere there is no such flag; the call is a no-op.
+#[cfg(not(target_os = "linux"))]
+pub fn decline_huge_pages() -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
