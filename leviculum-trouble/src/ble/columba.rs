@@ -31,9 +31,9 @@ use leviculum_ble_tx::{
     AdvertisePass, CandidateTable, ConnParams, ConnParamsAsk, ConnParamsLine, ConnParamsReq,
     ConnParamsReqLine, ConnectDecision, DialFailure, DialStage, DisconnectReason, DrainSlot,
     Exclusion, LinkDownLine, LinkPhase, LinkRole, Local, Origin, PeerAddr, PhaseEvent,
-    ReadIdentity, ScanPass, StageError, TxGap, ADV_BYTES_USED, CAP_PERIPHERAL_ONLY,
-    GATT_VALUE_MAX, IDENTITY_HINT_LEN, LEGACY_AD_CAPACITY, MANUFACTURER_DATA_HINT_LEN,
-    PERIPH_SLOTS, SCAN_WINDOW_COLLECT_MS, WINDOW_CANDIDATES,
+    ReadIdentity, ScanPass, StageError, TxGap, ADV_BYTES_USED, CAP_PERIPHERAL_ONLY, GATT_VALUE_MAX,
+    IDENTITY_HINT_LEN, LEGACY_AD_CAPACITY, MANUFACTURER_DATA_HINT_LEN, PERIPH_SLOTS,
+    SCAN_WINDOW_COLLECT_MS, WINDOW_CANDIDATES,
 };
 use leviculum_core::framing::ble::{
     self as ble_framing, BleDefragmenter, DefragResult, FRAGMENT_HEADER_SIZE, KEEPALIVE_BYTE,
@@ -90,7 +90,10 @@ const _: () = assert!(PERIPH_LINKS == PERIPH_SLOTS as usize);
 /// record stays with the flag cleared rather than being dropped; see the
 /// nRF module for why).
 fn capability_record(hint: [u8; IDENTITY_HINT_LEN]) -> [u8; MANUFACTURER_DATA_HINT_LEN] {
-    manufacturer_data_with_hint(with_free_slots(LOCAL_CAPS, session::free_peripheral_slots()), &hint)
+    manufacturer_data_with_hint(
+        with_free_slots(LOCAL_CAPS, session::free_peripheral_slots()),
+        &hint,
+    )
 }
 
 /// The advertising PDU as it stands at this instant: flags, the service
@@ -157,10 +160,7 @@ pub fn start(identity_hash: [u8; 16]) -> Option<(&'static ReticulumServer<'stati
     })) {
         Ok(server) => server,
         Err(e) => {
-            crate::log::log_fmt_critical(
-                "[BLE ] ",
-                format_args!("off reason=gatt err={:?}", e),
-            );
+            crate::log::log_fmt_critical("[BLE ] ", format_args!("off reason=gatt err={:?}", e));
             return None;
         }
     };
@@ -734,10 +734,10 @@ fn on_rx_write(
 
 // --- Link registry (both roles): leviculum_ble_link::session since 1715 ---
 
+use leviculum_ble_link::session::{self, LinkEnd, PeripheralSlot};
 pub(crate) use leviculum_ble_link::session::{
     live_peer_count, BLE_LINKS_DISPLACED, BLE_LINKS_REFUSED, BLE_PRE_HANDSHAKE_REFUSED,
 };
-use leviculum_ble_link::session::{self, LinkEnd, PeripheralSlot};
 
 /// The backend's half of a displacement (session::peer_link_up): move
 /// the old slot's queued packets onto the new link's queue, answering
@@ -1272,7 +1272,6 @@ async fn serve_peer_requests(
         }
     }
 }
-
 
 fn stage_failure<E>(stage: DialStage, error: &BleHostError<E>) -> DialFailure {
     let error = match error {

@@ -24,9 +24,7 @@ use leviculum_feedback::Pattern;
 
 use crate::feedback::Sink;
 
-use crate::seams::{
-    ButtonInput, Clock, ControlPort, Flash, Sensors, Sinks, Transceiver, Watchdog,
-};
+use crate::seams::{ButtonInput, Clock, ControlPort, Flash, Sensors, Sinks, Transceiver, Watchdog};
 
 /// A transceiver backend. Grows a command log and a scripted event queue
 /// when step 3 gives the seam its messages.

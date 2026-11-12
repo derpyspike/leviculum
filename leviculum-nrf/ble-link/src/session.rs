@@ -28,10 +28,10 @@ use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
 use leviculum_ble_tx::{
     admit, Admission, AdvReport, ChurnLedger, ChurnPolicy, DeadEnds, DialBackoff, DialFailure,
-    DialLedger, DialRefusedLine, DupRule, Ledgers, LedgerPolicy, LinkUp, LinkVerdict, Local,
+    DialLedger, DialRefusedLine, DupRule, LedgerPolicy, Ledgers, LinkUp, LinkVerdict, Local,
     Origin, PeerAddr, PeerRegistry, PhaseEvent, PhaseNeighbours, ScanMode, ScanPhase, TxGap,
-    DEAD_END_SLOTS, DEAD_END_TTL_MS, DIAL_BACKOFF_SLOTS, IDENTITY_HINT_LEN,
-    PHASE_NEIGHBOUR_SLOTS, PERIPH_SLOTS,
+    DEAD_END_SLOTS, DEAD_END_TTL_MS, DIAL_BACKOFF_SLOTS, IDENTITY_HINT_LEN, PERIPH_SLOTS,
+    PHASE_NEIGHBOUR_SLOTS,
 };
 use leviculum_core::framing::ble::{BleDefragmenter, DefragResult};
 use leviculum_heap_budget::MAX_LINKS;

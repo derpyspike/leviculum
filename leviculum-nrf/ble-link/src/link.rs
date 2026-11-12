@@ -221,7 +221,8 @@ pub fn tx_gap_ms() -> u16 {
 /// page, the control report and [`BleInterface::is_online`] read, one
 /// that has not presented an identity yet included. The peers behind
 /// those connections are [`LinkTable`]'s.
-pub static TX_DRAIN: leviculum_ble_tx::DrainRouter<MAX_LINKS> = leviculum_ble_tx::DrainRouter::new();
+pub static TX_DRAIN: leviculum_ble_tx::DrainRouter<MAX_LINKS> =
+    leviculum_ble_tx::DrainRouter::new();
 
 /// Last-observed heap bytes held by each link's defragmenter (#388
 /// census). Published by the backend's two inbound paths after every

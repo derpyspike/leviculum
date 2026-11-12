@@ -35,10 +35,10 @@ use leviculum_ble_tx::{
     AdvertisePass, CandidateTable, CarrierPath, CarrierStep, ConnParams, ConnParamsAsk,
     ConnParamsLine, ConnParamsReq, ConnParamsReqLine, ConnectDecision, DialFailure, DialStage,
     DisconnectReason, Enqueue, Exclusion, Fill, GattBytes, LinkDownLine, LinkForgottenLine,
-    LinkItem, LinkPhase, LinkRole, Local, Origin, OversizeFrom, OversizeLine, PeerAddr,
-    PhaseEvent, ReadIdentity, ScanPass, StageError, TxGap, ADV_BYTES_USED, CAP_PERIPHERAL_ONLY,
-    GATT_VALUE_MAX, IDENTITY_HINT_LEN, LEGACY_AD_CAPACITY, MANUFACTURER_DATA_HINT_LEN,
-    PERIPH_SLOTS, SCAN_WINDOW_COLLECT_MS, WINDOW_CANDIDATES,
+    LinkItem, LinkPhase, LinkRole, Local, Origin, OversizeFrom, OversizeLine, PeerAddr, PhaseEvent,
+    ReadIdentity, ScanPass, StageError, TxGap, ADV_BYTES_USED, CAP_PERIPHERAL_ONLY, GATT_VALUE_MAX,
+    IDENTITY_HINT_LEN, LEGACY_AD_CAPACITY, MANUFACTURER_DATA_HINT_LEN, PERIPH_SLOTS,
+    SCAN_WINDOW_COLLECT_MS, WINDOW_CANDIDATES,
 };
 use leviculum_core::framing::ble::{
     self as ble_framing, BleDefragmenter, BleReassemblyLimits, DefragResult, FRAGMENT_HEADER_SIZE,
@@ -263,7 +263,10 @@ const _: () = assert!(super::PERIPH_LINKS == PERIPH_SLOTS as usize);
 /// copy of it to go stale and no order in which this can be called
 /// before it is known.
 fn capability_record(hint: [u8; IDENTITY_HINT_LEN]) -> [u8; MANUFACTURER_DATA_HINT_LEN] {
-    manufacturer_data_with_hint(with_free_slots(LOCAL_CAPS, session::free_peripheral_slots()), &hint)
+    manufacturer_data_with_hint(
+        with_free_slots(LOCAL_CAPS, session::free_peripheral_slots()),
+        &hint,
+    )
 }
 
 /// The advertising PDU as it stands at this instant: the two fixed AD
@@ -1167,10 +1170,10 @@ async fn gatt_events(conn: &Connection, server: &NotifyAwareServer) -> Option<[u
 // (the displacement's packet move below) and the two counters only the
 // SoftDevice paths feed.
 
+use leviculum_firmware::ble_link::session::{self, LinkEnd};
 pub(crate) use leviculum_firmware::ble_link::session::{
     BLE_LINKS_DISPLACED, BLE_LINKS_REFUSED, BLE_PRE_HANDSHAKE_REFUSED,
 };
-use leviculum_firmware::ble_link::session::{self, LinkEnd};
 
 /// Inbound GATT values dropped for exceeding [`GATT_VALUE_MAX`] (#387)
 /// — writes and notifications together — for the `BLE_COUNTERS` line's
@@ -1781,7 +1784,6 @@ async fn central_connected(
     HVN_DRAIN.release(conn_handle);
     failure
 }
-
 
 /// Subscribe, handshake, then pump both directions until either side
 /// ends the link. Returns what a give-up before the handshake said
