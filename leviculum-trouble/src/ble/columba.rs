@@ -964,9 +964,15 @@ async fn find_peer_to_initiate<T: HciTransport>(
             break;
         }
     }
-    // Phase 2: collect for the window bound.
+    // Phase 2: collect for the window bound. ONE timer for the whole
+    // window: an embassy `Timer` answers its first poll `Pending` however
+    // late it is, so a fresh `Timer::at(deadline)` per report never fired
+    // while a peer reported at least once per poll turn — the window
+    // stayed open and the central never dialled (1715, the
+    // scripted-controller test: a 3 s window still open at 10 s).
     let deadline = Instant::now() + Duration::from_millis(SCAN_WINDOW_COLLECT_MS);
-    while let Either::First(report) = select(REPORTS.queue.receive(), Timer::at(deadline)).await {
+    let mut window_end = core::pin::pin!(Timer::at(deadline));
+    while let Either::First(report) = select(REPORTS.queue.receive(), window_end.as_mut()).await {
         consider(report);
     }
     session.stop().await;
