@@ -41,7 +41,7 @@
 //! The screen-to-world direction has no closed form under the blend:
 //! [`Blend::to_world`] runs Newton on the forward mapping, started at the
 //! Mercator inverse, and answers only when it lands within a thirty-second
-//! of a pixel ([`INVERSE_EPS_PX`]); a point off the world (outside Equal
+//! of a pixel (`INVERSE_EPS_PX`); a point off the world (outside Equal
 //! Earth's boundary, off the globe's limb) gets `None`.
 
 use crate::mercator::World;
@@ -334,7 +334,7 @@ impl Blend {
     /// The world point that lands on `(x, y)` pixels: Newton on the
     /// forward mapping from the Mercator inverse, `None` where no point
     /// does (off Equal Earth's boundary, off the globe) or Newton does
-    /// not close within [`INVERSE_EPS_PX`].
+    /// not close within `INVERSE_EPS_PX`.
     pub fn to_world(&self, x: f64, y: f64) -> Option<World> {
         let (cx, cy) = (f64::from(self.width) / 2.0, f64::from(self.height) / 2.0);
         // Continuous world coordinates; ux wraps, uy is clamped.
