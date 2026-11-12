@@ -695,6 +695,27 @@ impl<B> UiModel<B> {
             })
     }
 
+    /// Whether a message from `peer` whose signature is `signature` may
+    /// tell this device what the group at `peer` is now (1744): one the
+    /// reader sent, or one whose signature is verified. An unverified
+    /// message in the name of a group this device knows changes none of
+    /// its members, epoch, standing or `closed_at`, and deletes nothing:
+    /// it waits for its verdict ([`UiModel::learn_group`] once that says
+    /// verified), as its positions do. One from a sender that is no group
+    /// here (an invitation from a person whose key has not arrived) is
+    /// learned as before: what it can make is an invited group, which
+    /// speaks for nobody ([`copies_from`]). An invalid one tells nothing.
+    pub(super) fn tells_its_group(
+        &self,
+        peer: &[u8; 16],
+        outbound: bool,
+        signature: super::Signature,
+    ) -> bool {
+        outbound
+            || signature == super::Signature::Verified
+            || (signature == super::Signature::Unverified && !self.groups.contains_key(peer))
+    }
+
     /// Learn what a message in `peer`'s conversation says of a group:
     /// `outbound` when the reader (or another of its devices) sent it. A
     /// group that changed is written to the store with the next writes
@@ -972,20 +993,26 @@ impl<B> UiModel<B> {
         self.delete_conversation(group, false);
     }
 
-    /// Learn every group the restored conversations speak of.
+    /// Learn every group the restored conversations speak of: what each
+    /// message may tell ([`UiModel::tells_its_group`], 1744), so a
+    /// membership still waiting for its verdict changes nothing at a
+    /// restart either; the engine settles it again and the verdict
+    /// teaches it then.
     pub(super) fn learn_groups(&mut self) {
-        let seen: Vec<([u8; 16], bool, Vec<Field>)> = self
+        let seen: Vec<([u8; 16], bool, super::Signature, Vec<Field>)> = self
             .conversations
             .iter()
             .flat_map(|c| {
                 c.messages
                     .iter()
                     .filter(|m| Lev::from_fields(&m.fields).is_some())
-                    .map(|m| (c.peer, m.outbound, m.fields.clone()))
+                    .map(|m| (c.peer, m.outbound, m.signature, m.fields.clone()))
             })
             .collect();
-        for (peer, outbound, fields) in seen {
-            self.learn_group(peer, outbound, &fields);
+        for (peer, outbound, signature, fields) in seen {
+            if self.tells_its_group(&peer, outbound, signature) {
+                self.learn_group(peer, outbound, &fields);
+            }
         }
         self.forget_deleted_groups();
     }

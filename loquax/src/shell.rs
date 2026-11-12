@@ -822,6 +822,10 @@ impl Shell {
                 .store
                 .search(&query, &self.model.loaded_from())
                 .map(|hits| UiEvent::StoredHits { query, hits }),
+            StoreRead::Settled { peer, id } => self
+                .store
+                .settled(peer, id)
+                .map(|message| UiEvent::Settled { peer, message }),
         };
         match answer {
             Ok(event) => Some(event),

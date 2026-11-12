@@ -531,22 +531,17 @@ CREATE INDEX home_names_by_last_seen ON home_names(identity, last_seen);
 /// membership epoch from which the reader was out of a group it had
 /// joined, NULL while it is in and for a group it never joined.
 ///
-/// The rows a schema 22 program wrote were taught by rules that let a
-/// group's own word join the reader (before 1702) or take a group the
-/// reader was only invited to to left or ended (1702), so each is taken
-/// again by the rule of 1728: joined only where the reader made it or
-/// sent it anything (its Join is the first message it sends a group; a
-/// home's device gets it back from the archive), else invited; a group
-/// left or ended that the reader sent something speaks for the copies
-/// from before its newest membership, the one that said so, and one it
-/// never sent anything speaks for none. A Join no message on this device
-/// holds (a device without a home sends it as a state, not as a line)
-/// comes back invited: the card asks again, and a second Join is harmless.
+/// A joined group stays joined, whatever messages this device holds of
+/// it (1744): the reader's Join need not be among them (a device without
+/// a home sends it as a state, not as a line), and taking a group the
+/// reader is in back to invited made it ask again and drop every writer
+/// meanwhile. A group left or ended that the reader made or sent
+/// something (so one it was in) speaks for the copies from before its
+/// newest membership, the one that said so; one it never sent anything
+/// was taken there by a rule that let an invited group's word do so
+/// (1702), and speaks for none.
 const SCHEMA_V23: &str = "
 ALTER TABLE client_groups ADD COLUMN closed_at INTEGER;
-UPDATE client_groups SET standing = 0 WHERE standing = 1 AND ours = 0 AND NOT EXISTS (
-    SELECT 1 FROM messages m WHERE m.identity = client_groups.identity
-    AND m.conversation = client_groups.address AND m.direction = 1);
 UPDATE client_groups SET closed_at = epoch WHERE standing IN (2, 3) AND (ours = 1 OR EXISTS (
     SELECT 1 FROM messages m WHERE m.identity = client_groups.identity
     AND m.conversation = client_groups.address AND m.direction = 1));
@@ -1288,6 +1283,27 @@ impl Store {
         through: Option<u64>,
     ) -> Result<(Vec<Message>, usize), StoreError> {
         self.page(peer, before, through)
+    }
+
+    /// The received message `id` of `peer`'s conversation as the store
+    /// keeps it, its ledger left out (1744): what the screen reads of a
+    /// group's message whose verdict came while it did not hold it
+    /// ([`crate::ui::history::StoreRead::Settled`]). `None` where the
+    /// store keeps no such message.
+    pub fn settled(&self, peer: [u8; 16], id: [u8; 32]) -> Result<Option<Message>, StoreError> {
+        let message = self
+            .conn
+            .query_row(
+                "SELECT seq, id, direction, state, unproven, verification, last_leg, \
+                 received_at, utc_offset, size, content, fields, read_at FROM messages \
+                 WHERE identity = ?1 AND conversation = ?2 AND id = ?3 AND direction = 0 \
+                 ORDER BY seq DESC LIMIT 1",
+                params![&self.identity[..], &peer[..], &id[..]],
+                row_message,
+            )
+            .optional()
+            .map_err(|e| self.failed(e))?;
+        Ok(message.map(|row| self.read_one(row)))
     }
 
     fn page(
@@ -5925,8 +5941,9 @@ mod tests {
                     left: true,
                 },
             ],
-            // Left, with the epoch it was left at (1728): a joined group
-            // with no message of the reader's comes back invited, below.
+            // Left, with the epoch it was left at (1728, schema 23's
+            // `closed_at`). How the schema 23 migration takes the rows an
+            // older program wrote is the test after this one's.
             standing: Standing::Left,
             closed_at: Some(3),
         };
@@ -5956,13 +5973,10 @@ mod tests {
         assert!(store.restore().expect("restore").is_empty());
     }
 
-    /// 1728: the groups a schema 22 program wrote are taken again by the
-    /// new rule when the store moves to 23. Joined stays joined only where
-    /// the reader made it or sent it something (its Join is the first such
-    /// message); a row that came to say joined by a group's own word, as
-    /// the rule before 1702 let it, comes back invited. A group left that
-    /// the reader sent something keeps its history before its newest
-    /// membership; one it never sent anything keeps none.
+    /// 1728, 1744: the groups a schema 22 program wrote, moved to 23.
+    /// Joined stays joined, with or without a message of the reader's. A
+    /// group left that the reader sent something keeps its history before
+    /// its newest membership; one it never sent anything keeps none.
     #[test]
     fn a_schema_22_store_takes_its_groups_again_by_the_readers_own_messages() {
         use crate::ui::groups::{GroupInfo, Standing};
@@ -6009,13 +6023,50 @@ mod tests {
         assert_eq!(
             taken,
             vec![
-                (0x23, Standing::Invited, None),
+                (0x23, Standing::Joined, None),
                 (0x24, Standing::Joined, None),
                 (0x26, Standing::Joined, None),
-                (0x27, Standing::Invited, None),
+                (0x27, Standing::Joined, None),
                 (0x28, Standing::Left, Some(4)),
                 (0x29, Standing::Ended, None),
             ]
+        );
+    }
+
+    /// 1744: the schema 23 migration never takes a joined group back to
+    /// invited. A group the reader joined on a device whose Join no
+    /// message here holds (a device without a home sends it as a state)
+    /// stays joined and keeps speaking for its members; only `closed_at`
+    /// is new, and NULL for it.
+    #[test]
+    fn a_schema_22_joined_group_stays_joined_without_a_message_of_the_readers() {
+        use crate::ui::groups::{GroupInfo, Standing};
+        let old = tempfile::tempdir().expect("an older home");
+        let mut store = Store::open_in(old.path(), US).expect("open");
+        let joined = GroupInfo {
+            name: "Familie".into(),
+            inviter: Some(BOB),
+            standing: Standing::Joined,
+            epoch: 4,
+            ..GroupInfo::new([0x31; 16])
+        };
+        store
+            .write(&[StoreWrite::Group(joined.clone())])
+            .expect("write");
+        put(&mut store, [0x31; 16], message(1, false, "Bob: hi"));
+        drop(store);
+        let conn = Connection::open(old.path().join(STORE_FILE)).expect("raw");
+        conn.execute_batch(
+            "ALTER TABLE client_groups DROP COLUMN closed_at; PRAGMA user_version = 22;",
+        )
+        .expect("made schema 22");
+        drop(conn);
+        let store = Store::open_in(old.path(), US).expect("migrated");
+        let back = &store.client_groups().expect("groups")[&joined.address];
+        assert_eq!(
+            (back.standing, back.closed_at, back.epoch),
+            (Standing::Joined, None, 4),
+            "the migration took a joined group back to invited"
         );
     }
 

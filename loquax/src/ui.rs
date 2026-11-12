@@ -3188,6 +3188,13 @@ pub enum UiEvent {
     },
     /// The store's answer to [`StoreRead::Search`].
     StoredHits { query: String, hits: Vec<StoredHit> },
+    /// The store's answer to [`StoreRead::Settled`] (1744): the message of
+    /// `peer`'s conversation whose verdict came while the screen did not
+    /// hold it, as the store keeps it now; `None` where it keeps none.
+    Settled {
+        peer: [u8; 16],
+        message: Option<Message>,
+    },
     /// How the shell draws the map: the cell's pixels and the zooms its
     /// regions reach.
     MapSetup(map::MapSetup),
@@ -4230,6 +4237,7 @@ fn fold<B: InputBuffer + Default>(model: &mut UiModel<B>, event: UiEvent) -> Vec
             model.on_stored_hits(&query, hits);
             Vec::new()
         }
+        UiEvent::Settled { peer, message } => take_settled(model, peer, message),
         UiEvent::SendUnproven(detail) => on_send_unproven(model, detail),
         UiEvent::SendProgress(permille) => {
             if let Some(&(c, m)) = model.sending.front() {
@@ -6527,7 +6535,15 @@ fn on_engine<B: InputBuffer>(model: &mut UiModel<B>, event: OutboxEvent) -> Vec<
             {
                 return Vec::new();
             }
-            model.learn_group(source, false, &fields);
+            let signature = match verified {
+                true => Signature::Verified,
+                false => Signature::Unverified,
+            };
+            // An unverified membership in a known group's name waits for its
+            // verdict (1744, [`apply_verdict`]).
+            if model.tells_its_group(&source, false, signature) {
+                model.learn_group(source, false, &fields);
+            }
             let state = groups::is_state(&String::from_utf8_lossy(&body), &fields);
             // When this device took it, for its ledger and the Info sheet's
             // "Received"; the bubble shows when its writer wrote it (1445).
@@ -6545,10 +6561,7 @@ fn on_engine<B: InputBuffer>(model: &mut UiModel<B>, event: OutboxEvent) -> Vec<
                     body: String::from_utf8_lossy(&body).into_owned(),
                     id: Some(message_id),
                     delivery: None,
-                    signature: match verified {
-                        true => Signature::Verified,
-                        false => Signature::Unverified,
-                    },
+                    signature,
                     leg: None,
                     unproven: false,
                     at: shown,
@@ -6682,13 +6695,17 @@ fn apply_verdict<B>(
 ) -> Vec<UiEffect> {
     let now = model.now;
     let Some(index) = model.conversations.iter().position(|c| c.peer == source) else {
-        return Vec::new();
+        return settled_elsewhere(model, message_id, source, valid);
     };
     let conversation = &mut model.conversations[index];
     let peer = conversation.peer;
     let changed = &mut model.changed;
     let mut verified = Vec::new();
+    let mut held = false;
     conversation.messages.for_each_indexed_mut(|at, message| {
+        if !message.outbound && message.id == Some(message_id) {
+            held = true;
+        }
         if message.outbound
             || message.id != Some(message_id)
             || message.signature != Signature::Unverified
@@ -6719,12 +6736,84 @@ fn apply_verdict<B>(
             format!("invalid signature on a message from {from}"),
         );
     }
-    let deferred = model.groups.contains_key(&source);
-    verified
-        .into_iter()
-        .filter(|_| deferred)
-        .flat_map(|at| take_telemetry(model, index, at, message_id))
-        .collect()
+    // What a group's message waited for (1744, 1728): its membership is
+    // learned and its positions read, now that it is verified.
+    if !model.groups.contains_key(&source) {
+        return Vec::new();
+    }
+    if !held {
+        return settled_elsewhere(model, message_id, source, valid);
+    }
+    let mut effects = Vec::new();
+    for at in verified {
+        let Some(fields) = model
+            .conversations
+            .get(index)
+            .and_then(|c| c.messages.get(at))
+            .map(|m| m.fields.clone())
+        else {
+            continue;
+        };
+        model.learn_group(source, false, &fields);
+        effects.extend(take_telemetry(model, index, at, message_id));
+    }
+    model.forget_deleted_groups();
+    effects
+}
+
+/// A verdict on a message the screen does not hold (the shell's store
+/// settled it, 1079): a group's, verified, is asked of the store (1744),
+/// and [`take_settled`] reads it as [`apply_verdict`] would have.
+fn settled_elsewhere<B>(
+    model: &UiModel<B>,
+    message_id: [u8; 32],
+    source: [u8; 16],
+    valid: bool,
+) -> Vec<UiEffect> {
+    match valid && model.groups.contains_key(&source) {
+        true => Vec::from([UiEffect::Store(history::StoreRead::Settled {
+            peer: source,
+            id: message_id,
+        })]),
+        false => Vec::new(),
+    }
+}
+
+/// The store's answer to [`history::StoreRead::Settled`] (1744): a group's
+/// message that was verified while the screen did not hold it. Its
+/// membership is learned and its positions read, as [`apply_verdict`]
+/// does for one on the screen. Nothing for a message the screen holds
+/// now (that one was read when it was verified), one that is not
+/// verified, or one of a sender that is no group here.
+fn take_settled<B>(
+    model: &mut UiModel<B>,
+    peer: [u8; 16],
+    message: Option<Message>,
+) -> Vec<UiEffect> {
+    let Some(message) = message else {
+        return Vec::new();
+    };
+    let Some(id) = message.id else {
+        return Vec::new();
+    };
+    if message.outbound
+        || message.signature != Signature::Verified
+        || !model.groups.contains_key(&peer)
+    {
+        return Vec::new();
+    }
+    let held = model
+        .conversations
+        .iter()
+        .find(|c| c.peer == peer)
+        .is_some_and(|c| c.messages.iter().any(|m| !m.outbound && m.id == Some(id)));
+    if held {
+        return Vec::new();
+    }
+    model.learn_group(peer, false, &message.fields);
+    let effects = read_positions(model, peer, &message, id);
+    model.forget_deleted_groups();
+    effects
 }
 
 /// The telemetry in the newest message of conversation `index`, just
@@ -6747,7 +6836,6 @@ fn take_telemetry<B>(
         return Vec::new();
     }
     let source = conversation.peer;
-    let key = message.activity;
     // A message in a group's name whose signature is not verified yet
     // speaks for nobody (1728): its positions wait for the verdict
     // ([`apply_verdict`]), which reads them again once it holds, rather
@@ -6755,6 +6843,21 @@ fn take_telemetry<B>(
     if message.signature == Signature::Unverified && model.groups.contains_key(&source) {
         return Vec::new();
     }
+    let message = message.clone();
+    read_positions(model, source, &message, message_id)
+}
+
+/// Each position `message` from `source` carries into the peer's latest
+/// where it is newer, booked under the message's key: the read of
+/// [`take_telemetry`], and of [`take_settled`] for a message the screen
+/// does not hold.
+fn read_positions<B>(
+    model: &mut UiModel<B>,
+    source: [u8; 16],
+    message: &Message,
+    message_id: [u8; 32],
+) -> Vec<UiEffect> {
+    let key = message.activity;
     // Whoever vouches for a writer or a collector's row: a group the reader
     // joined, by the one rule and its membership (1696, 1702). A copy field
     // or a row in anyone else's message speaks for nobody but its signer.
@@ -19476,9 +19579,29 @@ pub(crate) mod tests {
         model
     }
 
+    /// The first auditor's version (1744): the same message carries a
+    /// stream row naming Bob too.
     #[test]
     fn audit_one_message_from_an_invited_group_naming_the_reader_left_moves_no_pin() {
-        let model = aud_one_message(false);
+        use leviculum_lxmf::lev::{GroupCopy, MEMBER_JOINED, MEMBER_LEFT};
+        let mut model = aud_invited();
+        let mut fields = report_of(&fix_at(9_300_000, 13_000_000, two_pm() - 60));
+        fields.extend(atk_stream(&[(ATK_BOB, 9_600_000)]));
+        let mut lev = leviculum_lxmf::lev::Lev {
+            members: Some(aud_members(
+                2,
+                &[(ATK_BOB, "Bob", MEMBER_JOINED), (ATK_ME, "Me", MEMBER_LEFT)],
+                false,
+            )),
+            ..Default::default()
+        };
+        lev.group_copy = Some(GroupCopy {
+            sender: ATK_BOB,
+            sent_ms: (two_pm() - 60) as u64 * 1000,
+            epoch: 1,
+        });
+        lev.put_into(&mut fields);
+        arrive(&mut model, ATK_GROUP, 2, "", fields);
         assert!(
             !model.positions.contains_key(&ATK_BOB),
             "one message from an invited group moved Bob's pin"
@@ -20044,5 +20167,520 @@ pub(crate) mod tests {
             report_of(&fix_at(9_995_000, 13_000_000, two_pm() - 60)),
         );
         assert_eq!(model.positions[&ATK_ME].location.latitude_e6, 9_995_000);
+    }
+
+    // 1744: the audit of 1728 (audits/1728-who-may-speak-for-a-member-
+    // three-open-doors-fix-or-revert.md). A membership whose signature is
+    // not verified changes nothing of a group the reader knows: not its
+    // members, epoch, standing or `closed_at`, and it deletes nothing. It
+    // waits for the verdict, as a position does, and is taken then.
+
+    /// A membership of `epoch` naming `members`, `ended` or not, as fields.
+    fn aud_roster(
+        epoch: u64,
+        members: &[([u8; 16], &str, u64)],
+        ended: bool,
+    ) -> Vec<(i64, Vec<u8>)> {
+        aud_fields(leviculum_lxmf::lev::Lev {
+            members: Some(aud_members(epoch, members, ended)),
+            ..leviculum_lxmf::lev::Lev::default()
+        })
+    }
+
+    fn aud_verdict(model: &mut UiModel<Field>, id: u8, valid: bool) -> Vec<UiEffect> {
+        update(
+            model,
+            UiEvent::Engine(OutboxEvent::Verified {
+                message_id: [id; 32],
+                source: ATK_GROUP,
+                valid,
+            }),
+        )
+    }
+
+    fn aud_state(model: &UiModel<Field>) -> Option<(groups::Standing, u64, Option<u64>, usize)> {
+        model
+            .group(&ATK_GROUP)
+            .map(|g| (g.standing, g.epoch, g.closed_at, g.members.len()))
+    }
+
+    #[test]
+    fn audit_an_unverified_membership_does_not_end_a_joined_group() {
+        use leviculum_lxmf::lev::MEMBER_JOINED;
+        let mut model = aud_joined(2);
+        aud_arrive_unverified(
+            &mut model,
+            3,
+            "",
+            aud_roster(3, &[(ATK_BOB, "Bob", MEMBER_JOINED)], true),
+        );
+        assert_eq!(
+            aud_state(&model),
+            Some((groups::Standing::Joined, 2, None, 2)),
+            "an unverified membership ended a joined group"
+        );
+        arrive(&mut model, ATK_GROUP, 4, "Bob: hi", aud_text(ATK_BOB, 2));
+        assert_eq!(aud_writers(&model, ATK_GROUP).last(), Some(&Some(ATK_BOB)));
+    }
+
+    #[test]
+    fn audit_an_unverified_epoch_does_not_widen_a_left_groups_history() {
+        use leviculum_lxmf::lev::{MEMBER_JOINED, MEMBER_LEFT};
+        let mut model = aud_invited();
+        update(
+            &mut model,
+            UiEvent::Group(groups::Verb::Join {
+                group: intent::Target::Peer(ATK_GROUP),
+            }),
+        );
+        arrive(
+            &mut model,
+            ATK_GROUP,
+            2,
+            "",
+            aud_roster(
+                2,
+                &[(ATK_BOB, "Bob", MEMBER_LEFT), (ATK_ME, "Me", MEMBER_JOINED)],
+                false,
+            ),
+        );
+        update(
+            &mut model,
+            UiEvent::Group(groups::Verb::Leave {
+                group: intent::Target::Peer(ATK_GROUP),
+                confirmed: true,
+            }),
+        );
+        assert_eq!(
+            aud_state(&model),
+            Some((groups::Standing::Left, 2, Some(3), 2))
+        );
+        // Bob had left at epoch 2: his copy of epoch 2 is nobody's.
+        arrive(&mut model, ATK_GROUP, 3, "Bob: late", aud_text(ATK_BOB, 2));
+        assert_eq!(aud_writers(&model, ATK_GROUP), vec![None]);
+        aud_arrive_unverified(
+            &mut model,
+            4,
+            "",
+            aud_roster(
+                9,
+                &[(ATK_BOB, "Bob", MEMBER_LEFT), (ATK_ME, "Me", MEMBER_LEFT)],
+                false,
+            ),
+        );
+        assert_eq!(
+            aud_state(&model),
+            Some((groups::Standing::Left, 2, Some(3), 2)),
+            "an unverified membership moved a left group's epoch"
+        );
+        assert!(
+            aud_writers(&model, ATK_GROUP)
+                .iter()
+                .all(|w| *w != Some(ATK_BOB)),
+            "an unverified epoch drew Bob over a copy from after his leave"
+        );
+    }
+
+    /// The positive twin: the same membership, once its verdict says
+    /// verified, is taken: the reader removed, the group left from its
+    /// epoch on.
+    #[test]
+    fn an_unverified_membership_is_taken_once_verified() {
+        use leviculum_lxmf::lev::{MEMBER_JOINED, MEMBER_LEFT};
+        let mut model = aud_joined(2);
+        aud_arrive_unverified(
+            &mut model,
+            3,
+            "",
+            aud_roster(
+                3,
+                &[(ATK_BOB, "Bob", MEMBER_JOINED), (ATK_ME, "Me", MEMBER_LEFT)],
+                false,
+            ),
+        );
+        assert_eq!(
+            aud_state(&model),
+            Some((groups::Standing::Joined, 2, None, 2)),
+            "an unverified membership was taken before its verdict"
+        );
+        aud_verdict(&mut model, 3, true);
+        assert_eq!(
+            aud_state(&model),
+            Some((groups::Standing::Left, 3, Some(3), 2)),
+            "a verified membership was not taken"
+        );
+    }
+
+    /// An invalid verdict leaves the group as it was.
+    #[test]
+    fn an_unverified_membership_found_invalid_is_never_taken() {
+        use leviculum_lxmf::lev::{MEMBER_JOINED, MEMBER_LEFT};
+        let mut model = aud_joined(2);
+        aud_arrive_unverified(
+            &mut model,
+            3,
+            "",
+            aud_roster(
+                3,
+                &[(ATK_BOB, "Bob", MEMBER_JOINED), (ATK_ME, "Me", MEMBER_LEFT)],
+                false,
+            ),
+        );
+        aud_verdict(&mut model, 3, false);
+        assert_eq!(
+            aud_state(&model),
+            Some((groups::Standing::Joined, 2, None, 2))
+        );
+    }
+
+    #[test]
+    fn audit_the_homes_removal_of_the_reader_closes_a_joined_group_at_its_epoch() {
+        use leviculum_lxmf::lev::{MEMBER_JOINED, MEMBER_LEFT};
+        let mut model = aud_joined(2);
+        arrive(
+            &mut model,
+            ATK_GROUP,
+            3,
+            "",
+            aud_roster(
+                3,
+                &[(ATK_BOB, "Bob", MEMBER_JOINED), (ATK_ME, "Me", MEMBER_LEFT)],
+                false,
+            ),
+        );
+        assert_eq!(
+            aud_state(&model),
+            Some((groups::Standing::Left, 3, Some(3), 2))
+        );
+        arrive(
+            &mut model,
+            ATK_GROUP,
+            4,
+            "Bob: before",
+            aud_text(ATK_BOB, 2),
+        );
+        arrive(&mut model, ATK_GROUP, 5, "Bob: after", aud_text(ATK_BOB, 3));
+        assert!(
+            aud_writers(&model, ATK_GROUP).ends_with(&[Some(ATK_BOB), None]),
+            "{:?}",
+            aud_writers(&model, ATK_GROUP)
+        );
+    }
+
+    #[test]
+    fn audit2_the_homes_remove_of_the_reader_closes_the_group_from_its_epoch() {
+        use leviculum_lxmf::lev::{MEMBER_JOINED, MEMBER_LEFT};
+        let mut model = aud_joined(5);
+        arrive(
+            &mut model,
+            ATK_GROUP,
+            3,
+            "",
+            aud_roster(
+                6,
+                &[(ATK_BOB, "Bob", MEMBER_JOINED), (ATK_ME, "Me", MEMBER_LEFT)],
+                false,
+            ),
+        );
+        let group = model.group(&ATK_GROUP).expect("the group");
+        assert_eq!(group.standing, groups::Standing::Left);
+        assert_eq!(group.closed_at, Some(6));
+        arrive(
+            &mut model,
+            ATK_GROUP,
+            4,
+            "",
+            atk_copy_at(ATK_BOB, 9_700_000, 5),
+        );
+        assert_eq!(model.positions[&ATK_BOB].location.latitude_e6, 9_700_000);
+        arrive(
+            &mut model,
+            ATK_GROUP,
+            5,
+            "",
+            atk_copy_at(ATK_BOB, 9_710_000, 6),
+        );
+        assert_eq!(
+            model.positions[&ATK_BOB].location.latitude_e6, 9_700_000,
+            "a copy from the epoch the reader was removed at moved Bob's pin"
+        );
+    }
+
+    #[test]
+    fn audit2_an_unverified_membership_does_not_evict_the_reader() {
+        use leviculum_lxmf::lev::{MEMBER_JOINED, MEMBER_LEFT};
+        let mut model = aud_joined(2);
+        aud_arrive_unverified(
+            &mut model,
+            3,
+            "",
+            aud_roster(
+                3,
+                &[(ATK_BOB, "Bob", MEMBER_JOINED), (ATK_ME, "Me", MEMBER_LEFT)],
+                false,
+            ),
+        );
+        assert_eq!(
+            model.group(&ATK_GROUP).map(|g| (g.standing, g.closed_at)),
+            Some((groups::Standing::Joined, None)),
+            "an unverified membership evicted the reader"
+        );
+        arrive(
+            &mut model,
+            ATK_GROUP,
+            4,
+            "",
+            atk_copy_at(ATK_BOB, 9_720_000, 3),
+        );
+        assert_eq!(model.positions[&ATK_BOB].location.latitude_e6, 9_720_000);
+    }
+
+    /// A group the reader made, with its conversation.
+    fn aud_own_group() -> UiModel<Field> {
+        use super::groups::{GroupInfo, GroupMember, Standing};
+        let mut model = atk_fresh();
+        let member = |address: [u8; 16], name: &str, admin: bool| GroupMember {
+            address,
+            name: name.into(),
+            admin,
+            joined: true,
+            left: false,
+        };
+        model.groups.insert(
+            ATK_GROUP,
+            GroupInfo {
+                name: "Ours".into(),
+                standing: Standing::Joined,
+                ours: true,
+                epoch: 2,
+                members: vec![member(ATK_ME, "Me", true), member(ATK_BOB, "Bob", false)],
+                ..GroupInfo::new(ATK_GROUP)
+            },
+        );
+        arrive(&mut model, ATK_GROUP, 2, "Bob: hi", aud_text(ATK_BOB, 2));
+        model
+    }
+
+    fn aud_ended_roster() -> Vec<(i64, Vec<u8>)> {
+        use leviculum_lxmf::lev::{MEMBER_ADMIN, MEMBER_JOINED};
+        aud_roster(
+            3,
+            &[
+                (ATK_ME, "Me", MEMBER_ADMIN | MEMBER_JOINED),
+                (ATK_BOB, "Bob", MEMBER_JOINED),
+            ],
+            true,
+        )
+    }
+
+    #[test]
+    fn audit2_an_unverified_end_of_the_readers_own_group_deletes_nothing() {
+        let mut model = aud_own_group();
+        aud_arrive_unverified(&mut model, 3, "", aud_ended_roster());
+        assert_eq!(
+            model.group(&ATK_GROUP).map(|g| g.standing),
+            Some(groups::Standing::Joined),
+            "an unverified end ended the reader's own group"
+        );
+        assert!(
+            model.conversations.iter().any(|c| c.peer == ATK_GROUP),
+            "an unverified end deleted the reader's own group's conversation"
+        );
+    }
+
+    /// The positive twin: the end, once verified, ends the reader's own
+    /// group and its conversation leaves this device.
+    #[test]
+    fn audit2_a_verified_end_of_the_readers_own_group_ends_it() {
+        let mut model = aud_own_group();
+        aud_arrive_unverified(&mut model, 3, "", aud_ended_roster());
+        assert!(
+            model.group(&ATK_GROUP).is_some(),
+            "the end was taken before its verdict"
+        );
+        aud_verdict(&mut model, 3, true);
+        assert!(
+            model.group(&ATK_GROUP).is_none(),
+            "a verified end kept the group"
+        );
+        assert!(
+            !model.conversations.iter().any(|c| c.peer == ATK_GROUP),
+            "a verified end kept the conversation"
+        );
+    }
+
+    #[test]
+    fn audit2_an_unverified_membership_of_the_highest_epoch_does_not_freeze_the_roster() {
+        use leviculum_lxmf::lev::MEMBER_JOINED;
+        let mut model = aud_joined(2);
+        aud_arrive_unverified(
+            &mut model,
+            3,
+            "",
+            aud_roster(
+                u64::MAX,
+                &[
+                    (ATK_MALLORY, "Mallory", MEMBER_JOINED),
+                    (ATK_ME, "Me", MEMBER_JOINED),
+                ],
+                false,
+            ),
+        );
+        arrive(
+            &mut model,
+            ATK_GROUP,
+            4,
+            "",
+            aud_roster(
+                3,
+                &[
+                    (ATK_BOB, "Bob", MEMBER_JOINED),
+                    (AUD_CAROL, "Carol", MEMBER_JOINED),
+                    (ATK_ME, "Me", MEMBER_JOINED),
+                ],
+                false,
+            ),
+        );
+        assert_eq!(
+            aud_state(&model),
+            Some((groups::Standing::Joined, 3, None, 3)),
+            "an unverified epoch froze the roster"
+        );
+        arrive(
+            &mut model,
+            ATK_GROUP,
+            5,
+            "Carol: hi",
+            aud_text(AUD_CAROL, 3),
+        );
+        assert_eq!(
+            aud_writers(&model, ATK_GROUP).last(),
+            Some(&Some(AUD_CAROL))
+        );
+    }
+
+    /// A restart reads the groups again from the messages it restored
+    /// (`learn_groups`): an unverified membership among them changes
+    /// nothing of the group the store kept.
+    #[test]
+    fn an_unverified_membership_restored_changes_nothing() {
+        use leviculum_lxmf::lev::{MEMBER_JOINED, MEMBER_LEFT};
+        let mut before = aud_joined(2);
+        aud_arrive_unverified(
+            &mut before,
+            3,
+            "",
+            aud_roster(
+                3,
+                &[(ATK_BOB, "Bob", MEMBER_JOINED), (ATK_ME, "Me", MEMBER_LEFT)],
+                true,
+            ),
+        );
+        let c = before.conversation(ATK_GROUP);
+        let mut messages = Vec::new();
+        before.conversations[c]
+            .messages
+            .for_each_mut(|m| messages.push(m.clone()));
+        let mut kept = restored(ATK_GROUP, messages, 0);
+        let mut group = aud_joined(2).group(&ATK_GROUP).cloned().expect("group");
+        group.ours = true;
+        kept.group = Some(group);
+        let mut after = atk_fresh();
+        after.restore(vec![kept]);
+        assert_eq!(
+            after
+                .group(&ATK_GROUP)
+                .map(|g| (g.standing, g.epoch, g.closed_at)),
+            Some((groups::Standing::Joined, 2, None)),
+            "a restored unverified membership changed the group"
+        );
+    }
+
+    /// The verdict on a group's message the screen does not hold (the
+    /// shell's store settled it, 1079): the store is asked for it, and its
+    /// answer reads the copy's position under its member, as a verdict on
+    /// a message on the screen does (1744).
+    #[cfg(feature = "history")]
+    #[test]
+    fn a_verdict_on_a_group_message_the_screen_does_not_hold_moves_its_members_pin() {
+        let home = tempfile::tempdir().expect("home");
+        let mut store = crate::store::Store::open_in(home.path(), ATK_ME).expect("store");
+        // The message as the store kept it when it came, unverified.
+        let mut then = atk_model(&[(ATK_BOB, false)]);
+        aud_arrive_unverified(&mut then, 1, "", atk_copy(ATK_BOB, 9_960_000));
+        let c = then.conversation(ATK_GROUP);
+        let mut kept = Vec::new();
+        then.conversations[c]
+            .messages
+            .for_each_mut(|m| kept.push(m.clone()));
+        let [message] = kept.as_slice() else {
+            panic!("one message, not {}", kept.len());
+        };
+        store
+            .write(&[StoreWrite::Message {
+                peer: ATK_GROUP,
+                message: message.clone(),
+            }])
+            .expect("write");
+        // The screen now holds the group, not that message.
+        let mut model = atk_model(&[(ATK_BOB, false)]);
+        arrive(&mut model, ATK_GROUP, 2, "M: hi", aud_text(ATK_BOB, 0));
+        store.settle_verdict(&[1; 32], true).expect("settled");
+        let effects = aud_verdict(&mut model, 1, true);
+        assert!(
+            effects.iter().any(|e| matches!(
+                e,
+                UiEffect::Store(history::StoreRead::Settled { peer, id })
+                    if *peer == ATK_GROUP && *id == [1; 32]
+            )),
+            "the store was not asked: {effects:?}"
+        );
+        assert!(!model.positions.contains_key(&ATK_BOB));
+        let answer = store.settled(ATK_GROUP, [1; 32]).expect("read");
+        assert_eq!(
+            answer.as_ref().map(|m| m.signature),
+            Some(Signature::Verified)
+        );
+        update(
+            &mut model,
+            UiEvent::Settled {
+                peer: ATK_GROUP,
+                message: answer,
+            },
+        );
+        assert_eq!(model.positions[&ATK_BOB].location.latitude_e6, 9_960_000);
+        assert_eq!(model.positions[&ATK_BOB].via, ATK_GROUP);
+    }
+
+    /// Its twin: an invalid verdict asks the store nothing and moves no pin.
+    #[test]
+    fn an_invalid_verdict_on_a_group_message_the_screen_does_not_hold_asks_nothing() {
+        let mut model = atk_model(&[(ATK_BOB, false)]);
+        arrive(&mut model, ATK_GROUP, 2, "M: hi", aud_text(ATK_BOB, 0));
+        assert!(aud_verdict(&mut model, 1, false).is_empty());
+        assert!(!model.positions.contains_key(&ATK_BOB));
+    }
+
+    /// A settled message the screen holds after all was read with its
+    /// verdict: the store's answer reads nothing twice.
+    #[test]
+    fn a_settled_message_the_screen_holds_is_not_read_again() {
+        let mut model = atk_model(&[(ATK_BOB, false)]);
+        aud_arrive_unverified(&mut model, 1, "", atk_copy(ATK_BOB, 9_970_000));
+        aud_verdict(&mut model, 1, true);
+        model.positions.clear();
+        let c = model.conversation(ATK_GROUP);
+        let mut held = Vec::new();
+        model.conversations[c]
+            .messages
+            .for_each_mut(|m| held.push(m.clone()));
+        update(
+            &mut model,
+            UiEvent::Settled {
+                peer: ATK_GROUP,
+                message: held.pop(),
+            },
+        );
+        assert!(model.positions.is_empty(), "a held message was read again");
     }
 }

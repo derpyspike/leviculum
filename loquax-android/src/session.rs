@@ -3114,6 +3114,10 @@ impl Inner {
                 .store
                 .search(&query, &self.model.loaded_from())
                 .map(|hits| UiEvent::StoredHits { query, hits }),
+            StoreRead::Settled { peer, id } => self
+                .store
+                .settled(peer, id)
+                .map(|message| UiEvent::Settled { peer, message }),
         };
         answer.unwrap_or_else(|error| UiEvent::Notice(format!("history: {error}")))
     }
