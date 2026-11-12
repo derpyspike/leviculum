@@ -122,6 +122,12 @@ fn capability_record(hint: [u8; IDENTITY_HINT_LEN]) -> [u8; MANUFACTURER_DATA_HI
 
 /// The advertising PDU as it stands at this instant: flags, the service
 /// UUID and the live capability record; built per advertising start.
+///
+/// The three records total `ADV_BYTES_USED` == `LEGACY_AD_CAPACITY`
+/// (const-asserted at [`start`]), so the encode cannot overrun the
+/// buffer by construction; were an encoder change to break that, the
+/// board advertises nothing and says so once per start instead of
+/// panicking mid-boot (1715, no `expect` in firmware code).
 fn advertisement_now(buf: &mut [u8; LEGACY_AD_CAPACITY], hint: [u8; IDENTITY_HINT_LEN]) -> usize {
     let record = capability_record(hint);
     AdStructure::encode_slice(
@@ -135,7 +141,13 @@ fn advertisement_now(buf: &mut [u8; LEGACY_AD_CAPACITY], hint: [u8; IDENTITY_HIN
         ],
         buf,
     )
-    .expect("Columba's shared legacy advertisement budget")
+    .unwrap_or_else(|_| {
+        crate::log::log_fmt_critical(
+            "[BLE ] ",
+            format_args!("BLE_ADV_ENCODE_FAIL cap={}", LEGACY_AD_CAPACITY),
+        );
+        0
+    })
 }
 
 /// The scan response: the BLE name, the operator's if set, `LN-<hex8>`
@@ -152,7 +164,13 @@ pub type AdvHint = [u8; IDENTITY_HINT_LEN];
 /// Register the GATT service and log the advertisement's budget, before
 /// the firmware spawns one peripheral task per incoming link slot and
 /// the central half ([`run_columba`](crate::ble::run_columba)).
-pub fn start(identity_hash: [u8; 16]) -> (&'static ReticulumServer<'static>, AdvHint) {
+///
+/// `None` — said on the log — when the GATT table refused the service:
+/// the board runs on without BLE instead of panicking on the boot path
+/// (1715, no `expect` in firmware code). The one way to reach it is an
+/// attribute-table layout change in the service macro, caught by the
+/// first bench boot rather than a field panic.
+pub fn start(identity_hash: [u8; 16]) -> Option<(&'static ReticulumServer<'static>, AdvHint)> {
     LIVE_PEERS.lock(|peers| peers.borrow_mut().set_local_identity(identity_hash));
     let hint = identity_hint(&identity_hash);
     const _: () = assert!(ADV_BYTES_USED == LEGACY_AD_CAPACITY);
@@ -160,13 +178,20 @@ pub fn start(identity_hash: [u8; 16]) -> (&'static ReticulumServer<'static>, Adv
     static GAP_NAME: StaticCell<heapless::String<22>> = StaticCell::new();
     let gap_name = GAP_NAME.init(heapless::String::new());
     let _ = gap_name.push_str(crate::name::gap_name_now().as_str());
-    let server: &'static ReticulumServer<'static> = SERVER.init(
-        ReticulumServer::new_with_config(GapConfig::Peripheral(PeripheralConfig {
-            name: gap_name.as_str(),
-            appearance: &appearance::UNKNOWN,
-        }))
-        .expect("GATT server"),
-    );
+    let built = match ReticulumServer::new_with_config(GapConfig::Peripheral(PeripheralConfig {
+        name: gap_name.as_str(),
+        appearance: &appearance::UNKNOWN,
+    })) {
+        Ok(server) => server,
+        Err(e) => {
+            crate::log::log_fmt_critical(
+                "[BLE ] ",
+                format_args!("off reason=gatt err={:?}", e),
+            );
+            return None;
+        }
+    };
+    let server: &'static ReticulumServer<'static> = SERVER.init(built);
     // Publish the identity characteristic value so a connecting peer can
     // read it before exchanging frames over rx/tx.
     let _ = server.set(&server.reticulum.identity, &identity_hash);
@@ -186,7 +211,7 @@ pub fn start(identity_hash: [u8; 16]) -> (&'static ReticulumServer<'static>, Adv
             free_peripheral_slots(),
         ),
     );
-    (server, hint)
+    Some((server, hint))
 }
 
 /// Serializes the advertise phase across the peripheral tasks: one
@@ -220,10 +245,22 @@ pub async fn peripheral<T: HciTransport>(
         }
         let mut held_slot: Option<PeripheralSlot> = None;
         let conn = {
-            let _adv_turn = ADV_LOCK
-                .acquire(1)
-                .await
-                .expect("one waiter per peripheral task");
+            // The semaphore holds one waiter slot per peripheral task
+            // and each task awaits at most once, so a refusal cannot
+            // happen by construction; were the layout to change, the
+            // task sits its pass out and says so instead of panicking
+            // (1715, no `expect` in firmware code).
+            let _adv_turn = match ADV_LOCK.acquire(1).await {
+                Ok(turn) => turn,
+                Err(_) => {
+                    crate::log::log_fmt(
+                        "[BLE ] ",
+                        format_args!("BLE_ADV_LOCK_REFUSED adv={index}"),
+                    );
+                    pause_advertise(AdvertisePass::Failed).await;
+                    continue;
+                }
+            };
             if !leviculum_ble_link::carrier().is_on() {
                 continue;
             }
@@ -1998,5 +2035,24 @@ pub async fn central<T: HciTransport>(
         if let Some(pause_ms) = scan_pass_pause_ms(pass) {
             Timer::after_millis(pause_ms).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Positive control for the `expect` 1715 removed: the three
+    /// advertisement records fill exactly the legacy budget, so the
+    /// logged-degradation path (0 bytes) stays unreachable while the
+    /// encoder and the record sizes agree.
+    #[test]
+    fn the_advertisement_encodes_its_full_budget() {
+        let _ring = crate::log::test_ring::lock();
+        let mut buf = [0u8; LEGACY_AD_CAPACITY];
+        assert_eq!(
+            advertisement_now(&mut buf, [0xab; IDENTITY_HINT_LEN]),
+            ADV_BYTES_USED
+        );
     }
 }

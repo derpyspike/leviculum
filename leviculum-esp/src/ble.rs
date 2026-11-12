@@ -131,7 +131,13 @@ pub fn start(
             BLE_INTERNAL_HEAP_BYTES
         ),
     );
-    let (server, hint) = columba::start(identity_hash);
+    // A refused GATT registration keeps the board alive without BLE;
+    // its reason is on the backend's ring, which nothing drains without
+    // a `Ble`, so the UART line here is the one a bench reads.
+    let Some((server, hint)) = columba::start(identity_hash) else {
+        log.line("[BLE ] ", format_args!("off reason=gatt"));
+        return None;
+    };
     let channels = leviculum_ble_link::channels();
     let interface = BleInterface::new(BLE_IFACE, channels.outgoing_tx);
     // The caller has already read the media record and wants the
