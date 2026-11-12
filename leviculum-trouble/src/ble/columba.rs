@@ -187,6 +187,18 @@ pub fn start(identity_hash: [u8; 16]) -> Option<(&'static ReticulumServer<'stati
     Some((server, hint))
 }
 
+/// The Columba attributes' handles as the server laid them out: `rx`,
+/// `tx` and `tx`'s CCCD, for the scripted-controller test, which plays
+/// the peer's ATT writes against them.
+#[cfg(test)]
+pub(super) fn attribute_handles(server: &ReticulumServer<'static>) -> (u16, u16, Option<u16>) {
+    (
+        server.reticulum.rx.handle,
+        server.reticulum.tx.handle,
+        server.reticulum.tx.cccd_handle,
+    )
+}
+
 /// Serializes the advertise phase across the peripheral tasks: one
 /// advertising set, one free task on the air at a time; a connect hands
 /// the turn to the next free task, and a full board is honestly silent.

@@ -59,5 +59,9 @@ leviculum-log-line = { path = "../leviculum-nrf/log-line" }
 # `cargo test`; the firmware brings its own (esp-hal's), and two
 # implementations are a link error, so this stays a dev-dependency.
 critical-section = { version = "1", features = ["std"] }
-# A host time driver for the ` t=<ms>` stamp in the log tests.
-embassy-time = { version = "0.5", features = ["std"] }
+# A host time driver for the ` t=<ms>` stamp in the log tests, and a
+# timer queue for `run_columba`'s timers under the scripted-controller
+# test, which has no executor to own one. Size 8, the size
+# leviculum-lr11xx's tests already pick: two sizes in one workspace
+# build define the queue twice.
+embassy-time = { version = "0.5", features = ["std", "generic-queue-8"] }

@@ -45,6 +45,8 @@
 extern crate alloc;
 
 pub mod columba;
+#[cfg(test)]
+mod h4_tests;
 mod incoming;
 pub mod notify;
 mod peer_address;

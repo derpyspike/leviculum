@@ -37,8 +37,9 @@ mod tests {
     /// Saturating the shared node channel refuses only the completed
     /// packet, counts the drop, and counts received bytes exactly once
     /// per accepted handoff — against the real shared channel, drained
-    /// before and after (this test is the only consumer of the shared
-    /// incoming channel in this binary).
+    /// before and after (the scripted-controller test in `h4_tests` is
+    /// the other consumer of the shared incoming channel in this binary;
+    /// both hold the ring lock, so they never run at once).
     #[test]
     fn saturation_refuses_only_the_completed_packet_and_counts_the_drop() {
         let _ring = crate::log::test_ring::lock();
