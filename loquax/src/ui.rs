@@ -14986,6 +14986,10 @@ pub(crate) mod tests {
         .put_into(&mut fields);
         arrive(&mut model, collector, 2, "", fields);
         assert_eq!(model.positions.len(), 1, "Carol's row is Bob's word");
+        assert!(
+            !model.positions.contains_key(&OTHER),
+            "Carol's row in Bob's copy moved her pin"
+        );
         assert_eq!(model.positions[&PEER].via, PEER, "the direct one stays");
         // Both go to the store; its key makes the repeated fix one row.
         let fixes: Vec<_> = model
@@ -20065,6 +20069,10 @@ pub(crate) mod tests {
     fn an_unverified_copy_books_under_its_member_once_verified() {
         let mut model = atk_model(&[(ATK_BOB, false)]);
         aud_arrive_unverified(&mut model, 1, "M: hi", atk_copy(ATK_BOB, 9_950_000));
+        // Before its verdict it speaks for nobody (1744: the twin pins both
+        // halves, so it fails where the wait is gone).
+        assert!(!model.positions.contains_key(&ATK_BOB));
+        assert_eq!(aud_writers(&model, ATK_GROUP), vec![None]);
         update(
             &mut model,
             UiEvent::Engine(OutboxEvent::Verified {
