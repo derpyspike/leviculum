@@ -568,6 +568,7 @@
     <string name="card_navigate">Navigieren</string>
     <string name="card_share">Meine teilen</string>
     <string name="scene_locations">Standorte</string>
+    <string name="scene_time_zones">Zeitzonen</string>
     <string name="scene_load_map_area">Diesen Kartenausschnitt laden</string>
     <string name="scene_date">%1$s, %2$d. %3$s</string>
     <string name="scene_date_year">%1$s, %2$d. %3$s %4$d</string>

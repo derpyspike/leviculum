@@ -254,3 +254,9 @@ command:java loquax-android/fling a_question_that_throws_reaches_its_failure_pat
 # by MsgPack.java with its host test.
 command:javac loquax-android/browse a_long_page_crosses_in_time
 command:java loquax-android/browse a_long_page_crosses_in_time
+
+# The time zone readers against the host's own tzdata (1684): the system
+# zone files the TZif reader and the std path read, which a container
+# without the tzdata package lacks.
+/usr/share/zoneinfo/Europe/Berlin leviculum-map/timezones tzif_matches_the_hosts_libc
+/usr/share/zoneinfo/Europe/Berlin leviculum-map/timezones system_zone_bytes_reads_zoneinfo

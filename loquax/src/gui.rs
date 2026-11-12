@@ -667,6 +667,11 @@ pub enum Message {
     Located([u8; 16]),
     /// The card's Navigate (1430): the directions to its pin.
     Navigate([u8; 16]),
+    /// The map menu's "Time zones" (1684): the time zone view on or off.
+    TimeZones,
+    /// The time zone view's minute turned: its clocks drawn anew, if the
+    /// view is still the one this timer was set for.
+    ZoneClock(u64),
     /// The mouse on the photo viewer (1269).
     Viewer(viewer::Input),
     /// The viewer's Close.
@@ -810,6 +815,9 @@ pub struct Order {
     /// The maps directory's epoch it is asked at.
     pub epoch: u64,
     pub motion: Motion,
+    /// The time zone view at this minute, in seconds since the epoch
+    /// (1684); `None` without it.
+    pub time_zones: Option<i64>,
 }
 
 /// A frame drawn for the window.
@@ -865,6 +873,7 @@ pub fn draw(frames: &Mutex<Frames>, order: Order) -> Arc<Shown> {
         // (1431): drawn there, at the exact zoom, the glide scales it the
         // rest of the way and ends on it sharp. A pan stays at its zoom.
         scaled_while_moving: false,
+        time_zones: order.time_zones,
     });
     let (w, h) = shot.view.size();
     Arc::new(Shown {
@@ -877,6 +886,14 @@ pub fn draw(frames: &Mutex<Frames>, order: Order) -> Arc<Shown> {
         ms: start.elapsed().as_secs_f64() * 1e3,
         order,
     })
+}
+
+/// Milliseconds until the next minute begins, and a little past it.
+fn to_next_minute() -> u64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    u64::try_from(60_000 - now % 60_000).unwrap_or(60_000) + 50
 }
 
 /// One prefetch batch; whether more is to draw.
@@ -1029,6 +1046,12 @@ struct App {
     /// The locations list over the map's left edge while it is open
     /// (1430): opened from the map's menu, closed by a choice or Escape.
     locations: bool,
+    /// The time zone view (1684): the zones' borders and each one's clock
+    /// over the map, from the map's menu.
+    time_zones: bool,
+    /// Which switching-on of the time zone view the minute's timer
+    /// belongs to: an older timer finds another number and stops.
+    zone_clock: u64,
     /// The bubble whose Forward was pressed (1371): its menu lists the
     /// conversations to send the copy to.
     forwarding: Option<NodeId>,
@@ -1179,6 +1202,8 @@ impl App {
             help: None,
             map_menu: false,
             locations: false,
+            time_zones: false,
+            zone_clock: 0,
             forwarding: None,
             info_advanced: false,
             on_screen: None,
@@ -1867,6 +1892,9 @@ impl App {
                     self.tell(UiEvent::Delete { peer, keys });
                 }
             },
+            Intent::Map(MapCmd::TimeZones) if self.screen == Screen::Map => {
+                return self.update(Message::TimeZones);
+            }
             Intent::Map(cmd) if self.screen == Screen::Map => {
                 self.map_cmd(cmd);
                 return self.paint();
@@ -1967,7 +1995,8 @@ impl App {
                 let next = self.seen.track_window.step(forward);
                 self.tell(UiEvent::TrackWindow(next));
             }
-            MapCmd::Drawing(_) | MapCmd::GlyphTest => {}
+            // The time zone view is the update's, which sets its timer.
+            MapCmd::Drawing(_) | MapCmd::GlyphTest | MapCmd::TimeZones => {}
         }
     }
 
@@ -2357,6 +2386,26 @@ impl App {
                 }
                 return Task::none();
             }
+            Message::TimeZones => {
+                self.map_menu = false;
+                self.time_zones = !self.time_zones;
+                self.zone_clock = self.zone_clock.wrapping_add(1);
+                let paint = self.paint();
+                return match self.time_zones {
+                    true => Task::batch([
+                        paint,
+                        after(to_next_minute(), Message::ZoneClock(self.zone_clock)),
+                    ]),
+                    false => paint,
+                };
+            }
+            Message::ZoneClock(n) => {
+                if !self.time_zones || n != self.zone_clock {
+                    return Task::none();
+                }
+                let paint = self.paint();
+                return Task::batch([paint, after(to_next_minute(), Message::ZoneClock(n))]);
+            }
             Message::CopyText(words) => {
                 self.seen.notice = Some(StrId::MailboxCopied.text(self.lang).to_string());
                 return iced::clipboard::write(words);
@@ -2563,6 +2612,7 @@ impl App {
             zooms: self.zooms(),
             epoch: self.seen.maps,
             motion: self.motion,
+            time_zones: self.time_zones.then(loquax::zoneclock::unix_minute),
         })
     }
 
@@ -3311,6 +3361,18 @@ impl App {
                     .padding([2, 8])
                     .width(Length::Fill)
                     .style(button::text),
+            )
+            // The time zone view (1684): one entry that turns it on and
+            // off, marked while it is on.
+            .push(
+                button(text(StrId::TimeZones.text(self.lang)).size(13))
+                    .on_press(Message::TimeZones)
+                    .padding([2, 8])
+                    .width(Length::Fill)
+                    .style(match self.time_zones {
+                        true => button::primary,
+                        false => button::text,
+                    }),
             )
             .width(Length::Fixed(200.0));
         // The background's ground with a line round it, so the menu
@@ -4740,6 +4802,79 @@ mod tests {
         }
         app.apply(Message::Seen(Box::new(seen_of(&model))));
         assert!(app.seen.info.is_none());
+    }
+
+    /// 1684 over 1457: the Info of a received position carries the
+    /// place's facts — the country, its emergency numbers, the driving
+    /// side, the currency, the magnetic declination and the altitude
+    /// above sea level (`telemetry::detail_rows`) — and the window shows
+    /// them under Advanced, as the phone does; pixel for pixel the
+    /// golden, Advanced open.
+    #[test]
+    fn a_received_positions_info_shows_the_places_facts() {
+        use leviculum_lxmf::telemetry::Location;
+        let (w, h) = (900, 560);
+        let mut model = chat_model();
+        let now = at(30, 9, 40);
+        update(
+            &mut model,
+            UiEvent::Engine(OutboxEvent::Received {
+                sent_at: now.unix_secs - 300,
+                message_id: [9; 32],
+                source: ANNA,
+                title: Vec::new(),
+                body: Vec::new(),
+                fields: loquax::ui::position_fields(Location {
+                    latitude_e6: 43_773_100,
+                    longitude_e6: 11_256_000,
+                    altitude_e2: 5_120,
+                    speed_e2: 0,
+                    bearing_e2: 0,
+                    accuracy_e2: 500,
+                    last_update: now.unix_secs - 300,
+                }),
+                verified: true,
+            }),
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(Frames::new(loquax::picture::Maps::default()), Some(tx));
+        app.window = Size::new(w as f32, h as f32);
+        app.apply(Message::Seen(Box::new(seen_of(&model))));
+        let key = app
+            .scene
+            .chat
+            .iter()
+            .flat_map(|c| &c.groups)
+            .flat_map(|g| &g.bubbles)
+            .find(|node| node.bubble.fix.is_some())
+            .map(|node| node.bubble.key)
+            .expect("the position bubble");
+        let _ = app.update(Message::Intent(Intent::Menu(Some(NodeId::Bubble(key)))));
+        let _ = app.update(Message::Intent(Intent::Details));
+        for event in told(&mut rx) {
+            update(&mut model, event);
+        }
+        app.apply(Message::Seen(Box::new(seen_of(&model))));
+        let info = app.seen.info.clone().expect("the Info");
+        let advanced = info.advanced.join("\n");
+        for row in [
+            "  country   Italy",
+            "  driving   on the right",
+            "  currency  EUR",
+            " of true north",
+            " m above sea level",
+        ] {
+            assert!(advanced.contains(row), "{row:?} in {advanced}");
+        }
+        assert!(
+            info.advanced
+                .iter()
+                .any(|r| r.trim_start().starts_with("emergency 112")),
+            "{advanced}"
+        );
+        let _ = app.update(Message::InfoAdvanced);
+        assert!(app.info_advanced);
+        map::tests::same_as("gui-info-position-light.png", &shoot(&app, w, h), w, h);
     }
 
     /// 1457: the list's fetch button raises Pull, which the window tells

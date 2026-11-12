@@ -28,7 +28,7 @@ use clap::{Parser, Subcommand};
 
 use leviculum_cli::daemon_rpc;
 use leviculum_cli::remote_mgmt;
-use leviculum_std::config::Config;
+use leviculum_std::config_dir::ConfigDirChoice;
 use leviculum_std::remote_dfu::{send_dfu, DfuOutcome, DfuVerdict};
 
 /// Exit status for an accepted command.
@@ -45,6 +45,20 @@ const EXIT_FAILED: u8 = 4;
 /// Default budget, the same as `lnstatus -R`'s
 /// (`RNS.Transport.PATH_REQUEST_TIMEOUT`, 15 s).
 const DEFAULT_TIMEOUT_SECS: f64 = 15.0;
+
+/// What `lnmgmt dfu --help` says after the options: the bootloader never
+/// leaves BLE DFU by itself (61.5 minutes measured on a T114, 2026-11-10),
+/// and the way out without a hand on the board is not a mesh verb, because
+/// a board in its bootloader is off the mesh. lnmgmt has no Bluetooth path,
+/// so the help names the tool that has one.
+const DFU_AFTER_HELP: &str = "\
+The board stays in BLE DFU until an image arrives or it is reset; it does not \
+time out. It advertises as <board>-OTA (HT-n5262-OTA on a T114) from its \
+application's Bluetooth address plus one. To bring it back without a transfer, \
+run scripts/dfu-exit.py from the Leviculum source tree on a host within \
+Bluetooth range (BlueZ, as root): it writes the Legacy DFU reset to the \
+bootloader and the application comes back intact. A power cycle or the reset \
+button does the same.";
 
 /// Reticulum remote management: verbs that change a node's state.
 #[derive(Parser, Debug)]
@@ -77,6 +91,7 @@ struct Args {
 #[derive(Subcommand, Debug)]
 enum Verb {
     /// put a board into its bootloader's BLE DFU mode
+    #[command(after_help = DFU_AFTER_HELP)]
     Dfu(DfuArgs),
 }
 
@@ -155,10 +170,9 @@ async fn run_dfu(args: &Args, dfu: &DfuArgs) -> u8 {
         }
     };
 
-    let config_dir = args
-        .config
-        .clone()
-        .unwrap_or_else(Config::default_config_dir);
+    // Which directory, and why: every failure below names it (order 1675).
+    let choice = ConfigDirChoice::resolve(args.config.as_deref());
+    let config_dir = choice.dir.clone();
     let config = daemon_rpc::load_config(&config_dir);
     let instance_name = args
         .instance_name
@@ -178,6 +192,7 @@ async fn run_dfu(args: &Args, dfu: &DfuArgs) -> u8 {
         Err(e) => {
             eprintln!("No shared RNS instance available");
             eprintln!("({e})");
+            eprintln!("{}", choice.hint_for(&instance_name));
             return EXIT_FAILED;
         }
     };
@@ -193,6 +208,7 @@ async fn run_dfu(args: &Args, dfu: &DfuArgs) -> u8 {
         Err(e) => {
             eprintln!("No shared RNS instance available");
             eprintln!("({e})");
+            eprintln!("{}", choice.hint_for(&instance_name));
             return EXIT_FAILED;
         }
     };
@@ -240,6 +256,19 @@ mod tests {
         );
         assert_eq!(dfu.identity, PathBuf::from("/tmp/id"));
         assert_eq!(dfu.timeout, 3.5);
+    }
+
+    /// 1660: the help says how a board gets out of DFU again, and names
+    /// the tool, because nothing in lnmgmt can do it.
+    #[test]
+    fn dfu_help_names_the_way_back() {
+        use clap::CommandFactory;
+        let mut cmd = Args::command();
+        let dfu = cmd.find_subcommand_mut("dfu").unwrap();
+        let help = dfu.render_long_help().to_string();
+        assert!(help.contains("scripts/dfu-exit.py"), "{help}");
+        assert!(help.contains("does not time out"), "{help}");
+        assert!(help.contains("-OTA"), "{help}");
     }
 
     #[test]

@@ -65,7 +65,7 @@ map as decided on 2026-10-25, and what is open.
 - **`leviculum-lxmf`, `no_std + alloc`** (`leviculum-lxmf/src/lib.rs:38`):
   - delivery (`LxmfRouter`, `leviculum-lxmf/src/router.rs:505`);
   - propagation nodes, both the client and the node
-    (`PropagationNode`, `leviculum-lxmf/src/propagation_node.rs:1019`);
+    (`PropagationNode`, `leviculum-lxmf/src/propagation_node.rs:1036`);
   - stamps (`CooperativeStamper`, `leviculum-lxmf/src/stamp.rs:269`).
 - **Telemetry.** [Telemetry](telemetry.md) settles positions as LXMF
   fields (`FIELD_TELEMETRY`, `FIELD_TELEMETRY_STREAM`) and the
@@ -316,8 +316,8 @@ stays the separate renderer it is.
 ### The input model
 
 One table. The M9's keyboard feeds the same resolver the terminal uses:
-a key becomes a `keys::Action` (`resolve`, `loquax/src/keys.rs:1059`)
-through the shared rows (`ROWS`, `loquax/src/keys.rs:225`, over
+a key becomes a `keys::Action` (`resolve`, `loquax/src/keys.rs:1069`)
+through the shared rows (`ROWS`, `loquax/src/keys.rs:228`, over
 `leviculum_ui::keymap`'s scroll rows), and the action becomes a scene
 intent (`Intent::from_action`, `loquax/src/ui/intent.rs:519`). Nothing
 M9-specific enters the model; what the platform layer owns is the I2C
@@ -518,7 +518,7 @@ halves stay: the store in flash, the scancodes, the send over the mesh.
   screen of one pane shows the pane the keys are in. That builds the Wide
   scene and drops its chat: the list's peak then carries the chat's.
 - **The list's cursor is the reader's** (1546, `list_top`,
-  `loquax/src/ui.rs:2646`). The model keeps the selected peer and the line
+  `loquax/src/ui.rs:2650`). The model keeps the selected peer and the line
   it stands on; while it stays selected, a pull or an arrival that sorts
   rows in above it moves the window, not the cursor. A key moves the line
   by as many rows as the selection moved in the order. Before, the window
@@ -692,7 +692,7 @@ draws is the scene the terminal, the window and the phone already draw.
   it changed as runs (`take_runs`, `loquax-m9/src/frame.rs:141`), and
   since 1507 the board sends each run through its own row window by DMA
   straight out of the frame (`window`,
-  `leviculum-esp/src/bin/thinknode_m9.rs:1267`): the full frame is the
+  `leviculum-esp/src/bin/thinknode_m9.rs:1277`): the full frame is the
   first draw's cost, a moved cursor sends two entries. The redraw test
   drives one renderer through four keys and must equal a fresh draw, its
   runs flushed into a second frame
@@ -802,7 +802,7 @@ well as into the renderer, and both must be refused for thumbv7em.
 **The page fits a packet.** A link on LoRa keeps the default MTU, 500
 bytes, and its MDU is 431 (`LORA_LINK_MDU`,
 `loquax/src/home/ask.rs:139`). A response longer than that goes as a
-resource (`leviculum-core/src/node/mod.rs:1841`), which is an
+resource (`leviculum-core/src/node/mod.rs:1843`), which is an
 advertisement, its parts and a proof. The home's own page bound is
 64 KiB of messages (`SYNC_PAGE_BYTES`, `loquax/src/home.rs:370`). So
 the client asks smaller pages: `/sync [cursor, page]`, a second element
@@ -831,7 +831,7 @@ out, because they are the nodes' cost and not the client's.
 | wake | 2 | 115 B | 83 B | channel message 83 (down), its proof 115 |
 | pull one message | 7 | 610 B | 345 B | link 102, 118, 83, 211; `/sync` 115, the page 227 (down); close 99 |
 | mark one read | 7 | 642 B | 217 B | link 102, 118, 83, 211; `/mark` 147, answer 99; close 99 |
-| keepalive | 2 | 20 B | 20 B | flags, hops, link id, context, one byte (`build_keepalive_packet`, `leviculum-core/src/link/mod.rs:2731`), every 230 s |
+| keepalive | 2 | 20 B | 20 B | flags, hops, link id, context, one byte (`build_keepalive_packet`, `leviculum-core/src/link/mod.rs:2753`), every 230 s |
 
 Five entries pulled in LoRa pages came as two pages, answers of 499 and
 467 bytes, each one packet of at most two LoRa frames. The control, the
@@ -916,8 +916,8 @@ host half. Nothing was flashed: the board half is the rig's.
 verbs, the yes/no question, "New group" with its friends, ticks and
 name, the invitation card with its Join. A phone taps a node and runs
 its `Action`. The terminal reaches these verbs through its palette only:
-the rows from `new group` (`loquax/src/keys.rs:930`) to `start again`
-(`loquax/src/keys.rs:962`) have no chord. The M9 has no palette. So its
+the rows from `new group` (`loquax/src/keys.rs:940`) to `start again`
+(`loquax/src/keys.rs:972`) have no chord. The M9 has no palette. So its
 group keys run the node's `Action` the way a tap does (`hit`,
 `loquax-m9/src/group.rs:137`), and nothing new enters the model. The
 cursor over the sheet's and the picker's rows is the M9's own, as a
@@ -1110,7 +1110,7 @@ twenty times slower (`docs/drafts/map-measurement-2026-10.md`).
   feature range-checked. The region's tiles are already geometry; there
   is no other decode.
 - **Pixels** is the map core's filler painting the view straight into
-  the panel's frame (`Painter::picture`, `loquax-m9/src/map.rs:711`); the
+  the panel's frame (`Painter::picture`, `loquax-m9/src/map.rs:781`); the
   whole screen adds the bar's and the legend's cells and the pins
   (`Renderer::show`, `loquax-m9/src/render.rs:260`).
 - **Cells** is the terminal's way (`leviculum_map::cells`): the view
@@ -1129,7 +1129,7 @@ in place:
 | the 2 km region, z10 to z15 | 820,244 B | flash, read in place: none in PSRAM |
 | the fixture region the image carries | 197,972 B | flash |
 | the view's tiles, read out of a card instead | 81,850 to 201,070 B | PSRAM, per view |
-| the painter's storage, made once (`Painter`, `loquax-m9/src/map.rs:665`) | 217,508 B | PSRAM |
+| the painter's storage, made once (`Painter`, `loquax-m9/src/map.rs:733`) | 217,508 B | PSRAM |
 | a map draw's heap peak (census, below) | 75,404 B | PSRAM |
 | the cells' own per view, besides the painter's (source and cells) | 191,436 B braille, 120,204 B quadrants | PSRAM |
 | the panel's frame | 153,600 B | SRAM or PSRAM |
@@ -1151,8 +1151,8 @@ same code the phone, the window and the terminal draw through, so no
 renderer is written twice; the cell renderer keeps the bar and the
 legend.
 
-**The screen** (`lines`, `loquax-m9/src/map.rs:250`; `pins`,
-`loquax-m9/src/map.rs:767`), as 1531 left it after Lew's evening at
+**The screen** (`lines`, `loquax-m9/src/map.rs:252`; `pins`,
+`loquax-m9/src/map.rs:889`), as 1531 left it after Lew's evening at
 the board on 2026-11-07: the map is in the light table; the UI around it
 keeps its dark tokens. Since 1565 the picture is the phone's
 (`Style::SCREEN`: casings, round joins, buildings from z16), its edges
@@ -1160,14 +1160,14 @@ smoothed by the panel's frame and the kept picture (`Coverage`), where
 1531 drew the M9's own finish (square caps, no casings, no buildings). There is no title row and no legend: the picture is
 the whole panel, rows 0 to 10 for the model's fit and pins (320 x 220),
 and row 11 is the picture too whenever it has no words. Its words
-(`Chrome`, `loquax-m9/src/map.rs:313`; `bottom`,
-`loquax-m9/src/map.rs:427`): the key hint, "T näher  Y weiter
+(`Chrome`, `loquax-m9/src/map.rs:315`; `bottom`,
+`loquax-m9/src/map.rs:429`): the key hint, "T näher  Y weiter
 Pfeile schieben", for three seconds after the map opens and after a key
 it does not know, the pins' page for three more when there is a pin;
 then the chosen pin's card, its age and the data's credit, "©
 OpenStreetMap", at the right end; and the credit for five seconds in the
 picture's top right corner the first time the map opens after a boot.
-The names (`names`, `loquax-m9/src/map.rs:493`) are set after the
+The names (`names`, `loquax-m9/src/map.rs:500`) are set after the
 picture and before the pins by the phone's label pass
 (`loquax::mapnames`, `no_std` under its `mapnames` feature since 1565):
 one round of the map core's rule, places centred on their point,
@@ -1185,11 +1185,11 @@ cells first, every row in the map's ground, then the map over them, the
 names, the pins and the words; ratatui draws only cells that changed,
 so the next map leaves the blank rows alone, and the renderer clears
 its cells when the screen leaves the map (`leave_map`,
-`loquax-m9/src/render.rs:386`), or the list would keep map pixels where
+`loquax-m9/src/render.rs:399`), or the list would keep map pixels where
 its cells are blank.
 
 **The pins are the model's**, as on every target (`map_pins`,
-`loquax/src/ui.rs:6818`): the shares the store kept, a `lev.position`
+`loquax/src/ui.rs:6800`): the shares the store kept, a `lev.position`
 announce, and the board's own fix. That last one is new in the core:
 the shell's own fix (`UiEvent::OwnFix`, from the receiver or typed by
 hand) is now our pin where it is newer than our last share, so a board
@@ -1198,14 +1198,14 @@ places them in the picture's cells (`map::place`), the M9 asks for the
 ASCII markers: the atlas has `●` but not the chosen pin's `◉`. Each pin
 is set in the atlas on the bar's colours, the chosen one reversed, an
 old one's and a nearby node's muted. Where the picture is, the M9 tells
-the model (`map_picture`, `loquax/src/ui.rs:1392`): the fit, the pan's
+the model (`map_picture`, `loquax/src/ui.rs:1395`): the fit, the pan's
 step and the pins' cells go by its 53 x 21 cells, not by the terminal's
 conversation pane.
 
-**The keys** (`ROWS`, `loquax-m9/src/map.rs:162`) are the terminal's map
+**The keys** (`ROWS`, `loquax-m9/src/map.rs:164`) are the terminal's map
 keys where the M9 has the key; Space and Backspace stand in for Tab and
 Shift-Tab, which it has not, and T, I, Y, O for `+` and `-`, which sit on
-the controller's Sym layer (`key`, `loquax-m9/src/map.rs:185`). A test
+the controller's Sym layer (`key`, `loquax-m9/src/map.rs:187`). A test
 takes every row through the shared resolver
 (`every_map_key_runs_the_terminals_map_command`).
 
@@ -1222,7 +1222,7 @@ takes every row through the shared resolver
 
 **The fixture** (`map`, `loquax-m9/src/fixture.rs:328`) gives the
 board's model the map core's Florence region (`FIXTURE`,
-`loquax-m9/src/map.rs:87`, read in place from the image), the picture,
+`loquax-m9/src/map.rs:89`, read in place from the image), the picture,
 and five positions: the board's GNSS fix by the cathedral, Jürgen's and
 Mum's shares, Zoë's three hours old, and Rifugio, a node nearby that
 announced itself. The existing screens' goldens did not move. Two
@@ -1353,7 +1353,7 @@ the tab), so a `ROOMS_ROWS` table beside `LIST_ROWS` and `CHAT_ROWS` in
 erase and the character keys onto those events through `keys::event`,
 with a test that resolves each row as the list's and the chat's tests do,
 and one row in the list pane for the terminal's `R`
-(`loquax/src/keys.rs:651`) to bring the tab. Two things beyond the
+(`loquax/src/keys.rs:654`) to bring the tab. Two things beyond the
 screen decide whether it is worth building there: the hub link is `std`
 on tokio (`loquax/src/rooms_link.rs`, behind `std`), so the board drives
 `leviculum_rrc::Session` (`no_std` already) over a link of its own once
@@ -1605,7 +1605,7 @@ phone pulls from; the bench line is lnsd on schneckenschreck, the
 rendezvous, the home behind it. lnsd's serial interface to the M9 needs
 `interface_mode = gateway`: in the default full mode a path request
 from the board for the home is not discovered onwards
-(`leviculum-core/src/transport.rs:12780`, only access point, gateway
+(`leviculum-core/src/transport.rs:12958`, only access point, gateway
 and roaming re-originate), and the join ends in `NoPath`. The M9 sets
 its own end to Gateway already (`leviculum-esp/src/handheld.rs:245`).
 
@@ -1986,7 +1986,7 @@ words, and the picture was the shorter one while the bottom row had
 words. Now the picture always takes the bottom row and its names keep
 clear of the pins only; the hint, the pin's card and the credit are
 drawn over the copy (`Renderer::show`, `loquax-m9/src/render.rs:260`;
-`Kept`, `loquax-m9/src/map.rs:1005`), so a word that goes uncovers the
+`Kept`, `loquax-m9/src/map.rs:1127`), so a word that goes uncovers the
 picture kept under it. A name under a word stays hidden while the word
 stands. `the_words_over_the_map_never_draw_its_picture_again`
 (`loquax-m9/tests/map.rs:219`) walks the board's chrome clock: open with
@@ -1998,7 +1998,7 @@ instead of draws; a draw's own copy is not counted.
 **The census in the reader's size.** 1532's census walked every screen
 in both type sizes and core 0 waited 6026 ms for it (window 12: 2857).
 A release boot now walks the reader's size only; the bench image walks
-both (`thinknode_m9.rs:3134`).
+both (`thinknode_m9.rs:3144`).
 
 **The walk.** `expect <field> changed` waits for a `[PAGE]` line that
 moves the field, up to 1 s after the action began
@@ -2064,12 +2064,12 @@ plus decode under 100 ms for the long chat, window 16's to prove.
 
 **An invitation keeps its row.** A group the reader is invited to that
 no message reached has the invitation's listing, "Einladung", from when
-the invitation came (`UiModel::listing_for`, `loquax/src/ui.rs:2373`);
+the invitation came (`UiModel::listing_for`, `loquax/src/ui.rs:2377`);
 the index keeps the group's name from the invitation, so both boots
 name and list it alike.
 
 **The boot's census.** The release image's census leaves out the map
-and its pan (`thinknode_m9.rs:3146`): window 15's boot `[MAP] zoom=15
+and its pan (`thinknode_m9.rs:3156`): window 15's boot `[MAP] zoom=15
 picture_ms=241` before the list was the census's own pan draw, kept by
 no reader's map. The census's map stats are dropped after it. A chat's
 draw may keep the renderer's seen record (ea3ffd02), and the next screen
@@ -2103,7 +2103,7 @@ of it waiting (`a_flush_gets_a_gap_between_two_flash_ops`,
 `loquax-m9/src/mspi/tests.rs:122`). On the board the flush line says
 `waited_ms=`, the wait before a draw is its own stall stage, `flush`,
 and a wait that moves feeds MWDT1 once per chunk started
-(`Panel::settle_fed`, `leviculum-esp/src/bin/thinknode_m9.rs:1161`); one
+(`Panel::settle_fed`, `leviculum-esp/src/bin/thinknode_m9.rs:1171`); one
 that stopped does not.
 
 **A reset reads the tail.** The summary written before a reset stands
@@ -2177,11 +2177,11 @@ boot the log shows `[PAGE] name=chats`, then a `[STORE] page_read`, a
 summary record, the cursor on row 12 and a bench `[OPEN]` with
 `keys=0`. That is 1546's preload: the boot's `house::set_size` asks
 the model, the model asks the cursor chat's page
-(`thinknode_m9.rs:3207`), and the fold runs behind the list
+(`thinknode_m9.rs:3217`), and the fold runs behind the list
 (`behind_the_list`, `loquax-m9/src/home.rs:292`), so no read mark is
 queued — `route` takes marks only from `take_marks`, and the hidden
 fold queues none. The summary write beside it is the touched row with
-its unread as it was (`UiModel::row`, `loquax/src/ui.rs:2437`, the
+its unread as it was (`UiModel::row`, `loquax/src/ui.rs:2441`, the
 a80038c2 rule); the cursor moves because the folded page gives the
 chat its real activity and the list re-sorts under a selection that
 follows the chat. A preload, not an open: nothing to stop for 1562/1564.
@@ -2481,7 +2481,7 @@ the same order.
 Two blocks of the rebuild grew with the ring whatever the chats were,
 and both went: the batch's note scope held one peer per folded entry
 (8192 x 16 B), now each conversation once (`Batch::fold`,
-`loquax/src/ui.rs:3729`); and every received message left a toast that a
+`loquax/src/ui.rs:3733`); and every received message left a toast that a
 board, which never ticks, never aged out, now at most `TOAST_KEEP`
 (`loquax/src/ui.rs:199`). The model after a rebuild holds about 470 KB
 less on the host. `a_rebuild_of_short_chats_asks_for_no_block_that_grows_with_the_ring`
@@ -2503,7 +2503,7 @@ entries=<n> ms=<t>` every `REBUILD_CHUNK` entries
 (the watchdog is not armed yet), so its 25 s lost what the 8 KiB keep
 could not hold (`rx_lost=7916`). Its clock now pumps the keep to the
 heap at every step, as the forget's reopen and a taken code do
-(`leviculum-esp/src/bin/thinknode_m9.rs:2276`). The held bytes live in
+(`leviculum-esp/src/bin/thinknode_m9.rs:2286`). The held bytes live in
 2 KiB blocks, at most 35 s of the line (`RxHeld`,
 `leviculum-nrf/serial-mux/src/rx.rs:126`): a doubling buffer would ask
 the pool for 256 KiB in one piece, and 22 s was shorter than the
@@ -2529,7 +2529,7 @@ owed, the reboot `rebuilt`).
 **A dump is its own stage.** Core 0 wrote a screen dump's lines inside
 the take stage, so the walks read takes of 1 to 6 s. The dump is now
 timed apart: stall stage `dump`, and `dump=` in the `[LOOP]` line beside
-`take=` (`leviculum-esp/src/bin/thinknode_m9.rs:2852`); `m9-walk.py`
+`take=` (`leviculum-esp/src/bin/thinknode_m9.rs:2862`); `m9-walk.py`
 takes `dump=` as the dump's turn and holds the rest of that turn to the
 bar.
 

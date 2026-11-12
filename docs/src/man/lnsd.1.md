@@ -90,7 +90,19 @@ Sending SIGUSR1 prints a diagnostic dump of internal state to stderr.
 *<config_dir>/storage/*
 :   Storage directory for identities, known destinations, and cached path state.
 
-The three configuration directories are tried in that order, matching Python-Reticulum's own lookup.
+The three configuration directories are tried in that order, the lookup order of Python-Reticulum, stated once in the installation guide, section "Configuration directory" (`docs/src/guide/installation.md:104-117`).
+
+## CONFIGURATION DIRECTORY
+
+Without **--config**, **lnsd** and every client tool take the first directory of that order, so a tool started without flags reaches the daemon started without flags. A tool that cannot reach or authenticate to the daemon names the directory it took and why, the socket, and every other candidate holding a `config`; see **lnstatus**(1).
+
+## PEER ADDRESSES
+
+**lnsd** writes no IP address of a client or neighbour into its log or its event log. Where a line would name one, it names the source's daily pseudonym instead, `src=3f9a01c2` in a sentence and `source=3f9a01c2` in an event: the first four bytes of HMAC-SHA256 over the address, under a key the daemon draws at start and redraws every 24 hours, held only in memory and never written. Within a day the same source carries the same tag, so a log still tells 412 connections from one host from one connection each from 412; after the key turns nothing written before can be linked to anything written after, nor back to an address. The port is dropped. An accepted TCP connection is named `tcp_server/<tag>`, an AutoInterface peer `auto/<nic>/<tag>`. A peer that announces is known by its transport hash, which is what debugging needs; the address is not. Addresses the operator configured (a TCP client's target, a UDP forward address, the daemon's own bind address) are configuration, not a client, and are logged as before.
+
+The running daemon still holds a connection's address while the connection lives, and **lnstatus -a** shows it as **rnstatus** does; **lnstatus -a --src-tags** prints each connection's tag beside it, so a log line can be matched to a live connection while it exists. Nothing else carries an address: the SIGUSR1 dump names interfaces by the same tags, and **lnstest diag** writes `src=<tag>` or `<address>` wherever the daemon's answers name one.
+
+`[logging] log_addresses = full` turns raw addresses back on for an operator who wants them; **lnsd** then says so at start with one `LOG_ADDRESSES_FULL` warning line. The default is `pseudonym`, and any other value keeps it. **rnsd** logs addresses raw; this is a deliberate deviation, with nothing on the wire changed: a log that holds no address has nothing to leak and nothing to declare.
 
 ## SIGNALS
 
@@ -104,7 +116,7 @@ The three configuration directories are tried in that order, matching Python-Ret
 
 The SIGUSR1 dump lists the estimated size of every tracked table, the `=== Total estimated ===` line, the process RSS, and three sections that say where the rest of the memory sits.
 
-`=== Allocator ===` prints glibc's own balance sheet (`mallinfo2`: arena, ordblks, hblks, hblkhd, uordblks, fordblks, keepcost) and the thread count. The shipped musl-static builds have no `mallinfo2` and run lnsd on mimalloc rather than the libc allocator, so there the section says it is unavailable and only the thread count is measured. The startup log line `Allocator:` and the `+mimalloc` in `lnsd --version` say which allocator a binary runs.
+`=== Allocator ===` prints glibc's own balance sheet (`mallinfo2`: arena, ordblks, hblks, hblkhd, uordblks, fordblks, keepcost) and the thread count. On a glibc older than 2.33, which has no `mallinfo2`, the section reads the older `mallinfo` instead and says so in its header: its counters are 32-bit and wrap past 4 GiB. The shipped musl-static builds have no `mallinfo2` and run lnsd on mimalloc rather than the libc allocator, so there the section says it is unavailable and only the thread count is measured. The startup log line `Allocator:` and the `+mimalloc` in `lnsd --version` say which allocator a binary runs.
 
 `=== Mappings ===` buckets the process's anonymous writable mappings by size (under 64 KiB, 64 KiB to 1 MiB, 1 to 8 MiB, 8 to 64 MiB, above) with count and bytes per bucket, then names the ten largest by address. Thread stacks show up as regions of about 2 MiB each, so a growing count in one bucket points at an owner class without a debugger.
 

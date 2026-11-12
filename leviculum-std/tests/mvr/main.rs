@@ -61,11 +61,11 @@ pub use harness::port_alloc;
 /// Per-thread arming was necessary and not sufficient. libtest gives each
 /// test its own thread, so no other test's *own* allocations land in this
 /// window — but `tracing` dispatch runs on the thread that emits the event,
-/// and `EventLogLayer::emit`, under `on_event` (`leviculum-std/src/event_log.rs:2436`)
+/// and `EventLogLayer::emit`, under `on_event` (`leviculum-std/src/event_log.rs:2437`)
 /// pushes one `String` into the buffer of EVERY capture handle any test has
 /// registered, "regardless of which test emitted it" (that module's own doc).
 /// So the code under test emitting `PKT_TX`
-/// (`leviculum-core/src/transport.rs:4983`) inside the window made THIS
+/// (`leviculum-core/src/transport.rs:5018`) inside the window made THIS
 /// thread pay another test's `Vec<String>` growth step: on 2026-09-25,
 /// `link_failure_recovery_silent_resume.rs:520` held the only handle in this
 /// binary, its buffer crossed 256 -> 512 entries during the calibration
@@ -385,6 +385,8 @@ mod a_dead_sync_link_ends_the_round_beside_a_second_node;
 // to test (#463, `just lnsd-minimal`).
 #[cfg(feature = "serial")]
 mod a_frame_the_modem_consumed_without_transmitting;
+#[cfg(feature = "serial")]
+mod a_frame_torn_by_a_gap_leaves_the_serial_decoder_in_phase;
 mod a_link_proof_later_than_six_rtts_fails_the_python_receipt;
 mod a_lost_link_rtt_strands_the_resource_transfer;
 mod a_new_interface_hears_an_announce_made_before_it;

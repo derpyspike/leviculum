@@ -724,6 +724,8 @@ leviculum_ui::catalogue! {
     CardNavigate = "card_navigate", "Navigate", "Navigieren";
     CardShare = "card_share", "Share mine", "Meine teilen";
     Locations = "scene_locations", "Locations", "Standorte";
+    // 1684: the map menu's time zone view, the zones and their clocks.
+    TimeZones = "scene_time_zones", "Time zones", "Zeitzonen";
     LoadMapArea = "scene_load_map_area", "Load this map area", "Diesen Kartenausschnitt laden";
     // The day line: the weekday, the day and the month, the year when it
     // is not this one.

@@ -44,10 +44,12 @@ use embedded_graphics::primitives::Rectangle;
 use embedded_graphics::text::{Baseline, Text};
 use leviculum_map::draw::{draw_in_scaled, draws_buildings, Ink};
 use leviculum_map::labels::{Rect as LabelRect, ViewLabel};
+use leviculum_map::outline;
 use leviculum_map::region::{Header, Region, RegionError};
+use leviculum_map::timezones;
 use leviculum_map::viewport::Viewport;
 use leviculum_mapfill::coverage::{Clip, Coverage};
-use leviculum_mapfill::fill::{Edge, Scratch};
+use leviculum_mapfill::fill::{Edge, Filler, Scratch};
 use leviculum_mapfill::frame::rgb888;
 use leviculum_mapfill::render::{NoClock, RenderStats, Work};
 use leviculum_mapfill::style::{Profile, Style};
@@ -490,17 +492,38 @@ pub fn taken_px(taken: &[(u16, u16, u16)]) -> Vec<LabelRect> {
 /// width) nor on the bottom row, whose words come and go over the
 /// picture ([`BOTTOM`]), at [`SCALE`] the phone's sizes. Set in Fira Sans
 /// by `glyphs`.
+///
+/// With `overview` the world region is what is shown, whose own names are
+/// only the places at z3: the world view's names ([`outline::NAMES_M9`],
+/// countries, seas, ranges, deserts and its places) join them (1683). A
+/// name both tables carry is placed once, by its text.
 pub fn names(
     region: &Region<&[u8]>,
     view: &Viewport,
     taken: &[(u16, u16, u16)],
     glyphs: &mut Glyphs,
+    overview: bool,
 ) -> (Vec<PlacedName>, NameStats) {
-    names_scaled(region, view, taken, glyphs, SCALE)
+    let mut found: Vec<ViewLabel> = Vec::new();
+    if region.view_labels(view, true, &mut found).is_err() {
+        found.clear();
+    }
+    if overview {
+        outline::names(outline::NAMES_M9, view, &mut found);
+        let mut once: Vec<ViewLabel> = Vec::with_capacity(found.len());
+        for l in found {
+            if !once.iter().any(|k| k.text == l.text) {
+                once.push(l);
+            }
+        }
+        found = once;
+    }
+    place_found(found, view, taken, glyphs, SCALE)
 }
 
-/// [`names`] at `scale` the phone's sizes instead of [`SCALE`]: what the
-/// measuring tool (`examples/map_measure.rs`) compares sizes with.
+/// [`names`] at `scale` the phone's sizes instead of [`SCALE`], without
+/// the overview's names: what the measuring tool
+/// (`examples/map_measure.rs`) compares sizes with.
 pub fn names_scaled(
     region: &Region<&[u8]>,
     view: &Viewport,
@@ -510,8 +533,52 @@ pub fn names_scaled(
 ) -> (Vec<PlacedName>, NameStats) {
     let mut found: Vec<ViewLabel> = Vec::new();
     if region.view_labels(view, true, &mut found).is_err() {
-        return (Vec::new(), NameStats::default());
+        found.clear();
     }
+    place_found(found, view, taken, glyphs, scale)
+}
+
+/// The time zone view's names (1684): each zone's clock at `unix` by the
+/// board's own rules ([`timezones::board_offset`]), `HH:MM`, placed as
+/// [`names`] places a view's names; a zone the table lacks is left out.
+pub fn zone_names(
+    view: &Viewport,
+    taken: &[(u16, u16, u16)],
+    glyphs: &mut Glyphs,
+    unix: i64,
+) -> (Vec<PlacedName>, NameStats) {
+    let mut found: Vec<ViewLabel> = Vec::new();
+    timezones::labels(view, &mut found);
+    found.retain_mut(|l| {
+        let Some(offset) = timezones::board_offset(&l.local, unix) else {
+            return false;
+        };
+        let minute = (unix + i64::from(offset))
+            .div_euclid(60)
+            .rem_euclid(24 * 60);
+        l.text = alloc::format!("{:02}:{:02}", minute / 60, minute % 60);
+        true
+    });
+    place_found(found, view, taken, glyphs, SCALE)
+}
+
+/// Whether the time zone view is on, and the minute its clocks show
+/// (1684): the model's `z`, once the board knows the time; a board
+/// without a clock draws the map as ever.
+pub fn zones<B>(model: &UiModel<B>) -> Option<i64> {
+    let now = model.now.filter(|_| model.time_zones)?;
+    Some(now.unix_secs - now.unix_secs.rem_euclid(60))
+}
+
+/// `found` placed by the phone's pass, as [`names`] documents, at `scale`
+/// the phone's sizes.
+fn place_found(
+    found: Vec<ViewLabel>,
+    view: &Viewport,
+    taken: &[(u16, u16, u16)],
+    glyphs: &mut Glyphs,
+    scale: f32,
+) -> (Vec<PlacedName>, NameStats) {
     let (w, h) = view.size();
     let sub = leviculum_map::labels::SUBPIXEL as f64;
     let px = |v: (i64, i64)| (v.0 as f64 / sub, v.1 as f64 / sub);
@@ -541,7 +608,8 @@ pub fn pin_cells(pins: &[PinCell]) -> Vec<(u16, u16, u16)> {
 
 /// Draw `names` into `panel` as the phone does
 /// ([`loquax::mapnames::paint_placed_on`]): each halo, then its glyphs,
-/// blended by their coverage.
+/// blended by their coverage, waters blue and parks green by the pass's
+/// own inks.
 pub fn draw_names<D>(names: &[PlacedName], panel: &mut D)
 where
     D: Coverage<Color = Rgb565>,
@@ -707,12 +775,15 @@ impl Painter {
     /// background, then the tiles the region holds there, class by class,
     /// with the buildings from z16 ([`draws_buildings`]), the edges
     /// blended where `panel` blends ([`Coverage`]). What the filler
-    /// counted.
+    /// counted. With `overview` — the world region, which carries no
+    /// boundary class — the country borders and the disputed boundary
+    /// lines go over it too (1683), from the world outline's tables.
     pub fn picture<D>(
         &mut self,
         region: &Region<&[u8]>,
         view: &Viewport,
         panel: &mut D,
+        overview: bool,
     ) -> Result<RenderStats, MapError>
     where
         D: Coverage<Color = Rgb565>,
@@ -745,7 +816,7 @@ impl Painter {
             points: &mut self.points,
             ring_ends: &mut self.ring_ends,
         };
-        draw_in_scaled(
+        let stats = draw_in_scaled(
             &tiles,
             region.area(view),
             Profile::Full,
@@ -757,9 +828,60 @@ impl Painter {
             &mut work,
             &mut NoClock,
         )
-        .map_err(|_| MapError::Draw)
+        .map_err(|_| MapError::Draw)?;
+        if overview {
+            // The overview has no boundary class, so the countries are
+            // parted by the world outline's own lines (1683), drawn over
+            // the land the region filled. The scratch is this painter's,
+            // freed again by the pass just gone.
+            let mut scratch = Scratch {
+                edges: &mut self.edges,
+                heads: &mut self.heads,
+                active: &mut self.active,
+            };
+            let mut filler = Filler::new(&mut scratch, target.bounding_box());
+            let _ = outline::bounds(
+                &outline::BOUNDARIES,
+                view,
+                Point::new(0, top),
+                style.theme.palette().border,
+                &mut filler,
+                &mut target,
+            );
+        }
+        Ok(stats)
+    }
+
+    /// The time zone view's borders over a picture already drawn for
+    /// `view` (1684), from the map core's zone table, in a violet no other
+    /// line of the map has. Past the outline's deepest zoom nothing.
+    pub fn zone_borders<D>(&mut self, view: &Viewport, panel: &mut D)
+    where
+        D: DrawTarget<Color = Rgb565>,
+    {
+        let top = i32::from(PICTURE.y * CELL_PX.1);
+        let (w, h) = view.size();
+        let mut target = panel.cropped(&Rectangle::new(Point::new(0, top), Size::new(w, h)));
+        let mut scratch = Scratch {
+            edges: &mut self.edges,
+            heads: &mut self.heads,
+            active: &mut self.active,
+        };
+        let mut filler = Filler::new(&mut scratch, target.bounding_box());
+        let _ = outline::bounds(
+            &timezones::BOUNDARIES,
+            view,
+            Point::new(0, top),
+            ZONE_LINE,
+            &mut filler,
+            &mut target,
+        );
     }
 }
+
+/// The time zone view's line colour (1684), the window's and the phone's
+/// violet, `#8e44ad`.
+pub const ZONE_LINE: Rgb565 = Rgb565::new(0x8e >> 3, 0x44 >> 2, 0xad >> 3);
 
 /// The pins over the picture: each pin's text where the model placed it,
 /// in the atlas, on the bar's colours; the chosen one reversed, an old
@@ -1004,8 +1126,9 @@ pub type Clear = Vec<(u16, u16, u16)>;
 /// zoom, a pin that came or went.
 pub struct Kept {
     pixels: Vec<u16>,
-    /// The view and the pins' cells of what `pixels` holds.
-    holds: Option<(Viewport, Clear)>,
+    /// The view, the pins' cells and the time zone view's minute of what
+    /// `pixels` holds.
+    holds: Option<(Viewport, Clear, Option<i64>)>,
     /// The picture's size.
     size: (u32, u32),
     /// Pictures drawn, and draws that copied a kept picture back instead
@@ -1037,19 +1160,24 @@ impl Kept {
         self.pixels.len() * 2
     }
 
-    /// Whether it holds `view` drawn clear of `taken`.
-    pub fn holds(&self, view: &Viewport, taken: &[(u16, u16, u16)]) -> bool {
+    /// Whether it holds `view` drawn clear of `taken`, with the time zone
+    /// view at `zones` (1684).
+    pub fn holds(&self, view: &Viewport, taken: &[(u16, u16, u16)], zones: Option<i64>) -> bool {
         self.holds
             .as_ref()
-            .is_some_and(|(v, t)| v == view && t.as_slice() == taken)
+            .is_some_and(|(v, t, z)| v == view && t.as_slice() == taken && *z == zones)
     }
 
     /// Draw `view` of `map`'s region and its names into the kept pixels,
     /// clear of `taken`, the names set by `glyphs`: what
     /// [`Renderer::show`] draws on the panel without a cache. The label
     /// pass's count, the picture's and the names' microseconds by `clock`.
+    /// `overview` says the view shows the world overview, which brings
+    /// the border table and the world's names (1683); `zones` the time
+    /// zone view with its clocks at that minute (1684).
     ///
     /// [`Renderer::show`]: crate::render::Renderer::show
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         painter: &mut Painter,
@@ -1057,17 +1185,25 @@ impl Kept {
         region: &Region<&[u8]>,
         view: &Viewport,
         taken: &[(u16, u16, u16)],
+        overview: bool,
+        zones: Option<i64>,
         clock: &dyn Fn() -> u64,
     ) -> Result<(NameStats, u64, u64), MapError> {
         self.holds = None;
         self.size = view.size();
         let t0 = clock();
-        painter.picture(region, view, self)?;
+        painter.picture(region, view, self, overview)?;
+        if zones.is_some() {
+            painter.zone_borders(view, self);
+        }
         let t1 = clock();
-        let (names, found) = names(region, view, taken, glyphs);
+        let (names, found) = match zones {
+            Some(unix) => zone_names(view, taken, glyphs, unix),
+            None => names(region, view, taken, glyphs, overview),
+        };
         draw_names(&names, self);
         let t2 = clock();
-        self.holds = Some((*view, taken.to_vec()));
+        self.holds = Some((*view, taken.to_vec(), zones));
         self.drawn = self.drawn.saturating_add(1);
         Ok((found, t1.saturating_sub(t0), t2.saturating_sub(t1)))
     }

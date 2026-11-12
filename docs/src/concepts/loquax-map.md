@@ -35,7 +35,7 @@ the writer, not the group, where the message's source is a group this
 device knows and the writer it names is a member, `groups::copy_writer`,
 `loquax/src/ui/groups.rs:315`), the screen model keeps each peer's latest
 and hands every one to the store (`take_telemetry`,
-`loquax/src/ui.rs:6712`), and the store keeps the fields whole in its
+`loquax/src/ui.rs:6717`), and the store keeps the fields whole in its
 `fields` column (`loquax/src/store.rs:3800`) and the positions in a table of
 their own (`SCHEMA_V2`, `loquax/src/store.rs:203`). The sender's timestamp
 is still not carried: `OutboxEvent`, the screen's `Message` and every type
@@ -543,14 +543,17 @@ whose module comment is the normative layout). All integers little-endian,
 offsets from the start of the file:
 
 - a header: `LMR1`, the version (1, 2 since 1100 with names, 3 since
-  1191 with buildings, 4 since 1291 in arrival order), the header length
-  (64, 96 for version 2, 112 for version 3 and 4), the bounds in
+  1191 with buildings, 4 since 1291 in arrival order, 5 since 1685 with
+  pois), the header length
+  (64, 96 for version 2, 112 for version 3 and 4, 128 for version 5),
+  the bounds in
   degrees x 10^7 (west, south, east, north; west greater than east means
   across the antimeridian), the zoom range (at most 16, so x and y fit a
   `u16`), the layer profile id, where the attribution and the notice lie,
   the tile count, where the index lies and the file's length; version 2
   adds where the label index and the string table lie, version 3 where
-  the building index lies and how many sections it lists;
+  the building index lies and how many sections it lists, version 5 the
+  same pair for the poi index;
 - the two texts, UTF-8 and both required: the attribution, one line every
   map view shows ("© OpenStreetMap contributors"), and the notice, the
   ODbL text, the derived-database sentence and the source the region was
@@ -601,7 +604,20 @@ offsets from the start of the file:
   are whole: a slot with a length whose bytes lie inside what is there.
   The rest are pending, and the draw stands the nearest coarser tile
   that is there in for each (`Region::stand_in`); the names and the
-  buildings show once the file is complete.
+  buildings show once the file is complete;
+- version 5 (LMR5, 1685): a poi section per tile of the region's deepest
+  zoom that has any, after the building sections, and a poi index after
+  the building index, last in the file. Every point of interest of the
+  `pois` layer goes in, every kind verbatim, named or not, and with it
+  the travel attributes the source carries about ways and areas: the
+  state of a way (surface, track grade, hiking difficulty, trail
+  visibility, fords, access), a marked route's `ref` and `network`, a
+  protected or military area's kind. Kinds, names, attribute keys and
+  values are all indices into the region's one string table, so a reader
+  skips a kind or key it does not know and new ones need no new version.
+  The layout is `leviculum-map/src/pois.rs`'s module comment; the header
+  grows to 128 bytes. A cut without pois writes version 4, which a
+  version 4 reader still reads.
 
 **Buildings** (1191, the format and the cut; 1192, the draw).
 Protomaps' z15 tiles carry every OSM building. They are not in the
@@ -638,8 +654,9 @@ before it reads past the version field, as a version 1 reader refuses
 version 2, so the reader has to ship before regions with buildings reach
 it; Loquax cuts its own regions, so in practice only a file copied by hand
 meets an older reader. Since 1291 every cut writes version 4, with
-buildings or without (a section count of 0), and this reader reads
-versions 1 to 4; a version 3 reader refuses it. No region file is
+buildings or without (a section count of 0), and since 1685 version 5
+when pois are cut (the autoload cuts them); this reader reads versions 1
+to 5, a version 4 reader refuses version 5. No region file is
 published anywhere today: the autoload cuts its regions on the device
 from the Protomaps archive, and the committed fixtures stay version 1 to
 3, which this reader keeps reading.
@@ -1376,6 +1393,34 @@ named, as a manual one (`mesh_position::manual`,
 destination of our identity on first use). The device walk's
 `offgrid_positions` uses it with the mailbox stopped
 ([device walk](loquax-device-walk.md)).
+
+### The light data (1684)
+
+The map core carries four small tables of reference data
+(`leviculum-map`, provenance in `leviculum-map/fixtures/README.md` and
+THIRD-PARTY.md):
+
+- **The time zone view.** One control, in the map's menu like the tracks'
+  time window (the window and the phone) and `z` in the terminal and on
+  the M9: the world's zones (timezone-boundary-builder 2026f, the variant
+  with the oceans, ODbL, 63 zones in 1.5 MB) with their borders in a
+  violet no other line of the map has and the current time written into
+  each, `HH:MM`, in place of the names; the clocks turn with the minute.
+  The rules come from the system's tzdata on Linux and Android
+  (`/usr/share/zoneinfo`, the packed `tzdata` file), the board's own table
+  (the TZif footers of tzdata 2026f) where the system has no zone and on
+  the M9, which shows the clocks once it knows the time. The borders go
+  over the composed frame, never into a cached tile.
+- **Height above sea level.** The wire's altitude is the GNSS height over
+  the WGS84 ellipsoid, as Android and Sideband send it, and since 1684 the
+  M9 too (its GGA height plus the sentence's geoid separation). Every
+  place a height is shown subtracts the EGM2008 geoid (15' grid, 2 MB,
+  public domain), which lies up to about a hundred metres from it.
+- **A place's facts.** The detail of a position names the country it lies
+  in (Natural Earth 1:50m), its emergency numbers, the side of the road
+  and its currency (Wikidata, CC0), and the magnetic declination there on
+  the fix's day (WMM2025, public domain). A compass arrow and a measuring
+  tool do not exist yet; the declination is ready for them.
 
 ## 7. Decided
 

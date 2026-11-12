@@ -11,7 +11,7 @@ The hands-on introduction is the [tutorial](rust-api-tutorial.md); the layer
 overview is [Choosing a layer](choosing-a-layer.md).
 
 All `leviculum-std` types are re-exported from the crate root
-(`leviculum-std/src/lib.rs:86-114`), so `use leviculum_std::{NodeEvent, LinkHandle,
+(`leviculum-std/src/lib.rs:90-118`), so `use leviculum_std::{NodeEvent, LinkHandle,
 …}` works without naming submodules.
 
 ## `leviculum-std` (std / tokio)
@@ -56,7 +56,7 @@ returns `self`.
 | `fn storage_path(self, path: PathBuf) -> Self` — `builder.rs:303` | Identity / known-destinations / ratchet store dir |
 | `fn connect_to_shared_instance(self, name: impl Into<String>) -> Self` — `builder.rs:803` | Attach to a running `lnsd`/`rnsd` instead of bringing up own interfaces |
 | `fn without_events(self) -> Self` — `builder.rs:237` | Daemon mode: no application event channel |
-| `async fn build(self) -> Result<ReticulumNode, Error>` — `builder.rs:1278` | Build the node (not yet running) |
+| `async fn build(self) -> Result<ReticulumNode, Error>` — `builder.rs:1287` | Build the node (not yet running) |
 | `fn build_sync(self) -> Result<ReticulumNode, Error>` — `builder.rs:948` | Same as `build`, outside an async context |
 
 ### `ReticulumNode`
@@ -158,8 +158,8 @@ Configuration, defined at `leviculum-std/src/config.rs:12`; re-exported as
 | Signature | Purpose |
 |-----------|---------|
 | `fn load<P: AsRef<Path>>(path: P) -> Result<Self>` — `config.rs:901` | Load an INI config (the `rnsd`/`lnsd` format) |
-| `fn default_config_dir() -> PathBuf` — `config.rs:1604` | Default config directory |
-| `fn default_config_path() -> PathBuf` — `config.rs:1613` | Default config file path |
+| `fn default_config_dir() -> PathBuf` — `config.rs:1611` | Default config directory |
+| `fn default_config_path() -> PathBuf` — `config.rs:1620` | Default config file path |
 
 ## `leviculum-core` (no_std, sans-IO)
 
@@ -171,22 +171,22 @@ All are re-exported from `leviculum-core/src/lib.rs:167-192`.
 
 The sans-IO protocol engine, generic over an RNG `R: CryptoRngCore`, a clock
 `C: Clock`, and storage `S: Storage`. Defined at
-`leviculum-core/src/node/mod.rs:476`. It never performs I/O; every method that
+`leviculum-core/src/node/mod.rs:478`. It never performs I/O; every method that
 can produce output returns a [`TickOutput`](#core-tickoutput-and-action) the
 caller must dispatch.
 
 | Signature | Purpose |
 |-----------|---------|
-| `fn new(identity: Identity, config: TransportConfig, proof_strategy: ProofStrategy, max_incoming_resource_size: usize, rng: R, clock: C, storage: S) -> Self` — `node/mod.rs:665` | Construct directly |
-| `fn register_destination(&mut self, dest: Destination)` — `node/mod.rs:748` | Register a local destination |
-| `fn announce_destination(&mut self, dest_hash: &DestinationHash, app_data: Option<&[u8]>) -> Result<TickOutput, AnnounceError>` — `node/mod.rs:1006` | Build and queue an announce |
-| `fn send_single_packet(&mut self, dest_hash: &DestinationHash, data: &[u8]) -> Result<([u8; TRUNCATED_HASHBYTES], TickOutput), SendError>` — `node/mod.rs:1218` | Build an unreliable data packet |
+| `fn new(identity: Identity, config: TransportConfig, proof_strategy: ProofStrategy, max_incoming_resource_size: usize, rng: R, clock: C, storage: S) -> Self` — `node/mod.rs:667` | Construct directly |
+| `fn register_destination(&mut self, dest: Destination)` — `node/mod.rs:750` | Register a local destination |
+| `fn announce_destination(&mut self, dest_hash: &DestinationHash, app_data: Option<&[u8]>) -> Result<TickOutput, AnnounceError>` — `node/mod.rs:1008` | Build and queue an announce |
+| `fn send_single_packet(&mut self, dest_hash: &DestinationHash, data: &[u8]) -> Result<([u8; TRUNCATED_HASHBYTES], TickOutput), SendError>` — `node/mod.rs:1220` | Build an unreliable data packet |
 | `fn connect(&mut self, dest_hash: DestinationHash, dest_signing_key: &[u8; 32]) -> (LinkId, bool, TickOutput)` — `node/link_management.rs:319` | Build a link request |
-| `fn send_on_link(&mut self, link_id: &LinkId, data: &[u8]) -> Result<TickOutput, SendError>` — `node/link_management.rs:810` | Send on an established link |
-| `fn close_link(&mut self, link_id: &LinkId) -> TickOutput` — `node/link_management.rs:677` | Close a link |
-| `fn handle_packet(&mut self, iface: InterfaceId, data: &[u8]) -> TickOutput` — `node/mod.rs:2651` | Feed received bytes from an interface |
-| `fn handle_timeout(&mut self) -> TickOutput` — `node/mod.rs:2924` | Run periodic maintenance (call at the next deadline) |
-| `fn next_deadline(&self) -> Option<u64>` — `node/mod.rs:2954` | Earliest timer deadline (ms); when to call `handle_timeout` |
+| `fn send_on_link(&mut self, link_id: &LinkId, data: &[u8]) -> Result<TickOutput, SendError>` — `node/link_management.rs:858` | Send on an established link |
+| `fn close_link(&mut self, link_id: &LinkId) -> TickOutput` — `node/link_management.rs:725` | Close a link |
+| `fn handle_packet(&mut self, iface: InterfaceId, data: &[u8]) -> TickOutput` — `node/mod.rs:2653` | Feed received bytes from an interface |
+| `fn handle_timeout(&mut self) -> TickOutput` — `node/mod.rs:2926` | Run periodic maintenance (call at the next deadline) |
+| `fn next_deadline(&self) -> Option<u64>` — `node/mod.rs:2956` | Earliest timer deadline (ms); when to call `handle_timeout` |
 
 A node is more often built with `NodeCoreBuilder` (`node/builder.rs:40`), whose
 `fn build<R, Clk, S>(self, rng: R, clock: Clk, storage: S) -> NodeCore<R, Clk, S>`

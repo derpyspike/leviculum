@@ -133,20 +133,20 @@ fn verbosity_flag(arg: &str) -> Option<(u8, u8)> {
 ///
 /// Info, not debug, for the same reason `lnsd` defaults there: `warn!` — the
 /// level of the one line that says this terminus adopted a proof's hop count
-/// (`node/link_management.rs:1333`) — must be visible without being asked
+/// (`node/link_management.rs:1381`) — must be visible without being asked
 /// for, while the `event=` debug lines are volume and are asked for. Asking
 /// is what every periculum node already does, twice over: the rendered config
 /// carries `[logging] loglevel = 5` (`periculum/src/topology.rs:9186`) and the
 /// container environment carries `RUST_LOG=debug`
 /// (`periculum/src/compose.rs:291-294`), so a scenario gets `PATH_REBALANCE`
-/// (`transport.rs:10814`) without touching the argv.
+/// (`transport.rs:10959`) without touching the argv.
 const DEFAULT_LOGLEVEL: u8 = 4;
 
 /// Map an RNS log level (0-7) to a tracing env-filter directive.
 ///
 /// tracing has no notice/verbose/extreme, so notice folds into info, verbose
 /// into debug and extreme into trace. The third copy of this ladder
-/// (`leviculum-cli/src/lnsd.rs:464`, `lnpnd/src/config.rs:468`); kept local
+/// (`leviculum-cli/src/lnsd.rs:477`, `lnpnd/src/config.rs:534`); kept local
 /// because this batch is scoped to this crate, and cited from here so a later
 /// consolidation into `leviculum-std` finds all three.
 fn loglevel_filter(level: u8) -> &'static str {

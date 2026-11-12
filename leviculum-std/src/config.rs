@@ -93,6 +93,12 @@ pub struct ReticulumConfig {
     /// tracing filter with CLI `-v/-q` and `RUST_LOG` taking precedence.
     #[serde(default)]
     pub loglevel: Option<u8>,
+    /// `[logging] log_addresses` (order 1678): what the daemon writes where
+    /// a peer's network address would go, a daily pseudonym by default or
+    /// the address itself under `full`. lnsd only; rnsd ignores the key and
+    /// logs addresses raw. See [`crate::peer_tag`].
+    #[serde(default)]
+    pub log_addresses: crate::peer_tag::LogAddresses,
     /// Allow sharing instance across processes via local Unix socket.
     /// When enabled, the daemon listens on `\0rns/{instance_name}` for local clients.
     #[serde(default)]
@@ -644,6 +650,7 @@ impl Default for ReticulumConfig {
             enable_transport_defaulted: true,
             use_implicit_proof: true,
             loglevel: None,
+            log_addresses: crate::peer_tag::LogAddresses::Pseudonym,
             shared_instance: false,
             instance_name: default_instance_name(),
             shared_instance_type: None,
@@ -1627,21 +1634,16 @@ impl Config {
 
 /// Pure resolver for the Python-Reticulum config-dir lookup, factored
 /// out so tests can drive it without touching the real filesystem or
-/// mutating `$HOME`.
+/// mutating `$HOME`. The order lives in
+/// [`crate::config_dir::ConfigDirChoice::resolve_with`], which also keeps
+/// the reason a client tool prints on a failure.
 fn resolve_config_dir<F: Fn(&Path) -> bool>(
     system_dir: &Path,
     home_dir: Option<&Path>,
     config_file_exists: F,
 ) -> PathBuf {
-    if config_file_exists(&system_dir.join("config")) {
-        return system_dir.to_path_buf();
-    }
-    let home = home_dir.unwrap_or(Path::new("."));
-    let xdg = home.join(".config/reticulum");
-    if config_file_exists(&xdg.join("config")) {
-        return xdg;
-    }
-    home.join(".reticulum")
+    crate::config_dir::ConfigDirChoice::resolve_with(None, system_dir, home_dir, config_file_exists)
+        .dir
 }
 
 // Minimal home_dir implementation to avoid dirs crate dependency

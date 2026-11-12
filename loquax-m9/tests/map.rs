@@ -542,7 +542,7 @@ fn the_map_carries_names_at_z13_z15_and_z16() {
         let (view, pins) = map::view(&model).expect("map");
         let tall = map::with_bottom(&view);
         let taken = map::pin_cells(&pins);
-        let (names, stats) = map::names(&region.region, &tall, &taken, &mut region.glyphs);
+        let (names, stats) = map::names(&region.region, &tall, &taken, &mut region.glyphs, false);
         let texts: Vec<(&str, f64)> = names.iter().map(|n| (n.text.as_str(), n.angle)).collect();
         println!("z{zoom}: {stats:?} {texts:?}");
         assert_eq!(stats.drawn, names.len());
@@ -586,7 +586,7 @@ fn the_map_carries_names_at_z13_z15_and_z16() {
             let mut bare = Frame::new();
             let mut painter = map::Painter::new();
             painter
-                .picture(&region.region, &tall, &mut bare)
+                .picture(&region.region, &tall, &mut bare, false)
                 .expect("picture");
             assert_ne!(
                 bare.pixels()[..(WIDTH * HEIGHT_PICTURE) as usize],
@@ -616,7 +616,7 @@ fn the_phones_rule_sets_berlin_and_its_streets() {
     let at = project(LatLon::from_e6(52_517_500, 13_395_000));
     for zoom in 12..=16 {
         let view = Viewport::new(at, zoom, 320, 240);
-        let (names, stats) = map::names(&region, &view, &[], &mut glyphs);
+        let (names, stats) = map::names(&region, &view, &[], &mut glyphs, false);
         let texts: Vec<(&str, LabelKind)> =
             names.iter().map(|n| (n.text.as_str(), n.kind)).collect();
         println!("z{zoom}: {stats:?} {texts:?}");
@@ -696,9 +696,43 @@ fn an_unknown_key_on_the_map_is_told_apart() {
     for (verb, key, _) in ROWS {
         assert!(map::bound(&model, &event(key)), "{verb} ({key:?})");
     }
-    for c in ['q', 'x', 'z'] {
+    // `z` is the time zone view's since 1684.
+    for c in ['q', 'x', 'v'] {
         assert!(!map::bound(&model, &event(M9Key::Char(c))), "{c}");
     }
     let list = fixture::model();
     assert!(map::bound(&list, &event(M9Key::Char('q'))));
+}
+
+/// 1684: the time zone view on the M9: `z` turns it on in the shared
+/// model, and once the board knows the time the names over the world are
+/// the zones' clocks by the board's own table, Paris's at its summer
+/// offset among them; without a clock the map stays as it was.
+#[test]
+fn the_time_zone_view_writes_the_boards_clocks() {
+    let mut model = Screen::Map.model();
+    assert_eq!(map::zones(&model), None, "off by default");
+    model.time_zones = true;
+    let fixture_now = model.now.take();
+    assert_eq!(map::zones(&model), None, "no clock, no clocks");
+    assert!(fixture_now.is_some(), "the fixture's board knows the time");
+    // 2026-07-01T12:00:30Z: the minute is what the clocks show.
+    model.now = Some(loquax::when::WallTime {
+        unix_secs: 1_782_907_230,
+        offset_secs: 0,
+    });
+    let unix = map::zones(&model).expect("on, with a clock");
+    assert_eq!(unix, 1_782_907_200);
+    let centre = leviculum_map::mercator::project(leviculum_map::LatLon::from_degrees(45.0, 10.0));
+    let view = leviculum_map::Viewport::new(centre, 3, 320, 240);
+    let mut glyphs = loquax_m9::glyphs::Glyphs::new().expect("font");
+    let (names, _) = map::zone_names(&view, &[], &mut glyphs, unix);
+    assert!(!names.is_empty());
+    assert!(
+        names
+            .iter()
+            .all(|n| n.text.len() == 5 && &n.text[2..3] == ":"),
+        "{names:?}"
+    );
+    assert!(names.iter().any(|n| n.text == "14:00"), "{names:?}");
 }

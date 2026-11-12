@@ -1514,6 +1514,14 @@ tree-clean-selftest:
 #   `Cargo.toml` feature list: `just deb-features-check`. 1570 added
 #   `GuiArgs::no_start` and loquax under `tui gui` on the gnu triple stayed
 #   uncompilable from 902bc129 to cbbd870d with every coder gate green.
+# not-in-guards: deb-floor-check -- links the desktop loquax and lnsd with
+#   cargo zigbuild at the packages' glibc floor (1674): 23.4 s after `touch
+#   leviculum-std/src/proc_memory.rs`, 1.4 s with nothing changed, 3 min 40 s
+#   cold (measured 2026-11-11), and two release links (clause b). RUN IT BY
+#   HAND INSTEAD whenever a pass adds or changes a `libc::` call or touches
+#   `leviculum-std/src/proc_memory.rs`: `just deb-floor-check`. 42cae4a2 put
+#   `mallinfo2` (glibc 2.33) into a path the desktop loquax links, every
+#   check passed, and the nightly packages failed to link for three days.
 # not-in-guards: citation-guard -- a cargo test target (clause c), and over the
 #   ten besides: 18.65 s for the bare-anchor test alone and 20.0 s for the
 #   recipe (measured 2026-09-27; the other thirteen tests in the binary run
@@ -1567,7 +1575,7 @@ tree-clean-selftest:
 #   run all still ahead of it. The `~3.5 min` in the recipe's own doc
 #   string is older than half the dependency list.
 [doc('The coder-pass gate: every guard in `fast` that costs under 10 s')]
-guards: tree-snapshot tree-clean-selftest check-submodules check-third-party check-trailers check-integ-bin-list check-ci-pipeline check-ci-secrets publish-selftest nightly-green-selftest check-publish-nightly-gate package-selftest site-publish-selftest site-unpack-docs-selftest deb-stamp-selftest version-guard lock-contention-selftest toolchain-status-selftest sweep-selftest tmp-leftovers-selftest window-bench-selftest m9-walk-selftest btvirt-selftest check-firmware-images check-plain-clone check-supervised-spawns check-core-lock-census check-env-knobs check-test-ports test-retry-guard no-printf-grep-pipes check-ignored-source check-just-docs check-guards-subset check-standard-integ check-python-test-prerequisites check-config-table-citations prepush-guard nrf-evt-max-size nrf-gap-device-name nrf-board-pins nrf-sd-guard nrf-uf2-volumes nrf-fw-readback rnode-chip-offsets nrf-shellcheck embassy-pins log-diff-mask-selftest firmware-no-hal firmware-no-chip-cfg nrf-module-reach check-fuzz-lock changelog-links loquax-name m0-build-gate lxmf-embedded-gate loquax-core-no-std map-core-no-std lnomad-core-no-std m9-render-no-std lnomad-core-no-tui-static ui-no-terminal-static check-source-invariant-census nessa-check
+guards: tree-snapshot tree-clean-selftest check-submodules check-third-party check-trailers check-integ-bin-list check-ci-pipeline check-ci-secrets publish-selftest nightly-green-selftest check-publish-nightly-gate package-selftest site-publish-selftest site-unpack-docs-selftest deb-stamp-selftest version-guard lock-contention-selftest toolchain-status-selftest sweep-selftest tmp-leftovers-selftest window-bench-selftest dfu-exit-selftest m9-walk-selftest btvirt-selftest check-firmware-images check-plain-clone check-supervised-spawns check-core-lock-census check-env-knobs check-test-ports test-retry-guard no-printf-grep-pipes check-ignored-source check-just-docs check-guards-subset check-standard-integ check-python-test-prerequisites check-config-table-citations prepush-guard nrf-evt-max-size nrf-gap-device-name nrf-board-pins nrf-sd-guard nrf-uf2-volumes nrf-fw-readback rnode-chip-offsets nrf-shellcheck embassy-pins log-diff-mask-selftest firmware-no-hal firmware-no-chip-cfg nrf-module-reach check-fuzz-lock changelog-links loquax-name m0-build-gate lxmf-embedded-gate loquax-core-no-std map-core-no-std lnomad-core-no-std m9-render-no-std lnomad-core-no-tui-static ui-no-terminal-static check-source-invariant-census nessa-check
 
 # Tier 0 (~3.5 min, runs on every git push): submodule pins + commit-message
 # trailers + the single-integ-bin-list guard (#310)
@@ -1599,7 +1607,7 @@ guards: tree-snapshot tree-clean-selftest check-submodules check-third-party che
 # `check-all-targets` dependency compiles those targets but does not lint
 # them, which is exactly the gap.
 [doc('Tier 0 (~3.5 min): the gate every git push runs')]
-fast: tree-snapshot tree-clean-selftest check-submodules check-third-party check-trailers check-integ-bin-list check-ci-pipeline check-ci-secrets publish-selftest nightly-green-selftest check-publish-nightly-gate package-selftest site-publish-selftest site-unpack-docs-selftest deb-stamp-selftest version-guard lock-contention-selftest toolchain-status-selftest sweep-selftest tmp-leftovers-selftest window-bench-selftest m9-walk-selftest btvirt-selftest check-firmware-images check-plain-clone check-supervised-spawns check-core-lock-census check-env-knobs check-test-ports test-retry-guard no-printf-grep-pipes check-ignored-source check-just-docs check-guards-subset check-standard-integ check-python-test-prerequisites check-config-table-citations prepush-guard check-processor-seam mvr supervised-spawn lint-nrf lint-lr11xx nrf-stack-frames nrf-store-gap nrf-flash-budget m9-reproducible nrf-reproducible nrf-evt-max-size nrf-gap-device-name nrf-board-pins nrf-sd-guard nrf-uf2-volumes nrf-fw-readback rnode-chip-offsets nrf-shellcheck embassy-pins log-diff-mask-selftest firmware-no-hal firmware-no-chip-cfg nrf-module-reach hw-witness check-fuzz-lock fuzz-selftest fuzz-regress notices-guard doc-touched doc-gate changelog-links loquax-name core-no-tracing lnsd-minimal event-catalog m0-build-gate lxmf-embedded-gate loquax-core-no-std map-core-no-std lnomad-core-no-std m9-render-no-std lnomad-core-no-tui ui-no-terminal i686-usize-gate no-atomic64-gate check-all-targets deb-features-check citation-guard source-invariant-tests tmp-leftovers nessa-check
+fast: tree-snapshot tree-clean-selftest check-submodules check-third-party check-trailers check-integ-bin-list check-ci-pipeline check-ci-secrets publish-selftest nightly-green-selftest check-publish-nightly-gate package-selftest site-publish-selftest site-unpack-docs-selftest deb-stamp-selftest version-guard lock-contention-selftest toolchain-status-selftest sweep-selftest tmp-leftovers-selftest window-bench-selftest dfu-exit-selftest m9-walk-selftest btvirt-selftest check-firmware-images check-plain-clone check-supervised-spawns check-core-lock-census check-env-knobs check-test-ports test-retry-guard no-printf-grep-pipes check-ignored-source check-just-docs check-guards-subset check-standard-integ check-python-test-prerequisites check-config-table-citations prepush-guard check-processor-seam mvr supervised-spawn lint-nrf lint-lr11xx nrf-stack-frames nrf-store-gap nrf-flash-budget m9-reproducible nrf-reproducible nrf-evt-max-size nrf-gap-device-name nrf-board-pins nrf-sd-guard nrf-uf2-volumes nrf-fw-readback rnode-chip-offsets nrf-shellcheck embassy-pins log-diff-mask-selftest firmware-no-hal firmware-no-chip-cfg nrf-module-reach hw-witness check-fuzz-lock fuzz-selftest fuzz-regress notices-guard doc-touched doc-gate changelog-links loquax-name core-no-tracing lnsd-minimal event-catalog m0-build-gate lxmf-embedded-gate loquax-core-no-std map-core-no-std lnomad-core-no-std m9-render-no-std lnomad-core-no-tui ui-no-terminal i686-usize-gate no-atomic64-gate check-all-targets deb-features-check deb-floor-check citation-guard source-invariant-tests tmp-leftovers nessa-check
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings
     {{manifest}} workspace-lib -- cargo test --workspace --lib
@@ -2034,6 +2042,21 @@ build-deb-armhf: (_require-cargo-deb) _deb-stamp
 [doc('cargo check every .deb feature set on its triple (host arch)')]
 deb-features-check:
     bash scripts/build-deb.sh --check
+
+# Link what the packages link against glibc, at the floor they promise
+# (GLIBC_FLOOR in scripts/build-deb.sh, 2.31: Debian 11, Ubuntu 20.04), by
+# that script's own `--floor` mode: the desktop loquax with the package's
+# feature set and lnsd on the same gnu triple. deb-features-check above
+# links nothing, so a glibc symbol newer than the floor passes it and fails
+# only in the package build: 42cae4a2 called `mallinfo2` (2.33) from the
+# census the mailbox pulls into loquax, and every nightly package build from
+# 2026-11-08 on died in `ld.lld: error: undefined symbol: mallinfo2` (1674).
+# Needs cargo-zigbuild and ziglang (`just _deb-prereqs`). In `fast`, not in
+# `guards` (see the ledger there). RUN IT BY HAND INSTEAD whenever a pass
+# adds or changes a `libc::` call or touches leviculum-std/src/proc_memory.rs.
+[doc('link the desktop loquax and lnsd against the glibc floor of the packages')]
+deb-floor-check:
+    bash scripts/build-deb.sh --floor
 
 # The heap-accounting variants of the leviculum package (#437) and of the
 # lnpnd package (550), for one architecture. Both build-deb-* recipes produce them
@@ -3056,6 +3079,15 @@ window-bench-v3 ROUNDS="3":
 [doc('Check the window-bench verdict rules on synthetic rounds')]
 window-bench-selftest:
     @python3 -I scripts/window-bench-compare.py --selftest
+
+# 1660: the DFU exit tool's parsers on the 2026-11-10 T114 bench captures
+# (docs/src/concepts/ota-stage-1-ble-dfu.md, "Leaving DFU without hands"):
+# the bootloader's advert from a decoded btmon and a btmgmt transcript, the
+# address-plus-one rule, the Control Point and CCCD handles from gatttool,
+# each with a control that must not match. ~0.1 s, no radio.
+[doc('Check the BLE DFU exit tool reads the captured T114 bootloader')]
+dfu-exit-selftest:
+    @python3 -I scripts/dfu-exit.py --selftest scripts/dfu-exit-fixtures
 
 # 1533: the M9 bench walk's verdicts on a simulated board behind the rig
 # proxy's files (a good walk passes and writes its dump as a PNG, a 150 ms

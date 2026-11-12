@@ -39,7 +39,7 @@ region into the maps directory. One request's whole budget is 60 s
 backs off 30 s doubling to an hour (`BACKOFF_FIRST_MS`,
 `loquax/src/mapload.rs:68`); autoloaded regions are a cache under
 500 MB by default (`CACHE_DEFAULT_MB`, `loquax/src/mapload.rs:66`),
-evicted least recently viewed (`evict`, `loquax/src/mapload.rs:715`).
+evicted least recently viewed (`evict`, `loquax/src/mapload.rs:718`).
 None of the Reticulum side below is built.
 
 The sizes, measured 2026-11-01 from the Protomaps build of 2026-10-28
@@ -96,8 +96,8 @@ signed and are never shared.
 
 **The request API**, over a Link on `lev.maps`, with handlers
 registered per path (`register_request_handler`,
-`leviculum-core/src/node/mod.rs:1546`) and every answer a Resource
-(`send_response_resource`, `leviculum-core/src/node/mod.rs:2028`):
+`leviculum-core/src/node/mod.rs:1548`) and every answer a Resource
+(`send_response_resource`, `leviculum-core/src/node/mod.rs:2030`):
 
 - `/index` — no request data; the signed index as msgpack: per piece
   its id, bounds, zoom range, bytes and SHA-256 hash; the server's

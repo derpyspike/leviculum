@@ -64,7 +64,7 @@ the tree on 2026-11-11; a statement the tree does not support carries
 Today the far zooms show Natural Earth land and country borders only
 (`leviculum-map/data/ne_50m_land.lwo`, 159,357 bytes, and the boundary
 lines `leviculum-map/data/ne_50m_admin_0_boundary_lines_land.lwl`,
-49,512 bytes), up to z10 (`MAX_ZOOM` (`leviculum-map/src/outline.rs:58`)).
+49,512 bytes), up to z10 (`MAX_ZOOM` (`leviculum-map/src/outline.rs:106`)).
 
 **Decided:** more Natural Earth on z0 to z9, public domain, version
 5.1.2, baked by the existing script (`scripts/bake-world-outline.py`).

@@ -304,6 +304,9 @@ where
         // after it, never part of its key, so a word that goes uncovers
         // the picture kept under it.
         let mut taken = map::pin_cells(&pins);
+        // The time zone view (1684): its borders and clocks in place of
+        // the names, while the board knows the time.
+        let zones = map::zones(model);
         // The overview's two rows of words (1477) keep names off them.
         if drawn == map::Drawn::Overview {
             taken.extend(map::overview_rows());
@@ -324,13 +327,16 @@ where
             // The kept picture (1507, 1554): drawn when the view or the
             // pins moved, copied back every time.
             (Some(kept), Some(region)) => {
-                if kept.holds(&painted, &taken) {
+                if kept.holds(&painted, &taken, zones) {
                     kept.copied = kept.copied.saturating_add(1);
                     stats.kept = true;
                     stats.names = self.names_kept;
                 } else {
+                    let overview = drawn == map::Drawn::Overview;
                     let (found, picture_us, names_us) = kept
-                        .draw(painter, glyphs, region, &painted, &taken, &now)
+                        .draw(
+                            painter, glyphs, region, &painted, &taken, overview, zones, &now,
+                        )
                         .map_err(|_| DrawError)?;
                     stats.picture_us = picture_us;
                     stats.names_us = names_us;
@@ -340,11 +346,18 @@ where
             }
             (None, Some(region)) => {
                 let t0 = now();
+                let overview = drawn == map::Drawn::Overview;
                 painter
-                    .picture(region, &painted, panel)
+                    .picture(region, &painted, panel, overview)
                     .map_err(|_| DrawError)?;
+                if zones.is_some() {
+                    painter.zone_borders(&painted, panel);
+                }
                 let t1 = now();
-                let (names, found) = map::names(region, &painted, &taken, glyphs);
+                let (names, found) = match zones {
+                    Some(unix) => map::zone_names(&painted, &taken, glyphs, unix),
+                    None => map::names(region, &painted, &taken, glyphs, overview),
+                };
                 map::draw_names(&names, panel);
                 let t2 = now();
                 stats.picture_us = t1.saturating_sub(t0);

@@ -237,6 +237,7 @@ compose too.
 | next / previous way of drawing the map (1093) | `t` / `T` | | `F2` | | P |
 | every way of drawing the map, the one now marked | | | palette `map drawing` | | P |
 | the glyph test: which glyph sets the font draws | `g` | | | | P |
+| the time zones and their clocks over the map, or away again (1684) | `z` | | | the map menu's "Time zones" | P |
 | every pin in view again | | | `0` | | P |
 | next / previous pin | | | `Tab` / `Shift-Tab` | | P |
 | open the pin's conversation | | | `Enter` | click the pin | P |
@@ -954,7 +955,7 @@ first rung it is.
 - a palette action `theme` toggles for the session, the way `t` calls
   `toggle_theme` in lnomad (`lnomad/src/app/intent.rs:352`); no key, the
   keymap is decided. Its toast names the theme it turned to
-  (`loquax/src/ui.rs:6156`).
+  (`loquax/src/ui.rs:6161`).
 
 #### 3. What colour carries and what it must not carry alone
 

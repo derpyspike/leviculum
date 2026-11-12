@@ -147,7 +147,7 @@ the window's map screen (1419) beside the rail, 900 x 560, light, the
 chat fixture's model with no map frame drawn: the bar with no time strip
 and the title "Map"; the map's menu open over the map's corner,
 "Locations" (1430) first, then "Time window" with the six windows, the
-current movement marked, and "Fit all";
+current movement marked, "Fit all", and "Time zones" (1684) last;
 the bar's title "Map · This week" once that window is chosen. Drawn by
 `gui::tests::the_time_window_is_in_the_maps_menu`.
 

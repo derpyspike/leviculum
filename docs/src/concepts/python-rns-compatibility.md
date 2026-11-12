@@ -67,7 +67,7 @@ wrong value, and it fails silently — see
   on are parsed for compatibility — for example `shared_instance_type`
   and `shared_instance_socket` are read and honoured per RNS 1.3.x
   semantics so an existing `rnsd` config works unchanged
-  (`leviculum-std/src/config.rs:115-121`).
+  (`leviculum-std/src/config.rs:121-127`).
 
 This drop-in property is a deliberate design goal, not an accident.
 It is also what makes honest A/B testing possible: the test harness
@@ -136,7 +136,7 @@ Leviculum defaults it **off** on dial-out point-to-point links —
 `TCPClientInterface`, `BackboneClientInterface`, `UDPInterface`, and an
 `I2PInterface` without `connectable` — and leaves it **on** everywhere
 else, including every listener
-(`ingress_control_default_for_type`, `leviculum-std/src/config.rs:1431`).
+(`ingress_control_default_for_type`, `leviculum-std/src/config.rs:1438`).
 
 Against the rule: the flag decides only whether *we* hold incoming
 announces, so no wire byte and no behaviour a peer observes changes
@@ -318,13 +318,13 @@ The reference behaves this way on every forwarding path:
 Loop-freedom never came from interface suppression. It comes from
 transport_id addressing (only the addressed relay processes a Type2
 transport packet), the hop-count limit, and packet-hash dedup —
-`has_packet_hash` (`leviculum-core/src/transport.rs:4638`) drops a
+`has_packet_hash` (`leviculum-core/src/transport.rs:4673`) drops a
 repeated copy, `add_packet_hash`
-(`leviculum-core/src/transport.rs:4685`) records it.
+(`leviculum-core/src/transport.rs:4720`) records it.
 
 The forwarding decision lives in the media-agnostic core
 (`forward_on_interface_from`,
-`leviculum-core/src/transport.rs:9763`). Whether the relayed echo
+`leviculum-core/src/transport.rs:9908`). Whether the relayed echo
 needs TX spacing on a half-duplex channel is the interface's business
 — see [Interface Isolation](interface-isolation.md).
 

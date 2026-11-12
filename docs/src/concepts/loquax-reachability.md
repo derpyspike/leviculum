@@ -78,7 +78,7 @@ path's interface changes. Nothing medium-aware enters transport
 - **Mechanism.** When Loquax and the mailbox run on one computer, both
   are clients of the same daemon's shared instance, an abstract AF_UNIX
   socket `\0rns/<instance_name>` (`shared_instance`,
-  `leviculum-std/src/config.rs:96-115`); TCP loopback only where a
+  `leviculum-std/src/config.rs:102-121`); TCP loopback only where a
   configuration asks for it, as Python does
   (`reference/Reticulum/RNS/Reticulum.py:683`). The path request and the
   link run inside the daemon over its local interfaces: zero network
@@ -328,7 +328,7 @@ holds no path and has no local clients, re-originates nothing: the
 reference gates the search on the receiving interface's mode
 (`reference/Reticulum/RNS/Transport.py:2918`), and so does lnsd
 (`discovers_paths`, `leviculum-core/src/traits.rs:115`;
-`leviculum-core/src/transport.rs:12780`). lnsd widens the gate only for
+`leviculum-core/src/transport.rs:12958`). lnsd widens the gate only for
 interfaces that report live peers, and today only BLE does
 (`leviculum-std/src/interfaces/ble/mod.rs:1812`). Without an announce of
 `loquax.home` no relay holds its path either. So A worked only when the

@@ -168,11 +168,17 @@ skip  leviculum-lxmf-node telemetry_loopback     # tokio runtime, two nodes over
 skip  leviculum-lxmf-node tracing_reaches_stderr # runs the shipped lxmf-node executable as a process, plus a shared-instance daemon
 skip  leviculum-lxmf-node two_node_loopback      # tokio runtime, two nodes, sleeps
 skip  leviculum-map golden                    # golden renders and cell dumps per profile at pinned counts; subject is the draw
+skip  leviculum-map blend                     # the blended world projection's arithmetic (1710); subject is the code
+skip  leviculum-map countries                 # point in the committed country rings and the facts table at pinned counts; subject is the lookup
+skip  leviculum-map declination               # WMM2025 against NOAA's published test values; subject is the field model
+skip  leviculum-map geoid                     # reads the committed geoid table, but the subject is the interpolation against EGM2008 reference values
 skip  leviculum-map labels                    # the pin label rule in cells and pixels; subject is the code
 skip  leviculum-map buildings                 # the building section format and its reader; subject is the code
 skip  leviculum-map lmr2                      # reads the committed region for its names, but the subject is the label format and the reader
+skip  leviculum-map pois                      # the poi section format and its reader; subject is the code
 skip  leviculum-map projection                # in-process projection and viewport arithmetic; subject is the code
 skip  leviculum-map region                    # reads the committed region, but the subject is the reader and the draw (golden counts)
+skip  leviculum-map timezones                 # the zone lookup, TZif and POSIX readers and the board table; reads host tzdata, takes seconds; subject is the code
 skip  leviculum-map view                      # the outline table and the region drawn at pinned counts; subject is the draw, choice and pin order
 skip  leviculum-mapcut cut                    # synthetic tiles through the cut; subject is the code
 skip  leviculum-mapcut http                   # a loopback server and threads; subject is the HTTP reader and the load

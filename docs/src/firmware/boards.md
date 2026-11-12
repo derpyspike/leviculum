@@ -33,7 +33,7 @@ runs an event-driven main loop that dispatches packets between them:
 `set_interface_name` (`leviculum-nrf/src/node_loop.rs:443-460`, the T114
 and the RAK4631 alike). The main loop selecting over
 the three RX sources plus a timer deadline begins at
-`leviculum-nrf/src/node_loop.rs:866`.)
+`leviculum-nrf/src/node_loop.rs:871`.)
 
 Transport routing is enabled in the node builder, so an LNode forwards
 packets and serves paths for other peers, exactly like a
@@ -47,7 +47,7 @@ A board does not accept compressed resources. The firmware builds
 megabytes of working memory against a 96 KiB heap. A board therefore
 refuses a compressed advertisement at once with a receiver cancel, before
 it requests a single part, and the sender fails that transfer immediately
-(`handle_resource_adv`, `leviculum-core/src/node/link_management.rs:2889`;
+(`handle_resource_adv`, `leviculum-core/src/node/link_management.rs:2937`;
 the refusal logs `RESOURCE_ADV_REFUSED reason=compressed` where tracing is
 compiled in). A Python sender compresses by default whenever bz2 shrinks
 the data (`auto_compress=True`, `reference/Reticulum/RNS/Resource.py:248`);
@@ -548,8 +548,8 @@ The mapping from board to binary and features used by the flash recipes:
 | SenseCAP T1000-E | `t1000e` | `bsp-t1000e` |
 
 (Feature sets as invoked in the `just flash`, `just flash-rak4631`, and
-`just flash-rak4631-pocket` recipes: `Justfile:2197`, `Justfile:2228`,
-`Justfile:2244`.)
+`just flash-rak4631-pocket` recipes: `Justfile:2220`, `Justfile:2251`,
+`Justfile:2267`.)
 
 ### What the `lnflash` bundle carries
 

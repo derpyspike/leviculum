@@ -599,14 +599,22 @@ fn name_style(tier: Tier, theme: MapTheme) -> impl Fn(LabelKind) -> Style {
         let dark = theme == MapTheme::Dark;
         let fg = match (tier, kind, dark) {
             (Tier::Mono, ..) => None,
-            (Tier::Ansi16, LabelKind::Water | LabelKind::River, false) => Some(Color::Indexed(4)),
-            (Tier::Ansi16, LabelKind::Water | LabelKind::River, true) => Some(Color::Indexed(12)),
+            (Tier::Ansi16, LabelKind::Water | LabelKind::River | LabelKind::Sea, false) => {
+                Some(Color::Indexed(4))
+            }
+            (Tier::Ansi16, LabelKind::Water | LabelKind::River | LabelKind::Sea, true) => {
+                Some(Color::Indexed(12))
+            }
             (Tier::Ansi16, LabelKind::Park, false) => Some(Color::Indexed(2)),
             (Tier::Ansi16, LabelKind::Park, true) => Some(Color::Indexed(10)),
             (Tier::Ansi16, _, false) => Some(Color::Indexed(0)),
             (Tier::Ansi16, _, true) => Some(Color::Indexed(15)),
-            (_, LabelKind::Water | LabelKind::River, false) => Some(Color::Rgb(0x1f, 0x4e, 0x8c)),
-            (_, LabelKind::Water | LabelKind::River, true) => Some(Color::Rgb(0x8c, 0xb4, 0xe6)),
+            (_, LabelKind::Water | LabelKind::River | LabelKind::Sea, false) => {
+                Some(Color::Rgb(0x1f, 0x4e, 0x8c))
+            }
+            (_, LabelKind::Water | LabelKind::River | LabelKind::Sea, true) => {
+                Some(Color::Rgb(0x8c, 0xb4, 0xe6))
+            }
             (_, LabelKind::Park, false) => Some(Color::Rgb(0x2e, 0x6b, 0x2e)),
             (_, LabelKind::Park, true) => Some(Color::Rgb(0x94, 0xc8, 0x8c)),
             (_, _, false) => Some(Color::Rgb(0x20, 0x20, 0x20)),
@@ -659,6 +667,8 @@ struct Painted {
     style: MapStyle,
     /// The maps directory's epoch it was painted at.
     epoch: u64,
+    /// The time zone view's minute it was painted at (1684).
+    time_zones: Option<i64>,
     fb: Vec<u16>,
     attribution: String,
     picture: Option<Picture>,
@@ -680,6 +690,9 @@ struct Ask {
     epoch: u64,
     /// The map's style, which follows the theme ([`MapPainter::set_theme`]).
     style: MapStyle,
+    /// The time zone view at this minute, in seconds since the epoch
+    /// ([`MapPainter::set_time_zones`], 1684).
+    time_zones: Option<i64>,
 }
 
 /// What draws a view: the regions, the backend, the scratch. It does not
@@ -720,6 +733,7 @@ impl Canvas {
     /// [`paint`](Self::paint), untimed.
     fn paint_view(&mut self, ask: Ask) -> Painted {
         let view = &ask.view;
+        self.painter.set_time_zones(ask.time_zones);
         // Places, waters and parks, and the streets and rivers, which the
         // cells name where they run level.
         let names = self.painter.labels(view, true);
@@ -730,6 +744,7 @@ impl Canvas {
                 cells: ask.cells,
                 style: ask.style,
                 epoch: ask.epoch,
+                time_zones: ask.time_zones,
                 fb: Vec::new(),
                 attribution,
                 picture: None,
@@ -753,6 +768,7 @@ impl Canvas {
             cells: ask.cells,
             style: ask.style,
             epoch: ask.epoch,
+            time_zones: ask.time_zones,
             fb,
             attribution,
             picture,
@@ -1028,6 +1044,8 @@ pub struct MapPainter {
     tier: Tier,
     /// The map's colour table.
     theme: MapTheme,
+    /// The time zone view (1684, [`MapPainter::set_time_zones`]).
+    time_zones: bool,
     /// The frame budget (1422): a drag is the gesture, the paint the
     /// ground, the names placed in cells a pass the minimal rung leaves
     /// to the frame at rest.
@@ -1087,11 +1105,20 @@ impl MapPainter {
             nudge: false,
             tier: Tier::Truecolor,
             theme: MapTheme::Light,
+            time_zones: false,
             ladder: Ladder::new(),
         }
     }
 
     /// Hold drags at `rung` whatever they cost: a test's.
+    /// Place no names: a measuring tool's ground ([`Painter`]'s own).
+    #[cfg(test)]
+    fn set_names_off(&mut self, off: bool) {
+        if let Engine::Inline(canvas) = &mut self.engine {
+            canvas.painter.set_names_off(off);
+        }
+    }
+
     #[cfg(test)]
     fn hold_rung(&mut self, rung: Option<u8>) {
         self.ladder.hold(rung);
@@ -1106,6 +1133,13 @@ impl MapPainter {
     /// paints the view again.
     pub fn set_theme(&mut self, theme: MapTheme) {
         self.theme = theme;
+    }
+
+    /// Draw the time zone view, or not, from the next frame on (1684):
+    /// the zones' borders over the picture and each one's clock in place
+    /// of the names, painted again as the minute turns.
+    pub fn set_time_zones(&mut self, on: bool) {
+        self.time_zones = on;
     }
 
     /// The style a paint asks for: the PC's finish where the picture has
@@ -1179,6 +1213,7 @@ impl MapPainter {
                     && p.cells == ask.cells
                     && p.epoch == ask.epoch
                     && p.style == ask.style
+                    && p.time_zones == ask.time_zones
             })
         };
         match &mut self.engine {
@@ -1197,6 +1232,7 @@ impl MapPainter {
                         cells: done.cells,
                         epoch: done.epoch,
                         style: done.style,
+                        time_zones: done.time_zones,
                     };
                     if keep(&of, &ask, shown_for) {
                         self.painted = Some(done);
@@ -1221,6 +1257,7 @@ impl MapPainter {
             cells: (shown.area.width, shown.area.height),
             epoch: self.maps.epoch(),
             style: self.style(),
+            time_zones: self.time_zones.then(loquax::zoneclock::unix_minute),
         };
         let started = Instant::now();
         match shown.moving {
@@ -2050,8 +2087,10 @@ mod tests {
             })
             .expect("draw");
         let out = String::from_utf8_lossy(&bytes.0.borrow()).into_owned();
-        // The 30 x 8 picture, less the pin label over it.
-        assert!(out.matches('▀').count() >= 30 * 8 - 20, "{out:?}");
+        // The 30 x 8 picture: its blocks, the letters of the world's
+        // names over it (1683), less the pin label.
+        let letters = out.chars().filter(|c| c.is_alphanumeric()).count();
+        assert!(out.matches('▀').count() + letters >= 30 * 8 - 20, "{out:?}");
         let sgr: Vec<&str> = out
             .split("\u{1b}[")
             .skip(1)
@@ -2179,6 +2218,9 @@ mod tests {
     /// columns of cell colours.
     fn halfblock_columns(view: Viewport) -> Vec<Vec<(Color, Color)>> {
         let mut painter = MapPainter::new(Maps::default(), Graphics::Halfblocks, None);
+        // The names are placed per view, not per copy of the world (1683):
+        // what repeats is the ground under them.
+        painter.set_names_off(true);
         let (w, h) = view.size();
         let (cols, rows) = (w as u16, (h / 2) as u16);
         let shown = MapView {
@@ -2207,8 +2249,9 @@ mod tests {
 
     /// The terminal shows one world at most (1131): a pane 300 pixels wide
     /// asked for z0, where the world is 256 wide, is drawn at z1 by the
-    /// model's view, and no column of it repeats. The view as asked, the
-    /// control, repeats every 256 columns.
+    /// model's view, and no column of its ground repeats. The view as
+    /// asked, the control, repeats every 256 columns. The names are off:
+    /// they are placed per view (1683), not per copy of the world.
     #[test]
     fn the_terminal_never_shows_the_world_twice() {
         let setup = MapSetup {
@@ -2500,6 +2543,7 @@ mod tests {
                 let buffer = terminal.backend().buffer().clone();
                 let mut picture = 0;
                 let mut inked = 0;
+                let mut named = 0;
                 // The picture's cells: inside (1, 1) 30 x 8, off the pin's
                 // row, whose label covers part of it.
                 for y in 1..9 {
@@ -2509,6 +2553,12 @@ mod tests {
                         }
                         let cell = buffer.cell((x, y)).expect("cell");
                         let ch = cell.symbol().chars().next().unwrap_or(' ');
+                        if ch.is_alphanumeric() {
+                            // A name's letter, not the technique's glyph
+                            // (1683): the label tests measure those.
+                            named += 1;
+                            continue;
+                        }
                         let ok = match graphics {
                             Graphics::Octant => octants.contains(&ch),
                             Graphics::Blocks => blocks.contains(&ch),
@@ -2545,7 +2595,7 @@ mod tests {
                         }
                     }
                 }
-                assert_eq!(picture, 30 * 7);
+                assert_eq!(picture + named, 30 * 7);
                 // The coasts of Europe at z1 are drawn: some cell carries a
                 // glyph, except in the mosaic, which has none.
                 match graphics {
@@ -2953,6 +3003,7 @@ mod tests {
                     cells: (cols, rows),
                     epoch: 0,
                     style: MapStyle::M9,
+                    time_zones: None,
                 };
                 // Painted whole for the render's share: the picture is
                 // encoded again below, both ways.
@@ -3017,6 +3068,7 @@ mod tests {
                 cells: (cols, rows),
                 epoch: 0,
                 style: MapStyle::M9,
+                time_zones: None,
             }
         };
         for per_s in [25u32, 50] {
@@ -3114,6 +3166,7 @@ mod tests {
             cells: (30, 8),
             epoch: 0,
             style: MapStyle::M9,
+            time_zones: None,
         }
     }
 
@@ -3124,6 +3177,7 @@ mod tests {
             cells: ask.cells,
             style: ask.style,
             epoch: ask.epoch,
+            time_zones: ask.time_zones,
             fb: Vec::new(),
             attribution: String::new(),
             picture: None,
@@ -3155,6 +3209,7 @@ mod tests {
             cells: done.cells,
             epoch: done.epoch,
             style: done.style,
+            time_zones: done.time_zones,
         };
         assert!(!keep(&of, &c, fresh), "A is dropped");
         assert_eq!(slot.start(), Some(c), "B is never painted");
@@ -3166,6 +3221,7 @@ mod tests {
             cells: done.cells,
             epoch: done.epoch,
             style: done.style,
+            time_zones: done.time_zones,
         };
         assert!(keep(&of, &c, fresh), "C is the view wanted");
         // Keys faster than paints: after CATCH_UP_MS the paint behind is
