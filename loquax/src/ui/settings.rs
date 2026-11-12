@@ -683,6 +683,46 @@ mod tests {
     use super::*;
     use crate::ui::strings::Lang;
 
+    /// 1700: the reader's text size has three steps, in the words a
+    /// messenger's settings use, normal the default at the ramp's own
+    /// sizes; it is kept in the model and remembered in the config.
+    #[test]
+    fn the_text_size_has_three_steps_and_is_remembered() {
+        use crate::ui::type_ramp::{self as ramp, TextSize};
+        use crate::ui::{update, UiEffect, UiEvent};
+        let words = |lang| -> Vec<String> {
+            TextSize::ALL
+                .iter()
+                .map(|s| Text::key(s.words()).resolve(lang))
+                .collect()
+        };
+        assert_eq!(words(Lang::En), ["Small", "Normal", "Large"]);
+        assert_eq!(words(Lang::De), ["Klein", "Normal", "Groß"]);
+        assert_eq!(Text::key(StrId::TextSize).resolve(Lang::En), "Text size");
+        assert_eq!(Text::key(StrId::TextSize).resolve(Lang::De), "Schriftgröße");
+        assert_eq!(TextSize::default(), TextSize::Normal);
+        assert_eq!(TextSize::Normal.factor(), 1.0);
+        assert!(TextSize::Small.factor() < 1.0 && TextSize::Large.factor() > 1.0);
+        // The small body is still above the normal caption's least.
+        assert!(ramp::BODY * TextSize::Small.factor() > ramp::SECONDARY - 1.0);
+        for size in TextSize::ALL {
+            assert_eq!(TextSize::from_word(size.word()), Some(size));
+        }
+        assert_eq!(TextSize::from_word("huge"), None);
+
+        let mut model = UiModel::<crate::ui::tests::Field>::new(&[]);
+        assert_eq!(model.text_size, TextSize::Normal);
+        let remembered = update(&mut model, UiEvent::TextSize(TextSize::Large));
+        assert_eq!(model.text_size, TextSize::Large);
+        assert_eq!(
+            remembered,
+            alloc::vec![UiEffect::Remember {
+                key: "text_size",
+                value: "large"
+            }]
+        );
+    }
+
     /// 1599: the hub rows offer the heard hubs by last seen, a shipped one
     /// among them marked "suggested", a nameless one as "Unnamed hub", one
     /// that did not answer marked so and kept; then the shipped ones not

@@ -11,6 +11,9 @@
 //! - the map (`crate::mapnames::size_of`, `crate::screenmap::LABEL`): a
 //!   pin's label is the body, place, park and water names the secondary
 //!   line, road names the caption, and no map text below the caption.
+//!
+//! The reader's [`TextSize`] (Settings, Appearance) scales the ramp as
+//! one value for the chat and the map together.
 
 /// A chat's title in its bar.
 pub const TITLE: f32 = 20.0;
@@ -34,3 +37,52 @@ pub const MAP_RATIO: f32 = BODY / 14.0;
 /// 24 with 8 around (`leviculum_ui_iced::control::icon_action`). A pin on
 /// the map answers a click as far out as this reaches.
 pub const LEAST_BUTTON: f32 = 40.0;
+
+/// The reader's text size: one value for the chat and the map, the
+/// ramp's sizes times its [`factor`](TextSize::factor). Normal is the
+/// ramp as it stands.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextSize {
+    Small,
+    #[default]
+    Normal,
+    Large,
+}
+
+impl TextSize {
+    /// The three, smallest first: the order the settings offer them.
+    pub const ALL: [TextSize; 3] = [TextSize::Small, TextSize::Normal, TextSize::Large];
+
+    /// What the ramp's sizes are multiplied by.
+    pub const fn factor(self) -> f32 {
+        match self {
+            TextSize::Small => 0.875,
+            TextSize::Normal => 1.0,
+            TextSize::Large => 1.25,
+        }
+    }
+
+    /// The config's word (`text_size`).
+    pub const fn word(self) -> &'static str {
+        match self {
+            TextSize::Small => "small",
+            TextSize::Normal => "normal",
+            TextSize::Large => "large",
+        }
+    }
+
+    /// The size a config word names.
+    pub fn from_word(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| s.word() == word)
+    }
+
+    /// Its words on the settings' page.
+    pub const fn words(self) -> super::strings::StrId {
+        use super::strings::StrId;
+        match self {
+            TextSize::Small => StrId::TextSmall,
+            TextSize::Normal => StrId::TextNormal,
+            TextSize::Large => StrId::TextLarge,
+        }
+    }
+}

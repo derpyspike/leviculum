@@ -569,6 +569,12 @@ leviculum_ui::catalogue! {
     PhotoPhone = "photo_phone", "Phone (recommended)", "Handy (empfohlen)";
     PhotoOriginal = "photo_original", "Original size", "Originalgröße";
     PhotoUnreadable = "photo_unreadable", "This photo could not be shown.", "Dieses Foto ließ sich nicht zeigen.";
+    // The reader's text size (1700): one value for the chat and the map,
+    // under Settings › Appearance.
+    TextSize = "text_size", "Text size", "Schriftgröße";
+    TextSmall = "text_small", "Small", "Klein";
+    TextNormal = "text_normal", "Normal", "Normal";
+    TextLarge = "text_large", "Large", "Groß";
     // Files (1221): the bubble's row, the paperclip's entry, the cap's
     // refusal with both sizes, and what the phone says when it cannot.
     File = "scene_file", "File %1$s, %2$s", "Datei %1$s, %2$s";

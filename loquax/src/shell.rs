@@ -1960,6 +1960,7 @@ pub(crate) async fn start(
     model.send_on_enter = config.send_on_enter.unwrap_or(true);
     model.reading.on = config.read_receipts.unwrap_or(true);
     model.photo_size = config.photo_size.unwrap_or_default();
+    model.text_size = config.text_size.unwrap_or_default();
     // The browser (1369), opened from Explore: on unless the config's
     // `browse_tab` says off (1618: Explore is the browser's way in, and a
     // tab that lists pages it cannot open is broken). On, its fetch runs

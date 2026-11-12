@@ -83,6 +83,7 @@ use loquax::ui::intent::{Intent, Messages, Target};
 use loquax::ui::map::{fit, want_pins, want_view, zoom_floor, MapPin, MapSetup, MapWant};
 use loquax::ui::scene::{LayoutClass, NodeId, Scene, TabId};
 use loquax::ui::strings::{Lang, StrId};
+use loquax::ui::type_ramp::TextSize;
 use loquax::ui::viewload::{ViewLoads, ViewWants};
 use loquax::ui::{Pane, UiEvent, MAP_LOADED_ALREADY, MAP_LOADING_HERE_WORDS};
 use loquax::when::WallTime;
@@ -139,6 +140,9 @@ pub struct Seen {
     pub receipts: bool,
     /// The reader's photo size (1220), the settings' row (1371).
     pub photo_size: loquax::ui::photos::PhotoSize,
+    /// The reader's text size (1700), the settings' Appearance rows: the
+    /// window's chat and map scaled together by its factor.
+    pub text_size: TextSize,
     /// The settings' Mailbox section (1450, 1642): the core's mailbox
     /// page, which mailbox, how it is reached, which devices use it.
     pub mailbox: Option<loquax::ui::mailbox_page::MailboxPage>,
@@ -235,6 +239,7 @@ impl Seen {
             now: model.now,
             receipts: model.reading.on,
             photo_size: model.photo_size,
+            text_size: model.text_size,
             mailbox: mailbox_lines(model),
             photo: None,
             browse: match (model.browse.showing(), &browsing.pictures) {
@@ -561,6 +566,11 @@ pub fn measure_frames() {
     leviculum_ui_iced::fps::enable(|line| tracing::info!(target: "loquax::window", "{line}"));
 }
 
+/// `size` times `k` both ways.
+fn shrunk(size: Size, k: f32) -> Size {
+    Size::new(size.width * k, size.height * k)
+}
+
 /// Open the window and run it until it is closed, or, as the packaging
 /// probe, until its first frame is drawn. Without the shell's half the
 /// window is the empty one [`App::boot`] makes.
@@ -584,6 +594,8 @@ fn window(taken: Option<(Frames, UnboundedReceiver<Seen>, Asks)>, probe: bool) -
     .font(lnomad::gui::MONO_BOLD_BYTES)
     .subscription(App::subscription)
     .theme(App::theme)
+    // The reader's text size (1700): the chat and the map together.
+    .scale_factor(App::text_factor)
     .window(iced::window::Settings {
         icon: leviculum_ui_iced::window_icon(),
         // Wayland names the window's icon and its launcher entry by the
@@ -615,7 +627,10 @@ pub enum Message {
     Seen(Box<Seen>),
     /// The map's canvas has this logical size.
     MapSize(Size),
+    /// The screen's own pixels per logical pixel.
     Scale(f32),
+    /// The reader chose a text size (1700) on the Appearance page.
+    TextSize(TextSize),
     Window(window::Event),
     Key(keyboard::Event),
     Pointer(Pointer),
@@ -741,6 +756,7 @@ impl Message {
             Message::Seen(_)
                 | Message::MapSize(_)
                 | Message::Scale(_)
+                | Message::TextSize(_)
                 | Message::Window(_)
                 | Message::Key(_)
                 | Message::Intent(_)
@@ -997,8 +1013,13 @@ struct App {
     selected: Option<[u8; 16]>,
     /// The map's canvas in logical pixels, once laid out.
     size: Option<Size>,
-    /// Screen pixels per logical pixel.
+    /// Screen pixels per logical pixel: the screen's own
+    /// ([`App::os_scale`]) times the reader's text size (1700), which iced
+    /// draws every logical pixel by ([`App::text_factor`]).
     scale: f32,
+    /// The screen's own pixels per logical pixel, as the window system
+    /// says it.
+    os_scale: f32,
     /// The view fitted to the pins once they first arrived.
     fitted: bool,
     press: Option<Press>,
@@ -1164,6 +1185,7 @@ impl App {
                 now: None,
                 receipts: true,
                 photo_size: loquax::ui::photos::PhotoSize::default(),
+                text_size: TextSize::default(),
                 mailbox: None,
                 photo: None,
                 browse: None,
@@ -1182,6 +1204,7 @@ impl App {
             selected: None,
             size: None,
             scale: 1.0,
+            os_scale: 1.0,
             fitted: false,
             press: None,
             shown: None,
@@ -1273,6 +1296,31 @@ impl App {
                 .in_theme(map_theme(Some(flag), Some(screen))),
             None => self.seen.style,
         }
+    }
+
+    /// What iced draws every logical pixel by besides the screen's own
+    /// factor: the reader's text size (1700), one value for the chat and
+    /// the map.
+    fn text_factor(&self) -> f32 {
+        self.seen.text_size.factor()
+    }
+
+    /// The reader's text size moved from `before`'s factor (1700): iced
+    /// draws the window's logical pixels by the new one, so the window's
+    /// and the map's logical sizes are their pixels over it, and the map
+    /// draws at the screen's pixels per logical pixel times it. The
+    /// pixels stay what they are.
+    fn text_size_changed(&mut self, before: f32) {
+        let now = self.text_factor();
+        if now == before {
+            return;
+        }
+        self.settle();
+        let k = before / now;
+        self.window = shrunk(self.window, k);
+        self.size = self.size.map(|size| shrunk(size, k));
+        self.scale = self.os_scale * now;
+        self.hold();
     }
 
     /// Hand `event` to the model.
@@ -2476,7 +2524,9 @@ impl App {
                 {
                     self.viewer = Some(viewer::Viewer::new(photo, self.window));
                 }
+                let before = self.text_factor();
                 self.seen = *seen;
+                self.text_size_changed(before);
                 self.rescene();
                 self.restore_draft();
                 if landed {
@@ -2496,9 +2546,11 @@ impl App {
             }
             Message::Scale(scale) | Message::Window(window::Event::Rescaled(scale)) => {
                 self.settle();
-                self.scale = scale.max(0.25);
+                self.os_scale = scale.max(0.25);
+                self.scale = self.os_scale * self.text_factor();
                 self.hold();
             }
+            Message::TextSize(size) => self.tell(UiEvent::TextSize(size)),
             Message::Window(window::Event::Resized(size)) => {
                 self.window = size;
                 leviculum_ui_iced::fps::set_size(
@@ -4064,6 +4116,7 @@ mod tests {
             now: None,
             receipts: true,
             photo_size: loquax::ui::photos::PhotoSize::default(),
+            text_size: TextSize::default(),
             mailbox: None,
             photo: None,
             browse: None,
@@ -4702,6 +4755,7 @@ mod tests {
             now: model.now,
             receipts: model.reading.on,
             photo_size: model.photo_size,
+            text_size: model.text_size,
             mailbox: mailbox_lines(model),
             photo: None,
             browse: None,
@@ -5324,6 +5378,44 @@ mod tests {
         let small = loquax::ui::photos::PhotoSize::Small;
         let _ = app.update(Message::Intent(Intent::PhotoSize(small)));
         assert_eq!(told(&mut rx), [UiEvent::PhotoSize(small)]);
+    }
+
+    /// 1700: the reader's text size (Settings, Appearance) scales the
+    /// window's chat and its map together, one value: iced draws every
+    /// logical pixel the size's factor larger, the map draws at the
+    /// screen's pixels per logical pixel times it, and the window's
+    /// logical size is its pixels over both. A press on the page tells
+    /// the model.
+    #[test]
+    fn the_text_size_scales_the_chat_and_the_map_together() {
+        use loquax::ui::type_ramp::TextSize;
+        let (mut app, mut rx) = florence_two("Anna", None, 1280, 720);
+        let _ = app.update(Message::Scale(1.5));
+        assert_eq!(app.text_factor(), 1.0);
+        assert_eq!(app.scale, 1.5);
+        let k = TextSize::Large.factor();
+        let mut seen = app.seen.clone();
+        seen.text_size = TextSize::Large;
+        app.apply(Message::Seen(Box::new(seen)));
+        assert_eq!(app.text_factor(), k);
+        assert!((app.scale - 1.5 * k).abs() < 1e-6, "{}", app.scale);
+        assert!(
+            (app.window.width - 1280.0 / k).abs() < 1e-3,
+            "{:?}",
+            app.window
+        );
+        // The screen's own factor moves under it; the reader's stays.
+        let _ = app.update(Message::Scale(2.0));
+        assert!((app.scale - 2.0 * k).abs() < 1e-6, "{}", app.scale);
+        let mut seen = app.seen.clone();
+        seen.text_size = TextSize::Normal;
+        app.apply(Message::Seen(Box::new(seen)));
+        assert_eq!(app.text_factor(), 1.0);
+        assert_eq!(app.scale, 2.0);
+        assert!((app.window.width - 1280.0).abs() < 1e-3, "{:?}", app.window);
+        let _ = told(&mut rx);
+        let _ = app.update(Message::TextSize(TextSize::Small));
+        assert_eq!(told(&mut rx), [UiEvent::TextSize(TextSize::Small)]);
     }
 
     /// A press on a bubble's photo (1269): the shell's file decoded for
