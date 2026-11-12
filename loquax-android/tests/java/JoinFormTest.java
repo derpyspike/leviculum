@@ -21,6 +21,13 @@ final class JoinFormTest {
         check(before(false, "code") && before(false, "code") != JoinForm.saysFailure(false, "code"),
                 "control: the rule before 1448 says a failure on the bare form, and this one tells them apart");
 
+        // 1760: a store from a later Loquax is no first start; neither the
+        // form nor Retry. Control: every other failure keeps both.
+        check(!JoinForm.offersJoin("newer"), "a later Loquax's store offers no join and no retry");
+        check(!JoinForm.offersJoin("moved"), "a moved mailbox has its own button");
+        check(JoinForm.offersJoin("code") && JoinForm.offersJoin("server") && JoinForm.offersJoin(""),
+                "control: the join's own failures keep the form");
+
         String carried = "lqxh1q2w3e4r@127.0.0.1:4242,home.example:4242";
         check(!JoinForm.advancedOffered(carried), "a code with servers offers no address field");
         check(JoinForm.advancedOffered("lqxh1q2w3e4r"), "a bare code offers it");

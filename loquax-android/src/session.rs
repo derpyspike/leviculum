@@ -157,6 +157,14 @@ impl StartError {
     }
 }
 
+/// The phone's store or its mailbox's, when a later Loquax wrote it
+/// (1760); read only, neither file touched.
+fn newer_store(home: &Path) -> Option<loquax::store::StoreError> {
+    [home.to_path_buf(), home.join(mailbox::DIR)]
+        .iter()
+        .find_map(|dir| loquax::store::written_later(&dir.join(loquax::store::STORE_FILE)))
+}
+
 /// The compose field the model needs a type for. Nobody types into it: the
 /// app's own text field sends with [`UiEvent::Write`].
 #[derive(Debug, Default, Clone)]
@@ -464,6 +472,16 @@ impl Session {
     /// server along; a server given beside it wins.
     pub fn start(start: &schema::Start) -> Result<Self, StartError> {
         let home = PathBuf::from(&start.dir);
+        // A store a later Loquax wrote (1760) is no first start: said in
+        // plain words before anything runs or is written, the join form
+        // not asked for, the file and the schemas under Details.
+        if let Some(error) = newer_store(&home) {
+            return Err(StartError {
+                need: Some("newer"),
+                text: error.brief(Lang::of_tag(start.lang.as_deref().unwrap_or_default())),
+                details: Some(error.to_string()),
+            });
+        }
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()

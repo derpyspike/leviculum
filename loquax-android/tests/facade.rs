@@ -53,6 +53,114 @@ fn start_bytes(start: &Start) -> Vec<u8> {
     schema::encode(start)
 }
 
+/// The store at `path` stamped `ahead` schemas past this build's: the
+/// header's `user_version`, four bytes big end first at offset 60, as a
+/// later Loquax's migration leaves it (SQLite keeps no checksum over it).
+fn stamp_ahead(path: &Path, ahead: i32) {
+    let mut bytes = std::fs::read(path).expect("the store");
+    let version = loquax::store::SCHEMA_VERSION + ahead;
+    bytes[60..64].copy_from_slice(&version.to_be_bytes());
+    std::fs::write(path, bytes).expect("stamp the store");
+}
+
+/// The phone's start answer over a store a later Loquax wrote (1760), as
+/// Java decodes it, the app's directory said as `<dir>`; pinned in German
+/// as `golden/store-newer-started.json`.
+fn newer_golden(answer: &Started, dir: &Path) -> String {
+    let mut got = serde_json::to_string_pretty(answer)
+        .expect("json")
+        .replace(&dir.display().to_string(), "<dir>")
+        // The schemas move with every migration; the golden does not.
+        .replace(
+            &format!("schema {}", loquax::store::SCHEMA_VERSION + 1),
+            "schema <later>",
+        )
+        .replace(
+            &format!("knows {}", loquax::store::SCHEMA_VERSION),
+            "knows <ours>",
+        );
+    got.push('\n');
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/store-newer-started.json");
+    if std::env::var_os("LOQUAX_WRITE_GOLDEN").is_some() {
+        std::fs::write(&path, &got).expect("write the golden");
+    }
+    got
+}
+
+/// A store from a later Loquax is no first start (1760): the start says
+/// so in plain words in the phone's language, asks for nothing the join
+/// form would (`need` is `newer`, not `code` or `server`), keeps the path
+/// and the schema numbers under Details, and leaves the file byte for
+/// byte as it was. The phone's own store and the mailbox's alike.
+#[test]
+fn a_store_from_a_later_loquax_says_so_and_is_left_alone() {
+    let _facade = FACADE.blocking_lock();
+    loquax_android::stop();
+    for under in ["", "mailbox"] {
+        let dir = tempfile::tempdir().expect("app dir");
+        let at = dir.path().join(under);
+        std::fs::create_dir_all(&at).expect("the store's directory");
+        drop(loquax::store::Store::open_in(&at, [0x42; 16]).expect("a store"));
+        let path = at.join(loquax::store::STORE_FILE);
+        stamp_ahead(&path, 1);
+        let before = std::fs::read(&path).expect("the store");
+        for (lang, said) in [
+            (
+                Some("de-DE"),
+                "Deine Chats wurden mit einer neueren Loquax-Version gespeichert. \
+                 Installiere die neuere Version, dann ist alles wieder da. \
+                 Deine Daten sind unverändert.",
+            ),
+            (
+                None,
+                "Your chats were saved by a newer version of Loquax. Install the \
+                 newer version and everything is back. Your data is unchanged.",
+            ),
+        ] {
+            let answer = started(&loquax_android::start(&start_bytes(&Start {
+                dir: dir.path().display().to_string(),
+                lang: lang.map(str::to_string),
+                ..Start::default()
+            })));
+            assert!(!answer.ok, "{under}: {answer:?}");
+            assert_eq!(answer.need.as_deref(), Some("newer"), "{under}: {answer:?}");
+            let error = answer.error.clone().expect("words");
+            assert_eq!(error, said, "{under}");
+            assert!(
+                !error.contains("sqlite") && !error.contains("schema"),
+                "{error}"
+            );
+            let details = answer.details.clone().expect("details");
+            assert!(details.contains(&path.display().to_string()), "{details}");
+            assert!(
+                details.contains(&format!("schema {}", loquax::store::SCHEMA_VERSION + 1)),
+                "{details}"
+            );
+            if under.is_empty() && lang.is_some() {
+                let got = newer_golden(&answer, dir.path());
+                let want = std::fs::read_to_string(
+                    Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("tests/golden/store-newer-started.json"),
+                )
+                .unwrap_or_default();
+                assert!(
+                    got == want,
+                    "the answer moved:\n{got}\n(LOQUAX_WRITE_GOLDEN=1 writes it)"
+                );
+            }
+        }
+        assert!(
+            std::fs::read(&path).expect("the store") == before,
+            "{under}: the store was touched"
+        );
+        // Nothing ran: no session answers.
+        let done: schema::Done =
+            rmp_serde::from_slice(&loquax_android::command(&schema::encode(&Request::Pull)))
+                .expect("a Done");
+        assert_eq!(done.error.as_deref(), Some("not started"), "{under}");
+    }
+}
+
 /// The ways a first start goes wrong, each with what the join screen asks
 /// for and words for it. Through the exported facade, which keeps no
 /// session after a failed start.
