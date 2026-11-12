@@ -7,9 +7,18 @@
 //!   with the v0.3.0 capability record, the scanner and the connection
 //!   rule, the GATT-client central path.
 //! - this module and [`notify`] are **protocol-neutral**: the host stack
-//!   bring-up, the bounded packet channels and the [`BleInterface`], the
-//!   handle-indexed drain router, the per-link outbound queues and fan-out,
-//!   and the fragment pumps over notifications and Write Commands.
+//!   bring-up, the per-link outbound queues and the fragment pumps over
+//!   notifications and Write Commands.
+//!
+//! The node side — the channels, the carrier gate, the pacing value, the
+//! drain table, the link table and the BLE `Interface` — is
+//! `leviculum_ble_link`'s since 1715, the same crate the nRF backend
+//! stands behind (there through `leviculum_firmware::ble_link`). This
+//! backend implements [`leviculum_ble_link::BleLink`] ([`TroubleLink`])
+//! over its slot map and reports through
+//! [`leviculum_ble_link::BleLinkEvent`]; until 1715 it carried its own
+//! copy of all of it, the second layer the no-duplication rule of
+//! 2026-10-23 forbids.
 //!
 //! What differs from the nRF module, and why:
 //!
@@ -48,32 +57,40 @@ use bt_hci::controller::ExternalController;
 use bt_hci::transport::Transport;
 use bt_hci::ReadHciError;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::{Channel, Receiver, Sender};
-use embassy_sync::signal::Signal;
-use leviculum_ble_tx::{DrainRouter, SlotMask, TxAim, TxFanout};
-use leviculum_core::traits::{Interface, InterfaceError, InterfaceKind};
-use leviculum_core::InterfaceId;
+use embassy_sync::channel::Channel;
+use leviculum_ble_tx::{Enqueue, Fill, TxAim};
 use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
 pub use incoming::BLE_RX_QUEUE_FULL;
 pub use notify::{BLE_TX_DRAIN_UNROUTED, BLE_TX_DRAIN_WAITS, BLE_TX_DROPPED, BLE_TX_PACKETS};
 
+// The node side of the BLE link (1715): the shared drain table, the
+// carrier gate and the pacing value, re-imported so the backend's own
+// modules keep their `super::` paths — exactly the shape of
+// `leviculum-nrf/src/ble/mod.rs`'s re-import block.
+pub use leviculum_ble_link::{BleChannels, BleInterface, BleLinkEvent, TX_DRAIN};
+pub(crate) use leviculum_ble_link::{carrier_off, carrier_on, tx_gap_ms, CarrierWaiter};
+
 /// Incoming (peripheral-role) link slots: a phone and two boards, the
 /// nRF's #372 count.
 pub const PERIPH_LINKS: usize = 3;
 /// Outgoing (central-role) links: one at a time.
 pub const CENTRAL_LINKS: usize = 1;
-/// Every link at once.
+/// Every link at once — and the shared drain table's slot count, which
+/// the heap budget pins.
 pub const MAX_LINKS: usize = PERIPH_LINKS + CENTRAL_LINKS;
+const _: () = assert!(MAX_LINKS == leviculum_heap_budget::MAX_LINKS);
 /// L2CAP channels the host reserves: one signalling and one ATT per link.
 const L2CAP_CHANNELS: usize = 2 * MAX_LINKS;
-/// The channel depth every BLE packet queue uses. 4 was the nRF's
+/// The depth of each PER-LINK outbound queue. 4 was the nRF's
 /// SoftDevice-era bound; on this family a public relay's announce bursts
 /// share the per-link outbound queue with data packets and 4 drops them
 /// (the 2026-09-18 Dallas soak: 202 fan-out drops in 600 s). 16 covers a
 /// burst at the observed rate without giving a stalled peer a deeper hole
-/// to fill before the drop counter reports it.
+/// to fill before the drop counter reports it. The node-facing channels
+/// are the shared crate's and run at the heap budget's depth; the soak's
+/// drops were here, between the fan-out and the pumps, not there.
 pub const QUEUE_DEPTH: usize = 16;
 
 /// An HCI transport the host can drive: what [`ExternalController`] needs
@@ -99,9 +116,6 @@ pub type BleRunner<T> = Runner<'static, Controller<T>, DefaultPacketPool>;
 /// The cell the firmware's bring-up places its stack in.
 pub type StackCell<T> = StaticCell<BleStack<T>>;
 
-/// One ownership table for session queues and handle-specific HCI drains.
-pub(crate) static TX_DRAIN: DrainRouter<MAX_LINKS> = DrainRouter::new();
-
 pub(crate) fn link_handle_at(slot: usize) -> Option<u16> {
     TX_DRAIN.handle_at(slot)
 }
@@ -111,107 +125,21 @@ pub fn links_claimed() -> usize {
     TX_DRAIN.claimed()
 }
 
-/// One packet queue, as both the node-facing channels and the per-link
-/// outbound queues use it. The outbound aim carries both the routed-peer
-/// hint and the ingress peer a broadcast must not return to.
+/// One packet queue, as the per-link outbound queues use it (the
+/// node-facing channels are `leviculum_ble_link`'s since 1715).
 type PacketQueue = Channel<CriticalSectionRawMutex, Vec<u8>, QUEUE_DEPTH>;
-type InboundQueue = Channel<CriticalSectionRawMutex, (Option<[u8; 16]>, Vec<u8>), QUEUE_DEPTH>;
-type OutboundQueue = Channel<CriticalSectionRawMutex, (TxAim, Vec<u8>), QUEUE_DEPTH>;
-
-static BLE_INCOMING: InboundQueue = Channel::new();
-static BLE_OUTGOING: OutboundQueue = Channel::new();
-
-/// A peer transition (Codeberg #365): the identity's FIRST link came up,
-/// or its LAST link died. Both on one ordered channel so a link flap's
-/// `Lost` lands before its `Up`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PeerEvent {
-    Up([u8; 16]),
-    Lost([u8; 16]),
-}
-
-static BLE_PEER_EVENTS: Channel<CriticalSectionRawMutex, PeerEvent, 8> = Channel::new();
-
-pub(crate) fn report_peer_event(event: PeerEvent) {
-    if BLE_PEER_EVENTS.try_send(event).is_err() {
-        let (kind, identity) = match event {
-            PeerEvent::Up(id) => ("up", id),
-            PeerEvent::Lost(id) => ("lost", id),
-        };
-        crate::log::log_fmt(
-            "[BLE ] ",
-            format_args!(
-                "BLE_PEER_EVENT_DROPPED kind={} peer={:02x}{:02x}{:02x}{:02x}",
-                kind, identity[0], identity[1], identity[2], identity[3]
-            ),
-        );
-    }
-}
-
-/// The runtime half of the carrier switch: one latch per protocol task
-/// and per live session, poked by [`note_media_changed`]; the woken task
-/// re-reads [`crate::media::ble_active`] and a live session disconnects
-/// its link, an advertiser or scanner drops its future.
-static CARRIER_WAKES: [Signal<CriticalSectionRawMutex, ()>; PERIPH_LINKS + 1 + MAX_LINKS] =
-    [const { Signal::new() }; PERIPH_LINKS + 1 + MAX_LINKS];
-
-#[derive(Clone, Copy)]
-pub(crate) enum CarrierWaiter {
-    Peripheral(usize),
-    Central,
-    Session(usize),
-}
-
-impl CarrierWaiter {
-    fn index(self) -> usize {
-        match self {
-            CarrierWaiter::Peripheral(i) => i,
-            CarrierWaiter::Central => PERIPH_LINKS,
-            CarrierWaiter::Session(slot) => PERIPH_LINKS + 1 + slot,
-        }
-    }
-}
-
-/// Wake every BLE protocol task to re-read the carrier switch. Called by
-/// the firmware after [`crate::media::set_ble_active`].
-pub fn note_media_changed() {
-    for wake in &CARRIER_WAKES {
-        wake.signal(());
-    }
-}
-
-pub(crate) async fn carrier_off(waiter: CarrierWaiter) {
-    let wake = &CARRIER_WAKES[waiter.index()];
-    while crate::media::ble_active() {
-        wake.wait().await;
-    }
-}
-
-pub(crate) async fn carrier_on(waiter: CarrierWaiter) {
-    let wake = &CARRIER_WAKES[waiter.index()];
-    while !crate::media::ble_active() {
-        wake.wait().await;
-    }
-}
-
-/// The gap the pumps serve: the compiled default; an operator override is
-/// a bench instrument this family has not needed yet.
-pub(crate) fn tx_gap_ms() -> u16 {
-    leviculum_ble_tx::effective_tx_gap_ms(None)
-}
 
 /// Per-link outbound queues, indexed by link slot. One broadcast from the
-/// core must reach every peer, so the fan-out is the only consumer of
-/// [`BLE_OUTGOING`]; a routed packet (#376) goes on the addressed peer's
-/// link alone.
+/// core must reach every peer, so [`TroubleLink`] — driven by the shared
+/// fan-out, the only consumer of the node-facing outbound channel —
+/// copies it onto every claimed slot; a routed packet (#376) goes on the
+/// addressed peer's link alone.
 static LINK_OUT: [PacketQueue; MAX_LINKS] = [const { Channel::new() }; MAX_LINKS];
 
 /// Packet bytes accepted by the interface and both receive roles.
-pub const INTERFACE_MTU: usize = 564;
+pub use leviculum_heap_budget::INTERFACE_MTU;
 /// Largest accepted assembled packet. This is enforced before payload copies.
 pub const MAX_REASSEMBLED_BYTES: usize = INTERFACE_MTU;
-/// Exact assembled-vector capacity bound; reassembly never grows geometrically.
-pub const REASSEMBLY_CAPACITY_BYTES: usize = MAX_REASSEMBLED_BYTES;
 const MIN_FRAGMENT_PAYLOAD: usize =
     leviculum_core::framing::ble::payload_per_fragment(leviculum_core::framing::ble::MIN_MTU);
 /// ATT23 can carry fifteen packet bytes in one Columba fragment.
@@ -223,138 +151,131 @@ pub const REASSEMBLY_LIMITS: leviculum_core::framing::ble::BleReassemblyLimits =
         MAX_PACKET_FRAGMENTS as u16,
     );
 
-// An upper-bound allocation model for the census estimates below: block
-// sizes rounded to a word with a two-word minimum. The fork measured it
-// on Llff; the M9's rlsf rounds no worse, so the estimates stay bounds.
-const ALLOCATION_ALIGNMENT: usize = core::mem::align_of::<usize>();
-const MIN_ALLOCATION_BYTES: usize = 2 * core::mem::size_of::<usize>();
-
-const fn allocation_bytes(bytes: usize) -> usize {
-    if bytes == 0 {
-        0
-    } else if bytes < MIN_ALLOCATION_BYTES {
-        MIN_ALLOCATION_BYTES
-    } else {
-        bytes.div_ceil(ALLOCATION_ALIGNMENT) * ALLOCATION_ALIGNMENT
-    }
-}
-
-/// A queued/pumping packet's maximum modelled allocation.
-pub const PACKET_HEAP_BYTES: usize = allocation_bytes(INTERFACE_MTU);
-
 const _: () = {
     assert!(MIN_FRAGMENT_PAYLOAD == 15);
     assert!(MAX_PACKET_FRAGMENTS == 38);
     assert!(leviculum_ble_tx::GATT_VALUE_MAX == 253);
 };
 
-/// Maximum allocation bytes pinned by the ordinary packets in each queue,
-/// for a census walker: per-slot outbound, then the two node-facing
-/// channels together.
-pub fn session_census() -> ([usize; MAX_LINKS], usize) {
-    let mut slots = [0usize; MAX_LINKS];
-    for (index, value) in slots.iter_mut().enumerate() {
-        *value = LINK_OUT[index].len() * PACKET_HEAP_BYTES;
-    }
-    (
-        slots,
-        (BLE_OUTGOING.len() + BLE_INCOMING.len()) * PACKET_HEAP_BYTES,
-    )
-}
-
 pub(crate) fn link_out(slot_index: usize) -> &'static PacketQueue {
     &LINK_OUT[slot_index]
 }
 
-/// The fan-out: the only consumer of the node-facing outbound queue,
-/// resolving each aim over the link registry onto the per-link queues.
-pub async fn tx_fanout() -> ! {
-    loop {
-        let (aim, packet) = BLE_OUTGOING.receive().await;
-        match columba::plan_fanout(aim) {
-            TxFanout::Route(slot) => {
-                let Some(handle) = link_handle_at(slot) else {
-                    if let TxAim::Peer(peer) = aim {
-                        log_route_miss(&peer, packet.len());
-                    }
-                    continue;
-                };
-                if let TxAim::Peer(peer) = aim {
-                    crate::log::log_fmt(
-                        "[BLE ] ",
-                        format_args!(
-                            "BLE_TX_ROUTE peer={:02x}{:02x}{:02x}{:02x} conn={} slot={} len={}",
-                            peer[0],
-                            peer[1],
-                            peer[2],
-                            peer[3],
-                            handle,
-                            slot,
-                            packet.len()
-                        ),
-                    );
-                }
-                queue_on_link(slot, packet);
-            }
-            TxFanout::NoLink => {
-                if let TxAim::Peer(peer) = aim {
-                    log_route_miss(&peer, packet.len());
-                }
-            }
-            fanout @ (TxFanout::Flood | TxFanout::FloodExcept(_)) => {
-                let skip = match fanout {
-                    TxFanout::FloodExcept(skip) => skip,
-                    _ => SlotMask::EMPTY,
-                };
-                let len = packet.len();
-                let mut links = 0usize;
-                let mut last = None;
-                for index in 0..MAX_LINKS {
-                    if skip.skips(index) || link_handle_at(index).is_none() {
-                        continue;
-                    }
-                    links += 1;
-                    if let Some(previous) = last.replace(index) {
-                        if LINK_OUT[previous].is_full() {
-                            log_fanout_drop(previous, len);
-                        } else {
-                            queue_on_link(previous, packet.clone());
-                        }
-                    }
-                }
-                if let Some(last) = last {
-                    queue_on_link(last, packet);
-                }
+/// This backend's side of [`leviculum_ble_link::BleLink`]: what the
+/// orchestration asks of the links below it. The same resolution the
+/// nRF's `SoftDeviceLink` performs — the registry plans
+/// ([`columba::plan_fanout`]), the drain table says which links are
+/// still claimed, `leviculum_ble_tx::resolve_fanout` decides.
+///
+/// `try_send`, never `send`: a link whose queue is full — a peer that
+/// stopped draining — costs that link the packet and is told so in the
+/// log, but must not stall delivery to the healthy links or wedge the
+/// fan-out. With no live link at all a flooded packet is dropped
+/// silently; a ROUTED packet whose peer has no live link is dropped
+/// loudly (`BLE_TX_ROUTE_MISS`) rather than flooded — see
+/// [`leviculum_ble_tx::TxFanout::NoLink`] for why.
+pub struct TroubleLink;
+
+impl leviculum_ble_link::BleLink for TroubleLink {
+    fn send(&mut self, aim: TxAim, packet: Vec<u8>) {
+        match leviculum_ble_tx::resolve_fanout(&TX_DRAIN, columba::plan_fanout(aim)) {
+            // `Link` and `RouteMiss` are only reachable from `Peer`, so
+            // the peer is known in both arms.
+            leviculum_ble_tx::Delivery::Link { slot, handle } => {
+                let hint = aim_peer(aim);
                 crate::log::log_fmt(
                     "[BLE ] ",
-                    format_args!("BLE_TX_FLOOD links={} len={}", links, len),
+                    format_args!(
+                        "BLE_TX_ROUTE peer={:02x}{:02x}{:02x}{:02x} conn={} slot={} len={}",
+                        hint[0],
+                        hint[1],
+                        hint[2],
+                        hint[3],
+                        handle,
+                        slot,
+                        packet.len()
+                    ),
                 );
+                queue_on_link(slot, packet);
+            }
+            leviculum_ble_tx::Delivery::RouteMiss => log_route_miss(&aim_peer(aim), packet.len()),
+            leviculum_ble_tx::Delivery::Flood(targets) => {
+                let links = flood(&packet, targets);
+                match aim {
+                    // The #422 ingress link: every live link but the one
+                    // these bytes came in on.
+                    TxAim::FloodExcept(excluded) => crate::log::log_fmt(
+                        "[BLE ] ",
+                        format_args!(
+                            "BLE_TX_FLOOD links={} len={} excl_link={:02x}{:02x}{:02x}{:02x}",
+                            links,
+                            packet.len(),
+                            excluded[0],
+                            excluded[1],
+                            excluded[2],
+                            excluded[3]
+                        ),
+                    ),
+                    _ => crate::log::log_fmt(
+                        "[BLE ] ",
+                        format_args!("BLE_TX_FLOOD links={} len={}", links, packet.len()),
+                    ),
+                }
             }
         }
     }
-}
 
-fn queue_on_link(slot: usize, packet: Vec<u8>) {
-    let len = packet.len();
-    if !owned_packet_fits(&packet) || LINK_OUT[slot].try_send(packet).is_err() {
-        log_fanout_drop(slot, len);
+    /// The advertised name on this family is rebuilt from
+    /// [`crate::name::gap_name_now`] at every advertising start, so the
+    /// seam's push updates the configured half of that rule and the next
+    /// start carries it.
+    fn set_advertised_name(&mut self, name: leviculum_core::node_name::NodeName) {
+        crate::name::set_configured(Some(name));
     }
 }
 
-fn owned_packet_fits(packet: &Vec<u8>) -> bool {
-    packet.len() <= INTERFACE_MTU && packet.capacity() <= INTERFACE_MTU
+/// Copy one packet onto every link in `targets`, answering how many got
+/// it.
+fn flood(packet: &[u8], targets: leviculum_ble_tx::SlotMask) -> usize {
+    let mut links = 0usize;
+    for index in 0..LINK_OUT.len() {
+        if !targets.contains(index) {
+            continue;
+        }
+        links += 1;
+        queue_on_link(index, packet.to_vec());
+    }
+    links
 }
 
-fn log_fanout_drop(slot: usize, len: usize) {
-    crate::log::log_fmt(
-        "[BLE ] ",
-        format_args!(
-            "BLE_TX_FANOUT_DROP slot={} len={} depth={}",
-            slot, len, QUEUE_DEPTH
-        ),
-    );
+/// The peer an aim names, or zeroes for a plain flood (which names
+/// none). Only used for logging and for the miss line.
+fn aim_peer(aim: TxAim) -> [u8; 16] {
+    match aim {
+        TxAim::Flood => [0u8; 16],
+        TxAim::Peer(peer) | TxAim::FloodExcept(peer) => peer,
+    }
 }
 
+/// Put one packet in a link's outbound queue, reporting a full queue
+/// ([`leviculum_ble_tx::link_queue_verdict`]).
+fn queue_on_link(slot: usize, packet: Vec<u8>) {
+    let len = packet.len();
+    let queue = &LINK_OUT[slot];
+    let fill = Fill::new(queue.len(), queue.capacity());
+    let verdict = leviculum_ble_tx::link_queue_verdict(fill, leviculum_ble_tx::LinkItem::Fanout);
+    if verdict != Enqueue::Queue || queue.try_send(packet).is_err() {
+        crate::log::log_fmt(
+            "[BLE ] ",
+            format_args!(
+                "BLE_TX_FANOUT_DROP slot={} len={} depth={}",
+                slot, len, QUEUE_DEPTH
+            ),
+        );
+    }
+}
+
+/// One line per routed packet whose peer holds no live link here.
 fn log_route_miss(peer: &[u8; 16], len: usize) {
     BLE_TX_ROUTE_MISSES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     crate::log::log_fmt(
@@ -370,153 +291,6 @@ fn log_route_miss(peer: &[u8; 16], len: usize) {
 /// (Codeberg #376), for the `BLE_COUNTERS` line.
 pub static BLE_TX_ROUTE_MISSES: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(0);
-
-/// The outbound producer is opaque so every accepted packet passes the
-/// interface's byte bound before its exact-length copy reaches the queue.
-pub struct BleOutgoingSender {
-    sender: Sender<'static, CriticalSectionRawMutex, (TxAim, Vec<u8>), QUEUE_DEPTH>,
-}
-
-pub struct BleChannels {
-    pub incoming_rx:
-        Receiver<'static, CriticalSectionRawMutex, (Option<[u8; 16]>, Vec<u8>), QUEUE_DEPTH>,
-    pub outgoing_tx: BleOutgoingSender,
-    pub peer_event_rx: Receiver<'static, CriticalSectionRawMutex, PeerEvent, 8>,
-}
-
-pub fn channels() -> BleChannels {
-    BleChannels {
-        incoming_rx: BLE_INCOMING.receiver(),
-        outgoing_tx: BleOutgoingSender {
-            sender: BLE_OUTGOING.sender(),
-        },
-        peer_event_rx: BLE_PEER_EVENTS.receiver(),
-    }
-}
-
-/// The BLE carrier as the core sees it: the firmware names the interface
-/// id its node gave this carrier.
-pub struct BleInterface {
-    id: InterfaceId,
-    sender: BleOutgoingSender,
-    drops: leviculum_media_state::DropRun,
-}
-
-impl BleInterface {
-    pub fn new(id: InterfaceId, sender: BleOutgoingSender) -> Self {
-        Self {
-            id,
-            sender,
-            drops: leviculum_media_state::DropRun::new(),
-        }
-    }
-
-    /// Distinct live peer identities behind this interface (#365).
-    pub fn peer_count(&self) -> usize {
-        if crate::media::ble_active() {
-            columba::live_peer_count()
-        } else {
-            0
-        }
-    }
-}
-
-impl Interface for BleInterface {
-    fn id(&self) -> InterfaceId {
-        self.id
-    }
-    fn name(&self) -> &str {
-        "ble"
-    }
-    fn mtu(&self) -> usize {
-        INTERFACE_MTU
-    }
-    fn kind(&self) -> InterfaceKind {
-        InterfaceKind::Ble
-    }
-    fn is_online(&self) -> bool {
-        crate::media::ble_active() && links_claimed() > 0
-    }
-    fn try_send(&mut self, data: &[u8]) -> Result<(), InterfaceError> {
-        self.try_send_to_peer(data, None, false)
-    }
-    fn try_send_to_peer(
-        &mut self,
-        data: &[u8],
-        peer: Option<&[u8; 16]>,
-        _high_priority: bool,
-    ) -> Result<(), InterfaceError> {
-        self.queue(peer.map_or(TxAim::Flood, |peer| TxAim::Peer(*peer)), data)
-    }
-    fn try_send_excluding_peer(
-        &mut self,
-        data: &[u8],
-        peer: &[u8; 16],
-        _high_priority: bool,
-    ) -> Result<(), InterfaceError> {
-        self.queue(TxAim::FloodExcept(*peer), data)
-    }
-}
-
-impl BleInterface {
-    fn queue(&mut self, aim: TxAim, data: &[u8]) -> Result<(), InterfaceError> {
-        if data.len() > INTERFACE_MTU {
-            // Dropped, not an error: the core sized the packet by `mtu()`,
-            // so this is a bug said out loud, and our `InterfaceError` has
-            // no oversize variant — `BufferFull` would make the core
-            // retry a packet that can never fit.
-            crate::log::log_fmt(
-                "[BLE ] ",
-                format_args!("BLE_TX_OVERSIZE len={} max={}", data.len(), INTERFACE_MTU),
-            );
-            return Ok(());
-        }
-        if !crate::media::ble_active() {
-            if let Some(run) = self.drops.dropped(data.len()) {
-                crate::media::log_tx_drop(self.name(), run);
-            }
-            return Ok(());
-        }
-        if let Some(run) = self.drops.resumed() {
-            crate::media::log_tx_resumed(self.name(), run);
-        }
-        if self.sender.sender.is_full() {
-            crate::log::log_fmt(
-                "[IFACE_FULL] ",
-                format_args!(
-                    "iface={} depth={} len={}",
-                    self.name(),
-                    self.sender.sender.capacity(),
-                    data.len()
-                ),
-            );
-            return Err(InterfaceError::BufferFull);
-        }
-        let mut packet = Vec::new();
-        packet
-            .try_reserve_exact(data.len())
-            .map_err(|_| InterfaceError::BufferFull)?;
-        packet.extend_from_slice(data);
-        self.sender
-            .sender
-            .try_send((aim, packet))
-            .map(|()| {
-                crate::iface_bytes::note_tx(crate::iface_bytes::BLE, data.len());
-            })
-            .map_err(|_| {
-                crate::log::log_fmt(
-                    "[IFACE_FULL] ",
-                    format_args!(
-                        "iface={} depth={} len={}",
-                        self.name(),
-                        self.sender.sender.capacity(),
-                        data.len()
-                    ),
-                );
-                InterfaceError::BufferFull
-            })
-    }
-}
 
 /// The host's runner, with the scanner's report sink as its event
 /// handler (`columba::Reports`).
@@ -590,9 +364,9 @@ pub fn build_stack<T: HciTransport>(
 }
 
 /// Every Columba future joined: the host runner, one peripheral per
-/// incoming link slot, the central half, the fan-out and the counters
-/// line. The firmware drives this one future however it runs futures;
-/// none of its arms ever completes.
+/// incoming link slot, the central half, the shared fan-out over
+/// [`TroubleLink`] and the counters line. The firmware drives this one
+/// future however it runs futures; none of its arms ever completes.
 pub async fn run_columba<T: HciTransport>(
     stack: &'static BleStack<T>,
     server: &'static columba::ReticulumServer<'static>,
@@ -602,6 +376,7 @@ pub async fn run_columba<T: HciTransport>(
     // The three calls below are the slot count; a fourth slot would
     // advertise capacity no task serves.
     const { assert!(PERIPH_LINKS == 3) };
+    let mut link = TroubleLink;
     embassy_futures::join::join4(
         run_host(stack.runner()),
         embassy_futures::join::join3(
@@ -610,7 +385,7 @@ pub async fn run_columba<T: HciTransport>(
             columba::peripheral(stack, server, 2, hint),
         ),
         columba::central(stack, server, identity_hash),
-        embassy_futures::join::join(tx_fanout(), counters()),
+        embassy_futures::join::join(leviculum_ble_link::run_fanout(&mut link), counters()),
     )
     .await;
     unreachable!("every joined arm loops forever")

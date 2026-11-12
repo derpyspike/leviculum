@@ -3425,6 +3425,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "leviculum-ble-link"
+version = "0.1.0"
+dependencies = [
+ "embassy-sync 0.7.2",
+ "embassy-time",
+ "leviculum-ble-tx",
+ "leviculum-core",
+ "leviculum-heap-budget",
+ "leviculum-media-state",
+]
+
+[[package]]
 name = "leviculum-ble-tx"
 version = "0.1.0"
 dependencies = [
@@ -3703,10 +3715,11 @@ dependencies = [
  "bt-hci",
  "critical-section",
  "embassy-futures",
- "embassy-sync 0.8.0",
+ "embassy-sync 0.7.2",
  "embassy-time",
  "embedded-io 0.7.1",
  "heapless 0.9.3",
+ "leviculum-ble-link",
  "leviculum-ble-tx",
  "leviculum-core",
  "leviculum-heap-budget",

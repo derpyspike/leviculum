@@ -1558,6 +1558,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "leviculum-ble-link"
+version = "0.1.0"
+dependencies = [
+ "embassy-sync 0.7.2",
+ "embassy-time",
+ "leviculum-ble-tx",
+ "leviculum-core",
+ "leviculum-heap-budget",
+ "leviculum-media-state",
+]
+
+[[package]]
 name = "leviculum-ble-tx"
 version = "0.1.0"
 dependencies = [
@@ -1587,7 +1599,6 @@ version = "0.1.6"
 dependencies = [
  "critical-section",
  "embassy-futures",
- "embassy-sync 0.8.0",
  "embassy-time",
  "embassy-time-driver",
  "embedded-hal 1.0.0",
@@ -1600,6 +1611,7 @@ dependencies = [
  "esp-storage",
  "esp-sync",
  "esp32s3 0.36.0",
+ "leviculum-ble-link",
  "leviculum-core",
  "leviculum-gnss-init",
  "leviculum-log-line",
@@ -1705,10 +1717,11 @@ version = "0.1.0"
 dependencies = [
  "bt-hci 0.10.1",
  "embassy-futures",
- "embassy-sync 0.8.0",
+ "embassy-sync 0.7.2",
  "embassy-time",
  "embedded-io 0.7.1",
  "heapless 0.9.3",
+ "leviculum-ble-link",
  "leviculum-ble-tx",
  "leviculum-core",
  "leviculum-heap-budget",

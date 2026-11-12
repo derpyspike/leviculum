@@ -25,7 +25,12 @@ trouble-host = { path = "../vendor/trouble-host", default-features = false, feat
 # bt-hci-transport 0.1, which esp-radio's `BleConnector` implements too, so
 # one controller serves both version lines.
 bt-hci = "0.10"
-embassy-sync = "0.8"
+# The backend's own statics (the scanner's report queue, the session
+# cells, the advertising lock) ride the same embassy-sync the shared
+# node side uses: 0.7, the nRF workspace pin. The vendored trouble-host
+# keeps its own embassy-sync 0.8 internally; no embassy-sync type
+# crosses between the two.
+embassy-sync = "0.7"
 embassy-futures = "0.1"
 embassy-time = "0.5"
 embedded-io = "0.7"
@@ -34,6 +39,10 @@ static_cell = "2"
 # The protocol decisions, host-tested: the advertisement records, the dial
 # rule, the duplicate rule, the pacing, the drain router.
 leviculum-ble-tx = { path = "../leviculum-nrf/ble-tx" }
+# The node side of the BLE seam (1715): the channels, the carrier gate,
+# the pacing value, the drain table, the link table, `deliver` and the
+# fan-out this backend's `TroubleLink` stands behind.
+leviculum-ble-link = { path = "../leviculum-nrf/ble-link" }
 # The fragment framing and the node-facing types.
 leviculum-core = { path = "../leviculum-core", default-features = false }
 # `size_of::<Vec<u8>>` on the 32-bit boards, for the heap-model asserts.

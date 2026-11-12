@@ -137,7 +137,7 @@ pub struct Handheld {
     pub serial: SerialIface,
     /// The BLE carrier (1480), once [`Handheld::enable_ble`] put it up;
     /// `None` on a board whose media record switched BLE off.
-    ble: Option<leviculum_trouble::ble::BleInterface>,
+    ble: Option<leviculum_ble_link::BleInterface>,
     ifac: BTreeMap<usize, IfacConfig>,
     client: Option<Client>,
     /// The way to the home as last read from the path table (1478), and
@@ -749,7 +749,7 @@ impl Handheld {
     /// Full: the peers behind it are mesh nodes of their own — phones,
     /// boards, a host's daemon — and the automatic-mesh rule wants
     /// announces relayed into the room as on any carrier.
-    pub fn enable_ble(&mut self, iface: leviculum_trouble::ble::BleInterface) {
+    pub fn enable_ble(&mut self, iface: leviculum_ble_link::BleInterface) {
         self.node
             .set_interface_name(BLE_IFACE.0, alloc::string::String::from(BLE_NAME));
         self.node

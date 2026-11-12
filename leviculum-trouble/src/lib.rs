@@ -31,7 +31,5 @@
 extern crate alloc;
 
 pub mod ble;
-pub mod iface_bytes;
 pub mod log;
-pub mod media;
 pub mod name;

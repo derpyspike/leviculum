@@ -100,6 +100,9 @@ rlsf = { version = "0.2.3", default-features = false, features = ["unstable"] }
 # Columba over the TrouBLE host (1480): the M9's BLE carrier. Generic
 # over the HCI transport; `src/ble.rs` names esp-radio's BleConnector.
 leviculum-trouble = { path = "../leviculum-trouble" }
+# The node side of the BLE seam (1715): the channels the loop reads,
+# the carrier push, the BLE Interface the node sends through.
+leviculum-ble-link = { path = "../leviculum-nrf/ble-link" }
 # The BLE controller: the radio blobs behind an HCI connector. `ble`
 # alone — the WiFi radio is 1479's next step and adds `wifi` + `coex`
 # here when it powers on. `unstable` because BleConnector is.
@@ -114,8 +117,6 @@ esp-rtos = { version = "0.4.0", features = ["esp32s3", "esp-radio"] }
 # keeps its `global-allocator` off — the Rust global allocator stays the
 # rlsf pools in PSRAM, where the blobs must not land.
 esp-alloc = { version = "0.11", default-features = false, features = ["esp32s3", "compat"] }
-# The BLE backend's channels and futures (join of the host's tasks).
-embassy-sync = "0.8"
 embassy-futures = "0.1"
 static_cell = "2"
 

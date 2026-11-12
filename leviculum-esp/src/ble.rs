@@ -29,15 +29,20 @@ use esp_alloc::{HeapRegion, MemoryCapability};
 use esp_hal::peripherals::{BT, FROM_CPU_INTR0};
 use esp_hal::timer::timg::Timer;
 use esp_radio::ble::controller::BleConnector;
+use leviculum_ble_link::{BleChannels, BleInterface, BleLinkEvent};
 use leviculum_trouble::ble::columba;
-pub use leviculum_trouble::ble::PeerEvent;
-use leviculum_trouble::ble::{
-    build_stack, channels, run_columba, BleChannels, BleInterface, Resources, StackCell,
-};
+use leviculum_trouble::ble::{build_stack, run_columba, Resources, StackCell};
 
 use crate::handheld::BLE_IFACE;
 use crate::time_driver::poll_once;
 use crate::UartLog;
+
+/// A peer transition as the loop consumes it, in its channel's order —
+/// the role the seam reports is the backend's business, not the loop's.
+pub enum PeerEvent {
+    Up([u8; 16]),
+    Lost([u8; 16]),
+}
 
 /// The radio blobs' internal-DRAM heap: the controller's pools and the
 /// scheduler's task stacks, everything behind `malloc_internal`. 44 KiB
@@ -54,27 +59,13 @@ use crate::UartLog;
 pub const BLE_INTERNAL_HEAP_BYTES: usize = 44 * 1024;
 
 /// The BLE carrier, as the loop drives it: the joined Columba future,
-/// the node-facing receivers, and the log drain's line accumulator.
+/// the node-facing channel ends, and the log drain's line accumulator.
 pub struct Ble {
     future: Pin<Box<dyn Future<Output = ()>>>,
-    incoming_rx: IncomingRx,
-    peer_event_rx: PeerEventRx,
+    channels: BleChannels,
     /// Bytes of an unfinished ring line between drains.
     line: Vec<u8>,
 }
-
-type IncomingRx = embassy_sync::channel::Receiver<
-    'static,
-    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-    (Option<[u8; 16]>, Vec<u8>),
-    { leviculum_trouble::ble::QUEUE_DEPTH },
->;
-type PeerEventRx = embassy_sync::channel::Receiver<
-    'static,
-    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-    PeerEvent,
-    8,
->;
 
 /// Bring the controller up and build the Columba future. `None` — with
 /// its reason on the log — when the controller refused; the board runs
@@ -95,6 +86,9 @@ pub fn start(
     // The M9's UART is open from boot: no DTR gate holds the backend's
     // runtime lines back.
     leviculum_trouble::log::open_runtime_drain();
+    // The shared node side's lines (1715) ride the same ring the
+    // backend's do; installed before any BLE task could write one.
+    leviculum_ble_link::log::set_sink(ble_link_log);
 
     // The blobs' heap, before the scheduler: esp-rtos allocates its task
     // stacks through the same `malloc_internal`.
@@ -138,24 +132,39 @@ pub fn start(
         ),
     );
     let (server, hint) = columba::start(identity_hash);
-    let BleChannels {
-        incoming_rx,
-        outgoing_tx,
-        peer_event_rx,
-    } = channels();
-    let interface = BleInterface::new(BLE_IFACE, outgoing_tx);
+    let channels = leviculum_ble_link::channels();
+    let interface = BleInterface::new(BLE_IFACE, channels.outgoing_tx);
+    // The caller has already read the media record and wants the
+    // carrier: push the profile's verdict before the tasks first gate
+    // on it — the shared boot state is off, and `--ble off` never
+    // reaches this function at all.
+    leviculum_ble_link::set_active(true);
     let future: Pin<Box<dyn Future<Output = ()>>> = Box::pin(async move {
         run_columba(stack, server, hint, identity_hash).await;
     });
     Some((
         Ble {
             future,
-            incoming_rx,
-            peer_event_rx,
+            channels,
             line: Vec::new(),
         },
         interface,
     ))
+}
+
+/// The shared node side's log sink: onto the backend's ring, between
+/// the same frames.
+fn ble_link_log(
+    prefix: &'static str,
+    args: core::fmt::Arguments<'_>,
+    level: leviculum_ble_link::log::Level,
+) {
+    match level {
+        leviculum_ble_link::log::Level::Runtime => leviculum_trouble::log::log_fmt(prefix, args),
+        leviculum_ble_link::log::Level::Critical => {
+            leviculum_trouble::log::log_fmt_critical(prefix, args)
+        }
+    }
 }
 
 impl Ble {
@@ -166,13 +175,26 @@ impl Ble {
 
     /// One completed inbound packet, with its link peer where the
     /// handshake named one; `None` when the turn has taken them all.
+    /// Taking it ends the packet's census custody
+    /// ([`leviculum_ble_link::incoming_held_sub`]), exactly where the
+    /// nRF main loops subtract.
     pub fn take_incoming(&mut self) -> Option<(Option<[u8; 16]>, Vec<u8>)> {
-        self.incoming_rx.try_receive().ok()
+        match self.channels.incoming_rx.try_receive() {
+            Ok(BleLinkEvent::Inbound { link, packet }) => {
+                leviculum_ble_link::incoming_held_sub(packet.capacity());
+                Some((link, packet))
+            }
+            _ => None,
+        }
     }
 
     /// One peer transition, in order; `None` when the turn is caught up.
     pub fn take_peer_event(&mut self) -> Option<PeerEvent> {
-        self.peer_event_rx.try_receive().ok()
+        match self.channels.peer_event_rx.try_receive() {
+            Ok(BleLinkEvent::PeerUp { identity, .. }) => Some(PeerEvent::Up(identity)),
+            Ok(BleLinkEvent::PeerLost { identity, .. }) => Some(PeerEvent::Lost(identity)),
+            _ => None,
+        }
     }
 
     /// Drain the backend's log ring onto the UART, whole lines only: the

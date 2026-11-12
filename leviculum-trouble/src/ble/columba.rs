@@ -17,13 +17,13 @@
 use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicU8, Ordering};
 
-use alloc::vec::Vec;
 use embassy_futures::select::{select, select3, select4, Either, Either3, Either4};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
-use embassy_sync::channel::{Channel, Sender};
+use embassy_sync::channel::Channel;
 use embassy_sync::semaphore::{FairSemaphore, Semaphore};
 use embassy_sync::signal::Signal;
+use leviculum_ble_link::BleLinkEvent;
 use embassy_time::{Duration, Instant, Timer};
 use leviculum_ble_tx::{
     addr_value, admit, advertise_pass_pause_ms, connect_failure_condemns, dial_preference,
@@ -205,10 +205,9 @@ pub async fn peripheral<T: HciTransport>(
     index: usize,
     hint: AdvHint,
 ) {
-    let incoming_tx = super::BLE_INCOMING.sender();
     let mut peripheral = stack.peripheral();
     loop {
-        if !crate::media::ble_active() {
+        if !leviculum_ble_link::carrier().is_on() {
             crate::log::log_fmt(
                 "[BLE ] ",
                 format_args!("BLE_CARRIER_GATE role=peripheral adv={index} state=off"),
@@ -225,7 +224,7 @@ pub async fn peripheral<T: HciTransport>(
                 .acquire(1)
                 .await
                 .expect("one waiter per peripheral task");
-            if !crate::media::ble_active() {
+            if !leviculum_ble_link::carrier().is_on() {
                 continue;
             }
             let mut adv = [0u8; 31];
@@ -261,7 +260,7 @@ pub async fn peripheral<T: HciTransport>(
                     Some(conn)
                 }
                 Either::First(Err(_)) => None,
-                Either::Second(()) => continue,
+                Either::Second(_) => continue,
             }
         };
         match conn {
@@ -282,7 +281,7 @@ pub async fn peripheral<T: HciTransport>(
                             ask_for_a_survivable_timeout(stack, &conn, handle).await;
                             core::future::pending::<u16>().await
                         };
-                        match select(gatt_events(&gatt, server, &incoming_tx), parameters).await {
+                        match select(gatt_events(&gatt, server), parameters).await {
                             Either::First(att_mtu) | Either::Second(att_mtu) => att_mtu,
                         }
                     }
@@ -464,16 +463,12 @@ async fn serve_tx_gap(gap: &TxGap, conn_handle: u16) {
     }
 }
 
-type IncomingSender =
-    Sender<'static, CriticalSectionRawMutex, (Option<[u8; 16]>, Vec<u8>), { super::QUEUE_DEPTH }>;
-
 /// Per-connection event loop: inbound writes (handshake, keepalive,
 /// fragments), outbound packets and keepalives as notifications, the
 /// carrier switch and the link expiry.
 async fn gatt_events(
     conn: &GattConnection<'static, 'static, DefaultPacketPool>,
     server: &'static ReticulumServer<'static>,
-    incoming_tx: &IncomingSender,
 ) -> u16 {
     let conn_handle = conn.raw().handle().raw();
     let Some((slot_index, drain)) = super::TX_DRAIN.claim_indexed(conn_handle) else {
@@ -534,7 +529,6 @@ async fn gatt_events(
                                     &tx_hold,
                                     &tx_ready,
                                     &defrag,
-                                    incoming_tx,
                                     &refused,
                                 )
                             });
@@ -643,7 +637,7 @@ async fn gatt_events(
     )
     .await
     {
-        Either4::Third(()) => {
+        Either4::Third(_) => {
             crate::log::log_fmt(
                 "[BLE ] ",
                 format_args!("BLE_CARRIER_DROP role=peripheral slot={}", slot_index),
@@ -700,7 +694,6 @@ fn on_rx_write(
     tx_hold: &Cell<leviculum_ble_tx::TxHold>,
     tx_ready: &Signal<CriticalSectionRawMutex, ()>,
     defrag: &Cell<BleDefragmenter>,
-    incoming_tx: &IncomingSender,
     refused: &Cell<bool>,
 ) {
     let peer_value = peer.value;
@@ -762,7 +755,7 @@ fn on_rx_write(
         defrag.set(d);
         if let DefragResult::Complete(packet) = result {
             let len = packet.len();
-            if offer_incoming(incoming_tx, link_peer.get(), packet, slot_index) {
+            if offer_incoming(link_peer.get(), packet, slot_index) {
                 crate::info!("BLE: RX {}B conn={} frags={}", len, conn_handle, frags);
             }
         }
@@ -902,7 +895,10 @@ fn peer_link_up(
         }
         LinkUp::Accepted { first } => {
             if first {
-                super::report_peer_event(super::PeerEvent::Up(peer_id));
+                let _ = leviculum_ble_link::deliver(BleLinkEvent::PeerUp {
+                    identity: peer_id,
+                    role: origin.our_role(),
+                });
             }
             note_phase_event(PhaseEvent::LinkAccepted(meet_link(&peer_id)));
         }
@@ -987,8 +983,11 @@ fn displace_old_link(displaced: DisplacedOld) {
 
 fn peer_link_down(slot_index: usize) {
     let lost = LIVE_PEERS.lock(|peers| peers.borrow_mut().link_down(slot_index));
-    if let Some((identity, _origin)) = lost {
-        super::report_peer_event(super::PeerEvent::Lost(identity));
+    if let Some((identity, origin)) = lost {
+        let _ = leviculum_ble_link::deliver(BleLinkEvent::PeerLost {
+            identity,
+            role: origin.our_role(),
+        });
     }
 }
 
@@ -1471,6 +1470,7 @@ async fn central_link<T: HciTransport>(
     );
     let conn = match select(attempt, super::carrier_off(CarrierWaiter::Central)).await {
         Either::First(Ok(Ok(conn))) => conn,
+        Either::Second(_) => return None,
         Either::First(result) => {
             crate::log::log_fmt(
                 "[BLE ] ",
@@ -1483,7 +1483,6 @@ async fn central_link<T: HciTransport>(
             }
             return Some(DialFailure::Transport);
         }
-        Either::Second(()) => return None,
     };
     let conn_handle = conn.handle().raw();
     log_conn_params(&conn, conn_handle, LinkRole::Central, LinkPhase::Open);
@@ -1659,7 +1658,7 @@ async fn central_link<T: HciTransport>(
     .await
     {
         Either3::First(failure) => failure,
-        Either3::Second(()) => {
+        Either3::Second(_) => {
             crate::log::log_fmt(
                 "[BLE ] ",
                 format_args!("BLE_CARRIER_DROP role=central slot={}", slot_index),
@@ -1796,7 +1795,6 @@ async fn run_central_session<T: HciTransport>(
     heard: &Cell<bool>,
 ) -> Option<DialFailure> {
     let peer_value = peer.value;
-    let incoming_tx = super::BLE_INCOMING.sender();
     let defrag: Cell<BleDefragmenter> = Cell::new(BleDefragmenter::new(super::REASSEMBLY_LIMITS));
     let last_keepalive: Cell<Instant> = Cell::new(Instant::now());
     let outgoing_rx = super::link_out(slot_index).receiver();
@@ -1869,7 +1867,7 @@ async fn run_central_session<T: HciTransport>(
                 defrag.set(d);
                 if let DefragResult::Complete(packet) = result {
                     let len = packet.len();
-                    if offer_incoming(&incoming_tx, Some(peer_id), packet, slot_index) {
+                    if offer_incoming(Some(peer_id), packet, slot_index) {
                         crate::info!("BLE: RX {}B conn={} frags={}", len, conn_handle, frags);
                     }
                 }
@@ -1946,7 +1944,7 @@ pub async fn central<T: HciTransport>(
         format_args!("BLE_CENTRAL_ADDR addr={own_addr_value:012x} caps={LOCAL_CAPS:#04x}"),
     );
     loop {
-        if !crate::media::ble_active() {
+        if !leviculum_ble_link::carrier().is_on() {
             crate::log::log_fmt(
                 "[BLE ] ",
                 format_args!("BLE_CARRIER_GATE role=central state=off"),
@@ -1995,7 +1993,7 @@ pub async fn central<T: HciTransport>(
                 crate::log::log_fmt("[BLE ] ", format_args!("BLE_SCAN_FAIL err={:?}", err));
                 ScanPass::Failed
             }
-            Either::Second(()) => ScanPass::CarrierOff,
+            Either::Second(_) => ScanPass::CarrierOff,
         };
         if let Some(pause_ms) = scan_pass_pause_ms(pass) {
             Timer::after_millis(pause_ms).await;
