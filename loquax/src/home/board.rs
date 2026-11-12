@@ -959,13 +959,15 @@ pub fn ask_verb(tag: u8, request: &[u8]) -> Option<ask::Verb> {
 /// its own), one of the home's devices sent, a mark one of them set, a
 /// name the home heard. `None` for the rest: their states and receipts
 /// change bubbles the board does not keep yet, and a kind from a later
-/// home the board cannot read. The board has not checked a received
-/// message's signature: it has no sender's identity, so it says
-/// `verified: false` and the model shows it so.
+/// home the board cannot read. The board checks no signature: it has no
+/// sender's identity. A received message is `verified` where the home
+/// verified it ([`super::KIND_VOUCHED`], 1744) and unverified otherwise,
+/// so a group's copy speaks for its writer, and a group's membership is
+/// taken, only on the home's word.
 pub fn fold(entry: &wire::Entry, address: &[u8; 16]) -> Option<OutboxEvent> {
     use leviculum_lxmf::{DeliveryMethod, Message};
     match entry.kind {
-        super::KIND_RECEIVED => {
+        super::KIND_RECEIVED | super::KIND_VOUCHED => {
             let message =
                 Message::unpack(&entry.packed, None, None, DeliveryMethod::Direct).ok()?;
             (message.destination_hash == *address).then_some(OutboxEvent::Received {
@@ -974,7 +976,7 @@ pub fn fold(entry: &wire::Entry, address: &[u8; 16]) -> Option<OutboxEvent> {
                 title: message.title,
                 body: message.content,
                 fields: message.fields,
-                verified: false,
+                verified: entry.kind == super::KIND_VOUCHED,
                 sent_at: message.timestamp as i64,
             })
         }

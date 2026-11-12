@@ -483,6 +483,11 @@ pub enum OutboxEvent {
         message_id: [u8; 32],
         packed: Vec<u8>,
         arrived: Arrived,
+        /// Whether its signature verified as it came (1744): the home
+        /// keeps the verdict with the archive entry for its boards. One
+        /// whose sender's key came later is said by
+        /// [`OutboxEvent::Verified`].
+        verified: bool,
     },
 }
 

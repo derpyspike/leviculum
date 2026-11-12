@@ -131,7 +131,7 @@ use leviculum_lxmf::telemetry::Location;
 pub const STORE_FILE: &str = "history.sqlite3";
 
 /// The schema this program writes, in SQLite's `user_version`.
-pub const SCHEMA_VERSION: i32 = 23;
+pub const SCHEMA_VERSION: i32 = 24;
 
 /// How long a write waits for another loquax holding the file.
 const BUSY_MS: u64 = 5_000;
@@ -547,6 +547,14 @@ UPDATE client_groups SET closed_at = epoch WHERE standing IN (2, 3) AND (ours = 
     AND m.conversation = client_groups.address AND m.direction = 1));
 ";
 
+/// What schema 24 adds to schema 23 (1744, [`Store::archive_vouch`]):
+/// whether the home verified a received message's signature, 1 where it
+/// did, 0 where it did not or a home from before 24 kept it. A board that
+/// asks gets a vouched message as [`crate::home::KIND_VOUCHED`].
+const SCHEMA_V24: &str = "
+ALTER TABLE archive ADD COLUMN vouched INTEGER NOT NULL DEFAULT 0;
+";
+
 pub mod groups;
 pub mod pages;
 
@@ -794,7 +802,7 @@ impl Store {
              {SCHEMA_V6} {SCHEMA_V7} {SCHEMA_V8} {SCHEMA_V9} {SCHEMA_V10} {SCHEMA_V11} \
              {SCHEMA_V12} {SCHEMA_V13} {SCHEMA_V14} {SCHEMA_V15} {SCHEMA_V16} {SCHEMA_V17} \
              {SCHEMA_V18} {SCHEMA_V19} {SCHEMA_V20} {SCHEMA_V21} {SCHEMA_V22} {SCHEMA_V23} \
-             PRAGMA user_version = {SCHEMA_VERSION}; \
+             {SCHEMA_V24} PRAGMA user_version = {SCHEMA_VERSION}; \
              COMMIT;"
         );
         self.conn
@@ -999,7 +1007,10 @@ impl Store {
                 if version < 22 {
                     batch.push_str(SCHEMA_V22);
                 }
-                batch.push_str(SCHEMA_V23);
+                if version < 23 {
+                    batch.push_str(SCHEMA_V23);
+                }
+                batch.push_str(SCHEMA_V24);
                 batch.push_str(&format!("PRAGMA user_version = {SCHEMA_VERSION};"));
                 if let Err(error) = self.conn.execute_batch(&batch) {
                     let _ = self.conn.execute_batch("ROLLBACK");
@@ -2146,6 +2157,24 @@ impl Store {
         Ok(seq)
     }
 
+    /// The home verified the signature of the received message `id` it
+    /// archived (1744): a board that asks for the home's verdicts is served
+    /// it as [`crate::home::KIND_VOUCHED`] from now on. Nothing for a
+    /// message the archive does not hold.
+    pub fn archive_vouch(&mut self, id: &[u8; 32]) -> Result<(), StoreError> {
+        self.conn
+            .execute(
+                "UPDATE archive SET vouched = 1 WHERE identity = ?1 AND kind = ?2 AND id = ?3",
+                params![
+                    &self.identity[..],
+                    i64::from(crate::home::KIND_RECEIVED),
+                    &id[..]
+                ],
+            )
+            .map(|_| ())
+            .map_err(|e| self.failed(e))
+    }
+
     /// Append a name entry ([`crate::home::KIND_NAME`]) for the display
     /// name `peer` announced, heard at `at`, when it says something new: a
     /// name that sanitises to nothing, or to the name kept for `peer`
@@ -2552,8 +2581,8 @@ impl Store {
         let mut statement = self
             .conn
             .prepare(&format!(
-                "SELECT seq, kind, at, packed FROM archive WHERE identity = ?1 AND seq > ?2{} \
-                 ORDER BY seq",
+                "SELECT seq, kind, at, packed, vouched FROM archive WHERE identity = ?1 \
+                 AND seq > ?2{} ORDER BY seq",
                 fold_clause(fold)
             ))
             .map_err(|e| self.failed(e))?;
@@ -2573,9 +2602,18 @@ impl Store {
             bytes = bytes.saturating_add(packed.len());
             let seq: i64 = row.get(0).map_err(|e| self.failed(e))?;
             let kind: i64 = row.get(1).map_err(|e| self.failed(e))?;
+            let kind = u8::try_from(kind).unwrap_or(u8::MAX);
+            let vouched: bool = row.get(4).map_err(|e| self.failed(e))?;
+            // The home's verdict (1744), only to a board that asked for it.
+            let kind = match (fold, kind, vouched) {
+                (crate::home::wire::Fold::BoardVouched, crate::home::KIND_RECEIVED, true) => {
+                    crate::home::KIND_VOUCHED
+                }
+                (_, kind, _) => kind,
+            };
             entries.push(crate::home::wire::Entry {
                 seq: seq as u64,
-                kind: u8::try_from(kind).unwrap_or(u8::MAX),
+                kind,
                 at: row.get(2).map_err(|e| self.failed(e))?,
                 packed,
             });
@@ -3694,7 +3732,7 @@ fn fold_clause(fold: crate::home::wire::Fold) -> String {
     use crate::home::wire::{Fold, BOARD_ENTRY_MAX, BOARD_KINDS};
     match fold {
         Fold::All => String::new(),
-        Fold::Board => {
+        Fold::Board | Fold::BoardVouched => {
             let kinds: Vec<String> = BOARD_KINDS.iter().map(u8::to_string).collect();
             format!(
                 " AND kind IN ({}) AND length(packed) <= {BOARD_ENTRY_MAX}",
@@ -5668,7 +5706,7 @@ mod tests {
         let conn = Connection::open(old.path().join(STORE_FILE)).expect("raw");
         conn.execute_batch(
             "DROP TABLE owed_petnames; ALTER TABLE home_devices DROP COLUMN last_seen; \
-             DROP TABLE owed_peer_states; DROP TABLE home_names; ALTER TABLE client_groups DROP COLUMN closed_at; PRAGMA user_version = 18;",
+             DROP TABLE owed_peer_states; DROP TABLE home_names; ALTER TABLE client_groups DROP COLUMN closed_at; ALTER TABLE archive DROP COLUMN vouched; PRAGMA user_version = 18;",
         )
         .expect("made schema 18");
         drop(conn);
@@ -5699,7 +5737,7 @@ mod tests {
         drop(store);
         let conn = Connection::open(old.path().join(STORE_FILE)).expect("raw");
         conn.execute_batch(
-            "ALTER TABLE client_groups DROP COLUMN closed_at; PRAGMA user_version = 22;",
+            "ALTER TABLE client_groups DROP COLUMN closed_at; ALTER TABLE archive DROP COLUMN vouched; PRAGMA user_version = 22;",
         )
         .expect("made schema 22");
         drop(conn);
@@ -5742,7 +5780,7 @@ mod tests {
             .expect("stamped");
         drop(store);
         let conn = Connection::open(old.path().join(STORE_FILE)).expect("raw");
-        conn.execute_batch("DROP TABLE home_names; ALTER TABLE client_groups DROP COLUMN closed_at; PRAGMA user_version = 21;")
+        conn.execute_batch("DROP TABLE home_names; ALTER TABLE client_groups DROP COLUMN closed_at; ALTER TABLE archive DROP COLUMN vouched; PRAGMA user_version = 21;")
             .expect("made schema 21");
         drop(conn);
         let mut store = Store::open_in(old.path(), US).expect("migrated");
@@ -5783,7 +5821,7 @@ mod tests {
         let conn = Connection::open(old.path().join(STORE_FILE)).expect("raw");
         conn.execute_batch(
             "ALTER TABLE home_devices DROP COLUMN last_seen; DROP TABLE owed_peer_states; \
-             DROP TABLE home_names; ALTER TABLE client_groups DROP COLUMN closed_at; PRAGMA user_version = 19;",
+             DROP TABLE home_names; ALTER TABLE client_groups DROP COLUMN closed_at; ALTER TABLE archive DROP COLUMN vouched; PRAGMA user_version = 19;",
         )
         .expect("made schema 19");
         drop(conn);
@@ -5850,7 +5888,7 @@ mod tests {
         drop(Store::open_in(old.path(), US).expect("create"));
         let conn = Connection::open(old.path().join(STORE_FILE)).expect("raw");
         conn.execute_batch(
-            "DROP TABLE owed_peer_states; DROP TABLE home_names; ALTER TABLE client_groups DROP COLUMN closed_at; PRAGMA user_version = 20;",
+            "DROP TABLE owed_peer_states; DROP TABLE home_names; ALTER TABLE client_groups DROP COLUMN closed_at; ALTER TABLE archive DROP COLUMN vouched; PRAGMA user_version = 20;",
         )
         .expect("made schema 20");
         drop(conn);
@@ -6007,7 +6045,7 @@ mod tests {
         drop(store);
         let conn = Connection::open(old.path().join(STORE_FILE)).expect("raw");
         conn.execute_batch(
-            "ALTER TABLE client_groups DROP COLUMN closed_at; PRAGMA user_version = 22;",
+            "ALTER TABLE client_groups DROP COLUMN closed_at; ALTER TABLE archive DROP COLUMN vouched; PRAGMA user_version = 22;",
         )
         .expect("made schema 22");
         drop(conn);
@@ -6057,7 +6095,7 @@ mod tests {
         drop(store);
         let conn = Connection::open(old.path().join(STORE_FILE)).expect("raw");
         conn.execute_batch(
-            "ALTER TABLE client_groups DROP COLUMN closed_at; PRAGMA user_version = 22;",
+            "ALTER TABLE client_groups DROP COLUMN closed_at; ALTER TABLE archive DROP COLUMN vouched; PRAGMA user_version = 22;",
         )
         .expect("made schema 22");
         drop(conn);

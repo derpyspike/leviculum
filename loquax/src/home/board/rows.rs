@@ -48,7 +48,7 @@ use alloc::vec::Vec;
 
 use super::store::{Appended, End, PendingAsk, Sectors, Span, Store};
 use crate::home::wire::Entry;
-use crate::home::{KIND_MARK, KIND_NAME, KIND_RECEIVED, KIND_SENT};
+use crate::home::{KIND_MARK, KIND_NAME, KIND_RECEIVED, KIND_SENT, KIND_VOUCHED};
 use crate::ui::listing::Row;
 use crate::ui::{update, Message, UiEvent, UiModel};
 use leviculum_ui::input::InputBuffer;
@@ -121,7 +121,7 @@ pub fn rows_tag(tag: [u8; 8]) -> [u8; 8] {
 /// unpacking it: destination (16), source (16).
 pub fn wire_peer(entry: &Entry) -> Option<[u8; 16]> {
     let at = match entry.kind {
-        KIND_RECEIVED => 16,
+        KIND_RECEIVED | KIND_VOUCHED => 16,
         KIND_SENT => 0,
         _ => return None,
     };

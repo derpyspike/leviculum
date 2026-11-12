@@ -16,7 +16,7 @@
 use leviculum_core::Identity;
 use leviculum_lxmf::{DeliveryMethod, Message};
 use loquax::home::wire::{self, Entry, Mark, MarkFlag, MARK_IDS_MAX};
-use loquax::home::{KIND_MARK, KIND_NAME, KIND_RECEIVED, KIND_SENT};
+use loquax::home::{KIND_MARK, KIND_NAME, KIND_RECEIVED, KIND_SENT, KIND_VOUCHED};
 
 #[allow(dead_code, unused_imports, clippy::all)]
 #[path = "../../../../loquax/tests/support/real_store.rs"]
@@ -50,9 +50,10 @@ pub fn archive_of(
     restored: &[loquax::ui::history::Restored],
     names: &[([u8; 16], String)],
 ) -> Result<Vec<Entry>, String> {
-    // The home signs nothing the board checks (`board::fold` says
-    // `verified: false`); one fixed key signs every message, so the bytes
-    // are the same on every run.
+    // The board checks no signature; a message the fixture holds verified
+    // comes as the home serves one it verified (1744, `KIND_VOUCHED`), the
+    // rest as it came. One fixed key signs every message, so the bytes are
+    // the same on every run.
     let signer = Identity::from_private_key_bytes(&[0x53; 64])
         .map_err(|e| format!("the fixture's signing key: {e:?}"))?;
     let mut rows: Vec<(i64, u8, Vec<u8>)> = Vec::new();
@@ -67,6 +68,9 @@ pub fn archive_of(
             let at = message.at.map_or(0, |at| at.unix_secs);
             let (to, from, kind) = match message.outbound {
                 true => (restored.peer, own, KIND_SENT),
+                false if message.signature == loquax::ui::Signature::Verified => {
+                    (own, restored.peer, KIND_VOUCHED)
+                }
                 false => (own, restored.peer, KIND_RECEIVED),
             };
             let packed = Message::create(

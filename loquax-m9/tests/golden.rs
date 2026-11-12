@@ -756,21 +756,39 @@ fn clock(model: &mut UiModel<Field>, secs: i64) {
     );
 }
 
+/// A message from `from` as the board receives it (1744): an archive
+/// entry of the reader's home, the home's verdict on its signature with
+/// it ([`loquax::home::KIND_VOUCHED`]: the home verified it), folded by
+/// the board's own `board::fold`. `id` makes the bytes, and so the
+/// message, distinct.
 fn arrive(model: &mut UiModel<Field>, from: [u8; 16], id: u8, body: &str, lev: Lev) {
     let mut fields = Vec::new();
     lev.put_into(&mut fields);
-    update(
-        model,
-        UiEvent::Engine(OutboxEvent::Received {
-            sent_at: 0,
-            message_id: [id; 32],
-            source: from,
-            title: Vec::new(),
-            body: body.as_bytes().to_vec(),
-            fields,
-            verified: true,
-        }),
+    let signer = leviculum_core::Identity::from_private_key_bytes(&[id; 64]).expect("a key");
+    let packed = leviculum_lxmf::Message::create(
+        ME,
+        from,
+        &signer,
+        0.0,
+        Vec::new(),
+        body.as_bytes().to_vec(),
+        fields,
+        leviculum_lxmf::DeliveryMethod::Direct,
+    )
+    .expect("a message")
+    .pack();
+    let entry = loquax::home::wire::Entry {
+        seq: u64::from(id),
+        kind: loquax::home::KIND_VOUCHED,
+        at: T0,
+        packed,
+    };
+    let event = loquax::home::board::fold(&entry, &ME).expect("the board folds it");
+    assert!(
+        matches!(event, OutboxEvent::Received { verified: true, .. }),
+        "the home's verdict did not reach the model: {event:?}"
     );
+    update(model, UiEvent::Engine(event));
 }
 
 fn members(epoch: u64, list: &[([u8; 16], &str, u64)]) -> Lev {

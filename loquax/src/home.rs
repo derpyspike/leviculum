@@ -289,6 +289,20 @@ pub const KIND_PN_STATUS: u8 = 13;
 /// hops changed or [`HUB_REFRESH_SECS`] passed. Like a name it wakes
 /// nobody. A client from before it skips it as a kind it cannot show.
 pub const KIND_HUB: u8 = 14;
+/// A received message whose signature the home verified (1744): the same
+/// bytes as [`KIND_RECEIVED`], served under this kind only to a board
+/// that asked for the home's verdicts ([`wire::Fold::BoardVouched`]), and
+/// never stored in the archive under it. The board has no sender's
+/// identity to check a signature with, so the home's own verdict is the
+/// one it reads: a group's copy speaks for its writer on the board only
+/// where the home verified it. A board from before it never asks for it.
+pub const KIND_VOUCHED: u8 = 15;
+
+/// Whether an entry of `kind` is a received message, verified by the home
+/// or not ([`KIND_RECEIVED`], [`KIND_VOUCHED`]).
+pub fn is_received(kind: u8) -> bool {
+    kind == KIND_RECEIVED || kind == KIND_VOUCHED
+}
 
 /// How long a hub heard again goes before its entry is appended again with
 /// the later hearing (1599): a hub announces about every few minutes, and
@@ -314,6 +328,7 @@ pub fn kind_word(kind: u8) -> alloc::borrow::Cow<'static, str> {
         KIND_GROUP => "group",
         KIND_PN_STATUS => "pn-status",
         KIND_HUB => "hub",
+        KIND_VOUCHED => "received-verified",
         other => return alloc::borrow::Cow::Owned(alloc::format!("{other}")),
     })
 }
