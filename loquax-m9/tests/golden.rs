@@ -824,6 +824,16 @@ fn group_model() -> UiModel<Field> {
         ..Lev::default()
     };
     arrive(&mut model, LEW, 1, "invite", invite);
+    // The reader joins, as a member does: since 1702 only the reader's own
+    // Join takes an invitation to joined, and only a joined group's copies
+    // are drawn under their writers (1728).
+    update(
+        &mut model,
+        UiEvent::Group(loquax::ui::groups::Verb::Join {
+            group: loquax::ui::intent::Target::Peer(GROUP),
+        }),
+    );
+    update(&mut model, UiEvent::SendDone(Ok(())));
     let joined = MEMBER_JOINED;
     let list = [
         (LEW, "Lew", MEMBER_ADMIN | joined),
