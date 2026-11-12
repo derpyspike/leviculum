@@ -847,17 +847,17 @@ as the phone, on by default since 1618.
   for no pictures (`no_images`): the map owns the terminal's picture
   protocol, and two pickers on one terminal is a later question.
 - **The window** draws it with lnomad's window view beside the rail
-  (`browse_view`, `loquax/src/gui.rs:3208`; `lnomad::gui::view`,
+  (`browse_view`, `loquax/src/gui.rs:3234`; `lnomad::gui::view`,
   `lnomad/src/gui.rs:681`). The pictures are lnomad's window code too:
   `Pictures` (`lnomad/src/gui.rs:272`), moved out of lnomad's `Window`
   so a host keeps it beside a model it hosts; the shell holds it and the
   window draws from it. What lnomad's view says is folded as lnomad's
-  window folds it (`App::browse`, `loquax/src/gui.rs:2248`, with
+  window folds it (`App::browse`, `loquax/src/gui.rs:2274`, with
   `wheel_mice` and `pointer_mouse`, `lnomad/src/gui.rs:433` and
   `lnomad/src/gui.rs:433`, and `type_address`,
   `lnomad/src/app/event.rs:546`, which lnomad's own window now calls as
   well). The window tells the browser its light or dark and the page's
-  cells (`browse_sync`, `loquax/src/gui.rs:2134`). The tab's icon
+  cells (`browse_sync`, `loquax/src/gui.rs:2160`). The tab's icon
   borrows the search glass; the shared icons have no globe yet.
 - **What the standalone has that the tab lacked (1337's list), and what
   the desktop tab has now.** Inline pictures: the window, yes; the
