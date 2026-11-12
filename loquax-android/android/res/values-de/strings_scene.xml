@@ -536,6 +536,7 @@
     <string name="join_bad_where">Loquax kann nicht lesen, wo das Postfach ist. Das sieht so aus: 192.168.1.20:4242.</string>
     <string name="join_failed">Das Postfach ließ sich nicht verbinden.</string>
     <string name="join_other_mailbox">Dieses Handy liest schon ein anderes Postfach.</string>
+    <string name="store_newer">Deine Chats wurden mit einer neueren Loquax-Version gespeichert. Installiere die neuere Version, dann ist alles wieder da. Deine Daten sind unverändert.</string>
     <string name="home_joining">Verbinde mit deinem Postfach</string>
     <string name="home_fetched">%1$d von %2$d abgeholt</string>
     <string name="home_fetched_some">%1$d abgeholt</string>

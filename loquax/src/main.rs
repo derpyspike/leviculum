@@ -746,6 +746,17 @@ fn no_daemon(error: &loquax::engine::AttachError) -> ExitCode {
     }
 }
 
+/// The store would not open: a later Loquax's store in the one plain
+/// sentence the phone shows (1760), in the locale's language, or with
+/// `--verbose` the file and the schemas; any other store error as it is.
+#[cfg(any(feature = "tui", feature = "gui"))]
+fn no_store(error: &loquax::store::StoreError) -> ExitCode {
+    match VERBOSE.load(std::sync::atomic::Ordering::Relaxed) {
+        true => failure(error, "no-store"),
+        false => failure(error.brief(loquax::engine::locale()), "no-store"),
+    }
+}
+
 /// `$LNMSG_HOME/reticulum` when `LNMSG_HOME` is set.
 #[cfg(any(feature = "tui", feature = "gui"))]
 fn moved_daemon_dir() -> Option<std::path::PathBuf> {
@@ -2353,7 +2364,7 @@ async fn run_mailbox(command: MailboxCommand) -> ExitCode {
         };
         match loquax::store::Store::open_in(&home, address) {
             Ok(mut opened) => store(&mut opened),
-            Err(error) => failure(error, "no-store"),
+            Err(error) => no_store(&error),
         }
     };
     let now = leviculum_std::local_time::unix_now_secs();

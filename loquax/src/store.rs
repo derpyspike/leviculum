@@ -123,6 +123,7 @@ use crate::ui::groups::{GroupInfo, Standing};
 use crate::ui::history::{Draft, Flags, Restored, StoreWrite, StoredHit, LOAD_WINDOW};
 use crate::ui::listing::Listing;
 use crate::ui::share::{Report, Share, Span};
+use crate::ui::strings::{Lang, StrId};
 use crate::ui::{LedgerEntry, Message, Signature};
 use crate::when::WallTime;
 use leviculum_lxmf::telemetry::Location;
@@ -670,6 +671,31 @@ impl fmt::Display for StoreError {
 }
 
 impl std::error::Error for StoreError {}
+
+impl StoreError {
+    /// What a person reads (1760): a store a later Loquax wrote is said in
+    /// plain words in `lang`, without the file or the schemas, on every
+    /// target that opens the store; the [`Display`](fmt::Display) text is
+    /// the detail (the phone's Details, the desktop's `--verbose`). The
+    /// other errors say what they said before.
+    pub fn brief(&self, lang: Lang) -> String {
+        match self {
+            Self::Newer { .. } => StrId::StoreNewer.text(lang).to_string(),
+            _ => self.to_string(),
+        }
+    }
+}
+
+/// The store at `path` when a later Loquax wrote it (1760), read only and
+/// the file untouched, so a start can refuse it before anything else runs.
+/// `None` when there is no file, when it is this Loquax's or an older one's,
+/// and when it cannot be read: the open that follows says why.
+pub fn written_later(path: &Path) -> Option<StoreError> {
+    match Store::open_read_only(path, [0; 16]) {
+        Err(error @ StoreError::Newer { .. }) => Some(error),
+        _ => None,
+    }
+}
 
 /// The open store, scoped to one of our addresses.
 pub struct Store {
@@ -5071,6 +5097,46 @@ mod tests {
             Store::open_in(home.path(), US),
             Err(StoreError::Newer { .. })
         ));
+    }
+
+    /// A later Loquax's store is found before any open that writes (1760),
+    /// and said in plain words without the file or the schemas; the file
+    /// is left as it was. No file and this Loquax's own are not "later".
+    #[test]
+    fn a_later_store_is_found_read_only_and_said_plainly() {
+        let home = tempfile::tempdir().expect("home");
+        let path = home.path().join(STORE_FILE);
+        assert!(written_later(&path).is_none(), "no file");
+        written(home.path());
+        assert!(written_later(&path).is_none(), "this Loquax's own");
+        let conn = Connection::open(&path).expect("open");
+        conn.execute_batch(&format!("PRAGMA user_version = {}", SCHEMA_VERSION + 1))
+            .expect("bump");
+        drop(conn);
+        let before = std::fs::read(&path).expect("read");
+        let error = written_later(&path).expect("a later store");
+        assert!(matches!(error, StoreError::Newer { .. }), "{error}");
+        for lang in [Lang::En, Lang::De] {
+            let brief = error.brief(lang);
+            assert_eq!(brief, StrId::StoreNewer.text(lang));
+            assert!(
+                !brief.contains("sqlite3") && !brief.contains("schema"),
+                "{brief}"
+            );
+        }
+        assert!(error.to_string().contains(&path.display().to_string()));
+        // The full open refuses it as well, and neither touches the file.
+        assert!(matches!(
+            Store::open(&path, US),
+            Err(StoreError::Newer { .. })
+        ));
+        assert!(std::fs::read(&path).expect("read") == before, "touched");
+        // Another error keeps its own words.
+        let failed = StoreError::Failed {
+            path: path.clone(),
+            detail: "gone".to_string(),
+        };
+        assert_eq!(failed.brief(Lang::De), failed.to_string());
     }
 
     /// A write is all or none: one that fails half way leaves the store as

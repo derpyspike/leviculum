@@ -678,6 +678,9 @@ leviculum_ui::catalogue! {
     JoinBadWhere = "join_bad_where", "Loquax cannot read where the mailbox is. It looks like 192.168.1.20:4242.", "Loquax kann nicht lesen, wo das Postfach ist. Das sieht so aus: 192.168.1.20:4242.";
     JoinFailed = "join_failed", "Joining the mailbox did not work.", "Das Postfach ließ sich nicht verbinden.";
     JoinOtherMailbox = "join_other_mailbox", "This phone already reads another mailbox.", "Dieses Handy liest schon ein anderes Postfach.";
+    // A store a later Loquax wrote (1760): no first start, nothing lost;
+    // the file and the schemas only under Details.
+    StoreNewer = "store_newer", "Your chats were saved by a newer version of Loquax. Install the newer version and everything is back. Your data is unchanged.", "Deine Chats wurden mit einer neueren Loquax-Version gespeichert. Installiere die neuere Version, dann ist alles wieder da. Deine Daten sind unverändert.";
     // A device of a home that has no window to say more (1415, the M9's
     // top bar): joining with its code, the archive coming in, and the
     // home out of reach. The pull counts entries of the archive, which

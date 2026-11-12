@@ -1772,8 +1772,7 @@ pub(crate) async fn start(
                 .map_err(|error| crate::failure(error, "locked"))?,
         ),
     };
-    let store =
-        Store::open_in(&home, address).map_err(|error| crate::failure(error, "no-store"))?;
+    let store = Store::open_in(&home, address).map_err(|error| crate::no_store(&error))?;
     // The start reads the summaries, not the bodies (1490, schema 17):
     // each conversation's page loads when it opens, through the same
     // store reads the scrollback uses.

@@ -508,6 +508,11 @@ required-features = ["history"]
 name = "mailbox_setup"
 required-features = ["tui"]
 
+# 1760: a store a later Loquax wrote, said in plain words, left alone.
+[[test]]
+name = "store_newer"
+required-features = ["tui"]
+
 # The SIGUSR1 census of `loquax mailbox run` (1585), the real binary
 # beside an in-process shared instance.
 [[test]]

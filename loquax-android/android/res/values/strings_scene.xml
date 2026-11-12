@@ -536,6 +536,7 @@
     <string name="join_bad_where">Loquax cannot read where the mailbox is. It looks like 192.168.1.20:4242.</string>
     <string name="join_failed">Joining the mailbox did not work.</string>
     <string name="join_other_mailbox">This phone already reads another mailbox.</string>
+    <string name="store_newer">Your chats were saved by a newer version of Loquax. Install the newer version and everything is back. Your data is unchanged.</string>
     <string name="home_joining">Joining your mailbox</string>
     <string name="home_fetched">Fetched %1$d of %2$d</string>
     <string name="home_fetched_some">Fetched %1$d</string>
