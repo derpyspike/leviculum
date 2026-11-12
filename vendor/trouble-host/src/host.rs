@@ -23,9 +23,8 @@ use bt_hci::cmd::le::{
     LeSetAddrResolutionEnable, LeSetPrivacyMode, LeSetResolvablePrivateAddrTimeout,
 };
 use bt_hci::cmd::le::{
-    LeConnUpdate, LeCreateConnCancel, LePeriodicAdvCreateSyncCancel, LePeriodicAdvTerminateSync,
-    LeReadBufferSize, LeReadFilterAcceptListSize, LeSetAdvEnable, LeSetEventMask,
-    LeSetExtAdvEnable, LeSetExtScanEnable, LeSetPeriodicAdvEnable, LeSetRandomAddr,
+    LeConnUpdate, LeCreateConnCancel, LeReadBufferSize, LeReadFilterAcceptListSize,
+    LeSetAdvEnable, LeSetEventMask, LeSetExtAdvEnable, LeSetExtScanEnable, LeSetRandomAddr,
     LeSetScanEnable,
 };
 use bt_hci::cmd::link_control::Disconnect;
@@ -48,11 +47,6 @@ use bt_hci::event::le::{
 };
 #[cfg(feature = "iso")]
 use bt_hci::event::le::{LeCisEstablished, LeCisRequest};
-#[cfg(feature = "periodic-advertising")]
-use bt_hci::event::le::{
-    LePeriodicAdvertisingReport, LePeriodicAdvertisingSyncEstablished,
-    LePeriodicAdvertisingSyncLost,
-};
 use bt_hci::event::{DisconnectionComplete, EventKind, NumberOfCompletedPackets, Vendor};
 #[cfg(feature = "security")]
 use bt_hci::param::BdAddr;
@@ -162,9 +156,6 @@ pub(crate) struct HostState<'d, P: PacketPool> {
     pub(crate) resolving_list_state: RefCell<ResolvingListSignal>,
     #[cfg(feature = "scan")]
     pub(crate) scan_timeout: Signal<NoopRawMutex, ()>,
-    /// Leviculum patch: the periodic advertising sync table.
-    #[cfg(feature = "periodic-advertising")]
-    pub(crate) periodic: crate::periodic::PeriodicState,
 }
 
 impl<'d, P: PacketPool> HostState<'d, P> {
@@ -200,8 +191,6 @@ impl<'d, P: PacketPool> HostState<'d, P> {
             resolving_list_state: RefCell::new(ResolvingListSignal::new()),
             #[cfg(feature = "scan")]
             scan_timeout: Signal::new(),
-            #[cfg(feature = "periodic-advertising")]
-            periodic: crate::periodic::PeriodicState::new(),
         }
     }
 }
@@ -354,11 +343,6 @@ where
         &self.state.scan_command_state
     }
 
-    #[cfg(feature = "periodic-advertising")]
-    pub(crate) fn periodic(&self) -> &'d crate::periodic::PeriodicState {
-        &self.state.periodic
-    }
-
     pub(crate) fn connections(&self) -> &'d ConnectionManager<'d, P> {
         &self.state.connections
     }
@@ -408,10 +392,6 @@ where
         #[cfg(feature = "scan")]
         if let Poll::Ready(ctx) = self.state.scan_command_state.poll_cancelled(cx) {
             return Poll::Ready(CancelledCommandState::Scan(ctx));
-        }
-        #[cfg(feature = "periodic-advertising")]
-        if let Poll::Ready(action) = self.state.periodic.poll_pending(cx) {
-            return Poll::Ready(CancelledCommandState::Periodic(action));
         }
 
         #[cfg(all(feature = "security", feature = "central"))]
@@ -1407,9 +1387,6 @@ impl<'d, C: Controller, P: PacketPool> Runner<'d, C, P> {
             + ControllerCmdSync<SetControllerToHostFlowControl>
             + ControllerCmdSync<Reset>
             + ControllerCmdSync<LeCreateConnCancel>
-            + ControllerCmdSync<LePeriodicAdvCreateSyncCancel>
-            + ControllerCmdSync<LePeriodicAdvTerminateSync>
-            + ControllerCmdSync<LeSetPeriodicAdvEnable>
             + ControllerCmdSync<LeSetScanEnable>
             + ControllerCmdSync<LeSetExtScanEnable>
             + for<'t> ControllerCmdSync<LeSetAdvEnable>
@@ -1449,9 +1426,6 @@ impl<'d, C: Controller, P: PacketPool> Runner<'d, C, P> {
             + ControllerCmdSync<LeSetExtScanEnable>
             + ControllerCmdSync<Reset>
             + ControllerCmdSync<LeCreateConnCancel>
-            + ControllerCmdSync<LePeriodicAdvCreateSyncCancel>
-            + ControllerCmdSync<LePeriodicAdvTerminateSync>
-            + ControllerCmdSync<LeSetPeriodicAdvEnable>
             + ControllerCmdSync<LeReadBufferSize>
             + ControllerCmdSync<ReadBdAddr>
             + crate::SecurityCmds
@@ -1827,46 +1801,6 @@ impl<'d, C: Controller, P: PacketPool> RxRunner<'d, C, P> {
                                     ));
                                     event_handler.on_cis_established(&e);
                                 }
-                                #[cfg(feature = "periodic-advertising")]
-                                LeEventKind::LePeriodicAdvertisingSyncEstablished => {
-                                    let e = unwrap!(LePeriodicAdvertisingSyncEstablished::from_hci_bytes_complete(
-                                        event.data
-                                    ));
-                                    host.state.periodic.on_established(
-                                        e.status,
-                                        e.sync_handle,
-                                        e.adv_sid,
-                                        e.adv_addr_kind,
-                                        e.adv_addr,
-                                        e.adv_phy,
-                                        Duration::from_micros(e.periodic_adv_interval.as_micros()),
-                                    );
-                                }
-                                #[cfg(feature = "periodic-advertising")]
-                                LeEventKind::LePeriodicAdvertisingReport => {
-                                    let e = unwrap!(
-                                        LePeriodicAdvertisingReport::from_hci_bytes_complete(
-                                            event.data
-                                        )
-                                    );
-                                    host.state.periodic.on_report(
-                                        e.sync_handle,
-                                        e.tx_power,
-                                        e.rssi,
-                                        e.cte_kind,
-                                        e.data_status,
-                                        e.data,
-                                    );
-                                }
-                                #[cfg(feature = "periodic-advertising")]
-                                LeEventKind::LePeriodicAdvertisingSyncLost => {
-                                    let e = unwrap!(
-                                        LePeriodicAdvertisingSyncLost::from_hci_bytes_complete(
-                                            event.data
-                                        )
-                                    );
-                                    host.state.periodic.on_lost(e.sync_handle);
-                                }
                                 _ => {
                                     warn!("Unknown LE event!");
                                 }
@@ -1953,8 +1887,6 @@ enum CancelledCommandState {
     Advertise(bool),
     #[cfg(feature = "scan")]
     Scan(bool),
-    #[cfg(feature = "periodic-advertising")]
-    Periodic(crate::periodic::PendingAction),
     #[cfg(feature = "security")]
     SyncResolvingList(ResolvingListUpdate),
     #[cfg(all(feature = "security", feature = "central"))]
@@ -1976,9 +1908,6 @@ impl<'d, C: Controller, P: PacketPool> ControlRunner<'d, C, P> {
             + ControllerCmdSync<SetControllerToHostFlowControl>
             + ControllerCmdSync<Reset>
             + ControllerCmdSync<LeCreateConnCancel>
-            + ControllerCmdSync<LePeriodicAdvCreateSyncCancel>
-            + ControllerCmdSync<LePeriodicAdvTerminateSync>
-            + ControllerCmdSync<LeSetPeriodicAdvEnable>
             + for<'t> ControllerCmdSync<LeSetAdvEnable>
             + for<'t> ControllerCmdSync<LeSetExtAdvEnable<'t>>
             + ControllerCmdSync<LeSetScanEnable>
@@ -2079,12 +2008,6 @@ impl<'d, C: Controller, P: PacketPool> ControlRunner<'d, C, P> {
 
         #[cfg(feature = "connection-params-update")]
         let mask = mask.enable_le_remote_conn_parameter_request(true);
-
-        #[cfg(feature = "periodic-advertising")]
-        let mask = mask
-            .enable_le_periodic_adv_sync_established_v1(true)
-            .enable_le_periodic_adv_report_v1(true)
-            .enable_le_periodic_adv_sync_lost(true);
 
         #[cfg(feature = "shorter-connection-intervals")]
         let mask = mask.enable_le_connection_rate_change(true);
@@ -2338,43 +2261,6 @@ impl<'d, C: Controller, P: PacketPool> ControlRunner<'d, C, P> {
                             host.command(LeSetScanEnable::new(false, false)).await?;
                         }
                         host.state.scan_command_state.canceled();
-                    }
-                    #[cfg(feature = "periodic-advertising")]
-                    CancelledCommandState::Periodic(action) => {
-                        use crate::periodic::PendingAction;
-                        match action {
-                            PendingAction::CancelCreate(index) => {
-                                trace!("[host] cancel periodic sync create");
-                                if let Err(e) =
-                                    host.command(LePeriodicAdvCreateSyncCancel::new()).await
-                                {
-                                    // Nothing pending at the controller any more (it
-                                    // was established or failed already): the
-                                    // establishment event settles the slot if it is
-                                    // still to come.
-                                    warn!("[host] error cancelling periodic sync create: {:?}", e);
-                                }
-                                host.state.periodic.cancel_sent(index);
-                            }
-                            PendingAction::Terminate(index, handle) => {
-                                trace!("[host] terminate periodic sync");
-                                if let Err(e) =
-                                    host.command(LePeriodicAdvTerminateSync::new(handle)).await
-                                {
-                                    warn!("[host] error terminating periodic sync: {:?}", e);
-                                }
-                                host.state.periodic.free(index);
-                            }
-                            PendingAction::StopAdvertising(handle) => {
-                                trace!("[host] disabling periodic advertising");
-                                if let Err(e) = host
-                                    .command(LeSetPeriodicAdvEnable::new(false, handle))
-                                    .await
-                                {
-                                    warn!("[host] error disabling periodic advertising: {:?}", e);
-                                }
-                            }
-                        }
                     }
                     #[cfg(feature = "security")]
                     CancelledCommandState::SyncResolvingList(update) => {

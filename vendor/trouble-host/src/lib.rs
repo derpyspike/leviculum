@@ -71,8 +71,6 @@ pub mod gap;
 pub mod l2cap;
 #[cfg(feature = "scan")]
 pub mod scan;
-#[cfg(feature = "periodic-advertising")]
-pub mod periodic;
 
 #[cfg(test)]
 pub(crate) mod mock_controller;
@@ -111,8 +109,6 @@ pub mod prelude {
     pub use crate::l2cap::*;
     #[cfg(feature = "default-packet-pool")]
     pub use crate::packet_pool::DefaultPacketPool;
-    #[cfg(feature = "periodic-advertising")]
-    pub use crate::periodic::*;
     pub use crate::pdu::Sdu;
     #[cfg(feature = "peripheral")]
     pub use crate::peripheral::*;
@@ -403,8 +399,6 @@ pub enum Error {
     NoPermits,
     /// Connection is disconnected.
     Disconnected,
-    /// The controller lost a periodic advertising sync (Leviculum patch).
-    PeriodicSyncLost,
     /// Connection limit has been reached.
     ConnectionLimitReached,
     /// GATT subscriber limit has been reached.

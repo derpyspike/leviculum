@@ -86,10 +86,3 @@ pub const CLIENT_ATT_TABLE_SIZE: usize = raw::CLIENT_ATT_TABLE_SIZE;
 ///
 /// Default: 512.
 pub const PREPARE_WRITE_BUFFER_SIZE: usize = raw::PREPARE_WRITE_BUFFER_SIZE;
-
-// ======== Periodic advertising (Leviculum patch)
-//
-/// Periodic advertising syncs held at once (`periodic-advertising` feature).
-///
-/// Default: 4.
-pub const PERIODIC_SYNCS_MAX: usize = raw::PERIODIC_SYNCS_MAX;
