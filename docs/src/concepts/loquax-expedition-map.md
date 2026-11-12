@@ -441,12 +441,16 @@ Additions (decided):
      every field of the original but the custom ones verbatim, the
      telemetry field included (`copy` (`loquax/src/home/group.rs:1397`),
      the field loop at lines 1407 to 1426), and its LXMF source is the
-     group, so `read` (`loquax/src/telemetry.rs:173`) books a plain
+     group, so `read` (`loquax/src/telemetry.rs:198`) books a plain
      telemetry field under the writer `lev.group_copy` names, not under
-     the group the copy came from (1687) — where the phone knows the
-     group and the named writer is one of its members
-     (`groups::copy_writer`, `loquax/src/ui/groups.rs:315`), since 1696,
-     so a person's message cannot name another's pin.
+     the group the copy came from (1687) — where the phone joined the
+     group and the named writer was one of its members when the home
+     made the copy (`groups::copies_from`,
+     `loquax/src/ui/groups.rs:326`), since 1696 and 1702, so neither a
+     person's message nor an invitation the reader never accepted can
+     name another's pin. What stays: the home of a group the reader
+     joined can write anyone into its membership, and its copies then
+     speak for them; joining a group is trusting its home that far.
    - *Home out of reach* (the field): the position announce sealed
      under the group key. Announces travel several hops with no host,
      it is one transmission for all, and only members can read it. The

@@ -6731,15 +6731,14 @@ fn take_telemetry<B>(
     }
     let source = conversation.peer;
     let key = message.activity;
-    // Whoever vouches for the writer: the group this device knows the
-    // message's source to be, and its membership naming the sender. A copy
-    // field in a person's message names nobody (1696).
-    let writer = groups::copy_writer(&message.fields, model.group(&source));
+    // Whoever vouches for a writer or a collector's row: a group the reader
+    // joined, by the one rule and its membership (1696, 1702). A copy field
+    // or a row in anyone else's message speaks for nobody but its signer.
     let read = telemetry::read(
         source,
+        groups::arrival(model.copies_from(&source, message)),
         &message.fields,
         model.now.map(|now| now.unix_secs),
-        writer,
     );
     let mut effects = Vec::new();
     for unreadable in &read.unreadable {
@@ -6758,9 +6757,10 @@ fn take_telemetry<B>(
 
 /// The fix a message from `peer` carries, the one its position line names
 /// ([`telemetry::shown_fix`]): a report's, and a text's that came with a
-/// telemetry field. `group` is the group this device knows `peer` to be
-/// ([`groups::copy_writer`]); without it a `lev.group_copy` names nobody,
-/// and the position is `peer`'s (1696). `None` for one of ours, which is
+/// telemetry field. `group` is the group whose copy the message is, by the
+/// one rule ([`groups::copies_from`]); without it a `lev.group_copy` or a
+/// collector's row names nobody, and the position is `peer`'s (1696,
+/// 1702). `None` for one of ours, which is
 /// our position and not the peer's, and for a message without a readable
 /// position.
 pub fn message_fix(
@@ -6772,8 +6772,7 @@ pub fn message_fix(
         return None;
     }
     let received = message.at.map(|at| at.unix_secs);
-    let writer = groups::copy_writer(&message.fields, group);
-    let read = telemetry::read(peer, &message.fields, received, writer);
+    let read = telemetry::read(peer, groups::arrival(group), &message.fields, received);
     telemetry::shown_fix(&read).cloned()
 }
 
@@ -6787,9 +6786,9 @@ pub fn own_fix(own: [u8; 16], message: &Message) -> Option<Fix> {
     }
     let read = telemetry::read(
         own,
+        telemetry::Arrival::Direct,
         &message.fields,
         message.at.map(|at| at.unix_secs),
-        None,
     );
     telemetry::shown_fix(&read).cloned()
 }
@@ -6870,7 +6869,11 @@ impl<B> UiModel<B> {
             // A position we shared (1201) is ours: its line shows where we
             // were, measured by us.
             true => self.address.and_then(|own| own_fix(own, message)),
-            false => message_fix(conversation.peer, message, self.group(&conversation.peer)),
+            false => message_fix(
+                conversation.peer,
+                message,
+                self.copies_from(&conversation.peer, message),
+            ),
         }
     }
 
@@ -14805,7 +14808,25 @@ pub(crate) mod tests {
         let bob = fix_at(43_773_100, 11_256_000, two_pm() - 300);
         arrive(&mut model, PEER, 1, "", report_of(&bob));
         let carol = fix_at(-33_868_800, 151_209_300, two_pm() - 100);
+        // The collector is a group the reader joined, both of them members:
+        // nobody else's rows speak for another (1702).
         let collector = [0xc0; 16];
+        model.groups.insert(
+            collector,
+            groups::GroupInfo {
+                standing: groups::Standing::Joined,
+                members: [PEER, OTHER]
+                    .map(|address| groups::GroupMember {
+                        address,
+                        name: String::new(),
+                        admin: false,
+                        joined: true,
+                        left: false,
+                    })
+                    .to_vec(),
+                ..groups::GroupInfo::new(collector)
+            },
+        );
         let stream = encode_stream_field_value(&[
             StreamEntry {
                 source: PEER.to_vec(),
@@ -14888,11 +14909,12 @@ pub(crate) mod tests {
             "the pin lands under the signed source"
         );
 
-        // The same copy from a group this device knows, its membership
+        // The same copy from a group the reader joined, its membership
         // naming the writer: under the writer, as 1687 had it.
         model.groups.insert(
             GROUP,
             groups::GroupInfo {
+                standing: groups::Standing::Joined,
                 members: vec![groups::GroupMember {
                     address: OTHER,
                     name: "Other".into(),
@@ -14910,6 +14932,396 @@ pub(crate) mod tests {
         );
         assert_eq!(model.positions[&OTHER].location.latitude_e6, 52_000_000);
         assert_eq!(model.positions[&OTHER].via, GROUP);
+    }
+
+    // 1702: who may speak for a member. The reviewer's attack tests on
+    // 1696 (notizen/2026-11-11-experiment-1696-a-gegen-b.md), each a door
+    // a stranger or a former member could move a pin through.
+
+    const ATK_MALLORY: [u8; 16] = [0x3a; 16];
+    const ATK_BOB: [u8; 16] = [0xb0; 16];
+    const ATK_STRANGER: [u8; 16] = [0x5e; 16];
+    const ATK_GROUP: [u8; 16] = [0x60; 16];
+    const ATK_ME: [u8; 16] = [0x11; 16];
+
+    fn atk_copy_at(writer: [u8; 16], lat: i32, epoch: u64) -> Vec<(i64, Vec<u8>)> {
+        use leviculum_lxmf::lev::{GroupCopy, Lev};
+        let mut fields = report_of(&fix_at(lat, 13_000_000, two_pm() - 60));
+        Lev {
+            group_copy: Some(GroupCopy {
+                sender: writer,
+                sent_ms: (two_pm() - 60) as u64 * 1000,
+                epoch,
+            }),
+            ..Lev::default()
+        }
+        .put_into(&mut fields);
+        fields
+    }
+
+    fn atk_copy(writer: [u8; 16], lat: i32) -> Vec<(i64, Vec<u8>)> {
+        atk_copy_at(writer, lat, 1)
+    }
+
+    /// A joined group at roster epoch `epoch` naming `members` (address,
+    /// left).
+    fn atk_model_at(members: &[([u8; 16], bool)], epoch: u64) -> UiModel<Field> {
+        use super::groups::{GroupInfo, GroupMember, Standing};
+        let mut model = UiModel::<Field>::new(&[ATK_MALLORY, ATK_BOB]);
+        model.address = Some(ATK_ME);
+        clock(&mut model, 26, 14, 0);
+        model.groups.insert(
+            ATK_GROUP,
+            GroupInfo {
+                standing: Standing::Joined,
+                epoch,
+                members: members
+                    .iter()
+                    .map(|(address, left)| GroupMember {
+                        address: *address,
+                        name: "M".into(),
+                        admin: false,
+                        joined: true,
+                        left: *left,
+                    })
+                    .collect(),
+                ..GroupInfo::new(ATK_GROUP)
+            },
+        );
+        model
+    }
+
+    fn atk_model(members: &[([u8; 16], bool)]) -> UiModel<Field> {
+        atk_model_at(members, 0)
+    }
+
+    fn atk_stream(rows: &[([u8; 16], i32)]) -> Vec<(i64, Vec<u8>)> {
+        let rows: Vec<StreamEntry> = rows
+            .iter()
+            .map(|(source, lat)| StreamEntry {
+                source: source.to_vec(),
+                timestamp: leviculum_lxmf::msgpack::Number::Int(two_pm() - 60),
+                telemetry: fix_at(*lat, 13_000_000, two_pm() - 60).encode(),
+                appearance: None,
+            })
+            .collect();
+        vec![(FIELD_TELEMETRY_STREAM, encode_stream_field_value(&rows))]
+    }
+
+    /// A stranger's direct message with a group_copy naming Bob: no pin of
+    /// Bob's moves, the bubble's fix is Mallory's.
+    #[test]
+    fn atk1_a_strangers_group_copy_mark_moves_no_members_pin() {
+        let mut model = atk_model(&[(ATK_BOB, false)]);
+        arrive(&mut model, ATK_MALLORY, 1, "", atk_copy(ATK_BOB, 1_000_000));
+        assert!(!model.positions.contains_key(&ATK_BOB), "Bob's pin moved");
+        assert_eq!(model.positions[&ATK_MALLORY].via, ATK_MALLORY);
+        let c = model.conversation(ATK_MALLORY);
+        let fix = model.message_fix(c, 0).expect("a fix");
+        assert_eq!(fix.peer, ATK_MALLORY, "Enter on the bubble opens Mallory");
+        // No writer is drawn over Mallory's bubble.
+        assert!(chat::bubbles(&model, c).iter().all(|b| b.writer.is_none()));
+    }
+
+    /// A known group's copy naming somebody its membership does not: the
+    /// group keeps the reading.
+    #[test]
+    fn atk2_a_known_groups_copy_of_a_non_member_books_under_the_group() {
+        let mut model = atk_model(&[(ATK_BOB, false)]);
+        arrive(
+            &mut model,
+            ATK_GROUP,
+            1,
+            "",
+            atk_copy(ATK_STRANGER, 2_000_000),
+        );
+        assert!(
+            !model.positions.contains_key(&ATK_STRANGER),
+            "a non-member got a pin"
+        );
+        assert_eq!(model.positions[&ATK_GROUP].location.latitude_e6, 2_000_000);
+        let c = model.conversation(ATK_GROUP);
+        assert_eq!(model.message_fix(c, 0).expect("a fix").peer, ATK_GROUP);
+    }
+
+    /// Door 3: a member the roster marks as left no longer speaks for a
+    /// copy made at or after the roster that says so.
+    #[test]
+    fn atk3_a_member_who_left_no_longer_moves_his_pin() {
+        let mut model = atk_model(&[(ATK_BOB, true)]);
+        arrive(&mut model, ATK_GROUP, 1, "", atk_copy(ATK_BOB, 3_000_000));
+        assert!(
+            !model.positions.contains_key(&ATK_BOB),
+            "a member who left still moves a pin"
+        );
+        let c = model.conversation(ATK_GROUP);
+        assert_eq!(model.message_fix(c, 0).expect("a fix").peer, ATK_GROUP);
+    }
+
+    /// Door 3's other half: a copy the home made before the leave (an
+    /// older epoch than the roster that names him gone) stays his.
+    #[test]
+    fn a_copy_from_before_a_members_leave_stays_his() {
+        let mut model = atk_model_at(&[(ATK_BOB, true)], 3);
+        arrive(
+            &mut model,
+            ATK_GROUP,
+            1,
+            "",
+            atk_copy_at(ATK_BOB, 3_100_000, 2),
+        );
+        assert_eq!(model.positions[&ATK_BOB].location.latitude_e6, 3_100_000);
+        assert_eq!(model.positions[&ATK_BOB].via, ATK_GROUP);
+        let c = model.conversation(ATK_GROUP);
+        assert_eq!(model.message_fix(c, 0).expect("a fix").peer, ATK_BOB);
+    }
+
+    /// Our own outbound message in a group chat, carrying a copy field
+    /// naming Bob: it is ours, and no pin moves when the bubble is read.
+    #[test]
+    fn atk4_our_own_message_is_ours_whatever_copy_field_it_carries() {
+        let mut model = atk_model(&[(ATK_BOB, false)]);
+        arrive(&mut model, ATK_GROUP, 1, "", atk_copy(ATK_BOB, 4_000_000));
+        let c = model.conversation(ATK_GROUP);
+        model.positions.clear();
+        model.conversations[c]
+            .messages
+            .for_each_mut(|m| m.outbound = true);
+        let fix = model.message_fix(c, 0).expect("our fix");
+        assert_eq!(fix.peer, ATK_ME, "an outbound message's fix is ours");
+        assert!(model.positions.is_empty());
+    }
+
+    /// Door 1: a stranger's collector row naming Bob moves no pin of Bob's.
+    #[test]
+    fn atk5_a_strangers_stream_row_moves_no_pin_of_the_source_it_names() {
+        let mut model = atk_model(&[(ATK_BOB, false)]);
+        arrive(
+            &mut model,
+            ATK_MALLORY,
+            1,
+            "",
+            atk_stream(&[(ATK_BOB, 5_000_000)]),
+        );
+        assert!(
+            !model.positions.contains_key(&ATK_BOB),
+            "a stranger's stream row moved Bob's pin (via {:?})",
+            model.positions.get(&ATK_BOB).map(|f| f.via)
+        );
+    }
+
+    /// Door 1, what still counts: a row naming the message's own signed
+    /// source, and from a joined group a row naming a present member; a
+    /// row naming somebody else, or a member who left, does not.
+    #[test]
+    fn a_stream_row_counts_for_its_source_or_a_joined_groups_present_member() {
+        let mut model = atk_model(&[(ATK_BOB, false), (ATK_STRANGER, true)]);
+        arrive(
+            &mut model,
+            ATK_MALLORY,
+            1,
+            "",
+            atk_stream(&[(ATK_MALLORY, 5_100_000)]),
+        );
+        assert_eq!(
+            model.positions[&ATK_MALLORY].location.latitude_e6,
+            5_100_000
+        );
+        arrive(
+            &mut model,
+            ATK_GROUP,
+            2,
+            "",
+            atk_stream(&[(ATK_BOB, 5_200_000), (ATK_STRANGER, 5_300_000)]),
+        );
+        assert_eq!(model.positions[&ATK_BOB].location.latitude_e6, 5_200_000);
+        assert_eq!(model.positions[&ATK_BOB].via, ATK_GROUP);
+        assert!(
+            !model.positions.contains_key(&ATK_STRANGER),
+            "a row of a member who left counted"
+        );
+    }
+
+    /// The legitimate case: a member's copy from the joined group.
+    #[test]
+    fn atk6_a_members_copy_books_under_the_member() {
+        let mut model = atk_model(&[(ATK_BOB, false)]);
+        arrive(&mut model, ATK_GROUP, 1, "", atk_copy(ATK_BOB, 6_000_000));
+        assert_eq!(model.positions[&ATK_BOB].location.latitude_e6, 6_000_000);
+        assert_eq!(model.positions[&ATK_BOB].via, ATK_GROUP);
+        assert!(!model.positions.contains_key(&ATK_GROUP));
+        let c = model.conversation(ATK_GROUP);
+        assert_eq!(model.message_fix(c, 0).expect("a fix").peer, ATK_BOB);
+    }
+
+    fn atk_invite(group: [u8; 16]) -> leviculum_lxmf::lev::Lev {
+        use leviculum_lxmf::lev::{Invite, Lev, PUBLIC_KEY_BYTES};
+        Lev {
+            invite: Some(Invite {
+                group,
+                public_key: [0x33; PUBLIC_KEY_BYTES],
+                name: "Trap".into(),
+                admin_name: "Mallory".into(),
+                epoch: 1,
+            }),
+            ..Lev::default()
+        }
+    }
+
+    fn atk_members(names: &[[u8; 16]]) -> leviculum_lxmf::lev::Members {
+        use leviculum_lxmf::lev::{Member, Members, MEMBER_JOINED};
+        Members {
+            epoch: 1,
+            members: names
+                .iter()
+                .map(|address| Member {
+                    address: *address,
+                    name: "Bob".into(),
+                    flags: MEMBER_JOINED,
+                })
+                .collect(),
+            ended: false,
+        }
+    }
+
+    fn atk_fresh() -> UiModel<Field> {
+        let mut model = UiModel::<Field>::new(&[ATK_MALLORY, ATK_BOB]);
+        model.address = Some(ATK_ME);
+        clock(&mut model, 26, 14, 0);
+        model
+    }
+
+    /// Door 2: Mallory invites the reader to a "group" whose address is
+    /// her own, tells it a membership naming Bob, then sends a copy. The
+    /// reader never joined anything, and no group is made.
+    #[test]
+    fn atk7_an_invitation_onto_the_senders_own_address_makes_no_group() {
+        use leviculum_lxmf::lev::Lev;
+        let mut model = atk_fresh();
+        let mut invite = Vec::new();
+        atk_invite(ATK_MALLORY).put_into(&mut invite);
+        arrive(&mut model, ATK_MALLORY, 1, "", invite);
+        assert!(
+            model.group(&ATK_MALLORY).is_none(),
+            "a person's own address became a group"
+        );
+        let mut members = Vec::new();
+        Lev {
+            members: Some(atk_members(&[ATK_BOB])),
+            ..Lev::default()
+        }
+        .put_into(&mut members);
+        arrive(&mut model, ATK_MALLORY, 2, "", members);
+        arrive(&mut model, ATK_MALLORY, 3, "", atk_copy(ATK_BOB, 7_000_000));
+        assert!(
+            !model.positions.contains_key(&ATK_BOB),
+            "an invitation nobody accepted let Mallory move Bob's pin"
+        );
+    }
+
+    /// The same in ONE message: invite, membership, copy mark, position.
+    #[test]
+    fn atk7b_one_self_invitation_message_moves_no_pin() {
+        use leviculum_lxmf::lev::GroupCopy;
+        let mut model = atk_fresh();
+        let mut fields = report_of(&fix_at(7_500_000, 13_000_000, two_pm() - 60));
+        let mut lev = atk_invite(ATK_MALLORY);
+        lev.members = Some(atk_members(&[ATK_BOB]));
+        lev.group_copy = Some(GroupCopy {
+            sender: ATK_BOB,
+            sent_ms: (two_pm() - 60) as u64 * 1000,
+            epoch: 1,
+        });
+        lev.put_into(&mut fields);
+        arrive(&mut model, ATK_MALLORY, 1, "", fields);
+        assert!(
+            !model.positions.contains_key(&ATK_BOB),
+            "one message from a stranger moved Bob's pin"
+        );
+    }
+
+    /// The chat's side of 7: Bob's name is not drawn over Mallory's text.
+    #[test]
+    fn atk8_a_self_invitation_draws_no_members_name_over_the_senders_text() {
+        use leviculum_lxmf::lev::{GroupCopy, Lev};
+        let mut model = atk_fresh();
+        let mut invite = Vec::new();
+        let mut lev = atk_invite(ATK_MALLORY);
+        lev.members = Some(atk_members(&[ATK_BOB]));
+        lev.put_into(&mut invite);
+        arrive(&mut model, ATK_MALLORY, 1, "", invite);
+        let mut text = Vec::new();
+        Lev {
+            group_copy: Some(GroupCopy {
+                sender: ATK_BOB,
+                sent_ms: (two_pm() - 60) as u64 * 1000,
+                epoch: 1,
+            }),
+            ..Lev::default()
+        }
+        .put_into(&mut text);
+        arrive(&mut model, ATK_MALLORY, 2, "Bob: send me the key", text);
+        let c = model.conversation(ATK_MALLORY);
+        let bubbles = chat::bubbles(&model, c);
+        assert!(
+            bubbles
+                .iter()
+                .all(|b| b.writer.as_ref().map(|w| w.0) != Some(ATK_BOB)),
+            "Mallory's text is drawn under Bob"
+        );
+    }
+
+    /// Door 2, the same with a group address of its own: an invitation the
+    /// reader never accepted is no known group, even when that group's
+    /// next message names the reader joined. Its copies speak for nobody,
+    /// in the chat as on the map, and the reader stays invited.
+    #[test]
+    fn an_invitation_nobody_accepted_speaks_for_no_member() {
+        use super::groups::Standing;
+        use leviculum_lxmf::lev::{GroupCopy, Lev};
+        let mut model = atk_fresh();
+        let mut invite = Vec::new();
+        atk_invite(ATK_GROUP).put_into(&mut invite);
+        arrive(&mut model, ATK_MALLORY, 1, "", invite);
+        assert_eq!(
+            model.group(&ATK_GROUP).map(|g| g.standing),
+            Some(Standing::Invited)
+        );
+        let mut members = Vec::new();
+        Lev {
+            members: Some(atk_members(&[ATK_BOB, ATK_ME])),
+            ..Lev::default()
+        }
+        .put_into(&mut members);
+        arrive(&mut model, ATK_GROUP, 2, "", members);
+        assert_eq!(
+            model.group(&ATK_GROUP).map(|g| g.standing),
+            Some(Standing::Invited),
+            "the group's own word joined the reader"
+        );
+        arrive(&mut model, ATK_GROUP, 3, "", atk_copy(ATK_BOB, 8_000_000));
+        assert!(
+            !model.positions.contains_key(&ATK_BOB),
+            "an invited group's copy moved Bob's pin"
+        );
+        let mut text = Vec::new();
+        Lev {
+            group_copy: Some(GroupCopy {
+                sender: ATK_BOB,
+                sent_ms: (two_pm() - 30) as u64 * 1000,
+                epoch: 1,
+            }),
+            ..Lev::default()
+        }
+        .put_into(&mut text);
+        arrive(&mut model, ATK_GROUP, 4, "Bob: hello", text);
+        let c = model.conversation(ATK_GROUP);
+        assert!(
+            chat::bubbles(&model, c)
+                .iter()
+                .all(|b| b.writer.as_ref().map(|w| w.0) != Some(ATK_BOB)),
+            "an invited group's text is drawn under Bob"
+        );
     }
 
     #[test]
@@ -17458,7 +17870,7 @@ pub(crate) mod tests {
             *fields, expected,
             "the Telemeter and the receipt mark alone"
         );
-        let read = telemetry::read(OTHER, fields, None, None);
+        let read = telemetry::read(OTHER, telemetry::Arrival::Direct, fields, None);
         assert_eq!(read.fixes.len(), 1, "{read:?}");
         assert_eq!(read.fixes[0].location, location);
         let fix = model.message_fix(0, 0).expect("our bubble names the fix");

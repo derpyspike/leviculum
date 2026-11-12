@@ -86,8 +86,8 @@ pub struct Draw<'a> {
     /// a relay's posts as they came.
     pub names: Option<&'a crate::names::Names>,
     /// The groups this device knows (1696): the conversation's peer looked
-    /// up here is what may vouch for a copy's writer, as the chat looks it
-    /// up ([`super::groups::copy_writer`]).
+    /// up here is what may vouch for a copy's writer, by the chat's own rule
+    /// ([`super::groups::copies_from`], 1702).
     pub groups: Option<&'a super::groups::Groups>,
     /// The bubbles' bytes under way (1662); none draws no bar.
     pub transfers: Option<&'a super::transfer::Transfers>,
@@ -536,9 +536,10 @@ fn block(
 ) -> Block {
     let peer = conversation.peer;
     let message = &conversation.messages[index];
-    // The group this device knows the conversation to be, if any: it alone
-    // may vouch for the writer of a copy (1696).
-    let group = draw.groups.and_then(|groups| groups.get(&peer));
+    // The group whose copy this message is, by the chat's one rule: it
+    // alone may vouch for the writer of a copy (1696, 1702).
+    let group =
+        super::groups::copies_from(draw.groups.and_then(|groups| groups.get(&peer)), message);
     let narrow = width < NARROW;
     let cap = block_cap(width);
     let mut rows = Vec::new();
@@ -564,9 +565,9 @@ fn block(
                     let received = message.at.map(|at| at.unix_secs);
                     telemetry::report_line(&telemetry::read(
                         peer,
+                        super::groups::arrival(group),
                         &message.fields,
                         received,
-                        super::groups::copy_writer(&message.fields, group),
                     ))
                 }
             }

@@ -301,20 +301,39 @@ pub fn is_state(body: &str, fields: &[Field]) -> bool {
         })
 }
 
-/// The writer a group's copy of a member's message is read under (1696):
-/// the copy's `sender`, when the message's signed source is a group this
-/// device knows and that group's membership names the sender. `None` for
-/// every other message: a `lev.group_copy` in a person's message is that
-/// person's word about somebody else, and the signed source alone stands.
-///
-/// `info` is the group the source is, as the chat takes it to draw a copy
-/// under its writer ([`copy_of`] with the conversation's peer's `info`,
-/// [`crate::ui::chat`]). One thing stricter here: a position says where
-/// somebody stands, so the membership must name the sender, not only a
-/// name in the home's text.
-pub fn copy_writer(fields: &[Field], info: Option<&GroupInfo>) -> Option<[u8; 16]> {
-    let copy = Lev::from_fields(fields)?.group_copy?;
-    info?.member(&copy.sender).map(|_| copy.sender)
+/// A joined group's membership vouches for a member (1702): named in it
+/// and not marked left, or, for a copy the home made at an epoch before
+/// the membership this device holds, named in it at all. The home moves
+/// the epoch once per change of the membership, so a copy made before the
+/// leave stays its writer's and one made after it is no member's.
+impl crate::telemetry::Roster for GroupInfo {
+    fn present(&self, member: &[u8; 16], epoch: Option<u64>) -> bool {
+        self.member(member)
+            .is_some_and(|m| !m.left || epoch.is_some_and(|epoch| epoch < self.epoch))
+    }
+}
+
+/// The one rule for "this message is a group's copy and shows under its
+/// writer" (1702): `group` is what this device holds for the
+/// conversation's peer, and it counts only when the reader joined it (or
+/// was in it: a group left or ended keeps its history), never for a group
+/// the reader was merely invited to, and only for a message that came in.
+/// The chat draws a copy's writer by it, and every position a copy or a
+/// collector's row carries is booked by it
+/// ([`crate::telemetry::Arrival::Group`]). [`UiModel::copies_from`] is the
+/// same for the model; the terminal's layout, which holds no model, calls
+/// this one.
+pub fn copies_from<'a>(group: Option<&'a GroupInfo>, message: &Message) -> Option<&'a GroupInfo> {
+    group.filter(|info| info.standing != Standing::Invited && !message.outbound)
+}
+
+/// How a message whose group is `group` ([`copies_from`]) arrived, for
+/// [`crate::telemetry::read`].
+pub fn arrival(group: Option<&GroupInfo>) -> crate::telemetry::Arrival<'_> {
+    match group {
+        Some(info) => crate::telemetry::Arrival::Group(info),
+        None => crate::telemetry::Arrival::Direct,
+    }
 }
 
 /// The writer of a group's copy and the text the home put after its
@@ -494,6 +513,12 @@ impl<B> UiModel<B> {
         self.groups.get(peer)
     }
 
+    /// The group `message` of `peer`'s conversation is a copy from, by the
+    /// one rule ([`copies_from`]).
+    pub fn copies_from(&self, peer: &[u8; 16], message: &Message) -> Option<&GroupInfo> {
+        copies_from(self.group(peer), message)
+    }
+
     /// The people a new conversation lists (1448, walk finding 17), as a
     /// messenger's contact list: every conversation with a person, the
     /// list's and the archived ones, by the name every screen gives them,
@@ -634,7 +659,16 @@ impl<B> UiModel<B> {
         if let (Some(status), false) = (&lev.status, outbound) {
             self.learn_status(peer, status);
         }
-        if let Some(invite) = &lev.invite {
+        // A home sends an invitation from the admin, naming the group's
+        // own address (`home::group::invitation`, the `sign(admin,
+        // group.admin, ...)` of `group.address`): never the sender's own.
+        // One naming its sender made a person a "group" whose membership
+        // and copies spoke for anybody (1702).
+        let invite = lev
+            .invite
+            .as_ref()
+            .filter(|invite| outbound || invite.group != peer);
+        if let Some(invite) = invite {
             let group = self
                 .groups
                 .entry(invite.group)
@@ -687,10 +721,15 @@ impl<B> UiModel<B> {
                     group.standing = Standing::Ended;
                 } else if let Some(me) = own.and_then(|own| group.member(&own)).cloned() {
                     group.ours |= me.admin;
-                    group.standing = match (me.left, me.joined) {
-                        (true, _) => Standing::Left,
-                        (false, true) => Standing::Joined,
-                        (false, false) => group.standing,
+                    // Only the reader's own Join takes an invitation to
+                    // joined (1702): a group's word that names the reader
+                    // joined would otherwise make any invitation, from
+                    // anybody, a group whose copies speak for its members.
+                    group.standing = match (me.left, me.joined, group.standing) {
+                        (true, _, _) => Standing::Left,
+                        (false, _, Standing::Invited) => Standing::Invited,
+                        (false, true, _) => Standing::Joined,
+                        (false, false, standing) => standing,
                     };
                 }
             }
@@ -1789,6 +1828,19 @@ mod tests {
         update(model, UiEvent::Group(verb))
     }
 
+    /// The reader's Join on the invitation to [`GROUP`]: only that takes
+    /// an invitation to joined, never the group's own word (1702).
+    fn join(model: &mut UiModel<Line>) {
+        verb(
+            model,
+            Verb::Join {
+                group: Target::Peer(GROUP),
+            },
+        );
+        // The shell sent it; its send is over.
+        update(model, UiEvent::SendDone(Ok(())));
+    }
+
     /// The study's create flow (4.1), counted: the new-chat button, "New
     /// group", a tick per friend, Next, the typed name and Create, 4 + k
     /// taps. The home is asked once with the friends under the reader's
@@ -2001,6 +2053,7 @@ mod tests {
     fn a_copy_names_its_writer_above_the_text() {
         let mut model = reader(&[LEW]);
         arrive(&mut model, LEW, 1, "invite", invite("Lew"));
+        join(&mut model);
         arrive(&mut model, GROUP, 2, "Lew: Brot ist da", copy(LEW));
         arrive(&mut model, GROUP, 3, "Anna: Danke", copy(ANNA));
         let c = model
@@ -2487,6 +2540,7 @@ mod tests {
     fn a_restart_lists_every_group_from_the_store_without_its_messages() {
         let mut first = reader(&[LEW]);
         arrive(&mut first, LEW, 1, "invite", invite("Lew"));
+        join(&mut first);
         arrive(
             &mut first,
             GROUP,
@@ -2539,29 +2593,55 @@ mod tests {
     }
 
     /// A restart learns the groups again from the stored messages: the
-    /// state messages are kept, not drawn, and no list line.
+    /// state messages are kept, not drawn, and no list line. The reader's
+    /// Join is among them, as it is in the archive a second device pulls
+    /// (the home puts every sent message's entry there,
+    /// `Store::outbox_accept`); only it joins the reader (1702). Control:
+    /// the same messages without the Join leave the reader invited, the
+    /// group's word that names the reader joined notwithstanding.
     #[test]
     fn a_restart_learns_the_groups_from_the_messages() {
         let mut first = reader(&[LEW]);
         arrive(&mut first, LEW, 1, "invite", invite("Lew"));
         arrive(&mut first, GROUP, 2, "", members(1, &[(ME, "Me", 4)]));
-        let restored: Vec<_> = first
-            .conversations
-            .iter()
-            .map(|c| super::super::history::Restored {
-                peer: c.peer,
-                pinned: false,
-                flags: Default::default(),
-                unread: 0,
-                messages: c.messages.to_vec(),
-                earlier: 0,
-                draft: Default::default(),
-                group: None,
-                listing: None,
-            })
-            .collect();
+        let restored = |with_join: bool| -> Vec<_> {
+            first
+                .conversations
+                .iter()
+                .map(|c| {
+                    let mut messages = c.messages.to_vec();
+                    if with_join && c.peer == GROUP {
+                        let mut join = messages[0].clone();
+                        join.outbound = true;
+                        join.id = Some([0x4a; 32]);
+                        join.fields = lev_fields(Lev {
+                            capabilities: Some(CAP_GROUPS),
+                            ..Lev::default()
+                        });
+                        messages.insert(0, join);
+                    }
+                    super::super::history::Restored {
+                        peer: c.peer,
+                        pinned: false,
+                        flags: Default::default(),
+                        unread: 0,
+                        messages,
+                        earlier: 0,
+                        draft: Default::default(),
+                        group: None,
+                        listing: None,
+                    }
+                })
+                .collect()
+        };
+        let mut unjoined = reader(&[]);
+        unjoined.restore(restored(false));
+        assert_eq!(
+            unjoined.group(&GROUP).map(|g| g.standing),
+            Some(Standing::Invited)
+        );
         let mut again = reader(&[]);
-        again.restore(restored);
+        again.restore(restored(true));
         assert_eq!(
             again.group(&GROUP).map(|g| g.standing),
             Some(Standing::Joined)
@@ -2890,6 +2970,7 @@ mod tests {
     fn in_familie(admin: bool) -> UiModel<Line> {
         let mut model = reader(&[LEW]);
         arrive(&mut model, LEW, 1, "invite", invite("Lew"));
+        join(&mut model);
         let me = if admin { 2 | 4 } else { 4 };
         let lew = if admin { 4 } else { 2 | 4 };
         arrive(
@@ -3401,44 +3482,56 @@ mod tests {
         assert_eq!(bodies, ["Anna: Brot\nBob: Danke"]);
     }
 
-    /// 1696: a copy's writer stands only where a group this device knows
-    /// vouches for it — the message's signed source is the group and its
-    /// membership names the sender. A copy field in a person's message, or
-    /// one naming someone the membership does not list, names nobody, and
-    /// the signed source alone stands.
+    /// 1696, 1702: a copy's writer stands only where a group the reader
+    /// joined vouches for it, the one rule [`copies_from`] says and the
+    /// membership's [`crate::telemetry::Roster`] checks: the message's
+    /// signed source is the group, the message came in, and the
+    /// membership named the sender when the home made the copy. A copy
+    /// field in a person's message, in an invited group's, or naming
+    /// someone the membership does not list, names nobody.
     #[test]
-    fn only_a_known_groups_membership_vouches_for_a_copy_writer() {
+    fn only_a_joined_groups_membership_vouches_for_a_copy_writer() {
+        use crate::telemetry::Roster;
         const CAROL: [u8; 16] = [0x05; 16];
         const MALLORY: [u8; 16] = [0x3a; 16];
-        let model = in_familie(false);
-        let info = model.group(&GROUP).expect("the group");
-        assert_eq!(
-            copy_writer(&lev_fields(copy_at(ANNA, 10)), Some(info)),
-            Some(ANNA),
-            "a member"
-        );
-        assert_eq!(
-            copy_writer(&lev_fields(copy_at(CAROL, 11)), Some(info)),
-            None,
-            "no member of it"
-        );
-        assert_eq!(
-            copy_writer(&lev_fields(copy_at(ANNA, 10)), None),
-            None,
-            "the source is no group this device knows"
-        );
-        assert_eq!(
-            copy_writer(&lev_fields(Lev::default()), Some(info)),
-            None,
-            "no copy field"
-        );
+        let mut model = in_familie(false);
+        arrive(&mut model, GROUP, 13, "Anna: hi", copy_at(ANNA, 10));
+        let c = model.conversation(GROUP);
+        let copy = model.conversations[c]
+            .messages
+            .iter()
+            .last()
+            .cloned()
+            .expect("the copy");
+        let info = model.copies_from(&GROUP, &copy).expect("a joined group");
+        assert!(info.present(&ANNA, Some(1)), "a member");
+        assert!(!info.present(&CAROL, Some(1)), "no member of it");
+        let mut ours = copy.clone();
+        ours.outbound = true;
+        assert!(model.copies_from(&GROUP, &ours).is_none(), "ours");
+        // Invited, the same group speaks for nobody.
+        if let Some(info) = model.groups.get_mut(&GROUP) {
+            info.standing = Standing::Invited;
+        }
+        assert!(model.copies_from(&GROUP, &copy).is_none(), "invited");
         // A person's message, whatever it says of somebody else.
         let mut person = reader(&[MALLORY]);
         arrive(&mut person, MALLORY, 12, "hi", copy_at(ANNA, 10));
-        assert_eq!(
-            copy_writer(&lev_fields(copy_at(ANNA, 10)), person.group(&MALLORY)),
-            None
-        );
+        assert!(person.copies_from(&MALLORY, &copy).is_none());
+        // A member the membership marks as left: no longer present, but a
+        // copy the home made before the membership that says so is his.
+        let mut gone = GroupInfo::new(GROUP);
+        gone.epoch = 3;
+        gone.members = alloc::vec![GroupMember {
+            address: ANNA,
+            name: "Anna".into(),
+            admin: false,
+            joined: true,
+            left: true,
+        }];
+        assert!(!gone.present(&ANNA, None));
+        assert!(!gone.present(&ANNA, Some(3)));
+        assert!(gone.present(&ANNA, Some(2)));
     }
 
     /// 1388: the bubble takes the writer from `0x02` and strips exactly

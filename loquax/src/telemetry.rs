@@ -7,11 +7,15 @@
 //! - `FIELD_TELEMETRY`, one node's own readings. Who measured is the
 //!   message's signed source, except in a group's copy of a member's
 //!   message: the home signs that with the group and the writer travels in
-//!   `lev.group_copy` (1687). Only a group this device knows may vouch for
-//!   that writer (1696): the field is no claim on its own, and a message
+//!   `lev.group_copy` (1687). Only a group this device joined may vouch for
+//!   that writer, and only for one its membership named when the home made
+//!   the copy (1696, 1702): the field is no claim on its own, and a message
 //!   from a person is read under its signed source whatever it carries.
 //! - `FIELD_TELEMETRY_STREAM`, a collector's rows. Who measured is the row's
-//!   source hash; the message's source only delivered it (`via`).
+//!   source hash; the message's source only delivered it (`via`). A row
+//!   counts only for the message's own signed source, or from a joined
+//!   group for a member present in its membership (1702): Sideband keeps no
+//!   record of who may collect for whom, and neither does this device.
 //!
 //! Every reading with a location becomes one [`Fix`]. A blob that does not
 //! decode is [`Unreadable`]: kept raw with its message, and named in
@@ -27,6 +31,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use leviculum_lxmf::constants::{FIELD_TELEMETRY, FIELD_TELEMETRY_STREAM};
+use leviculum_lxmf::lev::Lev;
 use leviculum_lxmf::msgpack::{self, Number};
 use leviculum_lxmf::telemetry::{decode_stream_field_value, Location, Telemetry};
 use leviculum_lxmf::Field;
@@ -165,25 +170,61 @@ pub fn has_telemetry(fields: &[Field]) -> bool {
         .any(|(k, _)| *k == FIELD_TELEMETRY || *k == FIELD_TELEMETRY_STREAM)
 }
 
+/// Who a group's membership names, as this device holds it: what a
+/// group's copy and a collector's row are checked against before they
+/// speak for somebody other than the message's signed source (1702).
+pub trait Roster {
+    /// Whether `member` was in the membership when the home made a copy
+    /// at membership epoch `epoch`, or, for `None`, is in it now.
+    fn present(&self, member: &[u8; 16], epoch: Option<u64>) -> bool;
+}
+
+/// What a message's signed source is to this device, said by the caller
+/// so that [`read`] stays a pure reading of the fields (1702, the shape of
+/// the 1696 experiment).
+#[derive(Clone, Copy)]
+pub enum Arrival<'a> {
+    /// A peer, or a group the reader never joined, speaking for itself:
+    /// whatever `lev.group_copy` or stream rows it carries, only what it
+    /// measured itself is read.
+    Direct,
+    /// A group this device joined, with its membership
+    /// ([`crate::ui::groups::copies_from`]).
+    Group(&'a dyn Roster),
+}
+
 /// The positions in `fields`, from a message whose signed source is
-/// `source`, received at `received_at`. `writer` is the member a group this
-/// device knows vouched for, read from `lev.group_copy`
-/// ([`crate::ui::groups::copy_writer`]); without one the signed source is
-/// who measured, whatever copy field the message carries (1696).
+/// `source`, arrived as `arrival`, received at `received_at`.
 pub fn read(
     source: [u8; 16],
+    arrival: Arrival<'_>,
     fields: &[Field],
     received_at: Option<i64>,
-    writer: Option<[u8; 16]>,
 ) -> Read {
     let mut out = Read::default();
     // 1687: the home sends a group's copy of a member's message under the
     // group's own address, so the source is the group and the writer is in
     // `lev.group_copy`. A position a member shared into a group belongs to
     // that member: read under the source alone, every such pin landed on
-    // the group, a place nobody stands. The caller passes the writer only
-    // where a group this device knows stands behind it (1696).
-    let writer = writer.unwrap_or(source);
+    // the group, a place nobody stands. Only a joined group's copy speaks
+    // for its writer, and only for one its membership named at the copy's
+    // epoch (1696, 1702); anything else is the source's own.
+    let roster = match arrival {
+        Arrival::Group(roster) => Some(roster),
+        Arrival::Direct => None,
+    };
+    let writer = roster
+        .zip(Lev::from_fields(fields).and_then(|lev| lev.group_copy))
+        .filter(|(roster, copy)| roster.present(&copy.sender, Some(copy.epoch)))
+        .map_or(source, |(_, copy)| copy.sender);
+    // A collector's row names whom it measured; nothing records who may
+    // collect for whom, so a row speaks for its source only where the
+    // message's signer is that source, or a joined group where that
+    // source is a present member (1702). Anyone else's row is the claim
+    // of a stranger about somebody else, and moves nobody's pin.
+    let speaks_for = |peer: &[u8; 16]| {
+        *peer == source || roster.is_some_and(|roster| roster.present(peer, None))
+    };
     let fix = |peer: [u8; 16], location: Location, telemetry: &[u8]| Fix {
         peer,
         via: source,
@@ -225,6 +266,9 @@ pub fn read(
                             });
                             continue;
                         };
+                        if !speaks_for(&peer) {
+                            continue;
+                        }
                         match Telemetry::decode(&row.telemetry) {
                             Ok(telemetry) => {
                                 if let Some(location) = telemetry.location {
@@ -688,6 +732,16 @@ mod tests {
     const COLLECTOR: [u8; 16] = [0xc0; 16];
     const NOW: i64 = 1_793_016_000;
 
+    /// A joined group's membership, as a test writes it: every address in
+    /// it is present.
+    struct Members(&'static [[u8; 16]]);
+
+    impl Roster for Members {
+        fn present(&self, member: &[u8; 16], _epoch: Option<u64>) -> bool {
+            self.0.contains(member)
+        }
+    }
+
     fn location(lat: i32, lon: i32, accuracy: u16, at: i64) -> Location {
         Location {
             latitude_e6: lat,
@@ -719,7 +773,7 @@ mod tests {
             FIELD_TELEMETRY,
             report(location(43_773_100, 11_256_000, 500, NOW - 240)).encode_field_value(),
         )];
-        let read = read(BOB, &fields, Some(NOW), None);
+        let read = read(BOB, Arrival::Direct, &fields, Some(NOW));
         assert!(read.unreadable.is_empty());
         assert_eq!(read.fixes.len(), 1);
         let fix = &read.fixes[0];
@@ -755,7 +809,7 @@ mod tests {
         blob.extend_from_slice(&[0x04, 0xc0]);
         let mut value = vec![0xc4, blob.len() as u8];
         value.extend_from_slice(&blob);
-        let read = read(BOB, &[(FIELD_TELEMETRY, value)], Some(NOW), None);
+        let read = read(BOB, Arrival::Direct, &[(FIELD_TELEMETRY, value)], Some(NOW));
         assert_eq!(read.fixes.len(), 1, "{read:?}");
         assert_eq!(
             coordinates(&read.fixes[0].location),
@@ -777,7 +831,8 @@ mod tests {
             appearance: None,
         });
         let fields = vec![(FIELD_TELEMETRY_STREAM, encode_stream_field_value(&rows))];
-        let read = read(COLLECTOR, &fields, Some(NOW), None);
+        let group = Members(&[BOB, CAROL]);
+        let read = read(COLLECTOR, Arrival::Group(&group), &fields, Some(NOW));
         let who: Vec<_> = read.fixes.iter().map(|f| (f.peer, f.via)).collect();
         assert_eq!(who, vec![(BOB, COLLECTOR), (CAROL, COLLECTOR)]);
         assert_eq!(
@@ -793,7 +848,7 @@ mod tests {
     /// every position shared into a group landed on the group: a pin for a
     /// place nobody stands, and the member who shared it went unmarked.
     /// The writer is the caller's to vouch for (1696,
-    /// [`crate::ui::groups::copy_writer`]).
+    /// [`crate::ui::groups::copies_from`]).
     #[test]
     fn a_group_copys_position_belongs_to_its_writer() {
         use leviculum_lxmf::lev::{GroupCopy, Lev};
@@ -813,7 +868,7 @@ mod tests {
             FIELD_TELEMETRY,
             report(location(43_773_100, 11_256_000, 500, NOW - 240)).encode_field_value(),
         ));
-        let read = read(GROUP, &fields, Some(NOW), Some(BOB));
+        let read = read(GROUP, Arrival::Group(&Members(&[BOB])), &fields, Some(NOW));
         assert!(read.unreadable.is_empty());
         assert_eq!(read.fixes.len(), 1);
         assert_eq!(
@@ -821,6 +876,15 @@ mod tests {
             (BOB, GROUP),
             "the writer measured it; the group delivered the copy"
         );
+        // A writer the membership does not name is no member's: the group,
+        // the signed source, keeps the reading.
+        let read = super::read(
+            GROUP,
+            Arrival::Group(&Members(&[CAROL])),
+            &fields,
+            Some(NOW),
+        );
+        assert_eq!((read.fixes[0].peer, read.fixes[0].via), (GROUP, GROUP));
     }
 
     /// 1696: a copy field in a message from someone this device knows no
@@ -846,7 +910,7 @@ mod tests {
             FIELD_TELEMETRY,
             report(location(43_773_100, 11_256_000, 500, NOW - 240)).encode_field_value(),
         ));
-        let read = read(MALLORY, &fields, Some(NOW), None);
+        let read = read(MALLORY, Arrival::Direct, &fields, Some(NOW));
         assert!(read.unreadable.is_empty());
         assert_eq!(read.fixes.len(), 1);
         assert_eq!(
@@ -882,10 +946,54 @@ mod tests {
             report(location(43_775_000, 11_261_000, 0, NOW - 4)).encode_field_value(),
         );
         let line = "◎ position 43.77500 N 11.26100 E (+2 more)";
+        let group = Members(&[CAROL, COLLECTOR]);
         let fields = vec![own.clone(), (FIELD_TELEMETRY_STREAM, rows.clone())];
-        assert_eq!(report_line(&read(BOB, &fields, Some(NOW), None)), line);
+        assert_eq!(
+            report_line(&read(BOB, Arrival::Group(&group), &fields, Some(NOW))),
+            line
+        );
         let fields = vec![(FIELD_TELEMETRY_STREAM, rows), own];
-        assert_eq!(report_line(&read(BOB, &fields, Some(NOW), None)), line);
+        assert_eq!(
+            report_line(&read(BOB, Arrival::Group(&group), &fields, Some(NOW))),
+            line
+        );
+    }
+
+    /// 1702: a collector's row speaks for its source only where the signer
+    /// is that source, or a joined group names it. From anyone else a row
+    /// naming Bob is a stranger's claim and gives no fix; the signer's own
+    /// row still counts.
+    #[test]
+    fn a_stream_row_from_a_stranger_speaks_for_nobody_but_the_stranger() {
+        let rows = stream(&[
+            (BOB, location(43_776_000, 11_266_000, 0, NOW - 180)),
+            (COLLECTOR, location(43_774_000, 11_258_000, 0, NOW - 1)),
+        ]);
+        let fields = vec![(FIELD_TELEMETRY_STREAM, rows)];
+        let who = |read: Read| -> Vec<_> { read.fixes.iter().map(|f| (f.peer, f.via)).collect() };
+        assert_eq!(
+            who(read(COLLECTOR, Arrival::Direct, &fields, Some(NOW))),
+            vec![(COLLECTOR, COLLECTOR)]
+        );
+        assert_eq!(
+            who(read(
+                COLLECTOR,
+                Arrival::Group(&Members(&[CAROL])),
+                &fields,
+                Some(NOW)
+            )),
+            vec![(COLLECTOR, COLLECTOR)],
+            "a group's row for somebody its membership does not name"
+        );
+        assert_eq!(
+            who(read(
+                COLLECTOR,
+                Arrival::Group(&Members(&[BOB])),
+                &fields,
+                Some(NOW)
+            )),
+            vec![(BOB, COLLECTOR), (COLLECTOR, COLLECTOR)]
+        );
     }
 
     /// Rows alone: none is the sender's, the line names the last row as it
@@ -898,7 +1006,12 @@ mod tests {
         ]);
         let fields = vec![(FIELD_TELEMETRY_STREAM, rows)];
         assert_eq!(
-            report_line(&read(COLLECTOR, &fields, Some(NOW), None)),
+            report_line(&read(
+                COLLECTOR,
+                Arrival::Group(&Members(&[BOB, CAROL])),
+                &fields,
+                Some(NOW)
+            )),
             "◎ position 43.77400 N 11.25800 E (+1 more)"
         );
     }
@@ -909,7 +1022,7 @@ mod tests {
             (FIELD_TELEMETRY, vec![0xc4, 0x02, 0x91, 0x01]),
             (FIELD_TELEMETRY_STREAM, vec![0x01]),
         ];
-        let read = read(BOB, &fields, Some(NOW), None);
+        let read = read(BOB, Arrival::Direct, &fields, Some(NOW));
         assert!(read.fixes.is_empty());
         assert_eq!(read.unreadable.len(), 2);
         let line = unreadable_line(&BOB, &[0x42; 32], &read.unreadable[0]);
@@ -993,12 +1106,12 @@ mod tests {
     fn the_header_says_position_accuracy_and_age_longest_first() {
         let fix = read(
             BOB,
+            Arrival::Direct,
             &[(
                 FIELD_TELEMETRY,
                 report(location(43_773_100, 11_256_000, 500, NOW - 240)).encode_field_value(),
             )],
             Some(NOW),
-            None,
         )
         .fixes
         .remove(0);
@@ -1061,7 +1174,9 @@ mod tests {
     fn a_fix_knows_its_battery_and_whether_it_arrived_late() {
         let late = report(location(43_773_100, 11_256_000, 500, NOW - 7_200));
         let fields = vec![(FIELD_TELEMETRY, late.encode_field_value())];
-        let fix = read(BOB, &fields, Some(NOW), None).fixes.remove(0);
+        let fix = read(BOB, Arrival::Direct, &fields, Some(NOW))
+            .fixes
+            .remove(0);
         assert_eq!(fix.battery(), Some(87));
         assert_eq!(fix.late_secs(), Some(7_200));
         let rows = detail_rows(&BOB, &fields, 0, Some(NOW));
@@ -1072,7 +1187,9 @@ mod tests {
 
         let soon = report(location(43_773_100, 11_256_000, 500, NOW - 1_200));
         let fields = vec![(FIELD_TELEMETRY, soon.encode_field_value())];
-        let fix = read(BOB, &fields, Some(NOW), None).fixes.remove(0);
+        let fix = read(BOB, Arrival::Direct, &fields, Some(NOW))
+            .fixes
+            .remove(0);
         assert_eq!(fix.late_secs(), None);
         let rows = detail_rows(&BOB, &fields, 0, Some(NOW));
         assert!(!rows.iter().any(|r| r.contains("arrived")), "{rows:?}");

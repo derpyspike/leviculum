@@ -30,13 +30,17 @@ fields on (`Message::fields`, `leviculum-lxmf/src/message.rs:84`):
 fields beside id, source, title, body and the verification
 (`loquax/src/engine.rs:520`, `loquax/src/outbox.rs:324`). The core reads
 the two telemetry fields into positions (`telemetry::read`,
-`loquax/src/telemetry.rs:173`; a group's copy books its position under
-the writer, not the group, where the message's source is a group this
-device knows and the writer it names is a member, `groups::copy_writer`,
-`loquax/src/ui/groups.rs:315`), the screen model keeps each peer's latest
+`loquax/src/telemetry.rs:198`; a group's copy books its position under
+the writer, not the group, where the message's source is a group the
+reader joined and the writer it names was a member when the home made
+the copy, `groups::copies_from`, `loquax/src/ui/groups.rs:326`, the one
+rule the chat draws a copy's writer by too; a collector's row counts
+only for the message's own signed source or a present member of such a
+group, since nothing records who may collect for whom, 1702), the
+screen model keeps each peer's latest
 and hands every one to the store (`take_telemetry`,
 `loquax/src/ui.rs:6717`), and the store keeps the fields whole in its
-`fields` column (`loquax/src/store.rs:3800`) and the positions in a table of
+`fields` column (`loquax/src/store.rs:3805`) and the positions in a table of
 their own (`SCHEMA_V2`, `loquax/src/store.rs:203`). The sender's timestamp
 is still not carried: `OutboxEvent`, the screen's `Message` and every type
 the model folds derive `Eq`, which an `f64` cannot, so carrying it is a

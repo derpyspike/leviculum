@@ -734,8 +734,11 @@ fn bubbles_of<B>(model: &UiModel<B>, c: usize, from: usize, to: usize) -> Vec<Bu
                 1 => (0, None),
                 n => (n, run.first().and_then(|&f| conversation.messages[f].at)),
             };
-            let copy = super::groups::copy_of(&message.body, &message.fields, info)
-                .filter(|_| group && !message.outbound);
+            // The one rule (1702): a joined group's incoming copy.
+            let copies = model.copies_from(&conversation.peer, message);
+            let copy = copies.and_then(|info| {
+                super::groups::copy_of(&message.body, &message.fields, Some(info))
+            });
             // The reader's own word for the writer, else the admin's
             // (1307); the bare name, as a group's sender line has it.
             let relay = relayed
@@ -750,9 +753,7 @@ fn bubbles_of<B>(model: &UiModel<B>, c: usize, from: usize, to: usize) -> Vec<Bu
                 Text::Key(StrId::ReactedElsewhere, Vec::from([Arg::Str(content)]))
                     .resolve(model.lang)
             });
-            let lev = (group && !message.outbound)
-                .then(|| leviculum_lxmf::lev::Lev::from_fields(&message.fields))
-                .flatten();
+            let lev = copies.and_then(|_| leviculum_lxmf::lev::Lev::from_fields(&message.fields));
             let late = match lev.as_ref().and_then(|lev| lev.group_copy) {
                 Some(pair) => match once(pair.sender, pair.sent_ms) {
                     Some(late) => late,

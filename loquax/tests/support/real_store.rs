@@ -534,11 +534,14 @@ pub fn fill_store_for(home: &Path, me: [u8; 16]) -> Store {
         }
         for message in &stored.messages {
             if !message.outbound {
+                // The live path's rule (1702): the stored group, by the
+                // chat's own test of a group's copy.
+                let group = loquax::ui::groups::copies_from(stored.group.as_ref(), message);
                 let read = loquax::telemetry::read(
                     stored.peer,
+                    loquax::ui::groups::arrival(group),
                     &message.fields,
                     message.at.map(|at| at.unix_secs),
-                    None,
                 );
                 writes.extend(read.fixes.into_iter().map(|fix| {
                     StoreWrite::Position(loquax::telemetry::Fix {

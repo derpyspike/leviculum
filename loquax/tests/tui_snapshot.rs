@@ -2057,13 +2057,31 @@ async fn peer_session(
     prepare: impl FnOnce(&Path),
     messages: impl FnOnce([u8; 16]) -> Vec<(&'static str, Vec<(i64, Vec<u8>)>)>,
 ) -> (String, String) {
-    let (frames, log, _) =
-        peer_session_of(name, size, script_text, extra, prepare, messages, false).await;
+    let (frames, log, _) = peer_session_of(
+        name,
+        size,
+        script_text,
+        extra,
+        prepare,
+        messages,
+        false,
+        Vec::new(),
+    )
+    .await;
     (frames, log)
 }
 
+/// A second sender of [`peer_session_of`]: its identity and the fields of
+/// its one message.
+type Other = (Identity, Vec<(i64, Vec<u8>)>);
+
 /// [`peer_session`]; with `listen`, the peer also reads what loquax sends
 /// it until loquax quits, and returns each message's body and fields.
+/// Each of `others`, an identity and the fields of one message, sends that
+/// message from its own address before the peer sends its own: a second
+/// person in the reader's list (1702: a position of somebody else comes
+/// from that somebody, not from the peer's word).
+#[allow(clippy::too_many_arguments)]
 async fn peer_session_of(
     name: &str,
     size: &str,
@@ -2072,6 +2090,7 @@ async fn peer_session_of(
     prepare: impl FnOnce(&Path),
     messages: impl FnOnce([u8; 16]) -> Vec<(&'static str, Vec<(i64, Vec<u8>)>)>,
     listen: bool,
+    others: Vec<Other>,
 ) -> (String, String, Vec<(Vec<u8>, Vec<(i64, Vec<u8>)>)>) {
     let daemon = daemon(&format!("tui-{name}-{size}"), |b| b).await;
     let home = tempfile::tempdir().expect("tui home");
@@ -2129,6 +2148,46 @@ async fn peer_session_of(
     });
 
     wait_for_frame(&frames, "attached", Duration::from_secs(20)).await;
+    let options = SendOptions::new(daemon.instance.clone(), Duration::from_secs(20));
+    for (identity, fields) in others {
+        let storage = tempfile::tempdir().expect("the other's storage");
+        let mut other = attach(AttachConfig {
+            instance: daemon.instance.clone(),
+            config_dir: Some(daemon.config_dir.path().to_path_buf()),
+            storage_dir: storage.path().to_path_buf(),
+            identity,
+            display_name: Vec::new(),
+            notices: Terminal::new(storage.path().to_path_buf()),
+        })
+        .await
+        .expect("the other attaches");
+        let mut fanout = Fanout::default();
+        let mut tap = fanout.tap();
+        let clock = Tokio::new();
+        let send = run_send(
+            &mut tap,
+            SendRequest {
+                destination: our_address,
+                title: Vec::new(),
+                body: Vec::new(),
+                fields,
+                via: Via::Direct,
+            },
+            &options,
+            &clock,
+        );
+        tokio::pin!(send);
+        let sent = loop {
+            tokio::select! {
+                sent = &mut send => break sent,
+                _ = tokio::time::sleep(Duration::from_millis(20)) => {
+                    let _ = fanout.pump(&mut other.outbox);
+                }
+            }
+        };
+        assert!(sent.is_ok(), "the other's message did not go out: {sent:?}");
+        other.stop().await;
+    }
     let storage = tempfile::tempdir().expect("their storage");
     let mut them = attach(AttachConfig {
         instance: daemon.instance.clone(),
@@ -2140,7 +2199,6 @@ async fn peer_session_of(
     })
     .await
     .expect("the correspondent attaches");
-    let options = SendOptions::new(daemon.instance.clone(), Duration::from_secs(20));
     let mut fanout = Fanout::default();
     for (body, fields) in messages(our_address) {
         let mut tap = fanout.tap();
@@ -2303,6 +2361,7 @@ async fn the_terminal_sends_one_receipt_six_seconds_after_the_focus_came() {
         |_| {},
         messages,
         true,
+        Vec::new(),
     )
     .await;
     let elapsed = |prefix: &str| -> Vec<u64> {
@@ -2463,7 +2522,7 @@ const MAP_SCRIPT: &str = "\
 clock 2026-10-26 14:00
 until ready 20
 frame attached
-until received 1 60
+until received 2 60
 tick 12
 key M
 frame map
@@ -2496,7 +2555,8 @@ frame report closed
 key q
 ";
 
-/// The third peer the stream reports.
+/// The third peer the stream names: a row the peer sends about somebody
+/// else, which moves no pin (1702).
 const CAROL: [u8; 16] = [0x33; 16];
 
 fn located(minutes_ago: i64, lat_e6: i32, lon_e6: i32) -> leviculum_lxmf::telemetry::Telemetry {
@@ -2557,8 +2617,29 @@ async fn map_session_of(name: &str, script: &str, graphics: &str) -> (String, St
         ];
         vec![("", own)]
     };
+    // Carol's own position, three hours old, from Carol: the row naming
+    // her in the peer's stream is the peer's word about somebody else and
+    // moves no pin (1702), as the row naming the reader does not either.
+    let carol = vec![(
+        fixed_identity(0x33),
+        vec![(
+            leviculum_lxmf::constants::FIELD_TELEMETRY,
+            located(180, 43_776_000, 11_266_000).encode_field_value(),
+        )],
+    )];
     let flag = format!("--graphics={graphics}");
-    peer_session(name, "80x24", script, &[&flag], install, messages).await
+    let (frames, log, _) = peer_session_of(
+        name,
+        "80x24",
+        script,
+        &[&flag],
+        install,
+        messages,
+        false,
+        carol,
+    )
+    .await;
+    (frames, log)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2613,10 +2694,14 @@ async fn the_map_shows_the_pins_on_the_region_and_the_outline_in_braille_and_hal
             "the map has the pane and the focus\n{map}"
         );
         assert!(!en || map.contains("© OpenStreetMap contributors"), "{map}");
+        // The title's mark and Carol's pin, from Carol. The rows of the
+        // peer's stream naming Carol and the reader are the peer's word
+        // about others and draw nothing (1702); before, the reader's dot
+        // came from such a row.
         assert_eq!(
             map.matches('●').count(),
-            3,
-            "the title's mark and two pins\n{map}"
+            2,
+            "the title's mark and one pin\n{map}"
         );
         assert_eq!(map.matches('◉').count(), 1, "the selected pin\n{map}");
         // Our own position is the dot alone, no name and no age (1449
@@ -2664,11 +2749,13 @@ async fn the_map_shows_the_pins_on_the_region_and_the_outline_in_braille_and_hal
         );
         // Enter on the report: the map at its fix, the region's deepest
         // zoom, the sender's pin selected; Esc brings the conversation back.
+        // The pin Enter opened is Carol's, whose own report it is (1702:
+        // she sent it herself, and her conversation is the one open).
         let reported = frame(&frames, "from the report");
         assert!(!en || reported.contains("● map"), "{reported}");
         // No zoom number on screen (1447): the debug overlay alone has it.
         assert!(!en || !reported.contains("z15"), "{reported}");
-        assert!(!en || reported.contains("◉ them"), "{reported}");
+        assert!(!en || reported.contains("◉ Unknown"), "{reported}");
         assert_eq!(frame(&frames, "report closed"), back);
         all.push_str(&format!("=== {graphics} ===\n{frames}"));
     }
@@ -2684,7 +2771,7 @@ const MAP_CYCLE_SCRIPT: &str = "\
 clock 2026-10-26 14:00
 until ready 20
 frame attached
-until received 1 60
+until received 2 60
 tick 12
 key M
 frame octant
@@ -2807,7 +2894,7 @@ async fn the_map_drawing_cycles_through_the_text_techniques_in(lang: &str) -> St
     // Every frame keeps the pins and the credit.
     for label in ["octant", "blocks", "braille-thin", "mosaic", "braille"] {
         let shown = frame(&frames, label);
-        assert_eq!(shown.matches('●').count(), 3, "{label}\n{shown}");
+        assert_eq!(shown.matches('●').count(), 2, "{label}\n{shown}");
         assert!(
             !en || shown.contains("© OpenStreetMap contributors"),
             "{label}\n{shown}"

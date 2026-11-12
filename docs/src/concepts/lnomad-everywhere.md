@@ -531,7 +531,7 @@ desktop's colour scheme on Linux and a screenshot over a live node.
   `Palette::of` the same table (`lnomad/src/gui.rs:131`). A page's inks
   and NomadNet's link colour stay lnomad's. Loquax's window goldens and
   the phone's `colors.xml` test are unchanged;
-  `the_chrome_is_the_suites` (`loquax/src/ui/chat.rs:1524`) holds the
+  `the_chrome_is_the_suites` (`loquax/src/ui/chat.rs:1525`) holds the
   sharing.
 - **`--theme auto` follows the desktop.** Asked at the start and on
   each change (`lnomad/src/gui.rs:524`), as Loquax's window does, until
