@@ -621,6 +621,16 @@ the loop"; the scheduler exists for the blobs alone. The embassy time
 driver (`leviculum-esp/src/time_driver.rs`) keeps no wake queue for
 the same reason: a not-yet-due future is simply polled next turn.
 
+One trap follows from polling this way, and 1715 found it in the
+Columba scan window: an embassy `Timer` answers its first poll
+`Pending` however late it is, so a deadline rebuilt as a fresh
+`Timer::at` on every pass of a `select` loop never fires while the
+other arm is ready at every turn. A deadline in a loop is pinned once,
+outside the loop (`leviculum-trouble/src/ble/columba.rs`, the scan
+window's `window_end`), and the scripted-controller test
+(`leviculum-trouble/src/ble/h4_tests.rs`) drives the backend the way
+the loop does, one no-op-waker poll a turn.
+
 **The decision before Lew:** accept the exception as scoped above
 (scheduler on core 0, blobs only, off with BLE off), or strike BLE
 from the M9 until an open controller exists. The bench criteria for
