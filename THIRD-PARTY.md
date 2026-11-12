@@ -72,6 +72,7 @@ other dependency.
 | `vendor/iced_debug` | [iced-rs/iced](https://github.com/iced-rs/iced) | 0.14.0 | MIT | `set_sink`: the finished view, layout, interact, draw and present spans handed to a function the window sets, for its frame meter (1441) | loquax (host, `gui`) |
 | `vendor/iced_tiny_skia` | [iced-rs/iced](https://github.com/iced-rs/iced) | 0.14.1 | MIT | `whole_when_fragmented`: a frame's damage of more than four rectangles or an eighth of the window is drawn as the whole window, where iced redraws every layer once per rectangle through a clip mask (1456) | loquax, lnomad (host, `gui`) |
 | `vendor/nmea0183` | [nsforth/nmea0183](https://github.com/nsforth/nmea0183) | 0.6.0 | BSD-3-Clause | The float parse replaced by a fixed-point one (Codeberg #386) | nRF firmware |
+| `vendor/trouble-host` | [embassy-rs/trouble](https://github.com/embassy-rs/trouble) | 0.8.0 | MIT OR Apache-2.0 | `on_packets_completed` carries the connection handle, so a drain wait routes to its own link (`vendor/trouble-host/LEVICULUM-PATCH.md`) | leviculum-trouble, and through it the ThinkNode M9 image (not shipped in any package today) |
 
 The patches are described where they are wired in: the workspace
 `Cargo.toml` (crossterm, termbg, iced_debug, iced_tiny_skia) and `leviculum-nrf/Cargo.toml`
@@ -83,6 +84,7 @@ and repository URL; this table is where the difference is recorded.
 | Path | Origin | Licence | Role |
 |---|---|---|---|
 | `lnflash/payload/t114/s140_nrf52_7.3.0_softdevice.hex` | Nordic Semiconductor S140 SoftDevice 7.3.0 | Nordic licence, `s140_nrf52_7.3.0_license-agreement.txt` beside it | Shipped in the lnflash bundle, with its licence, for the board that needs it |
+| Espressif radio libraries (`libbtdm_app.a`, `libbtbb.a`, `libphy.a`, `libcoexist.a` and siblings), not in this repository: they arrive inside the crates.io crate `esp-wifi-sys-esp32s3` 0.3.0 (`libs/*.a`) when the M9 image is built | Espressif Systems, precompiled, taken from ESP-IDF by the esp-rs project | Apache-2.0 (ESP-IDF's licence; the carrying crate is MIT OR Apache-2.0) | The BLE controller and PHY linked into the ThinkNode M9 image (1480). The image ships in no package today; the day one carries it, its notices part (see `scripts/gen-notices.py`) must name these libraries |
 
 ## Data
 

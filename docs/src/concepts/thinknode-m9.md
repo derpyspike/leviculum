@@ -571,6 +571,62 @@ possible; [Loquax: one messenger on every target](loquax-targets.md),
   photos drawn, but "open with" and "save to" have no meaning; a file is
   fetched by a paired device instead.
 
+## The esp-rtos exception: a scheduler for the radio blobs (1480, decision for Lew)
+
+The M9's two cores run blocking loops and poll every future of ours
+with a no-op waker — the "no executor" rule, written after the
+community port's interrupt executor crashed this board (see
+"Executors" above). Order 1480 bent that rule without asking first:
+it brought BLE up over esp-radio, whose precompiled Espressif radio
+libraries refuse to run without a preemptive scheduler, and started
+`esp-rtos` 0.4.0 on core 0 to satisfy them. The pass then reworded
+the loop's "NO executor" comment to "NO executor OF OURS" after the
+fact, which is the wrong order: the exception is a design decision,
+it belongs on this page and before Lew. This section is that
+decision's file; until Lew confirms it, the scheduler stays what it
+is — a bench spike's necessity, not an adopted rule.
+
+**Why the blobs force it.** The BLE controller inside esp-radio is
+Espressif's closed firmware, linked as C libraries. They spawn and
+block their own tasks (controller scheduling, coexistence) through an
+RTOS interface; esp-radio 1.0.0-beta.1 names `esp-rtos` as that
+interface and its init refuses without a running scheduler. There is
+no cooperative or poll-driven mode in the published API; whether the
+blobs could run without preemption is unknowable from outside
+Espressif. The alternatives are: no BLE on the M9, a from-scratch
+open controller (nobody ships one for the S3), or this scheduler.
+
+**What it costs, measured on 1480's image** (the verbatim headroom
+lines live in the orders' reports; m9-gates prints them on every
+build):
+
+- Flash: the BLE stack as a whole — blobs, host, scheduler — took the
+  image from 3 862 736 B to 4 228 960 B used (+366 224 B), release.
+- Internal DRAM: 44 KiB as the blobs' C heap (`esp-alloc` behind
+  `malloc_internal`), a `.bss` region that is spent even when the
+  media record keeps BLE off — the region is handed over at link
+  time, though nothing allocates from it with the radio dark.
+- Scheduling: core 0's loop becomes the scheduler's main task. Only
+  the blobs' tasks can preempt it, and their stacks are paid from the
+  44 KiB heap, not from core 0's measured stack budget. The UI core
+  never sees the scheduler.
+- Boot: a board whose media record switches BLE off never calls
+  `esp_rtos::start` at all; the loop runs exactly as before 1480.
+
+**What stays executor-free.** Every future of ours: the Columba join
+(`leviculum_esp::ble`), the LoRa task, the client — all polled from
+core 0's loop with a no-op waker, one turn each. No task of ours is
+spawned on esp-rtos, and the rule for new work stays "poll it from
+the loop"; the scheduler exists for the blobs alone. The embassy time
+driver (`leviculum-esp/src/time_driver.rs`) keeps no wake queue for
+the same reason: a not-yet-due future is simply polled next turn.
+
+**The decision before Lew:** accept the exception as scoped above
+(scheduler on core 0, blobs only, off with BLE off), or strike BLE
+from the M9 until an open controller exists. The bench criteria for
+the spike (boot proof, sniffer, Columba phone, five-node room, soak)
+are in order 1715's bank list and judge the first option on hardware.
+
 ## Decided
 
 - **The full stack, in the two modes of [Operating
