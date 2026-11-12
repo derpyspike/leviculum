@@ -319,23 +319,23 @@ pub fn kind(message: &Message) -> &'static str {
 /// The list's line for a reaction someone else sent, with its subject
 /// (1447, walk 1 finding 24): "Lew Mobile hat mit ❤️ reagiert", where the
 /// line said "hat mit ❤️ reagiert" and nobody knew who. In a group the
-/// subject is the member whose copy it is; `None` where no name is known,
-/// and for our own reaction, whose line says "Du" already.
+/// subject is the member whose copy it is, by the rule the bubble's
+/// writer follows ([`super::groups::copy_writer`], 1728); a group's
+/// reaction that names no member that way is the group's own, as a
+/// person's is the person's. `None` where no name is known, and for our
+/// own reaction, whose line says "Du" already.
 pub fn reaction_line<B>(model: &UiModel<B>, peer: &[u8; 16], message: &Message) -> Option<String> {
     let (_, content) = message.reaction().filter(|_| !message.outbound)?;
-    let name = match model.group(peer) {
-        Some(info) => {
-            let (address, name, _) =
-                super::groups::copy_of(&message.body, &message.fields, Some(info))?;
-            match model.names.shown(&address) {
-                Some(shown) => shown.to_string(),
-                None if !name.is_empty() => name.to_string(),
-                None => info
-                    .member(&address)
-                    .filter(|m| !m.name.is_empty())
-                    .map(|m| m.name.clone())?,
-            }
-        }
+    let name = match model.copy_writer(peer, message) {
+        Some((address, name, _)) => match model.names.shown(&address) {
+            Some(shown) => shown.to_string(),
+            None if !name.is_empty() => name.to_string(),
+            None => model
+                .group(peer)?
+                .member(&address)
+                .filter(|m| !m.name.is_empty())
+                .map(|m| m.name.clone())?,
+        },
         None => model.names.shown(peer)?.to_string(),
     };
     Some(
@@ -734,11 +734,11 @@ fn bubbles_of<B>(model: &UiModel<B>, c: usize, from: usize, to: usize) -> Vec<Bu
                 1 => (0, None),
                 n => (n, run.first().and_then(|&f| conversation.messages[f].at)),
             };
-            // The one rule (1702): a joined group's incoming copy.
+            // The one rule (1702): a joined group's incoming copy; its
+            // writer only where the roster names it present at the copy's
+            // epoch, as for its position (1728).
             let copies = model.copies_from(&conversation.peer, message);
-            let copy = copies.and_then(|info| {
-                super::groups::copy_of(&message.body, &message.fields, Some(info))
-            });
+            let copy = model.copy_writer(&conversation.peer, message);
             // The reader's own word for the writer, else the admin's
             // (1307); the bare name, as a group's sender line has it.
             let relay = relayed

@@ -345,6 +345,7 @@ pub fn group_info() -> GroupInfo {
         epoch: 3,
         members,
         standing: Standing::Joined,
+        closed_at: None,
     }
 }
 

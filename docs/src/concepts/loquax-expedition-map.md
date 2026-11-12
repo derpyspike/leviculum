@@ -444,13 +444,23 @@ Additions (decided):
      group, so `read` (`loquax/src/telemetry.rs:198`) books a plain
      telemetry field under the writer `lev.group_copy` names, not under
      the group the copy came from (1687) — where the phone joined the
-     group and the named writer was one of its members when the home
-     made the copy (`groups::copies_from`,
-     `loquax/src/ui/groups.rs:326`), since 1696 and 1702, so neither a
-     person's message nor an invitation the reader never accepted can
-     name another's pin. What stays: the home of a group the reader
-     joined can write anyone into its membership, and its copies then
-     speak for them; joining a group is trusting its home that far.
+     group by its own Join, the copy's signature is verified, and the
+     named writer was one of its members when the home made the copy
+     (`groups::copies_from`, `loquax/src/ui/groups.rs:351`), since
+     1696, 1702 and 1728, so neither a person's message, nor an
+     invitation the reader never accepted, nor a group's word that the
+     reader left or that it ended can name another's pin. A group the
+     reader left or that ended speaks only for the copies made before
+     (the epoch this device recorded the leave or the end at). The chat
+     names a copy's writer by the same roster (`groups::copy_writer`),
+     and a collector's row in a copy counts only for that copy's writer,
+     never for another member (order 1728, the first of its two
+     options: Sideband gives a row no word of who may collect for whom,
+     so a member's row about someone else is that member's claim). What
+     stays: the home of
+     a group the reader joined can write anyone into its membership,
+     and its copies then speak for them; joining a group is trusting its
+     home that far.
    - *Home out of reach* (the field): the position announce sealed
      under the group key. Announces travel several hops with no host,
      it is one transmission for all, and only members can read it. The

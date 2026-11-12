@@ -574,16 +574,21 @@ fn block(
         }
         (false, mark) => {
             // A group's copy without words names its writer as every copy
-            // does here, not with the home's sentence (1388) — only from a
-            // group this device knows, as the chat draws one (1696).
-            let body = group
-                .and_then(|_| super::groups::stand_in_line(&message.body, &message.fields))
-                .or_else(|| {
-                    relayed.and_then(|names| {
-                        super::relayed::terminal_line(names, draw.lang, conversation, message)
-                    })
+            // does here, not with the home's sentence (1388), by the
+            // chat's rule: `groups::copies_from`, an incoming copy from a
+            // joined group, whose writer the roster names
+            // (`groups::copy_writer`, 1702, 1728).
+            let body = super::groups::copy_writer(
+                draw.groups.and_then(|groups| groups.get(&peer)),
+                message,
+            )
+            .and_then(|_| super::groups::stand_in_line(&message.body, &message.fields))
+            .or_else(|| {
+                relayed.and_then(|names| {
+                    super::relayed::terminal_line(names, draw.lang, conversation, message)
                 })
-                .unwrap_or_else(|| message.body.clone());
+            })
+            .unwrap_or_else(|| message.body.clone());
             match mark {
                 Some(query) => super::search::mark_first(&body, query),
                 None => body,

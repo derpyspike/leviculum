@@ -392,6 +392,7 @@ fn groups() -> Vec<Restored> {
                 member(0x46, "Ünal", false, true, true),
             ],
             standing: Standing::Joined,
+            closed_at: None,
         },
         GroupInfo {
             address: KLETTERHALLE,
@@ -407,6 +408,7 @@ fn groups() -> Vec<Restored> {
                 member(0x4e, "Ivan", false, false, false),
             ],
             standing: Standing::Joined,
+            closed_at: None,
         },
         GroupInfo {
             address: CHOR,
@@ -421,6 +423,7 @@ fn groups() -> Vec<Restored> {
                 member(0x4b, "Ольга", false, true, false),
             ],
             standing: Standing::Invited,
+            closed_at: None,
         },
     ];
     infos

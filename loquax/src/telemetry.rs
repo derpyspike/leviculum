@@ -188,8 +188,8 @@ pub enum Arrival<'a> {
     /// whatever `lev.group_copy` or stream rows it carries, only what it
     /// measured itself is read.
     Direct,
-    /// A group this device joined, with its membership
-    /// ([`crate::ui::groups::copies_from`]).
+    /// A verified message from a group this device joined, with its
+    /// membership ([`crate::ui::groups::copies_from`]).
     Group(&'a dyn Roster),
 }
 
@@ -218,13 +218,15 @@ pub fn read(
         .filter(|(roster, copy)| roster.present(&copy.sender, Some(copy.epoch)))
         .map_or(source, |(_, copy)| copy.sender);
     // A collector's row names whom it measured; nothing records who may
-    // collect for whom, so a row speaks for its source only where the
-    // message's signer is that source, or a joined group where that
-    // source is a present member (1702). Anyone else's row is the claim
-    // of a stranger about somebody else, and moves nobody's pin.
-    let speaks_for = |peer: &[u8; 16]| {
-        *peer == source || roster.is_some_and(|roster| roster.present(peer, None))
-    };
+    // collect for whom, so a row counts only for the message's own source
+    // (the signer, as the caller says it arrived: the caller passes
+    // `Arrival::Group` only for a verified message, `copies_from`), or,
+    // in a joined group's copy, for the copy's writer as vouched above,
+    // the roster naming that writer present at the copy's epoch (1702,
+    // 1728). A member's row about another member, or about anybody else,
+    // is that member's claim and moves nobody's pin; so is any other
+    // collector's, Sideband's included.
+    let speaks_for = |peer: &[u8; 16]| *peer == source || *peer == writer;
     let fix = |peer: [u8; 16], location: Location, telemetry: &[u8]| Fix {
         peer,
         via: source,
@@ -818,11 +820,16 @@ mod tests {
         assert_eq!(accuracy(&read.fixes[0].location).as_deref(), Some("±12 m"));
     }
 
+    /// A row in a joined group's copy belongs to who measured it, the
+    /// copy's writer, and names the group that delivered it. Since 1728 a
+    /// row about another member, Carol here, present or not, is the
+    /// writer's claim about her and gives no fix.
     #[test]
     fn a_stream_row_belongs_to_who_measured_and_names_who_delivered() {
+        use leviculum_lxmf::lev::{GroupCopy, Lev};
         let rows = [
-            (BOB, location(43_773_100, 11_256_000, 500, NOW - 600)),
-            (CAROL, location(-33_868_800, 151_209_300, 0, NOW - 300)),
+            (BOB, location(-33_868_800, 151_209_300, 0, NOW - 300)),
+            (CAROL, location(43_773_100, 11_256_000, 500, NOW - 600)),
         ]
         .map(|(peer, l)| StreamEntry {
             source: peer.to_vec(),
@@ -830,16 +837,25 @@ mod tests {
             telemetry: report(l).encode(),
             appearance: None,
         });
-        let fields = vec![(FIELD_TELEMETRY_STREAM, encode_stream_field_value(&rows))];
+        let mut fields = vec![(FIELD_TELEMETRY_STREAM, encode_stream_field_value(&rows))];
+        Lev {
+            group_copy: Some(GroupCopy {
+                sender: BOB,
+                sent_ms: 1_793_015_000_000,
+                epoch: 1,
+            }),
+            ..Lev::default()
+        }
+        .put_into(&mut fields);
         let group = Members(&[BOB, CAROL]);
         let read = read(COLLECTOR, Arrival::Group(&group), &fields, Some(NOW));
         let who: Vec<_> = read.fixes.iter().map(|f| (f.peer, f.via)).collect();
-        assert_eq!(who, vec![(BOB, COLLECTOR), (CAROL, COLLECTOR)]);
+        assert_eq!(who, vec![(BOB, COLLECTOR)]);
         assert_eq!(
-            coordinates(&read.fixes[1].location),
+            coordinates(&read.fixes[0].location),
             "33.86880 S 151.20930 E"
         );
-        assert_eq!(accuracy(&read.fixes[1].location), None, "none given");
+        assert_eq!(accuracy(&read.fixes[0].location), None, "none given");
     }
 
     /// 1687: the home sends a group's copy of a member's message under the
@@ -934,7 +950,9 @@ mod tests {
     }
 
     /// A message with the sender's own reading and a collector's rows: the
-    /// line names the sender's fix, whichever field came first.
+    /// line names the sender's fix, whichever field came first. Since 1728
+    /// the rows about others (Carol, the collector) give no fix and the
+    /// line counts none of them.
     #[test]
     fn the_report_line_names_the_senders_own_fix_beside_a_stream() {
         let rows = stream(&[
@@ -945,7 +963,7 @@ mod tests {
             FIELD_TELEMETRY,
             report(location(43_775_000, 11_261_000, 0, NOW - 4)).encode_field_value(),
         );
-        let line = "◎ position 43.77500 N 11.26100 E (+2 more)";
+        let line = "◎ position 43.77500 N 11.26100 E";
         let group = Members(&[CAROL, COLLECTOR]);
         let fields = vec![own.clone(), (FIELD_TELEMETRY_STREAM, rows.clone())];
         assert_eq!(
@@ -985,6 +1003,8 @@ mod tests {
             vec![(COLLECTOR, COLLECTOR)],
             "a group's row for somebody its membership does not name"
         );
+        // 1728: a joined group's row counts for a member only where the
+        // member wrote the copy that carries it.
         assert_eq!(
             who(read(
                 COLLECTOR,
@@ -992,17 +1012,39 @@ mod tests {
                 &fields,
                 Some(NOW)
             )),
+            vec![(COLLECTOR, COLLECTOR)],
+            "a group's row for a member who wrote no copy"
+        );
+        let mut copied = fields.clone();
+        leviculum_lxmf::lev::Lev {
+            group_copy: Some(leviculum_lxmf::lev::GroupCopy {
+                sender: BOB,
+                sent_ms: 1_793_015_000_000,
+                epoch: 1,
+            }),
+            ..leviculum_lxmf::lev::Lev::default()
+        }
+        .put_into(&mut copied);
+        assert_eq!(
+            who(read(
+                COLLECTOR,
+                Arrival::Group(&Members(&[BOB])),
+                &copied,
+                Some(NOW)
+            )),
             vec![(BOB, COLLECTOR), (COLLECTOR, COLLECTOR)]
         );
     }
 
-    /// Rows alone: none is the sender's, the line names the last row as it
-    /// did before the sender's own fix was preferred.
+    /// Rows alone: the line names the last row that speaks; a stream of
+    /// rows about others alone (1728: none speaks) says it carried no
+    /// position.
     #[test]
     fn the_report_line_of_a_stream_alone_names_its_last_row() {
         let rows = stream(&[
-            (CAROL, location(43_776_000, 11_266_000, 0, NOW - 180)),
-            (BOB, location(43_774_000, 11_258_000, 0, NOW - 1)),
+            (COLLECTOR, location(43_776_000, 11_266_000, 0, NOW - 180)),
+            (CAROL, location(43_770_000, 11_250_000, 0, NOW - 90)),
+            (COLLECTOR, location(43_774_000, 11_258_000, 0, NOW - 1)),
         ]);
         let fields = vec![(FIELD_TELEMETRY_STREAM, rows)];
         assert_eq!(
@@ -1013,6 +1055,14 @@ mod tests {
                 Some(NOW)
             )),
             "◎ position 43.77400 N 11.25800 E (+1 more)"
+        );
+        let others = vec![(
+            FIELD_TELEMETRY_STREAM,
+            stream(&[(CAROL, location(43_770_000, 11_250_000, 0, NOW - 90))]),
+        )];
+        assert_eq!(
+            report_line(&read(COLLECTOR, Arrival::Direct, &others, Some(NOW))),
+            "◎ telemetry, no position"
         );
     }
 

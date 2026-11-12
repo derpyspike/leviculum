@@ -130,6 +130,14 @@ pub struct GroupInfo {
     pub epoch: u64,
     pub members: Vec<GroupMember>,
     pub standing: Standing,
+    /// The first membership epoch at which the reader was out of a group
+    /// it had joined (1728): its own Leave (the epoch this device held,
+    /// plus one: the home moves it once for the leave), or the home's
+    /// membership that names it left or the group ended. A copy made at
+    /// an earlier epoch is history from the reader's time in it and keeps
+    /// its writer; a later one speaks for nobody. `None` while the reader
+    /// is in, and for a group it never joined.
+    pub closed_at: Option<u64>,
 }
 
 impl GroupInfo {
@@ -180,7 +188,20 @@ impl GroupInfo {
             epoch: 0,
             members: Vec::new(),
             standing: Standing::Invited,
+            closed_at: None,
         }
+    }
+
+    /// The reader is out of it from membership epoch `from` on (1728):
+    /// `standing` is [`Standing::Left`] or [`Standing::Ended`]. Only a
+    /// group the reader was in gets a [`GroupInfo::closed_at`], the
+    /// earliest one said winning; one it was only invited to keeps none,
+    /// so none of its copies is anybody's.
+    fn close(&mut self, standing: Standing, from: u64) {
+        if self.standing == Standing::Joined || self.closed_at.is_some() {
+            self.closed_at = Some(self.closed_at.map_or(from, |at| at.min(from)));
+        }
+        self.standing = standing;
     }
 
     /// The members present now, the avatar's count; the reader and the
@@ -313,18 +334,55 @@ impl crate::telemetry::Roster for GroupInfo {
     }
 }
 
-/// The one rule for "this message is a group's copy and shows under its
-/// writer" (1702): `group` is what this device holds for the
-/// conversation's peer, and it counts only when the reader joined it (or
-/// was in it: a group left or ended keeps its history), never for a group
-/// the reader was merely invited to, and only for a message that came in.
-/// The chat draws a copy's writer by it, and every position a copy or a
-/// collector's row carries is booked by it
+/// The one rule for "this message is a group's copy and may speak for its
+/// writer" (1702, 1728): `group` is what this device holds for the
+/// conversation's peer. It counts only for a message that came in with a
+/// verified signature, from a group the reader joined by its own Join or
+/// made ([`Standing::Joined`]: nothing else takes a group there), never
+/// for one it was only invited to, never for a group that names its own
+/// address as its inviter (a home invites from its admin, so that is a
+/// person's own word), and for a group the reader left or that ended only
+/// for a copy the home made before ([`GroupInfo::closed_at`]). Which
+/// writer the copy then names is [`copy_writer`]'s: the roster's.
+/// Every position a copy or a collector's row carries is booked by it
 /// ([`crate::telemetry::Arrival::Group`]). [`UiModel::copies_from`] is the
 /// same for the model; the terminal's layout, which holds no model, calls
 /// this one.
 pub fn copies_from<'a>(group: Option<&'a GroupInfo>, message: &Message) -> Option<&'a GroupInfo> {
-    group.filter(|info| info.standing != Standing::Invited && !message.outbound)
+    let info = group?;
+    if message.outbound
+        || message.signature != super::Signature::Verified
+        || info.inviter == Some(info.address)
+    {
+        return None;
+    }
+    match info.standing {
+        Standing::Joined => Some(info),
+        Standing::Invited => None,
+        Standing::Left | Standing::Ended => {
+            let until = info.closed_at?;
+            let epoch = Lev::from_fields(&message.fields)?.group_copy?.epoch;
+            (epoch < until).then_some(info)
+        }
+    }
+}
+
+/// The writer a group's copy is drawn under, its name and its text
+/// without the home's prefix ([`copy_of`]), by the rule positions follow
+/// (1728): a copy [`copies_from`] accepts, whose writer the roster names
+/// present at the copy's epoch ([`crate::telemetry::Roster::present`]).
+/// A copy naming anybody else is drawn as the group's own text, under no
+/// writer, whatever its `"Name: "` prefix says.
+pub fn copy_writer<'a>(
+    group: Option<&'a GroupInfo>,
+    message: &'a Message,
+) -> Option<([u8; 16], &'a str, &'a str)> {
+    let info = copies_from(group, message)?;
+    let copy = Lev::from_fields(&message.fields)?.group_copy?;
+    if !crate::telemetry::Roster::present(info, &copy.sender, Some(copy.epoch)) {
+        return None;
+    }
+    copy_of(&message.body, &message.fields, Some(info))
 }
 
 /// How a message whose group is `group` ([`copies_from`]) arrived, for
@@ -519,6 +577,16 @@ impl<B> UiModel<B> {
         copies_from(self.group(peer), message)
     }
 
+    /// The writer `message` of `peer`'s conversation is drawn under, by the
+    /// rule positions follow ([`copy_writer`]).
+    pub fn copy_writer<'a>(
+        &'a self,
+        peer: &[u8; 16],
+        message: &'a Message,
+    ) -> Option<([u8; 16], &'a str, &'a str)> {
+        copy_writer(self.group(peer), message)
+    }
+
     /// The people a new conversation lists (1448, walk finding 17), as a
     /// messenger's contact list: every conversation with a person, the
     /// list's and the archived ones, by the name every screen gives them,
@@ -663,11 +731,17 @@ impl<B> UiModel<B> {
         // own address (`home::group::invitation`, the `sign(admin,
         // group.admin, ...)` of `group.address`): never the sender's own.
         // One naming its sender made a person a "group" whose membership
-        // and copies spoke for anybody (1702).
-        let invite = lev
-            .invite
-            .as_ref()
-            .filter(|invite| outbound || invite.group != peer);
+        // and copies spoke for anybody (1702). And an invitation names a
+        // group the reader is in, left or saw end as anybody's word: it
+        // renames nothing and names no other admin or inviter (1728).
+        let invite = lev.invite.as_ref().filter(|invite| {
+            outbound
+                || (invite.group != peer
+                    && self
+                        .groups
+                        .get(&invite.group)
+                        .is_none_or(|g| g.standing == Standing::Invited))
+        });
         if let Some(invite) = invite {
             let group = self
                 .groups
@@ -701,7 +775,8 @@ impl<B> UiModel<B> {
                         return;
                     };
                     if only.address == own && only.flags & MEMBER_LEFT != 0 {
-                        group.standing = Standing::Left;
+                        let from = group.epoch.saturating_add(1);
+                        group.close(Standing::Left, from);
                     }
                 }
                 return;
@@ -714,23 +789,27 @@ impl<B> UiModel<B> {
             if members.epoch >= group.epoch {
                 group.epoch = members.epoch;
                 group.members = members.members.iter().map(member_of).collect();
-                if members.ended {
+                // No group's word joins the reader (1702, 1728): only the
+                // reader's own Join does. A group it was only invited to
+                // says who is in it and nothing of the reader: its word
+                // that the reader left, or that it ended, would make it a
+                // group whose history speaks for its members. A group the
+                // reader is in may say the admin removed it or ended the
+                // group; one it left does not take it back.
+                let me = own.and_then(|own| group.member(&own)).cloned();
+                match (group.standing, members.ended, me) {
+                    (Standing::Invited, _, _) => {}
                     // Deleted by its admin (1307 pass four): nothing more
                     // is written to it; the admin's own devices forget it
                     // once the message is in ([`UiModel::forget_deleted_groups`]).
-                    group.standing = Standing::Ended;
-                } else if let Some(me) = own.and_then(|own| group.member(&own)).cloned() {
-                    group.ours |= me.admin;
-                    // Only the reader's own Join takes an invitation to
-                    // joined (1702): a group's word that names the reader
-                    // joined would otherwise make any invitation, from
-                    // anybody, a group whose copies speak for its members.
-                    group.standing = match (me.left, me.joined, group.standing) {
-                        (true, _, _) => Standing::Left,
-                        (false, _, Standing::Invited) => Standing::Invited,
-                        (false, true, _) => Standing::Joined,
-                        (false, false, standing) => standing,
-                    };
+                    (_, true, _) => group.close(Standing::Ended, members.epoch),
+                    (Standing::Joined, false, Some(me)) => {
+                        group.ours |= me.admin;
+                        if me.left {
+                            group.close(Standing::Left, members.epoch);
+                        }
+                    }
+                    _ => {}
                 }
             }
         } else if outbound && lev.supports_groups() {
@@ -1673,6 +1752,9 @@ impl<B: Default> UiModel<B> {
         if let Some(info) = self.groups.get_mut(&group) {
             info.standing = Standing::Joined;
         }
+        // The store lists it joined from now on (1728): a restart that read
+        // "invited" waited for a group's word to move it.
+        self.groups_changed.insert(group);
         let index = self.conversation(group);
         self.select(index);
         effects
@@ -1699,7 +1781,9 @@ impl<B: Default> UiModel<B> {
         if let (Some(own), Some(Members { members, .. })) = (self.address, &members) {
             if members[0].address == own {
                 if let Some(info) = self.groups.get_mut(&group) {
-                    info.standing = Standing::Left;
+                    let from = info.epoch.saturating_add(1);
+                    info.close(Standing::Left, from);
+                    self.groups_changed.insert(group);
                 }
             }
         }
@@ -2047,13 +2131,21 @@ mod tests {
 
     /// The group chat (study 3.1, 6): a copy's bubble carries its writer's
     /// name and the text without the home's prefix, and two writers in a
-    /// row are two groups of bubbles. Control: the same copy from an
-    /// address that is no group keeps its words as they came.
+    /// row are two groups of bubbles. The membership names both (1728: a
+    /// writer it does not name is drawn under no name). Control: the same
+    /// copy from an address that is no group keeps its words as they came.
     #[test]
     fn a_copy_names_its_writer_above_the_text() {
         let mut model = reader(&[LEW]);
         arrive(&mut model, LEW, 1, "invite", invite("Lew"));
         join(&mut model);
+        arrive(
+            &mut model,
+            GROUP,
+            9,
+            "",
+            members(1, &[(LEW, "Lew", 2 | 4), (ME, "Me", 4), (ANNA, "Anna", 4)]),
+        );
         arrive(&mut model, GROUP, 2, "Lew: Brot ist da", copy(LEW));
         arrive(&mut model, GROUP, 3, "Anna: Danke", copy(ANNA));
         let c = model
@@ -2291,6 +2383,9 @@ mod tests {
     fn the_admin_adds_members_in_three_taps_and_one_per_friend() {
         let mut model = reader(&[ANNA, BOB, LEW]);
         arrive(&mut model, LEW, 1, "invite", invite("Lew"));
+        // In it first: a membership naming the reader admin makes it the
+        // admin only in a group it joined (1728).
+        join(&mut model);
         arrive(
             &mut model,
             GROUP,
@@ -3538,9 +3633,10 @@ mod tests {
     /// the name the membership gives them, so a name with a colon and a
     /// line that starts with one stay whole; a photo without words, whose
     /// copy says "Photo from a:b", is the photo alone under its writer.
-    /// Controls: a writer the membership does not name falls back to the
-    /// split at the first colon, and a stock reader (no `0x02`) keeps the
-    /// text as it came.
+    /// Controls: a writer the membership does not name is drawn under no
+    /// name, its text whole (1728: the chat follows the roster, as
+    /// positions do), and a stock reader (no `0x02`) keeps the text as it
+    /// came.
     #[test]
     fn a_copy_loses_exactly_its_writers_name_and_a_photo_its_sentence() {
         const CAROL: [u8; 16] = [0x05; 16];
@@ -3577,7 +3673,7 @@ mod tests {
                 verified: true,
             }),
         );
-        // A writer the membership does not name: the split.
+        // A writer the membership does not name: no writer, the text whole.
         arrive(
             &mut model,
             GROUP,
@@ -3603,7 +3699,7 @@ mod tests {
                 ("a:b", "hello", false),
                 ("Bob", ": smile", false),
                 ("a:b", "", true),
-                ("Carol", "hi: there", false),
+                ("", "Carol: hi: there", false),
             ]
             .map(|(w, b, p)| (w.to_string(), b.to_string(), p))
         );
