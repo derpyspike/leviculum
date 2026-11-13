@@ -966,6 +966,18 @@ pub const EVENT_CATALOG: &[EventSchema] = &[
         name: "EXPLORE_OPEN",
         required_keys: &["ask", "reason", "since_ms"],
     },
+    // The phone's first start (1798, render walk 2026-11-13 finding 2):
+    // one line per step of the Android session's start, and the state of
+    // the mailbox running inside the app, whose end carried its `Err` to
+    // nothing before. Emitters in `loquax-android/src/events.rs`.
+    EventSchema {
+        name: "FIRST_START",
+        required_keys: &["step", "ok", "detail"],
+    },
+    EventSchema {
+        name: "MAILBOX_HERE",
+        required_keys: &["state", "detail"],
+    },
     EventSchema {
         name: "LNMSG_SYNC_DONE",
         required_keys: &["received", "duplicates", "new"],

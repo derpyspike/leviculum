@@ -267,6 +267,7 @@ skip  loquax-android   browse_first_link          # the first fetch behind a rel
 skip  loquax-android   device_walk_script         # starts python3 on the device walk's parser tests; subject is the script's code
 skip  loquax-android   explore                    # the Explore tab's verbs, order under a finger and server sheet through the facade in Java's bytes (1618); subject is the code
 skip  loquax-android   facade                     # the facade against an in-process home node and transport over a loopback TCP socket; subject is the code
+skip  loquax-android   first_start                # starts sessions with the phone's own mailbox daemon over loopback TCP (1798); subject is the code
 skip  loquax-android   fling                      # starts javac and java on Fling.java and its host test; subject is the code
 skip  loquax-android   glyph                      # Glyph.java against the core's mark shapes, and the shapes rasterised; subject is the code
 skip  loquax-android   home_reach                 # phone and mailbox through in-process relays over loopback TCP sockets (1196); subject is the code

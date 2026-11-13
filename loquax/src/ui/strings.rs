@@ -670,6 +670,11 @@ leviculum_ui::catalogue! {
     // Joining a mailbox (1263, finding 8): one sentence each, the
     // daemon's words under Details.
     JoinNoAnswer = "join_no_answer", "The mailbox did not answer. Is the computer on?", "Das Postfach hat nicht geantwortet. Ist der Computer an?";
+    // The mailbox on this phone (1798, render walk 2026-11-13 finding 2):
+    // its own words, never the computer question above, which has no
+    // computer to ask about here.
+    HereNotStarted = "here_not_started", "Your mailbox could not start on this phone.", "Dein Postfach konnte auf diesem Handy nicht starten.";
+    HereNoAnswer = "here_no_answer", "The mailbox on this phone did not answer.", "Das Postfach auf diesem Handy hat nicht geantwortet.";
     JoinSlow = "join_slow", "The mailbox did not answer in time. Try again.", "Das Postfach hat nicht rechtzeitig geantwortet. Versuch es noch einmal.";
     JoinNotMailbox = "join_not_mailbox", "That code is not a mailbox code.", "Das ist kein Postfach-Code.";
     JoinRefused = "join_refused", "The mailbox did not take this code. Make a new one on the computer.", "Das Postfach hat den Code nicht angenommen. Mach am Computer einen neuen.";
