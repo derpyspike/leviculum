@@ -208,19 +208,14 @@ impl<B> UiModel<B> {
         &mut self,
         index: usize,
         body: String,
-        mut fields: Vec<Field>,
+        fields: Vec<Field>,
     ) -> Vec<UiEffect> {
-        // While a share runs here, what the reader writes carries the
-        // place it was written at (1692, `super::place`).
-        let to = self.conversations[index].peer;
-        if let Some(place) = self.place_field(&to, &body, &fields) {
-            fields.push(place);
-        }
         let mut message = Message::ours(body.clone(), self.now);
         message.fields = fields.clone();
         let activity = self.bump();
         message.activity = activity;
         let conversation = &mut self.conversations[index];
+        let to = conversation.peer;
         conversation.messages.push(message);
         conversation.activity = activity;
         let at = conversation.messages.len() - 1;
