@@ -100,6 +100,9 @@ pub(crate) mod tracing {
 }
 
 pub(crate) mod announce;
+/// AutoInterface over raw Ethernet frames, for a board without an IP
+/// stack (1479).
+pub mod auto_lan;
 pub mod auto_wire;
 pub mod bounded_map;
 #[cfg(feature = "compression")]
@@ -126,6 +129,9 @@ pub mod ifac;
 pub mod iface_map;
 pub mod interface_counters;
 pub mod known_destinations;
+/// IPv6 link-local frames for AutoInterface on a board without an IP
+/// stack (1479).
+pub mod lan_frame;
 pub mod link;
 pub mod media_profile_store;
 pub mod media_switches;
