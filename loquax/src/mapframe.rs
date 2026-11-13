@@ -816,6 +816,26 @@ impl Frames {
                         }
                     }
                 };
+                // On the pure sphere a carried name whose box the turn
+                // pushes over the limb goes for the frame (1799): its
+                // anchor still faces, but part of the name would stand
+                // in space.
+                if let Some(b) = wblend.as_ref().filter(|b| b.is_globe() && b.t() <= 0.0) {
+                    let (bw, bh) = b.size();
+                    let (cx, cy) = (f64::from(bw) / 2.0, f64::from(bh) / 2.0);
+                    let r = b.radius() - 1.0;
+                    let (dx, dy) = (x - name.centre.0, y - name.centre.1);
+                    let out = name.boxes.iter().any(|bx| {
+                        [bx.x0, bx.x1].iter().any(|&px| {
+                            [bx.y0, bx.y1].iter().any(|&py| {
+                                (f64::from(px) + dx - cx).hypot(f64::from(py) + dy - cy) > r
+                            })
+                        })
+                    });
+                    if out {
+                        continue;
+                    }
+                }
                 let by = ((x - name.centre.0).round(), (y - name.centre.1).round());
                 self.drawn_names.push(Carried {
                     i,
