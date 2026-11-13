@@ -2634,9 +2634,11 @@ mod tests {
         let notice = |model: &UiModel<Buffer>| node(model).sheet.expect("the sheet").notice;
         assert!(model.profile.name.is_empty());
         assert_eq!(notice(&model), Text::key(StrId::RoomsNoName));
+        // The audit of 1808: short enough for the Advanced modal's 74
+        // columns, so the key hint keeps its row.
         assert_eq!(
             StrId::RoomsNoName.text(Lang::De),
-            "Auf diesem Server hast du noch keinen Namen: Im Raum erscheinst du ohne Namen."
+            "Noch kein Name auf diesem Server: Im Raum erscheinst du ohne Namen."
         );
         // Walk 11, finding 62: where the mailbox names the profile, the
         // notice says that name beside "no name on this server".
@@ -2647,7 +2649,7 @@ mod tests {
         };
         assert_eq!(
             notice(&model).resolve(Lang::De),
-            "Auf diesem Server hast du noch keinen Namen (dein Profil heißt lew): \
+            "Noch kein Name auf diesem Server (dein Profil heißt lew): \
              Im Raum erscheinst du ohne Namen."
         );
         model.profile.name = "Lew".into();
