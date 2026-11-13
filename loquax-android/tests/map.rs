@@ -1789,6 +1789,28 @@ fn a_view_without_a_region_says_no_map_here_yet() {
     assert!(shown.no_map && !shown.loading, "{shown:?}");
 }
 
+/// Lew's smoke screenshot of 988ef9b3 (order 1799, with finding 16):
+/// "No map here yet" stood over a fully drawn Natural Earth globe.
+/// Where the world data serves the zoom there IS a map: the chip comes
+/// only past the outline's deepest zoom, over ground no region covers.
+/// Past it, over the plain overzoomed land, the chip stays (the z16
+/// control above).
+#[test]
+fn the_world_view_is_a_map_and_shows_no_chip() {
+    let home = home();
+    let berlin = project(LatLon::from_degrees(52.52, 13.405));
+    for zoom in [4u8, 10] {
+        let away = MapRequest {
+            x: Some(berlin.x),
+            y: Some(berlin.y),
+            zoom: Some(zoom),
+            ..request(home.path(), false)
+        };
+        let (shown, _) = frame(&loquax_android::map::render(&away, Some(Vec::new()), now()));
+        assert!(!shown.no_map, "z{zoom}: {shown:?}");
+    }
+}
+
 /// The Maps page's call (1201, 1207) for `home`: no frame, the regions;
 /// a refusal as `ok: false`.
 fn regions(home: &Path, change: impl FnOnce(&mut (Option<String>, Option<bool>))) -> MapRegions {
@@ -1865,8 +1887,10 @@ fn the_maps_page_lists_sizes_and_deletes_regions() {
     assert_eq!(left.region_bytes, len);
     assert!(!maps.join("auto-old.lmr").exists());
 
-    // Florence still draws; once its region is deleted the frame says
-    // there is no map here.
+    // Florence still draws; once its region is deleted the frame falls
+    // back to the world data — the zoom held to the outline's deepest,
+    // the credit Natural Earth's, and no "no map here yet" chip, since
+    // up to that zoom the world data IS a map (1799, the chip rule).
     let before = frame(&loquax_android::map::render(
         &request(home.path(), false),
         Some(Vec::new()),
@@ -1874,6 +1898,7 @@ fn the_maps_page_lists_sizes_and_deletes_regions() {
     ))
     .0;
     assert!(!before.no_map, "{before:?}");
+    assert_eq!(before.zoom, 16, "{before:?}");
     let none = regions(home.path(), |ask| ask.0 = Some("firenze.lmr".to_string()));
     assert!(none.ok && none.regions.is_empty() && none.region_bytes == 0);
     let after = frame(&loquax_android::map::render(
@@ -1882,7 +1907,12 @@ fn the_maps_page_lists_sizes_and_deletes_regions() {
         now(),
     ))
     .0;
-    assert!(after.no_map, "the deleted region is not drawn: {after:?}");
+    assert!(
+        !after.no_map
+            && after.attribution == "Natural Earth"
+            && u32::from(after.max_zoom) == u32::from(leviculum_map::outline::MAX_ZOOM),
+        "the deleted region is not drawn: {after:?}"
+    );
 }
 
 /// 1201: the crosshair centres on the phone's fix at the zoom it asks,

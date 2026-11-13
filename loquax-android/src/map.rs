@@ -676,7 +676,12 @@ impl Renderer {
             ),
             false => Vec::new(),
         };
+        // "No map here yet" only where there is none (1799, finding 16's
+        // family): up to the outline's deepest zoom the world data draws
+        // the view — coast, borders, names — and that IS a map. The chip
+        // comes only deeper, over ground no region covers.
         let no_map = !self.loader.loading_here()
+            && shot.shows.zoom_milli() > u32::from(leviculum_map::outline::MAX_ZOOM) * MILLI
             && !radar::any_region(&setup.regions, &shot.shows.at_zoom(rest_zoom));
         let name = |peer: [u8; 16]| pins.iter().find(|p| p.peer == peer).map(|p| p.words());
         let own = match (request.own_lat_e6, request.own_lon_e6) {
