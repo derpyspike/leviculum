@@ -2709,6 +2709,13 @@ impl App {
         if !self.press.is_some_and(|p| p.dragging) || shown.missing > 0 || shown.fading {
             return false;
         }
+        // On the globe a drag is a rotation (1799, the wobble P0): no
+        // margin of a flat frame can show a turned sphere, so every
+        // event draws the turned frame anew; until it lands the one on
+        // screen stays in place ([`loquax::mapframe::onto_as`]).
+        if loquax::mapframe::turns(&order.view).is_some() {
+            return false;
+        }
         let same = Order {
             view: shown.order.view,
             moving: shown.order.moving,

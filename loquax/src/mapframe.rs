@@ -1463,6 +1463,12 @@ pub fn hold_as(shape: Shape, view: ExactView, floor: u8, ceiling: u8) -> ExactVi
     held
 }
 
+/// The blend a drag on `view` turns, through the product's world
+/// projection ([`turns_as`]); `None` where a drag pans.
+pub fn turns(view: &ExactView) -> Option<Blend> {
+    turns_as(crate::picture::world_shape(), view)
+}
+
 /// The blend a drag on `view` turns, when the world projection `shape`
 /// is the globe and the view is not yet Mercator (1762); `None` where a
 /// drag pans.
@@ -1515,8 +1521,30 @@ pub fn moved(rest: &ExactView, now: &ExactView, c: (f64, f64)) -> (f64, f64) {
 /// may have moved since it was asked for: its top left corner in the
 /// screen's pixels, and how many screen pixels one of its pixels is. A
 /// frontend shows the last frame there until the next one lands.
+/// Through the product's world projection ([`onto_as`]).
 pub fn onto(drawn: &ExactView, screen: &ExactView) -> (f64, f64, f64) {
+    onto_as(crate::picture::world_shape(), drawn, screen)
+}
+
+/// [`onto`] for a world projection `shape`. At the zooms a drag turns
+/// the globe ([`turns_as`]) the frame is never translated (1799, the
+/// wobble P0): a drag is a rotation about the disk's fixed centre, so
+/// the frame on screen stays placed centre on centre — scaled about it
+/// while a zoom glides — until the frame drawn for the turned view
+/// replaces it. Translating it by the centres' Mercator offset, the
+/// flat map's placement, moved the disk with the pointer and snapped it
+/// back on the next frame.
+pub fn onto_as(shape: Shape, drawn: &ExactView, screen: &ExactView) -> (f64, f64, f64) {
     let k = screen.scale_at(0) / drawn.scale_at(0);
+    if turns_as(shape, drawn).is_some() || turns_as(shape, screen).is_some() {
+        let (w, h) = drawn.size();
+        let (sw, sh) = screen.size();
+        return (
+            (f64::from(sw) - f64::from(w) * k) / 2.0,
+            (f64::from(sh) - f64::from(h) * k) / 2.0,
+            k,
+        );
+    }
     let (cx, cy) = screen.to_screen(drawn.centre);
     let (w, h) = drawn.size();
     (cx - f64::from(w) / 2.0 * k, cy - f64::from(h) / 2.0 * k, k)
@@ -1597,6 +1625,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Lew on the desktop build fcb3785e5 (order 1799, P0): fully
+    /// zoomed out, dragging the globe, "it shifts a bit while turning
+    /// and then jumps back. It wobbles." The frontend translated the
+    /// last frame by the pointer delta — the flat map's placement —
+    /// while the core turned the globe about its fixed centre, so the
+    /// disk moved and snapped back when the turned frame landed. On the
+    /// globe a drag is a rotation only: the frame on screen is never
+    /// moved, it stays placed centre on centre through every step of
+    /// the drag until the next frame replaces it. The flat map keeps
+    /// its exact pan placement.
+    #[test]
+    fn a_turning_globes_frame_stays_in_place() {
+        use leviculum_map::blend::Shape;
+        let at = project(LatLon::from_degrees(50.0, 10.0));
+        let (w, h) = (1860u32, 1024u32);
+        let zoom = floor_milli_as(Shape::Globe, w, h, 0);
+        let drawn = ExactView::new(at, zoom, w, h);
+        let mut view = drawn;
+        for step in 0..30 {
+            drag_as(Shape::Globe, &mut view, 7, -3);
+            let (x, y, k) = onto_as(Shape::Globe, &drawn, &view);
+            assert!(
+                x.abs() < 1e-9 && y.abs() < 1e-9 && (k - 1.0).abs() < 1e-9,
+                "step {step}: the frame moved to ({x}, {y}, {k})"
+            );
+        }
+        // The control: on the flat map the frame pans with the view.
+        let flat = ExactView::new(at, 12_000, w, h);
+        let mut moved = flat;
+        drag_as(Shape::Globe, &mut moved, 40, 0);
+        let (x, _, k) = onto_as(Shape::Globe, &flat, &moved);
+        assert!((x + 40.0).abs() < 1e-9 && (k - 1.0).abs() < 1e-9, "{x} {k}");
     }
 
     /// A drag on a globe view turns it by the arcball amount and on the
