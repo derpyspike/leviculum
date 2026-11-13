@@ -204,23 +204,34 @@ EOF
     (cd "$DIST" && sha256sum "$name.tar.gz" >"$name.tar.gz.sha256")
 }
 
-# lnsd ships on mimalloc (#437, 766), and a tarball is the one artefact no
-# build-deb.sh check reads: it packs whatever lnsd sits in the release
-# directory. The startup line `Allocator: mimalloc` is in the binary only when
-# it was built on mimalloc, so its bytes say which allocator the tarball would
-# ship. LEVICULUM_ALLOC=system is build-deb.sh's knob, honoured here the same
-# way.
-mimalloc_marker='Allocator: mimalloc'
+# Every binary runs on leviculum-alloc's allocator (1805,
+# docs/src/architecture.md "Memory allocator"), and a tarball is the one
+# artefact that packs whatever sits in the release directories. So every
+# binary a tarball will carry is read before anything is packed, for the two
+# byte witnesses of scripts/check-allocator.py --binary: mimalloc's own
+# message string, and musl mallocng's `__libc_malloc_impl` symbol, which a
+# rust-lld link keeps and a cargo zigbuild link (Zig's malloc for the C code)
+# does not. Read with grep, because this step runs in debian:bookworm-slim,
+# which has no python3 (scripts/test-collect-nightly-debs.sh holds it to
+# that); build-deb.sh ran the whole check, the run of `--version` under
+# MIMALLOC_VERBOSE included, on these same files when it built them.
+mimalloc_marker='mimalloc: warning: '
+mallocng_witness='__libc_malloc_impl'
+tarball_bins=(lnsd lnstest lncp lnstatus lnprobe lnpath lnmgmt lnomad lblogd lnpnd loquax)
 for triple in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
-    lnsd_bin="$TARGET/$triple/release/lnsd"
-    if [ "${LEVICULUM_ALLOC:-mimalloc}" = system ]; then
-        continue
-    fi
-    grep -qaF "$mimalloc_marker" "$lnsd_bin" || {
-        echo "error: ${lnsd_bin} is not built on mimalloc (no '${mimalloc_marker}')" >&2
-        echo "       build it with scripts/build-deb.sh, or set LEVICULUM_ALLOC=system for both steps" >&2
-        exit 1
-    }
+    for bin in "${tarball_bins[@]}"; do
+        path="$TARGET/$triple/release/$bin"
+        grep -qaF "$mimalloc_marker" "$path" || {
+            echo "error: ${path}: not built on mimalloc (no '${mimalloc_marker}')" >&2
+            echo "       build it with scripts/build-deb.sh" >&2
+            exit 1
+        }
+        grep -qaF "$mallocng_witness" "$path" || {
+            echo "error: ${path}: a musl binary without musl mallocng's ${mallocng_witness}:" >&2
+            echo "       linked by cargo zigbuild (Zig's malloc) or stripped; build it with scripts/build-deb.sh" >&2
+            exit 1
+        }
+    done
 done
 
 pack_bin_tarball leviculum amd64 x86_64-unknown-linux-musl README.md lnsd lnstest lncp lnstatus lnprobe lnpath lnmgmt

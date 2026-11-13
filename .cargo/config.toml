@@ -47,21 +47,23 @@ target = "x86_64-unknown-linux-musl"
 linker = "rust-lld"
 rustflags = ["-C", "link-self-contained=yes"]
 
-# The arm64 host override, linked by rust-lld for the same reason as
-# above: an arm64 host that sets CARGO_BUILD_TARGET then needs no musl
-# toolchain of its own, exactly as an x86_64 host needs none.
-#
-# No rustflags here, deliberately, although the x86_64 section carries
-# them. This triple is also what `scripts/build-deb.sh arm64` cross-
-# builds from an amd64 host through cargo-zigbuild, and zig is the C
-# compiler in that build: its CARGO_TARGET_*_LINKER overrides the line
-# below, but cargo uses only the first rustflags source it finds, so a
-# rustflags key here would either be ignored or feed self-contained crt
-# objects to a zig link that never asked for them. musl targets enable
-# link-self-contained by default anyway, so the key would buy nothing
-# and put the nightly's arm64 packages at risk for it.
+# The arm64 and armhf triples link the same way, with rust-lld and Rust's
+# self-contained musl, for a developer's host override as for the packages
+# (1805, docs/src/architecture.md "Memory allocator"). The packages used to
+# link them through cargo zigbuild, which brought Zig's libc, whose malloc
+# (SmpAllocator) is what the C code in the binaries (bundled SQLite,
+# libdbus) then called: it keeps every slab and strands every cross-thread
+# free. Through rust-lld that malloc is musl's mallocng on every triple, as
+# it always was on amd64. Zig stays the C compiler only: scripts/build-deb.sh
+# sets CC_<triple> to scripts/zig-cc.sh for a cross build, and links nothing
+# musl through zigbuild any more (scripts/check-allocator.py refuses it).
 [target.aarch64-unknown-linux-musl]
 linker = "rust-lld"
+rustflags = ["-C", "link-self-contained=yes"]
+
+[target.armv7-unknown-linux-musleabihf]
+linker = "rust-lld"
+rustflags = ["-C", "link-self-contained=yes"]
 
 # Huge pages off in mimalloc's C build, on every triple (1805,
 # docs/src/architecture.md "Memory allocator"). mimalloc reads
@@ -85,6 +87,15 @@ linker = "rust-lld"
 # leviculum-alloc's `huge_pages_are_off_at_compile_time` test reads it too.
 [env]
 CFLAGS = "-DMI_DEFAULT_ALLOW_THP=0"
+# libmimalloc-sys links `-latomic` on 32-bit arm (its build.rs reads the
+# library's name from DEP_ATOMIC). Rust's self-contained musl ships no
+# libatomic, and armv7-A needs none: it has native 64-bit atomics
+# (LDREXD/STREXD), so clang lowers mimalloc's atomics inline and no
+# `__atomic_*` call is emitted. Naming libc, which the link has anyway,
+# satisfies the flag without a stub archive; should a future mimalloc emit
+# an `__atomic_*` call after all, rust-lld fails on the undefined symbol
+# instead of linking something wrong. Other triples never read it.
+DEP_ATOMIC = "c"
 
 [alias]
 # Development workflow

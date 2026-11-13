@@ -580,9 +580,9 @@ core-no-tracing:
 # recipe is what keeps the set compiling and green, the way `core-no-tracing`
 # keeps core's. `compression` stays on: it is the bz2 codec a Python peer's
 # compressed resources need, so a daemon without it is not a smaller lnsd but
-# a broken one. leviculum-cli's default `alloc-mimalloc` goes, because the set
-# is the minimal one, and the libc allocator is what `--no-default-features`
-# always meant for it.
+# a broken one. The allocator is not a feature (1805): the minimal lnsd runs
+# leviculum-alloc's mimalloc like every other build, so the set tests the
+# allocator the field runs.
 #
 # Clippy over every target compiles the integration suites in this set too,
 # which is what catches a test that reaches for a gated item; the test lines
@@ -1575,7 +1575,7 @@ tree-clean-selftest:
 #   run all still ahead of it. The `~3.5 min` in the recipe's own doc
 #   string is older than half the dependency list.
 [doc('The coder-pass gate: every guard in `fast` that costs under 10 s')]
-guards: tree-snapshot tree-clean-selftest check-submodules check-third-party check-trailers check-integ-bin-list check-ci-pipeline check-ci-secrets publish-selftest nightly-green-selftest check-publish-nightly-gate package-selftest site-publish-selftest site-unpack-docs-selftest deb-stamp-selftest version-guard lock-contention-selftest toolchain-status-selftest sweep-selftest tmp-leftovers-selftest window-bench-selftest dfu-exit-selftest m9-walk-selftest btvirt-selftest check-firmware-images check-plain-clone check-supervised-spawns check-core-lock-census check-env-knobs check-test-ports test-retry-guard no-printf-grep-pipes check-ignored-source check-just-docs check-guards-subset check-standard-integ check-python-test-prerequisites check-config-table-citations prepush-guard nrf-evt-max-size nrf-gap-device-name nrf-board-pins nrf-sd-guard nrf-uf2-volumes nrf-fw-readback rnode-chip-offsets nrf-shellcheck embassy-pins log-diff-mask-selftest firmware-no-hal firmware-no-chip-cfg nrf-module-reach check-fuzz-lock changelog-links loquax-name m0-build-gate lxmf-embedded-gate loquax-core-no-std map-core-no-std lnomad-core-no-std m9-render-no-std lnomad-core-no-tui-static ui-no-terminal-static check-source-invariant-census
+guards: tree-snapshot tree-clean-selftest check-submodules check-third-party check-trailers check-integ-bin-list check-ci-pipeline check-ci-secrets publish-selftest nightly-green-selftest check-publish-nightly-gate package-selftest site-publish-selftest site-unpack-docs-selftest deb-stamp-selftest version-guard lock-contention-selftest toolchain-status-selftest sweep-selftest tmp-leftovers-selftest window-bench-selftest dfu-exit-selftest m9-walk-selftest btvirt-selftest check-firmware-images check-plain-clone check-supervised-spawns check-core-lock-census check-env-knobs check-test-ports test-retry-guard no-printf-grep-pipes check-ignored-source check-just-docs check-guards-subset check-standard-integ check-python-test-prerequisites check-config-table-citations prepush-guard nrf-evt-max-size nrf-gap-device-name nrf-board-pins nrf-sd-guard nrf-uf2-volumes nrf-fw-readback rnode-chip-offsets nrf-shellcheck embassy-pins log-diff-mask-selftest firmware-no-hal firmware-no-chip-cfg nrf-module-reach check-fuzz-lock changelog-links loquax-name m0-build-gate lxmf-embedded-gate loquax-core-no-std map-core-no-std lnomad-core-no-std m9-render-no-std lnomad-core-no-tui-static ui-no-terminal-static check-source-invariant-census check-allocator
 
 # Tier 0 (~3.5 min, runs on every git push): submodule pins + commit-message
 # trailers + the single-integ-bin-list guard (#310)
@@ -1607,7 +1607,7 @@ guards: tree-snapshot tree-clean-selftest check-submodules check-third-party che
 # `check-all-targets` dependency compiles those targets but does not lint
 # them, which is exactly the gap.
 [doc('Tier 0 (~3.5 min): the gate every git push runs')]
-fast: tree-snapshot tree-clean-selftest check-submodules check-third-party check-trailers check-integ-bin-list check-ci-pipeline check-ci-secrets publish-selftest nightly-green-selftest check-publish-nightly-gate package-selftest site-publish-selftest site-unpack-docs-selftest deb-stamp-selftest version-guard lock-contention-selftest toolchain-status-selftest sweep-selftest tmp-leftovers-selftest window-bench-selftest dfu-exit-selftest m9-walk-selftest btvirt-selftest check-firmware-images check-plain-clone check-supervised-spawns check-core-lock-census check-env-knobs check-test-ports test-retry-guard no-printf-grep-pipes check-ignored-source check-just-docs check-guards-subset check-standard-integ check-python-test-prerequisites check-config-table-citations prepush-guard check-processor-seam mvr supervised-spawn lint-nrf lint-lr11xx nrf-stack-frames nrf-store-gap nrf-flash-budget m9-reproducible nrf-reproducible nrf-evt-max-size nrf-gap-device-name nrf-board-pins nrf-sd-guard nrf-uf2-volumes nrf-fw-readback rnode-chip-offsets nrf-shellcheck embassy-pins log-diff-mask-selftest firmware-no-hal firmware-no-chip-cfg nrf-module-reach hw-witness check-fuzz-lock fuzz-selftest fuzz-regress notices-guard doc-touched doc-gate changelog-links loquax-name core-no-tracing lnsd-minimal event-catalog m0-build-gate lxmf-embedded-gate loquax-core-no-std map-core-no-std lnomad-core-no-std m9-render-no-std lnomad-core-no-tui ui-no-terminal i686-usize-gate no-atomic64-gate check-all-targets deb-features-check deb-floor-check citation-guard source-invariant-tests tmp-leftovers
+fast: tree-snapshot tree-clean-selftest check-submodules check-third-party check-trailers check-integ-bin-list check-ci-pipeline check-ci-secrets publish-selftest nightly-green-selftest check-publish-nightly-gate package-selftest site-publish-selftest site-unpack-docs-selftest deb-stamp-selftest version-guard lock-contention-selftest toolchain-status-selftest sweep-selftest tmp-leftovers-selftest window-bench-selftest dfu-exit-selftest m9-walk-selftest btvirt-selftest check-firmware-images check-plain-clone check-supervised-spawns check-core-lock-census check-env-knobs check-test-ports test-retry-guard no-printf-grep-pipes check-ignored-source check-just-docs check-guards-subset check-standard-integ check-python-test-prerequisites check-config-table-citations prepush-guard check-processor-seam mvr supervised-spawn lint-nrf lint-lr11xx nrf-stack-frames nrf-store-gap nrf-flash-budget m9-reproducible nrf-reproducible nrf-evt-max-size nrf-gap-device-name nrf-board-pins nrf-sd-guard nrf-uf2-volumes nrf-fw-readback rnode-chip-offsets nrf-shellcheck embassy-pins log-diff-mask-selftest firmware-no-hal firmware-no-chip-cfg nrf-module-reach hw-witness check-fuzz-lock fuzz-selftest fuzz-regress notices-guard doc-touched doc-gate changelog-links loquax-name core-no-tracing lnsd-minimal event-catalog m0-build-gate lxmf-embedded-gate loquax-core-no-std map-core-no-std lnomad-core-no-std m9-render-no-std lnomad-core-no-tui ui-no-terminal i686-usize-gate no-atomic64-gate check-all-targets deb-features-check deb-floor-check citation-guard source-invariant-tests tmp-leftovers check-allocator
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings
     {{manifest}} workspace-lib -- cargo test --workspace --lib
@@ -2119,13 +2119,13 @@ _require-cargo-deb:
 
 # Best-effort, idempotent install of the cross-build toolchain the
 # build-deb* recipes need: the musl and glibc rustup targets, cargo-deb, and
-# cargo-zigbuild + ziglang for the cross-links and loquax's glibc build. Safe to re-run.
+# cargo-zigbuild + ziglang, at the versions scripts/build-deb.sh pins (1805). Safe to re-run.
 _deb-prereqs:
     rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
     cargo install --locked cargo-deb
-    cargo install --locked cargo-zigbuild
-    @echo "[_deb-prereqs] also ensure ziglang is available for arm64:"
-    @echo "    pip install ziglang   (or install a full Zig distribution on PATH)"
+    cargo install --locked cargo-zigbuild --version 0.23.4
+    @echo "[_deb-prereqs] also ensure ziglang 0.16.0 (the arm C compiler, loquax's glibc linker):"
+    @echo "    pip install ziglang==0.16.0"
 
 [doc('Status of last runs across all tiers')]
 status:
@@ -2505,19 +2505,19 @@ mailbox-growth-soak secs="7200" sample="600" rate="2" limit="20":
 # /tmp: the soak directory is the target dir's tmp unless LNPND_SOAK_DIR says
 # otherwise (lnpnd/tests/pn_growth_soak.rs).
 #
-# `alloc` picks the daemon's allocator (1592): `mimalloc`, lnpnd's default,
-# or `system`, the libc allocator the field ran before, built with the
-# interface families and without `alloc-mimalloc`. Positional, as just 1.40
-# hands `alloc=system` over as a literal: `just pn-growth-soak 1200 300000 14
-# system`.
+# `alloc` once picked the daemon's allocator (1592); since 1805 every build
+# runs leviculum-alloc's mimalloc and `mimalloc` is the only value left. The
+# parameter stays so a scheduled call with four positional arguments keeps
+# working, and anything else is refused with the reason (the libc build it
+# chose is gone with `alloc-mimalloc`).
 [doc('lnpnd growth soak: does a table grow once the store is full (20 min)')]
 pn-growth-soak secs="1200" messages="300000" peers="14" alloc="mimalloc":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{alloc}}" in
     mimalloc) features=() ;;
-    system) features=(--no-default-features --features "ble serial i2p") ;;
-    *) echo "pn-growth-soak: alloc={{alloc}}; want mimalloc or system" >&2; exit 2 ;;
+    # `system` built lnpnd without `alloc-mimalloc`, which no longer exists.
+    *) echo "pn-growth-soak: alloc={{alloc}}; one allocator since 1805, want mimalloc" >&2; exit 2 ;;
     esac
     LNPND_SOAK_SECS={{secs}} LNPND_SOAK_MESSAGES={{messages}} LNPND_SOAK_PEERS={{peers}} \
         cargo test --release -p lnpnd "${features[@]}" --test pn_growth_soak -- --ignored --nocapture
@@ -3257,3 +3257,18 @@ window-bench-baseline:
         if m.get("reason") == "compiler-artifact" and m.get("executable") and m["target"]["name"] == "loquax" and m["profile"]["test"]:
             print(m["executable"])')"
     LOQUAX_WINDOW_BENCH="$(realpath loquax/tests/window_bench.baseline)" "$bench" --exact gui::bench::window_bench --nocapture
+
+# 1805: one allocator for every Leviculum program, leviculum-alloc's mimalloc
+# v3 (docs/src/architecture.md "Memory allocator"). The source half (no
+# build, well under a second) finds every binary target by cargo's rules and
+# wants the global allocator and `leviculum_alloc::start()` first in `main`,
+# no mimalloc, jemalloc or snmalloc dependency outside leviculum-alloc, the
+# three release() sites in leviculum-std, the THP define, and no musl link
+# through cargo zigbuild in build-deb.sh; the selftest injects each defect
+# into a copy of the files the check reads, plus synthetic binaries for the
+# bytes half, and wants each refused. In `guards` and `fast`; at the end of
+# this file so no cited Justfile line moves.
+[doc('Check every program runs on leviculum-alloc (1805)')]
+check-allocator:
+    @python3 -I scripts/check-allocator.py
+    @python3 -I scripts/check-allocator.py --selftest

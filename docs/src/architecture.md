@@ -247,3 +247,89 @@ Use `HexShort` for hashes. Always explain drop reasons ("rate limited",
 | node/link_management | Link lifecycle, RTT | `debug!` |
 | driver | Startup, interface registration | `info!` |
 | interfaces | Connection events, I/O errors | `info!`/`warn!` |
+
+## Memory allocator
+
+Every Leviculum program runs on one allocator, now and in future (Lew,
+2026-11-13, order 1805): **mimalloc v3**, through the workspace crate
+`leviculum-alloc`, which owns the only mimalloc dependency (`mimalloc`
+0.1.52 / `libmimalloc-sys` 0.1.49, mimalloc 3.3.2). The choice was measured
+in the allocator study of 2026-11-13 (review repository,
+`notizen/2026-11-13-allocator-studie.md`) against musl's mallocng, glibc's
+ptmalloc, Zig's SmpAllocator, jemalloc, snmalloc and mimalloc v2, on lnsd,
+lnpnd and the Loquax Mailbox: it is the only candidate that builds on every
+shipped triple, hands a spike back in 0.1 s, costs the least CPU per flush
+and under cross-thread churn, and starts in the least memory.
+
+Every binary carries the same two lines:
+
+```rust
+#[global_allocator]
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
+
+fn main() {
+    leviculum_alloc::start();
+    // an async body runs behind a plain `main`, after this line
+}
+```
+
+Under `heap-accounting` the static is
+`CountingOver<leviculum_alloc::Global>` instead, so the census counts and
+forwards to the same allocator.
+
+Three settings come with it, and the crate owns all three:
+
+- **Huge pages off at compile time.** `.cargo/config.toml` passes
+  `-DMI_DEFAULT_ALLOW_THP=0` to mimalloc's C build through `[env] CFLAGS`,
+  on every triple. On glibc mimalloc initialises in a constructor before
+  `main`, so a `PR_SET_THP_DISABLE` in `main` comes too late there: the study
+  measured 6.8 MB `--version` with it and 2.9 MB with the define. `start()`
+  sets the prctl as well, as a belt.
+- **A release thread.** `start()` spawns one thread, `alloc-release`, that
+  runs `mi_collect(true)` once a second. mimalloc v3 keeps a freed span for
+  ten seconds or more; the thread brought lnsd from 191 to 50 MB anonymous
+  memory 20 s after start, at no measurable CPU.
+- **A release at the spike sites.** `leviculum_alloc::release()` runs
+  `mi_collect(true)` on the calling thread. leviculum-std calls it where a
+  blocking job frees a structure the size of the store: at the end of the
+  `known_destinations` flush closure, after the replaced table is dropped,
+  and after the start-up load of `known_destinations`. The flush's spike is
+  back in 0.1 s instead of 10 to 20 s (`tests/flush_release_memory.rs`).
+
+**The link rule.** musl binaries on every triple link with rust-lld and
+Rust's self-contained musl (`-C link-self-contained=yes`), so the libc
+`malloc` that C code still calls (bundled SQLite, libdbus) is musl's
+mallocng, never Zig's SmpAllocator, which keeps every slab and strands every
+cross-thread free. Zig is the cross C compiler for arm64 and armhf
+(`scripts/zig-cc.sh`, `scripts/zig-ar.sh`) and links nothing musl. On armv7
+libmimalloc-sys asks for `-latomic`; armv7-A has native 64-bit atomics, so
+`DEP_ATOMIC = "c"` names libc instead and rust-lld would fail loudly on an
+`__atomic_*` call. The glibc desktop loquax still links through cargo
+zigbuild at glibc 2.31. The packaging pins ziglang 0.16.0 and cargo-zigbuild
+0.23.4.
+
+**Exemptions**, the only ones: `libloquax_android.so`, where bionic's scudo
+owns the JVM's process and `leviculum-alloc` is `System` (both functions
+are no-ops); firmware images (nRF, M9), which have no libc and their own
+heap; `leviculum-heap-lab` and test or bench binaries with their own
+counting allocators (`leviculum-std/src/bin/heap-gap-bench.rs`). One-shot
+tools, lnflash included, are not exempt: with huge pages off mimalloc v3
+starts in 2.7 to 4.0 MB against mallocng's 3.2 MB, and one rule beats a
+list.
+
+`scripts/check-allocator.py` enforces the rule. Its source half (in
+`just guards`) finds every binary target by cargo's rules and wants the two
+lines, refuses a mimalloc, jemalloc or snmalloc dependency anywhere but in
+`leviculum-alloc`, wants the three `release()` sites, the define, a musl
+build without cargo zigbuild in `scripts/build-deb.sh`, and re-reads each
+exemption's reason. Its bytes half (`--binary`, run by build-deb.sh on
+every packaged binary) wants mimalloc's message string in the file, musl
+mallocng's `__libc_malloc_impl` symbol in every musl binary (a zigbuild link
+strips it and brings Zig's malloc), and `option 'allow_thp': 0` from
+`MIMALLOC_VERBOSE=1 <bin> --version` wherever the binary runs, natively or
+under qemu-user. The nightly's tarball step reads the same two strings with
+grep.
+
+The allocator decides whether a spike stays, not how high it gets: how
+high the flush peaks is the streaming flush's business (order 1749,
+`tests/known_destinations_flush_memory.rs`).
