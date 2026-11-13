@@ -573,4 +573,171 @@ mod tests {
         .is_empty());
         assert_eq!(model.share(&PEER), None);
     }
+
+    // 1692, "A message at its place" (`loquax-tracks.md`): while a share
+    // runs in a chat, every message written there carries the last fix.
+
+    /// The location the one `FIELD_TELEMETRY` of `fields` carries, and its
+    /// mark; none without the field.
+    fn place_of(fields: &[Field]) -> Option<(Location, ShareMark)> {
+        let mut found = fields.iter().filter(|(k, _)| *k == FIELD_TELEMETRY);
+        let (_, value) = found.next()?;
+        assert!(found.next().is_none(), "one telemetry field, not two");
+        let mut p = 0;
+        let blob = leviculum_lxmf::msgpack::read_bin(value, &mut p).expect("a bin");
+        let telemetry = Telemetry::decode(blob).expect("a Telemeter");
+        Some((telemetry.location?, ShareMark::of_blob(blob)))
+    }
+
+    /// The fields of the one message `effects` send to `to` that is no
+    /// share report: a chat message.
+    fn written(effects: &[UiEffect], to: [u8; 16]) -> Vec<Field> {
+        let sent: Vec<&Vec<Field>> = effects
+            .iter()
+            .filter_map(|e| match e {
+                UiEffect::Send {
+                    to: t,
+                    body,
+                    fields,
+                } if *t == to => Some((body, fields)),
+                _ => None,
+            })
+            .filter(|(body, fields)| {
+                !body.is_empty() || fields.iter().any(|(k, _)| *k != FIELD_TELEMETRY)
+            })
+            .map(|(_, fields)| fields)
+            .collect();
+        assert_eq!(sent.len(), 1, "{effects:?}");
+        sent[0].clone()
+    }
+
+    fn sharing(span: Span) -> UiModel<Buffer> {
+        let mut model = model();
+        update(&mut model, UiEvent::OwnFix(Some(fix(43_773_100, T))));
+        update(&mut model, UiEvent::StartShare { peer: PEER, span });
+        model
+    }
+
+    fn write(model: &mut UiModel<Buffer>, to: [u8; 16], body: &str) -> Vec<UiEffect> {
+        update(
+            model,
+            UiEvent::Write {
+                peer: to,
+                body: body.into(),
+            },
+        )
+    }
+
+    /// A text, a photo, a file and a voice message written while the
+    /// share runs each carry the last fix, plain as Sideband packs it
+    /// (no share mark: the message is no report), beside their own field.
+    #[test]
+    fn every_message_written_while_sharing_carries_the_last_fix() {
+        let mut model = sharing(Span::Hour1);
+        clock(&mut model, T + 30);
+        let text = written(&write(&mut model, PEER, "at the bridge"), PEER);
+        let (location, mark) = place_of(&text).expect("the text carries the place");
+        assert_eq!(location, fix(43_773_100, T));
+        assert!(mark.is_empty(), "plain, as Sideband packs it");
+        let photo = update(
+            &mut model,
+            UiEvent::SendPhoto {
+                peer: PEER,
+                format: "jpg".into(),
+                data: vec![0xff, 0xd8, 0xff],
+            },
+        );
+        let photo = written(&photo, PEER);
+        assert!(photo
+            .iter()
+            .any(|(k, _)| *k == leviculum_lxmf::constants::FIELD_IMAGE));
+        assert_eq!(place_of(&photo).map(|p| p.0), Some(fix(43_773_100, T)));
+        let file = update(
+            &mut model,
+            UiEvent::SendFile {
+                peer: PEER,
+                name: "route.gpx".into(),
+                data: vec![1, 2, 3],
+            },
+        );
+        assert_eq!(
+            place_of(&written(&file, PEER)).map(|p| p.0),
+            Some(fix(43_773_100, T))
+        );
+        let voice = update(
+            &mut model,
+            UiEvent::SendVoice {
+                peer: PEER,
+                data: vec![1, 2, 3],
+            },
+        );
+        assert_eq!(
+            place_of(&written(&voice, PEER)).map(|p| p.0),
+            Some(fix(43_773_100, T))
+        );
+        // The message on screen keeps what went: the bubble's pin.
+        let ours = model.conversations[model.selected]
+            .messages
+            .iter()
+            .find(|m| m.body == "at the bridge")
+            .expect("ours");
+        assert_eq!(
+            place_of(&ours.fields).map(|p| p.0),
+            Some(fix(43_773_100, T))
+        );
+    }
+
+    /// No share in the chat, no place: the fix is known, the message goes
+    /// without the field. A share with somebody else does not leak here.
+    #[test]
+    fn a_message_without_a_share_carries_no_place() {
+        const OTHER: [u8; 16] = [0xcd; 16];
+        let mut model = model();
+        update(&mut model, UiEvent::OwnFix(Some(fix(43_773_100, T))));
+        let text = written(&write(&mut model, PEER, "hello"), PEER);
+        assert_eq!(place_of(&text), None, "{text:?}");
+        update(
+            &mut model,
+            UiEvent::StartShare {
+                peer: OTHER,
+                span: Span::Hour1,
+            },
+        );
+        let text = written(&write(&mut model, PEER, "still hello"), PEER);
+        assert_eq!(place_of(&text), None, "the share is the other chat's");
+        let there = written(&write(&mut model, OTHER, "here"), OTHER);
+        assert!(
+            place_of(&there).is_some(),
+            "control: the sharing chat has it"
+        );
+        // Stopped, it goes without again.
+        update(&mut model, UiEvent::StopShare { peer: OTHER });
+        let after = written(&write(&mut model, OTHER, "bye"), OTHER);
+        assert_eq!(place_of(&after), None);
+    }
+
+    /// A fix older than the share's longest gap is no place any more:
+    /// the message goes without it rather than with a stale one; and with
+    /// no fix at all, nothing goes either.
+    #[test]
+    fn an_old_or_missing_fix_sends_no_place() {
+        let mut model = sharing(Span::UntilStopped);
+        clock(&mut model, T + STILL_EVERY_S);
+        let fresh = written(&write(&mut model, PEER, "fresh"), PEER);
+        assert!(place_of(&fresh).is_some(), "control: at the limit it goes");
+        clock(&mut model, T + STILL_EVERY_S + 1);
+        let stale = written(&write(&mut model, PEER, "stale"), PEER);
+        assert_eq!(place_of(&stale), None, "{stale:?}");
+
+        let mut blind = self::model();
+        update(
+            &mut blind,
+            UiEvent::StartShare {
+                peer: PEER,
+                span: Span::Hour1,
+            },
+        );
+        let none = written(&write(&mut blind, PEER, "where am I"), PEER);
+        assert_eq!(place_of(&none), None);
+    }
 }

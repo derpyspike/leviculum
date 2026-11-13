@@ -161,6 +161,7 @@ pub mod owed;
 pub mod pager;
 pub mod photos;
 pub mod pin_card;
+pub mod place;
 pub mod profile;
 pub mod radar;
 pub mod reactions;
@@ -6246,34 +6247,15 @@ fn send_body<B>(model: &mut UiModel<B>, body: String) -> Vec<UiEffect> {
         model.toast(ToastKind::Info, line);
         return Vec::new();
     }
-    let Some(conversation) = model.conversations.get_mut(model.selected) else {
+    let Some(to) = model.conversations.get(model.selected).map(|c| c.peer) else {
         return Vec::new();
     };
-    conversation
-        .messages
-        .push(Message::ours(body.clone(), model.now));
-    let to = conversation.peer;
-    let index = conversation.messages.len() - 1;
     model.clear_draft(to);
-    let activity = model.bump();
-    model.conversations[model.selected].activity = activity;
-    if let Some(mut message) = model.conversations[model.selected].messages.get_mut(index) {
-        message.activity = activity;
-    }
-    model.touch(model.selected, index);
-    // Signal's rule: what you send is where the view goes.
-    model.message_cursor = index;
-    model.scroll_top = None;
-    model.sending.push_back((model.selected, index));
-    let now = model.elapsed_ms;
-    if let Some(sync) = model.sync.as_mut() {
-        sync.on(SyncEvent::Sent, now);
-    }
-    vec![UiEffect::Send {
-        to,
-        body,
-        fields: Vec::new(),
-    }]
+    // Signal's rule: what you send is where the view goes; `send_fields`
+    // moves it for a text in the open chat. The one way out of the model
+    // for a message of ours, so a place goes with a text as with a photo
+    // (1692).
+    model.send_fields(model.selected, body, Vec::new())
 }
 
 /// The text a send carries: `body` without leading and trailing
