@@ -116,6 +116,9 @@ final class MapPane implements MapView.Listener {
     private final Map<String, Map<String, Object>> people = new HashMap<>();
     /** Our own address when the store has a position of ours: its card has no Chat. */
     private String own;
+    /** The last `map pins=` counts logged: the line goes out on change only (1799 finding 9). */
+    private int loggedPins = -1;
+    private int loggedNearby = -1;
     /** The peer whose card is open, or whose card opens once the map has it. */
     private String carded;
     private String cardOwed;
@@ -489,12 +492,18 @@ final class MapPane implements MapView.Listener {
         }
         map.people(people, carded, own);
         // The pins drawn, and how many are nodes nearby (1302): the device
-        // walk counts them here, the canvas has no nodes to dump.
+        // walk counts them here, the canvas has no nodes to dump. Only a
+        // CHANGE is logged (1799 finding 9: the same line 605 times in one
+        // session); the walk reads the newest line, which stays current.
         int nearby = 0;
         for (Map<String, Object> row : friends) {
             nearby += Core.bool(row, "nearby") ? 1 : 0;
         }
-        Log.i(PhotoView.TAG, "map pins=" + friends.size() + " nearby=" + nearby);
+        if (friends.size() != loggedPins || nearby != loggedNearby) {
+            loggedPins = friends.size();
+            loggedNearby = nearby;
+            Log.i(PhotoView.TAG, "map pins=" + loggedPins + " nearby=" + loggedNearby);
+        }
         if (carded != null && people.containsKey(carded)) {
             fillCard(people.get(carded));
         }
