@@ -112,6 +112,31 @@ pub struct GroupMember {
     pub admin: bool,
     pub joined: bool,
     pub left: bool,
+    /// The epoch from which the reader's memberships list it (Lew
+    /// 2026-11-13, rule 4) — the first epoch the reader SAW it listed
+    /// under, which is all the reader can vouch for. `None` when the
+    /// store cannot say (a row written before this rule): then no copy
+    /// is vouched for until the next membership comes.
+    pub since: Option<u64>,
+    /// The epoch from which the memberships mark it left; `None` while
+    /// it is in, or when the store cannot say since when it is not.
+    pub left_from: Option<u64>,
+}
+
+impl GroupMember {
+    /// Whether this member vouches for a copy `writer` wrote under
+    /// `epoch`: listed from an epoch at or before the copy's, and not
+    /// left by then. A member whose epochs the store could not say
+    /// vouches for nothing (Lew 2026-11-13, rule 4: "if the store cannot
+    /// say, the copy is refused").
+    pub fn vouches_at(&self, epoch: u64, writer: &[u8; 16]) -> bool {
+        self.address == *writer
+            && self.since.is_some_and(|s| s <= epoch)
+            && match self.left_from {
+                Some(l) => epoch < l,
+                None => !self.left,
+            }
+    }
 }
 
 /// A group the reader is in, was invited to or left.
@@ -159,7 +184,8 @@ impl GroupInfo {
     }
 
     /// [`GroupInfo::members_bytes`] read back: the epoch and the members;
-    /// `None` for bytes that are no membership.
+    /// `None` for bytes that are no membership. The members' epochs are
+    /// unknown until [`GroupInfo::epochs_from`] fills them.
     pub fn members_from(bytes: &[u8]) -> Option<(u64, Vec<GroupMember>)> {
         let [kind, _] = Lev::default().fields();
         let members = Lev::from_fields(&[kind, (FIELD_CUSTOM_DATA, bytes.to_vec())])?.members?;
@@ -167,6 +193,71 @@ impl GroupInfo {
             members.epoch,
             members.members.iter().map(member_of).collect(),
         ))
+    }
+
+    /// The members' epochs as the store keeps them (schema 23, Lew
+    /// 2026-11-13 rule 4): per member a msgpack array of its address and
+    /// the two epochs, each shifted up one so `0` says "the store cannot
+    /// say" (`since`) or "not left" (`left_from`).
+    pub fn epochs_bytes(&self) -> Vec<u8> {
+        use leviculum_lxmf::msgpack;
+        let shifted = |e: Option<u64>| e.map_or(0, |e| e.saturating_add(1));
+        let mut out = Vec::new();
+        msgpack::array(&mut out, self.members.len());
+        for m in &self.members {
+            msgpack::array(&mut out, 3);
+            msgpack::bin(&mut out, &m.address);
+            msgpack::uint(&mut out, shifted(m.since));
+            msgpack::uint(&mut out, shifted(m.left_from));
+        }
+        out
+    }
+
+    /// [`GroupInfo::epochs_bytes`] read back onto `members`, matched by
+    /// address. `None` bytes — a row from before schema 23 — leave every
+    /// epoch unknown, which vouches for no copy until the next
+    /// membership comes.
+    pub fn epochs_from(members: &mut [GroupMember], bytes: Option<&[u8]>) {
+        use leviculum_lxmf::msgpack;
+        let Some(d) = bytes else { return };
+        let unshifted = |e: u64| e.checked_sub(1);
+        let mut p = 0;
+        let Ok(count) = msgpack::array_len(d, &mut p) else {
+            return;
+        };
+        for _ in 0..count {
+            let Ok(len) = msgpack::array_len(d, &mut p) else {
+                return;
+            };
+            if len < 3 {
+                return;
+            }
+            let Ok(address) = msgpack::raw(d, &mut p) else {
+                return;
+            };
+            let address = {
+                let mut q = 0;
+                msgpack::read_bin(address, &mut q)
+                    .ok()
+                    .and_then(|b| <[u8; 16]>::try_from(b).ok())
+            };
+            let (Ok(since), Ok(left_from)) =
+                (msgpack::read_uint(d, &mut p), msgpack::read_uint(d, &mut p))
+            else {
+                return;
+            };
+            // A longer array from a later version: skip what it added.
+            for _ in 3..len {
+                if msgpack::raw(d, &mut p).is_err() {
+                    return;
+                }
+            }
+            if let Some(member) = address.and_then(|a| members.iter_mut().find(|m| m.address == a))
+            {
+                member.since = unshifted(since);
+                member.left_from = unshifted(left_from);
+            }
+        }
     }
 
     /// The group at `address` with nothing known of it yet.
@@ -276,7 +367,8 @@ pub enum Verb {
     Close,
 }
 
-/// A member as a membership (`0x05`) lists it.
+/// A member as a membership (`0x05`) lists it, its epochs unknown until
+/// the caller merges them ([`merged_members`]) or the store says them.
 fn member_of(m: &Member) -> GroupMember {
     GroupMember {
         address: m.address,
@@ -284,7 +376,34 @@ fn member_of(m: &Member) -> GroupMember {
         admin: m.flags & MEMBER_ADMIN != 0,
         joined: m.flags & (MEMBER_JOINED | MEMBER_ADMIN) != 0,
         left: m.flags & MEMBER_LEFT != 0,
+        since: None,
+        left_from: None,
     }
+}
+
+/// The membership at `epoch` over what the reader held (Lew 2026-11-13,
+/// rule 4): each listed member carries the first epoch the reader saw it
+/// listed under — kept from `old` where it was known, this `epoch` for a
+/// member new to the reader or one whose epoch the store could not say —
+/// and the epoch its leaving was first listed under.
+fn merged_members(old: &[GroupMember], members: &Members) -> Vec<GroupMember> {
+    members
+        .members
+        .iter()
+        .map(|m| {
+            let mut member = member_of(m);
+            let before = old.iter().find(|o| o.address == m.address);
+            member.since = before.and_then(|o| o.since).or(Some(members.epoch));
+            member.left_from = match member.left {
+                true => before
+                    .filter(|o| o.left)
+                    .and_then(|o| o.left_from)
+                    .or(Some(members.epoch)),
+                false => None,
+            };
+            member
+        })
+        .collect()
 }
 
 /// Whether a message of `body` and `fields` is only a group's state: no
@@ -612,10 +731,10 @@ impl<B> UiModel<B> {
                 self.groups_changed.insert(address);
             }
         }
-        // A copy that came before the membership of its epoch was filed
-        // under the group (`copy_writer`); with that membership here it is
-        // judged again (the second audit of 1787, decided in
-        // loquax-expedition-map.md).
+        // A copy that came before the membership of its epoch was
+        // nobody's reading (`copy_writer`, Lew 2026-11-13); with that
+        // membership here it is judged again (the second audit of 1787,
+        // decided in loquax-expedition-map.md).
         if let (false, Some(was)) = (outbound, epoch_before) {
             if self.groups.get(&peer).is_some_and(|g| g.epoch > was) {
                 self.file_early_copies(peer, was);
@@ -625,27 +744,41 @@ impl<B> UiModel<B> {
 
     /// File the positions of `group`'s copies that name an epoch newer
     /// than `was`, the epoch the reader knew when they came, under the
-    /// writer the group's membership now vouches for.
+    /// writer the group's membership now vouches for. Such a copy was
+    /// NOBODY's reading when it came (Lew 2026-11-13, rule 2), so this
+    /// is its first filing, and one whose signature is still unverified
+    /// stays held: its verdict files it ([`super::apply_verdict`],
+    /// rule 3). The one writer rule judges here as everywhere
+    /// ([`super::copy_writer`], rule 5).
     fn file_early_copies(&mut self, group: [u8; 16], was: u64) {
         let Some(c) = self.conversations.iter().position(|c| c.peer == group) else {
             return;
         };
         let writers = self.writers();
-        let rows = writers.rows(&group);
         let mut fixes = Vec::new();
         for message in &self.conversations[c].messages {
-            let late = !message.outbound
-                && crate::telemetry::claimed_writer(&message.fields)
-                    .is_some_and(|copy| copy.epoch > was);
-            if !late || !crate::telemetry::has_telemetry(&message.fields) {
+            if message.outbound || !crate::telemetry::has_telemetry(&message.fields) {
                 continue;
             }
-            let writer = super::copy_writer(writers.groups, group, &message.fields);
-            if writer == group {
+            let verified = message.signature == super::Signature::Verified;
+            let owner = super::copy_writer(writers.groups, group, &message.fields, verified);
+            let leviculum_lxmf::lev::ReadingOwner::Writer(copy) = owner else {
+                continue;
+            };
+            if copy.epoch <= was {
+                // Judged and filed when it arrived.
                 continue;
             }
             let received = message.at.map(|at| at.unix_secs);
-            let read = super::read_with(writer, rows, group, &message.fields, received);
+            // Only the message's own readings: its stream rows were
+            // filed at arrival, whatever the copy's standing.
+            let read = crate::telemetry::read_judged(
+                crate::telemetry::Own::Under(copy.sender),
+                group,
+                &message.fields,
+                received,
+                crate::telemetry::Rows::Dropped,
+            );
             fixes.extend(read.fixes.into_iter().map(|mut fix| {
                 fix.message = Some(message.activity);
                 fix
@@ -710,7 +843,7 @@ impl<B> UiModel<B> {
             };
             if members.epoch >= group.epoch {
                 group.epoch = members.epoch;
-                group.members = members.members.iter().map(member_of).collect();
+                group.members = merged_members(&group.members, members);
                 if members.ended {
                     // Deleted by its admin (1307 pass four): nothing more
                     // is written to it; the admin's own devices forget it
@@ -1613,6 +1746,10 @@ impl<B: Default> UiModel<B> {
                     admin: true,
                     joined: true,
                     left: false,
+                    // Provisional until the home's first membership: a
+                    // member without epochs vouches for no copy.
+                    since: None,
+                    left_from: None,
                 })
                 .chain(draft.picked.iter().map(|peer| GroupMember {
                     address: *peer,
@@ -1622,6 +1759,8 @@ impl<B: Default> UiModel<B> {
                     admin: false,
                     joined: false,
                     left: false,
+                    since: None,
+                    left_from: None,
                 }))
                 .collect();
         }
@@ -2247,6 +2386,8 @@ mod tests {
                     admin: false,
                     joined: true,
                     left: false,
+                    since: Some(0),
+                    left_from: None,
                 }],
                 ..GroupInfo::new(GROUP)
             },
@@ -2852,12 +2993,14 @@ mod tests {
         const EVA: [u8; 16] = [0x07; 16];
         const OLA: [u8; 16] = [0x08; 16];
         let mut model = reader(&[ANNA, BOB, KIM, UWE, EVA, OLA]);
-        let member = |address, name: &str, joined, left| GroupMember {
+        let member = |address, name: &str, joined, left: bool| GroupMember {
             address,
             name: name.into(),
             admin: false,
             joined,
             left,
+            since: Some(0),
+            left_from: left.then_some(0),
         };
         model.groups.insert(
             GROUP,

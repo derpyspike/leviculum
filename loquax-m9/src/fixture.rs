@@ -370,6 +370,8 @@ fn member(seed: u8, name: &str, admin: bool, joined: bool, left: bool) -> GroupM
         admin,
         joined,
         left,
+        since: Some(0),
+        left_from: left.then_some(0),
     }
 }
 

@@ -148,6 +148,9 @@ pub enum StoreWrite {
     /// Keep one received position; one already there for the same peer and
     /// fix time is the same fix, arrived again.
     Position(Fix),
+    /// Delete one kept position: its message's signature came back
+    /// INVALID (Lew 2026-11-13, rule 3), so the reading is taken back.
+    ForgetPosition { peer: [u8; 16], fix_time: i64 },
     /// Keep the conversation's draft as it stands, the empty one deleting
     /// it (1219).
     Draft { peer: [u8; 16], draft: Draft },

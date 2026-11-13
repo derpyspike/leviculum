@@ -96,8 +96,8 @@ pub struct Report {
 /// Empty for the ordinary case: somebody's chat message to an address that
 /// also collects. A message carrying both field numbers yields both, which
 /// is what "and/or" on the wire means. The helper joins no group, so a
-/// reading is never a group copy's writer's: [`reports_with`] with no
-/// group's word.
+/// group copy's reading is NOBODY's here — refused, not reported
+/// ([`reports_with`] with no group's word; Lew 2026-11-13, rule 2).
 pub fn reports(message: &Message) -> Vec<Report> {
     reports_with(message, |_| false)
 }
@@ -105,14 +105,26 @@ pub fn reports(message: &Message) -> Vec<Report> {
 /// [`reports`] for a reader whose groups `lists` knows: whether the
 /// message's source is a group it joined whose membership at the copy's
 /// epoch lists the copy's writer, not as left. A `FIELD_TELEMETRY`
-/// reading is that writer's only then, by [`Lev::reading_writer`], and
-/// the source's in every other case (the second audit of 1757).
+/// reading is that writer's only when that holds AND the message's
+/// signature verified ([`Lev::reading_writer`], one rule; Lew
+/// 2026-11-13), the source's own where no writer is named, and NOBODY's
+/// otherwise: a refused reading yields no report at all (rule 2).
 pub fn reports_with(message: &Message, lists: impl Fn(&GroupCopy) -> bool) -> Vec<Report> {
-    let measurer = Lev::reading_writer(&message.fields, &message.source_hash, |copy| lists(copy));
+    use leviculum_lxmf::Verification;
+    let owner = Lev::reading_writer(
+        &message.fields,
+        &message.source_hash,
+        message.verification == Verification::Valid,
+        |copy| lists(copy),
+    );
     let mut out = Vec::new();
     for (id, value) in &message.fields {
         match *id {
-            FIELD_TELEMETRY => out.push(direct(message, measurer, value)),
+            FIELD_TELEMETRY => {
+                if let Some(measurer) = owner.filed_under(&message.source_hash) {
+                    out.push(direct(message, measurer, value));
+                }
+            }
             FIELD_TELEMETRY_STREAM => out.extend(stream(message, value)),
             _ => {}
         }
@@ -537,12 +549,12 @@ mod tests {
             .unwrap_or_else(|| panic!("no {key} among {fields:?}"))
     }
 
-    /// A group copy's reading (1687, the second audit of 1757): credited to
-    /// the writer it names only where the reader's groups list that writer
-    /// at the copy's epoch, by the rule Loquax files pins by. A forged
-    /// copy, naming a writer the group does not list, and the same valid
-    /// copy read by the helper itself, which joins no group, are the
-    /// group's own reading.
+    /// A group copy's reading (1687, the audits of 1757/1808, Lew
+    /// 2026-11-13): credited to the writer it names only where the
+    /// reader's groups list that writer at the copy's epoch, by the rule
+    /// Loquax files pins by. A forged copy, naming a writer the group
+    /// does not list, and the same valid copy read by the helper itself,
+    /// which joins no group, are NOBODY's reading: no report at all.
     #[test]
     fn only_a_valid_group_copy_is_credited_to_its_writer() {
         const GROUP: [u8; 16] = [0x60; 16];
@@ -573,8 +585,13 @@ mod tests {
         let valid = copy_of(MEMBER);
         assert_eq!(who(reports_with(&valid, lists)), [(MEMBER.to_vec(), GROUP)]);
         let forged = copy_of(FORGER);
-        assert_eq!(who(reports_with(&forged, lists)), [(GROUP.to_vec(), GROUP)]);
-        assert_eq!(who(reports(&valid)), [(GROUP.to_vec(), GROUP)]);
+        assert!(who(reports_with(&forged, lists)).is_empty());
+        assert!(who(reports(&valid)).is_empty());
+        // An unverified message's copy is nobody's reading even where the
+        // groups would vouch (Lew 2026-11-13, rule 1).
+        let mut unverified = copy_of(MEMBER);
+        unverified.verification = leviculum_lxmf::Verification::Unverified;
+        assert!(who(reports_with(&unverified, lists)).is_empty());
     }
 
     /// Scaled integers print exactly, sign and all — the property the whole

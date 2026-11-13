@@ -556,10 +556,7 @@ fn block(
                         super::scene::position_words(&fix, alive, draw.now).resolve(draw.lang)
                     )
                 }
-                None => {
-                    let received = message.at.map(|at| at.unix_secs);
-                    telemetry::report_line(&draw.writers.read(peer, &message.fields, received))
-                }
+                None => telemetry::report_line(&draw.writers.read(peer, message)),
             }
         }
         (false, mark) => {
