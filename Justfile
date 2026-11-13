@@ -2970,6 +2970,27 @@ nrf-reproducible:
 render-walk *ARGS:
     python3 -I scripts/render-walk.py {{ARGS}}
 
+# 1811, #232: the map's loading walked as a user does, on the window's
+# real path (the same App, scheduler, loader and painter, headless)
+# against a local range server with a configurable rate and injectable
+# faults. Scripted sessions (a zoom ladder rested and rushed, in-out-in,
+# pans slow and fast, pan while zooming, a jump away and back, the same
+# against a 200 kB/s source, a 503 window, a dropped link, a stalled
+# request, a cache at its cap) checked by named rules
+# (view_filled_at_rest, screen_first, nothing_lost, no_regress,
+# same_view_same_picture, no_spin, fault_recovers, frame_never_blank;
+# loquax/tests/support/load_walk.rs). Writes OUT/index.html, summary.tsv
+# and a per-frame trace per session, default target/load-walk; red on
+# any failed rule. `--quick` walks the ladder, in-out-in and the pans
+# (28 s warm, measured 2026-11-13); the full set takes about 6 min;
+# `--selftest` injects each fault class into the walk itself and each
+# rule must fire (2 min). The short
+# per-batch set runs in `cargo test` by itself. A measuring tool, never
+# in `guards`.
+[doc('Load the map as a user does; check every session by rules (1811)')]
+load-walk *ARGS:
+    python3 -I scripts/load-walk.py {{ARGS}}
+
 # 1422, #474: the map's frame budget measured (the eye candy study of
 # 2026-11-04, section 4). `REGION` is the Frankfurt region the study cut
 # (LMR3 with names and buildings, sha256 5022565b...a2b7c7a). One MAP_BENCH

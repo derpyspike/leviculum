@@ -47,6 +47,11 @@ mod counts;
 mod first_tile;
 #[cfg(test)]
 mod idle;
+/// The load walk (1811): sessions that load the map as a user does, and
+/// the rules that hold them.
+#[cfg(test)]
+#[path = "../tests/support/load_walk.rs"]
+mod load_walk;
 pub mod map;
 mod select;
 #[cfg(test)]
