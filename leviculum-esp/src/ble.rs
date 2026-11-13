@@ -7,9 +7,10 @@
 //! - the radio blobs' C heap, one internal-DRAM region behind esp-alloc's
 //!   `compat` symbols — the Rust global allocator stays the rlsf pools in
 //!   PSRAM, where controller memory must not land,
-//! - the scheduler the blobs' tasks run under (`esp_rtos::start`), which
-//!   turns core 0's loop into the scheduler's main task and otherwise
-//!   leaves it alone — no task of ours runs on it,
+//! - the scheduler the blobs' tasks run under, started by
+//!   `radio::start` before this (WiFi shares it, 1479), which turns core
+//!   0's loop into the scheduler's main task and otherwise leaves it
+//!   alone — no task of ours runs on it,
 //! - the one joined future of every Columba task, polled from the loop
 //!   with a no-op waker once a turn, exactly as the LR1110's task is: a
 //!   missed wake costs a turn of latency, never a link — the controller
@@ -26,8 +27,7 @@ use core::future::Future;
 use core::pin::Pin;
 
 use esp_alloc::{HeapRegion, MemoryCapability};
-use esp_hal::peripherals::{BT, FROM_CPU_INTR0};
-use esp_hal::timer::timg::Timer;
+use esp_hal::peripherals::BT;
 use esp_radio::ble::controller::BleConnector;
 use leviculum_ble_link::{BleChannels, BleInterface, BleLinkEvent};
 use leviculum_trouble::ble::columba;
@@ -44,19 +44,21 @@ pub enum PeerEvent {
     Lost([u8; 16]),
 }
 
-/// The radio blobs' internal-DRAM heap: the controller's pools and the
-/// scheduler's task stacks, everything behind `malloc_internal`. 44 KiB
-/// is what the internal bank has left once core 0's stack floor
-/// (94,976 B, measured + reserve) and the UI core's (96 KiB) are paid —
-/// the whole DRAM+IRAM bank is ~340 KiB and the blobs' code already
-/// took 29 KiB of it into IRAM. The boot's `[BLE ] heap` line states
-/// the real take; if the bench shows the blobs need more, the UI
-/// core's 32 KiB above its own floor is the next bank to draw on, and
-/// this constant follows the measurement. Only a board whose media
-/// record keeps BLE on spends it at runtime — the region is handed to
-/// esp-alloc either way, but nothing allocates from it with the radio
-/// off.
-pub const BLE_INTERNAL_HEAP_BYTES: usize = 44 * 1024;
+/// The radio blobs' internal-DRAM top-up: a region of their own beside
+/// the reclaimed bootloader region `radio::start` gives esp-alloc
+/// (`radio::RECLAIMED_HEAP_BYTES`, 72 KiB), both behind
+/// `malloc_internal`. 44 KiB from 1480 until 1479, when WiFi's IRAM code
+/// and statics (`.rwtext.wifi` 29 → 52 KiB, the WiFi blobs' .bss) took
+/// 43 KiB of the bank core 0's stack is what is left of: the reclaimed
+/// region costs that stack nothing, so it carries the blobs now, and
+/// this static shrank to what the build's STACK_HEADROOM floor leaves.
+/// The pool the blobs see grew all the same, 44 → 80 KiB. The boot's
+/// `[BLE ] heap` and `[WIFI] heap` lines state the real take; if the
+/// bench shows the two carriers need more, the UI core's stack
+/// (`UI_STACK` in `thinknode_m9.rs`) is the next bank to draw on, and
+/// this constant follows the measurement. Only a board that runs a
+/// carrier spends it at runtime.
+pub const BLE_INTERNAL_HEAP_BYTES: usize = 8 * 1024;
 
 /// The BLE carrier, as the loop drives it: the joined Columba future,
 /// the node-facing channel ends, and the log drain's line accumulator.
@@ -67,7 +69,8 @@ pub struct Ble {
     line: Vec<u8>,
 }
 
-/// Bring the controller up and build the Columba future. `None` — with
+/// Bring the controller up and build the Columba future; the scheduler
+/// is already running (`radio::start`). `None` — with
 /// its reason on the log — when the controller refused; the board runs
 /// on without BLE, exactly like the nRF's `BLE_INIT_FAIL` path. The
 /// caller has already decided the carrier is wanted (the media record);
@@ -76,8 +79,6 @@ pub struct Ble {
 ///
 /// Returns the future holder and the interface the node sends through.
 pub fn start(
-    timer: Timer<'static>,
-    int0: FROM_CPU_INTR0<'static>,
     bt: BT<'static>,
     identity_hash: [u8; 16],
     log: &mut UartLog<'_>,
@@ -90,8 +91,7 @@ pub fn start(
     // backend's do; installed before any BLE task could write one.
     leviculum_ble_link::log::set_sink(ble_link_log);
 
-    // The blobs' heap, before the scheduler: esp-rtos allocates its task
-    // stacks through the same `malloc_internal`.
+    // The blobs' heap, before the controller allocates from it.
     static mut BLE_HEAP: [u8; BLE_INTERNAL_HEAP_BYTES] = [0; BLE_INTERNAL_HEAP_BYTES];
     // SAFETY: the static is given to esp-alloc here once and never
     // touched by anything else; `start` runs once (the StaticCell below
@@ -103,11 +103,6 @@ pub fn start(
             MemoryCapability::Internal.into(),
         ));
     }
-
-    // The scheduler the blobs require. Core 0 only: this loop becomes
-    // its main task and runs on; the UI core keeps its own regime
-    // (`corepark` parks it for flash ops exactly as before).
-    esp_rtos::start(timer, int0);
 
     let connector = match BleConnector::new(bt, esp_radio::ble::Config::default()) {
         Ok(connector) => connector,

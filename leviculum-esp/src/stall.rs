@@ -131,6 +131,9 @@ pub enum Stage {
     /// Core 0: the BLE host's tasks polled and their queues pumped
     /// (1480).
     Ble = 16,
+    /// Core 0: the WiFi station's supervisor polled, its frames through
+    /// AutoInterface and into the node (1479).
+    Wifi = 17,
     /// Core 1: the I/O core's messages folded.
     Drain = 20,
     /// Core 1: the key presses folded.
@@ -169,6 +172,7 @@ impl Stage {
             14 => "dump",
             15 => "radio",
             16 => "ble",
+            17 => "wifi",
             20 => "drain",
             21 => "keys",
             22 => "draw",

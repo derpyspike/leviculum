@@ -87,7 +87,8 @@ pub const BLE_IFACE: InterfaceId = InterfaceId(1);
 pub const BLE_NAME: &str = "ble";
 
 /// The medium the bar names for the interface at `index` (1478): the host's
-/// serial line is a cable, the Columba mesh is Bluetooth (1480). Every
+/// serial line is a cable, the Columba mesh is Bluetooth (1480), the
+/// AutoInterface is the WLAN (1479). Every
 /// other index is none until its interface joins the node and says what
 /// it is.
 pub fn medium_of(index: usize) -> Option<Medium> {
@@ -95,6 +96,9 @@ pub fn medium_of(index: usize) -> Option<Medium> {
         Some(Medium::Cable)
     } else if index == BLE_IFACE.0 {
         Some(Medium::Bluetooth)
+    } else if index == crate::wifi::WIFI_IFACE.0 {
+        // The LAN rung (1479): a mailbox in the WLAN the board joined.
+        Some(Medium::Wifi)
     } else {
         None
     }
@@ -138,6 +142,9 @@ pub struct Handheld {
     /// The BLE carrier (1480), once [`Handheld::enable_ble`] put it up;
     /// `None` on a board whose media record switched BLE off.
     ble: Option<leviculum_ble_link::BleInterface>,
+    /// The WiFi AutoInterface (1479), once [`Handheld::enable_wifi`]
+    /// registered it; online only while the station is joined.
+    wifi: Option<crate::wifi::WifiIface>,
     ifac: BTreeMap<usize, IfacConfig>,
     client: Option<Client>,
     /// The way to the home as last read from the path table (1478), and
@@ -247,6 +254,7 @@ impl Handheld {
             node,
             serial: SerialIface::new(),
             ble: None,
+            wifi: None,
             ifac: BTreeMap::new(),
             client: None,
             way: None,
@@ -804,6 +812,62 @@ impl Handheld {
         self.output(out, now_ms, stores, log);
     }
 
+    /// The WiFi AutoInterface joins the node's table (1479), offline
+    /// until the station first joins: [`Self::wifi_link`] puts it up.
+    /// Mode stays Full, as on BLE: a LAN neighbour is a node of its own.
+    pub fn enable_wifi(&mut self) {
+        self.wifi = Some(crate::wifi::WifiIface::new());
+    }
+
+    /// The station joined or left (1479). Up registers the interface and
+    /// announces on it; down tears it down transiently, so the paths
+    /// learned over it go with it and the way to the home falls back to
+    /// whatever the other carriers still hear — the ladder's next rung.
+    pub fn wifi_link(
+        &mut self,
+        link: crate::wifi::Link,
+        now_ms: u64,
+        stores: &mut Stores<'_>,
+        log: &mut UartLog<'_>,
+    ) {
+        let Some(iface) = self.wifi.as_mut() else {
+            return;
+        };
+        let index = crate::wifi::WIFI_IFACE.0;
+        let out = match link {
+            crate::wifi::Link::Up => {
+                iface.set_online(true);
+                self.node
+                    .set_interface_name(index, alloc::string::String::from(crate::wifi::WIFI_NAME));
+                self.node
+                    .set_interface_hw_mtu(index, leviculum_core::auto_wire::HW_MTU);
+                self.node.handle_interface_up(index)
+            }
+            crate::wifi::Link::Down => {
+                iface.set_online(false);
+                self.node.handle_interface_down(crate::wifi::WIFI_IFACE)
+            }
+        };
+        self.output(out, now_ms, stores, log);
+    }
+
+    /// A packet an AutoInterface peer sent (1479).
+    pub fn wifi_packet(
+        &mut self,
+        data: &[u8],
+        now_ms: u64,
+        stores: &mut Stores<'_>,
+        log: &mut UartLog<'_>,
+    ) {
+        let out = self.node.handle_packet(crate::wifi::WIFI_IFACE, data);
+        self.output(out, now_ms, stores, log);
+    }
+
+    /// The next packet the node queued for the WiFi station.
+    pub fn wifi_out(&mut self) -> Option<Vec<u8>> {
+        self.wifi.as_mut().and_then(|w| w.pop())
+    }
+
     /// A packet the host sent.
     pub fn packet(
         &mut self,
@@ -847,12 +911,20 @@ impl Handheld {
         if actions.is_empty() {
             return;
         }
-        let dispatched = match self.ble.as_mut() {
-            Some(ble) => {
+        let dispatched = match (self.ble.as_mut(), self.wifi.as_mut()) {
+            (Some(ble), Some(wifi)) => {
+                let mut ifaces: [&mut dyn Interface; 3] = [&mut self.serial, ble, wifi];
+                dispatch_actions(&mut ifaces, actions, &self.ifac)
+            }
+            (Some(ble), None) => {
                 let mut ifaces: [&mut dyn Interface; 2] = [&mut self.serial, ble];
                 dispatch_actions(&mut ifaces, actions, &self.ifac)
             }
-            None => {
+            (None, Some(wifi)) => {
+                let mut ifaces: [&mut dyn Interface; 2] = [&mut self.serial, wifi];
+                dispatch_actions(&mut ifaces, actions, &self.ifac)
+            }
+            (None, None) => {
                 let mut ifaces: [&mut dyn Interface; 1] = [&mut self.serial];
                 dispatch_actions(&mut ifaces, actions, &self.ifac)
             }
