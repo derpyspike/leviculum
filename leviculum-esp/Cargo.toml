@@ -103,19 +103,17 @@ leviculum-trouble = { path = "../leviculum-trouble" }
 # The node side of the BLE seam (1715): the channels the loop reads,
 # the carrier push, the BLE Interface the node sends through.
 leviculum-ble-link = { path = "../leviculum-nrf/ble-link" }
-# The radio blobs: the BLE controller behind an HCI connector (1480) and
-# the WiFi station whose raw frames carry AutoInterface (1479, `src/wifi.rs`);
-# `coex` because both share the one 2.4 GHz front end. `unstable` because
-# BleConnector and the station's frame tokens are.
-esp-radio = { version = "=1.0.0-beta.1", default-features = false, features = ["esp32s3", "ble", "wifi", "coex", "unstable"] }
+# The BLE controller: the radio blobs behind an HCI connector. `ble`
+# alone — the WiFi radio is 1479's next step and adds `wifi` + `coex`
+# here when it powers on. `unstable` because BleConnector is.
+esp-radio = { version = "=1.0.0-beta.1", default-features = false, features = ["esp32s3", "ble", "unstable"] }
 # The preemptive scheduler the radio blobs' tasks run under. ONLY they
 # do: the image's own loops stay as they are — core 0's main becomes the
 # scheduler's main task and runs on unchanged, and the blob tasks
-# preempt it. Started once by `src/radio.rs`, before the first carrier,
-# never without one.
+# preempt it. Started right before the controller, never without it.
 esp-rtos = { version = "0.4.0", features = ["esp32s3", "esp-radio"] }
 # The radio blobs' C heap only (`malloc_internal`, ...), over one
-# internal-DRAM regions `src/ble.rs` and `src/radio.rs` place; `default-features = false`
+# internal-DRAM region `src/ble.rs` places; `default-features = false`
 # keeps its `global-allocator` off — the Rust global allocator stays the
 # rlsf pools in PSRAM, where the blobs must not land.
 esp-alloc = { version = "0.11", default-features = false, features = ["esp32s3", "compat"] }

@@ -47,12 +47,10 @@ pub mod m9_radio;
 pub mod mspi;
 pub mod pool_tlsf;
 pub mod pools;
-pub mod radio;
 pub mod serial_iface;
 pub mod stall;
 pub mod sx1262;
 pub mod time_driver;
-pub mod wifi;
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::RefCell;

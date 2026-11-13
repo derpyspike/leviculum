@@ -44,12 +44,7 @@
 //! [STACK] bytes=<n> t=<ms>
 //! [FLASH] identity=<offset|none/why> client=<offset|none/why> messages=<offset|none/why> t=<ms>  (1414, 1476)
 //! [MAP] regions=firenze:image,world:image[,<name>:area:<bytes>|,<name>:damaged][ area=<error>] area=<offset|none/why> world_bytes=<n> t=<ms>  (1477; again with the banner)
-//! [WIFI] creds=<set ssid_bytes=<n> secured=<0|1> ... radio=on|none ... radio=off> slot=<offset|none/why>[ error=<why>] t=<ms>  (1479: the WLAN lnflash --wifi wrote, never its passphrase)
-//! [WIFI] state=off reason=<ssid|passphrase|driver err=..|station-taken> t=<ms>   (1479: the station refused, the board runs on without it)
-//! [WIFI] heap used=<n> free=<n> t=<ms>   (the radio blobs' internal regions once the driver is up, the cost line)
-//! [AUTO] group=ff12:0:d70b:fb1c:16e4:5e39:485e:31e1 discovery_port=29716 data_port=42671 hw_mtu=1196 peers_max=8 t=<ms>   (AutoInterface's wire facts, Python's)
-//! [WIFI] state=joining | state=up channel=<n> addr=<link-local> | state=refused reason=<driver reason> retry_ms=<n> | state=down reason=<driver reason> peers_lost=<n> retry_ms=<n>   (each join and loss, as it happens)
-//! [AUTO] peer=added peers=<n> | peer=expired gone=<n> peers=<n>   (LAN neighbours coming and going)
+//! [WIFI] creds=<set ssid_bytes=<n> secured=<0|1>|none> slot=<offset|none/why>[ error=<why>] radio=off t=<ms>  (1479: the WLAN lnflash --wifi wrote, never its passphrase)
 //! [BLE ] off reason=<config|controller|no-identity> ... t=<ms>   (1480: the carrier held down — the record lnflash --ble off wrote, a refused controller — radio dark)
 //! [BLE ] up addr=<static random> periph_links=3 central_links=1 t=<ms>   (the TrouBLE host over esp-radio, from the backend's ring)
 //! [BLE ] heap used=<n> free=<n> of=<n> t=<ms>   (what the radio blobs took from the internal region, the cost line)
@@ -764,22 +759,21 @@ impl UiLog {
     }
 }
 
-/// The UI core's stack: 80 KiB since 1479 (88 KiB since 1480, 120 KiB
-/// since 1595 before it), 16.4 KiB over the build script's floor (the
-/// board's measured peak plus 16 KiB, 65,504 B since 1594; the most the
-/// UI core ever took was 48,784 B, window 20 — 31 KiB under this
-/// array). This array is a static in internal RAM, and core 0's stack is
-/// what the linker leaves of that RAM (the ELF's `.stack` section, the
-/// build's `STACK_HEADROOM stack=`), so every KiB taken off here is core
-/// 0's — and the radio carriers are paid for out of exactly this trade:
-/// 1480's BLE took 32 KiB from here, 1479's WiFi (IRAM code and blob
-/// statics, 43 KiB) another 8 KiB, the rest from the blob heap's sizing
-/// (`leviculum_esp::ble::BLE_INTERNAL_HEAP_BYTES`) and the reclaimed
-/// bootloader region (`leviculum_esp::radio`). The binding floor is the
-/// BENCH image, whose inject machinery costs core 0 another ~8 KiB of
-/// statics over the release image's.
-const UI_STACK: usize = 80 * 1024;
-const _: () = assert!(UI_STACK >= 65_504 + 16 * 1024);
+/// The UI core's stack: 88 KiB since 1480 (120 KiB since 1595 before
+/// it), 24.6 KiB over the build script's floor (the board's measured
+/// peak plus 16 KiB, 65,504 B since 1594; the most the UI core ever
+/// took was 48,784 B, window 20 — 41 KiB under this array). This array
+/// is a static in internal RAM, and core 0's stack is what the linker
+/// leaves of that RAM (the ELF's `.stack` section, the build's
+/// `STACK_HEADROOM stack=`), so every KiB taken off here is core 0's —
+/// and 1480's BLE stack (the radio blobs' heap and IRAM code, the
+/// scheduler, the host's statics) is paid for out of exactly this
+/// trade: 32 KiB came from here, the rest from the blob heap's sizing
+/// (`leviculum_esp::ble::BLE_INTERNAL_HEAP_BYTES`). The binding floor
+/// is the BENCH image, whose inject machinery costs core 0 another
+/// ~8 KiB of statics over the release image's.
+const UI_STACK: usize = 88 * 1024;
+const _: () = assert!(UI_STACK >= 65_504 + 24 * 1024);
 
 static mut APP_CORE_STACK: Stack<UI_STACK> = Stack::new();
 
@@ -1837,7 +1831,7 @@ fn main() -> ! {
         Ok(Some(creds)) => log.line(
             "[WIFI] ",
             format_args!(
-                "creds=set ssid_bytes={} secured={} slot={} radio=on",
+                "creds=set ssid_bytes={} secured={} slot={} radio=off",
                 creds.ssid().len(),
                 u8::from(!creds.passphrase().is_empty()),
                 stores.wifi_slot()
@@ -2138,22 +2132,12 @@ fn main() -> ! {
         }
     }
 
-    // The radio blobs' scheduler and their reclaimed heap region (1479),
-    // once, on TIMG0's second timer, before the first carrier; core 0's
-    // loop goes on as its main task. Only when a carrier is wanted: BLE
-    // unless switched off, WiFi when lnflash named a WLAN.
-    let wifi_creds = match wifi {
-        Ok(Some(creds)) => Some(creds),
-        _ => None,
-    };
-    if media.ble() || wifi_creds.is_some() {
-        leviculum_esp::radio::start(group0.timer1, p.FROM_CPU_INTR0);
-    }
-
     // BLE (1480): Columba over the TrouBLE host on esp-radio's
     // controller, the same protocol the nRF boards speak through the
     // SoftDevice. On by default; `lnflash --ble off` wrote the record
-    // that keeps the radio dark.
+    // that keeps the radio dark. The scheduler the radio blobs need
+    // starts inside `ble::start`, on TIMG0's second timer, and core 0's
+    // loop goes on as its main task.
     let mut ble = if !media.ble() {
         log.line(
             "[BLE ] ",
@@ -2162,7 +2146,13 @@ fn main() -> ! {
         None
     } else {
         let identity_hash = *node.node.identity().hash();
-        match leviculum_esp::ble::start(p.BT, identity_hash, &mut log) {
+        match leviculum_esp::ble::start(
+            group0.timer1,
+            p.FROM_CPU_INTR0,
+            p.BT,
+            identity_hash,
+            &mut log,
+        ) {
             Some((ble, iface)) => {
                 node.enable_ble(iface);
                 log.line(
@@ -2178,23 +2168,6 @@ fn main() -> ! {
                 Some(ble)
             }
             None => None,
-        }
-    };
-
-    // WiFi (1479): the station in the WLAN lnflash --wifi named, and
-    // AutoInterface over it, on whenever a WLAN is named — the zero-config
-    // default; a board without one keeps the radio dark. The interface
-    // joins the node's table offline and goes up with the first join.
-    let mut station = match wifi_creds {
-        None => None,
-        Some(creds) => {
-            let mut nonce = [0u8; leviculum_core::auto_wire::NONCE_SIZE];
-            rand_core::RngCore::fill_bytes(&mut rng, &mut nonce);
-            let started = leviculum_esp::wifi::start(p.WIFI, &creds, nonce, &mut log);
-            if started.is_some() {
-                node.enable_wifi();
-            }
-            started
         }
     };
 
@@ -2483,22 +2456,6 @@ fn main() -> ! {
                 wdt.feed();
             }
             ble.drain_log(&mut log);
-        }
-        if let Some(wifi) = station.as_mut() {
-            // The station's turn (1479): its joins and losses into the
-            // node, the AutoInterface peers' packets in, the node's out.
-            stall::stage(Core::Io, Stage::Wifi);
-            let mut inbound = Vec::new();
-            if let Some(link) = wifi.turn(uptime_ms(), &mut log, &mut inbound) {
-                node.wifi_link(link, uptime_ms(), &mut stores, &mut log);
-            }
-            for packet in inbound {
-                node.wifi_packet(&packet, uptime_ms(), &mut stores, &mut log);
-                wdt.feed();
-            }
-            while let Some(packet) = node.wifi_out() {
-                wifi.send(&packet);
-            }
         }
         stall::stage(Core::Io, Stage::Host);
         let now = uptime_ms();
