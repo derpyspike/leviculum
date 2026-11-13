@@ -1159,8 +1159,9 @@ async fn gatt_events(conn: &Connection, server: &NotifyAwareServer) -> Option<[u
     // the identity still reads linked would refuse a legitimate
     // reconnect in the central task's duplicate check.
     session::peer_link_down(slot_index);
+    // Zeroes the slot's defragmenter census too: `conn_link_down` is
+    // the one place that does, in both roles and both backends (1726).
     session::conn_link_down(slot_index);
-    super::defrag_held_set(slot_index, 0);
     super::session_held_reset(slot_index);
     HVN_DRAIN.release(conn_handle);
     read_peer.get()
@@ -1785,7 +1786,8 @@ async fn central_connected(
     if refused_dial(Origin::Outgoing, heard.get(), session_ms) {
         session::note_dial_refused(peer_value, session_ms);
     }
-    super::defrag_held_set(slot_index, 0);
+    // The defragmenter census went to zero in `conn_link_down` above,
+    // the one place that zeroes it (1726).
     super::session_held_reset(slot_index);
     HVN_DRAIN.release(conn_handle);
     failure
