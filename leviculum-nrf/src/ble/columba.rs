@@ -21,7 +21,7 @@
 use core::cell::{Cell, RefCell};
 
 use embassy_executor::Spawner;
-use embassy_futures::select::{select, select3, select4, Either, Either3, Either4};
+use embassy_futures::select::{select, select4, Either, Either4};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
@@ -42,7 +42,7 @@ use leviculum_ble_tx::{
 };
 use leviculum_core::framing::ble::{
     self as ble_framing, BleDefragmenter, BleReassemblyLimits, DefragResult, FRAGMENT_HEADER_SIZE,
-    KEEPALIVE_BYTE, KEEPALIVE_INTERVAL_MS,
+    KEEPALIVE_BYTE,
 };
 use nrf_softdevice::ble::advertisement_builder::{
     AdvertisementDataType, Flag, LegacyAdvertisementBuilder, LegacyAdvertisementPayload,
@@ -1034,19 +1034,24 @@ async fn gatt_events(conn: &Connection, server: &NotifyAwareServer) -> Option<[u
         // This connection's inter-packet gap state (#376); dies with the
         // link, so a reconnect starts unpaced.
         let mut tx_gap = TxGap::new();
+        // One deadline for the whole loop, re-armed only when the last
+        // keepalive or the hold moves, and polled before the queue: a
+        // `Timer::at` rebuilt per pass and polled after the queue never
+        // fired while a packet was ready at every pass, under this
+        // executor as under the M9's loop (1726,
+        // `leviculum_ble_link::keepalive`).
+        let mut keepalive = KeepaliveClock::new();
         loop {
             // Keepalives only once the link is ready (#376): before the
             // CCCD subscription a keepalive notify fails with the same
             // sd_error 13313 the first packet did. Readiness implies the
             // handshake, which is what armed this deadline before.
-            let keepalive_deadline = if tx_hold.get().ready() {
-                Timer::at(last_keepalive.get() + Duration::from_millis(KEEPALIVE_INTERVAL_MS))
-            } else {
-                Timer::at(Instant::MAX)
-            };
-
-            match select3(outgoing_rx.receive(), keepalive_deadline, tx_ready.wait()).await {
-                Either3::First(packet) => {
+            let due = keepalive::due(last_keepalive.get(), tx_hold.get().ready());
+            match keepalive
+                .next(due, select(outgoing_rx.receive(), tx_ready.wait()))
+                .await
+            {
+                Some(Either::First(packet)) => {
                     // #388 census: this packet stays in the slot's
                     // custody until its last fragment is out (or the
                     // teardown reset catches a death mid-pump).
@@ -1088,14 +1093,14 @@ async fn gatt_events(conn: &Connection, server: &NotifyAwareServer) -> Option<[u
                     tx_gap.packet_done(Instant::now().as_millis());
                     super::session_held_sub(slot_index, held_bytes);
                 }
-                Either3::Second(()) => {
+                None => {
                     let kv = [KEEPALIVE_BYTE];
                     notify_fragments(conn, drain, tx_handle, 1, |_| &kv, "keepalive", kv.len())
                         .await;
                     last_keepalive.set(Instant::now());
                 }
-                // Readiness changed: recompute the keepalive deadline.
-                Either3::Third(()) => {}
+                // Readiness changed: the next pass re-arms the deadline.
+                Some(Either::Second(())) => {}
             }
         }
     };
@@ -1170,6 +1175,7 @@ async fn gatt_events(conn: &Connection, server: &NotifyAwareServer) -> Option<[u
 // (the displacement's packet move below) and the two counters only the
 // SoftDevice paths feed.
 
+use leviculum_firmware::ble_link::keepalive::{self, KeepaliveClock};
 use leviculum_firmware::ble_link::session::{self, LinkEnd};
 pub(crate) use leviculum_firmware::ble_link::session::{
     BLE_LINKS_DISPLACED, BLE_LINKS_REFUSED, BLE_PRE_HANDSHAKE_REFUSED,
@@ -1985,11 +1991,12 @@ async fn run_central_session(
         // This connection's inter-packet gap state (#376); dies with the
         // link, so a reconnect starts unpaced.
         let mut tx_gap = TxGap::new();
+        // As on the peripheral pump: one deadline, polled first.
+        let mut keepalive = KeepaliveClock::new();
         loop {
-            let keepalive_deadline =
-                Timer::at(last_keepalive.get() + Duration::from_millis(KEEPALIVE_INTERVAL_MS));
-            match select(outgoing_rx.receive(), keepalive_deadline).await {
-                Either::First(packet) => {
+            let due = keepalive::due(last_keepalive.get(), true);
+            match keepalive.next(due, outgoing_rx.receive()).await {
+                Some(packet) => {
                     // #388 census, as on the peripheral pump.
                     let held_bytes = packet.capacity();
                     session::serve_tx_gap(&tx_gap, conn.handle().unwrap_or(u16::MAX)).await;
@@ -2079,7 +2086,7 @@ async fn run_central_session(
                     }
                     BLE_TX_PACKETS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                 }
-                Either::Second(()) => {
+                None => {
                     // Unreachable `else` (1 <= GATT_VALUE_MAX); ending
                     // the session is the harmless reading of it.
                     let Some(kv) = GattData::new(&[KEEPALIVE_BYTE]) else {

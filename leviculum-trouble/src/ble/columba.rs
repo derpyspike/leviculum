@@ -23,6 +23,7 @@ use embassy_sync::channel::Channel;
 use embassy_sync::semaphore::{FairSemaphore, Semaphore};
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
+use leviculum_ble_link::keepalive::{self, KeepaliveClock};
 use leviculum_ble_tx::{
     addr_value, advertise_pass_pause_ms, connect_failure_condemns, dial_preference,
     dial_stage_failure, disconnect_settle_ms, drain_table_refusal, fragment_mtu, identity_hint,
@@ -37,7 +38,6 @@ use leviculum_ble_tx::{
 };
 use leviculum_core::framing::ble::{
     self as ble_framing, BleDefragmenter, DefragResult, FRAGMENT_HEADER_SIZE, KEEPALIVE_BYTE,
-    KEEPALIVE_INTERVAL_MS,
 };
 use static_cell::StaticCell;
 use trouble_host::prelude::*;
@@ -546,14 +546,18 @@ async fn gatt_events(
 
     let outbound = async {
         let mut tx_gap = TxGap::new();
+        // One deadline for the whole loop, re-armed only when the last
+        // keepalive or the hold moves, and polled before the queue: a
+        // fresh `Timer::at` per pass never fired while the queue was
+        // ready at every pass (1726, `leviculum_ble_link::keepalive`).
+        let mut keepalive = KeepaliveClock::new();
         loop {
-            let keepalive_deadline = if tx_hold.get().ready() {
-                Timer::at(last_keepalive.get() + Duration::from_millis(KEEPALIVE_INTERVAL_MS))
-            } else {
-                Timer::at(Instant::MAX)
-            };
-            match select3(outgoing_rx.receive(), keepalive_deadline, tx_ready.wait()).await {
-                Either3::First(packet) => {
+            let due = keepalive::due(last_keepalive.get(), tx_hold.get().ready());
+            match keepalive
+                .next(due, select(outgoing_rx.receive(), tx_ready.wait()))
+                .await
+            {
+                Some(Either::First(packet)) => {
                     if !tx_hold.get().ready() {
                         let mut hold = tx_hold.get();
                         if hold.note_held() {
@@ -588,7 +592,7 @@ async fn gatt_events(
                     }
                     tx_gap.packet_done(Instant::now().as_millis());
                 }
-                Either3::Second(()) => {
+                None => {
                     let kv = [KEEPALIVE_BYTE];
                     if !notify_fragments(
                         conn,
@@ -605,7 +609,7 @@ async fn gatt_events(
                     }
                     last_keepalive.set(Instant::now());
                 }
-                Either3::Third(()) => {}
+                Some(Either::Second(())) => {}
             }
         }
     };
@@ -1407,11 +1411,12 @@ async fn run_central_session<T: HciTransport>(
         };
         let outbound = async {
             let mut tx_gap = TxGap::new();
+            // As on the peripheral pump: one deadline, polled first.
+            let mut keepalive = KeepaliveClock::new();
             loop {
-                let keepalive_deadline =
-                    Timer::at(last_keepalive.get() + Duration::from_millis(KEEPALIVE_INTERVAL_MS));
-                match select(outgoing_rx.receive(), keepalive_deadline).await {
-                    Either::First(packet) => {
+                let due = keepalive::due(last_keepalive.get(), true);
+                match keepalive.next(due, outgoing_rx.receive()).await {
+                    Some(packet) => {
                         session::serve_tx_gap(&tx_gap, conn_handle).await;
                         let fragments =
                             ble_framing::fragment_packet(&packet, fragment_mtu(conn.att_mtu()));
@@ -1431,17 +1436,17 @@ async fn run_central_session<T: HciTransport>(
                         }
                         tx_gap.packet_done(Instant::now().as_millis());
                     }
-                    Either::Second(()) => {
-                        let keepalive = [KEEPALIVE_BYTE];
+                    None => {
+                        let kv = [KEEPALIVE_BYTE];
                         if !write_fragments(
                             conn,
                             client,
                             drain,
                             rx,
                             1,
-                            |_| &keepalive,
+                            |_| &kv,
                             "keepalive",
-                            keepalive.len(),
+                            kv.len(),
                         )
                         .await
                         {

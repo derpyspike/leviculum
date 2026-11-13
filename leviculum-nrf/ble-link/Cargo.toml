@@ -49,5 +49,7 @@ dial-ledger-off = []
 churn-penalty-off = []
 
 [dev-dependencies]
-embassy-time = { version = "0.5", features = ["mock-driver"] }
+# generic-queue-8: the keepalive clock's tests poll a real `Timer`, which
+# registers its waker in a timer queue; the firmware links its executor's.
+embassy-time = { version = "0.5", features = ["mock-driver", "generic-queue-8"] }
 critical-section = { version = "1", features = ["std"] }

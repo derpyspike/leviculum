@@ -627,7 +627,9 @@ Columba scan window: an embassy `Timer` answers its first poll
 `Timer::at` on every pass of a `select` loop never fires while the
 other arm is ready at every turn. A deadline in a loop is pinned once,
 outside the loop (`leviculum-trouble/src/ble/columba.rs`, the scan
-window's `window_end`), and the scripted-controller test
+window's `window_end`; every link's keepalive deadline, armed once and
+polled before the queue, `leviculum-nrf/ble-link/src/keepalive.rs`,
+1726), and the scripted-controller test
 (`leviculum-trouble/src/ble/h4_tests.rs`) drives the backend the way
 the loop does, one no-op-waker poll a turn.
 
