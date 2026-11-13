@@ -371,9 +371,13 @@ def check_source(root: pathlib.Path) -> list[str]:
 ELF_MACHINES = {62: "x86_64", 183: "aarch64", 40: "arm"}
 HOST_MACHINES = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64", "arm64": "aarch64", "armv7l": "arm"}
 QEMU = {"x86_64": "qemu-x86_64", "aarch64": "qemu-aarch64", "arm": "qemu-arm"}
+# Where a cross glibc's loader lives (Debian's libc6-<arch>-cross), for a
+# dynamic glibc binary under qemu-user: the arm64 desktop loquax. Without it
+# qemu cannot even load the binary, which says nothing about its allocator.
+QEMU_SYSROOTS = {"x86_64": "/usr/x86_64-linux-gnu", "aarch64": "/usr/aarch64-linux-gnu", "arm": "/usr/arm-linux-gnueabihf"}
 
 
-def runner(path: pathlib.Path, head: bytes) -> list[str] | None:
+def runner(path: pathlib.Path, head: bytes, dynamic: bool = False) -> list[str] | None:
     """How to run `path` here, or None when nothing here can."""
     if head.startswith(b"#!"):
         return [str(path)]
@@ -384,10 +388,16 @@ def runner(path: pathlib.Path, head: bytes) -> list[str] | None:
         return None
     if machine == HOST_MACHINES.get(platform.machine()):
         return [str(path)]
+    sysroot: list[str] = []
+    if dynamic:
+        root = QEMU_SYSROOTS[machine]
+        if not pathlib.Path(root).is_dir():
+            return None
+        sysroot = ["-L", root]
     for name in (QEMU[machine], QEMU[machine] + "-static"):
         qemu = shutil.which(name)
         if qemu:
-            return [qemu, str(path)]
+            return [qemu, *sysroot, str(path)]
     return None
 
 
@@ -411,7 +421,7 @@ def check_bytes(paths: list[str]) -> list[str]:
                 "linked by cargo zigbuild (Zig's malloc) or stripped; link musl with rust-lld "
                 "and -C link-self-contained=yes"
             )
-        command = runner(path, data[:64])
+        command = runner(path, data[:64], dynamic=glibc)
         if command is None:
             print(f"check-allocator: {name}: not runnable here, allow_thp not read")
             continue
