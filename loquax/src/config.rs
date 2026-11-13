@@ -13,10 +13,11 @@
 //! place loads its region by itself; `map_source`, the URL of the PMTiles
 //! archive regions are cut from (unset: the newest Protomaps daily build);
 //! and `map_cache_mb`, how many megabytes the autoloaded regions may take
-//! (500 by default). `map_theme`, `light` (the default), `dark` or `auto`
-//! (1099): the map's colour table, `auto` following the theme the screen
-//! is drawn in where the frontend has one (the terminal) and light where
-//! it has none (the window). `map_fling`, `on` (the default) or `off`
+//! (500 by default). `map_theme`, `light`, `dark` or `auto` (1099): the
+//! map's colour table, `auto` following the theme the screen is drawn in
+//! (the terminal's, the window's, the phone's). Unset follows the window
+//! and the phone as `auto` does (1730) and is light in the terminal.
+//! `map_fling`, `on` (the default) or `off`
 //! (1188): whether the phone's map coasts on after a finger that panned
 //! lifts. `read_receipts`, `on` (the default) or `off` (1231): whether
 //! this messenger says it takes read receipts and sends them for what the
@@ -186,7 +187,8 @@ pub struct Config {
     pub outbox_retry_secs: Option<u64>,
     /// `outbox_days`, when the file sets it: how long the home node retries.
     pub outbox_days: Option<u64>,
-    /// `map_theme`, when the file sets it; unset is light.
+    /// `map_theme`, when the file sets it; unset follows the window and
+    /// the phone, and is light in the terminal (1730).
     pub map_theme: Option<ThemeFlag>,
     /// `map_fling`, when the file sets it; unset is on.
     pub map_fling: Option<bool>,

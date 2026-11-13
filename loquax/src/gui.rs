@@ -1259,20 +1259,19 @@ impl App {
 
     /// How the map is drawn in this window (1699): the shell's style,
     /// whose `auto` is light for want of a screen, turned to the window's
-    /// theme when the config says `auto` or names a theme; unset keeps the
-    /// shell's light.
+    /// theme. Unset follows the window as `auto` does, as the phone's
+    /// unset follows the phone (`loquax-android/src/map.rs`, 1730); the
+    /// config's `light` or `dark` still wins.
     fn map_style(&self) -> Style {
         let screen = match self.dark() {
             true => leviculum_ui::theme::Theme::Dark,
             false => leviculum_ui::theme::Theme::Light,
         };
-        match self.seen.map_flag {
-            Some(flag) => self
-                .seen
-                .style
-                .in_theme(map_theme(Some(flag), Some(screen))),
-            None => self.seen.style,
-        }
+        let flag = self
+            .seen
+            .map_flag
+            .or(Some(leviculum_ui::theme::ThemeFlag::Auto));
+        self.seen.style.in_theme(map_theme(flag, Some(screen)))
     }
 
     /// Hand `event` to the model.
@@ -3898,9 +3897,19 @@ impl canvas::Program<Message> for MapCanvas<'_> {
                 ((ty + k * f64::from(y)) / s) as f32,
             )
         };
+        // The names' ground and ink follow the map's own table, as the
+        // phone's frame draws them (`screenmap::pin_ink`, 1730).
+        let dark = app.map_style().theme == leviculum_mapfill::style::MapTheme::Dark;
+        let (label_ground, label_ink) = match dark {
+            true => (
+                Color::from_rgb8(0x18, 0x18, 0x18),
+                Color::from_rgb8(0xe6, 0xe6, 0xe6),
+            ),
+            false => (Color::WHITE, Color::from_rgb8(0x10, 0x10, 0x10)),
+        };
         for pin in &shown.placed {
             // A peer with a track in its hue, the name too (1385).
-            let hue = map::pin_hue(&shown.order.tracks, &pin.peer, false)
+            let hue = map::pin_hue(&shown.order.tracks, &pin.peer, dark)
                 .filter(|_| !pin.nearby)
                 .map(|[r, g, b]| Color::from_rgb8(r, g, b));
             let blue = hue.unwrap_or(Color::from_rgb8(0x20, 0x50, 0xc0));
@@ -3952,18 +3961,18 @@ impl canvas::Program<Message> for MapCanvas<'_> {
                 let text_ink = match (pin.stale, hue) {
                     (true, Some(hue)) => hue.scale_alpha(0.55),
                     (false, Some(hue)) => hue,
-                    (true, None) => Color::from_rgba8(0x20, 0x20, 0x20, 0.55),
-                    (false, None) => Color::from_rgb8(0x10, 0x10, 0x10),
+                    (true, None) => label_ink.scale_alpha(0.55),
+                    (false, None) => label_ink,
                 };
                 let at = to(*x, *y);
                 let width = pin.width / scale;
                 let line = map::LABEL * map::LINE;
-                // A light ground under the text, so a name reads on any
-                // street.
+                // A ground under the text, light or dark with the map, so
+                // a name reads on any street.
                 frame.fill_rectangle(
                     Point::new(at.x - 2.0, at.y),
                     Size::new(width + 4.0, line),
-                    Color::from_rgba8(0xff, 0xff, 0xff, 0.75),
+                    label_ground.scale_alpha(0.75),
                 );
                 frame.fill_text(canvas::Text {
                     content: words.clone(),
@@ -7702,7 +7711,8 @@ mod tests {
 
     /// 1699 3a: `map_theme = auto` follows the window, as the terminal
     /// follows its own: a dark window asks a dark frame, a light one a
-    /// light frame; unset and `light` stay light in a dark window.
+    /// light frame; `light` stays light in a dark window, and unset
+    /// follows the window as on the phone (1730).
     #[test]
     fn an_auto_map_follows_the_windows_theme() {
         use leviculum_mapfill::style::MapTheme;
@@ -7713,7 +7723,10 @@ mod tests {
         for (flag, dark, want) in [
             (Some(ThemeFlag::Auto), true, MapTheme::Dark),
             (Some(ThemeFlag::Auto), false, MapTheme::Light),
-            (None, true, MapTheme::Light),
+            // Unset follows the window, as the phone's unset follows the
+            // phone (1730).
+            (None, true, MapTheme::Dark),
+            (None, false, MapTheme::Light),
             (Some(ThemeFlag::Light), true, MapTheme::Light),
             (Some(ThemeFlag::Dark), false, MapTheme::Dark),
         ] {
@@ -7728,6 +7741,114 @@ mod tests {
         let _ = app.update(Message::Intent(Intent::Theme));
         assert!(app.dark());
         assert_eq!(theme(&app), MapTheme::Dark);
+    }
+
+    /// 1730: a pin's name stands on the ground of the map's own theme,
+    /// as the phone's frame draws it (`screenmap::pin_ink`): with
+    /// `map_theme = auto` a dark window grounds the name in 0x18 at 0.75,
+    /// a light one in white at 0.75. Read from the rendered pixels in the
+    /// two pixels of ground left of the name.
+    #[test]
+    fn a_pins_name_stands_on_the_maps_own_ground() {
+        use leviculum_ui::theme::ThemeFlag;
+        let (w, h) = (900, 560);
+        for dark in [false, true] {
+            let (mut app, _rx) = florence_two("Anna", None, w, h);
+            app.seen.map_flag = Some(ThemeFlag::Auto);
+            app.system_dark = dark;
+            let _ = run(&mut app);
+            let rgb = shoot(&app, w, h);
+            let pane = map_pane(&app, w, h);
+            let (shown, tx, ty, k) = app.onto().expect("a frame");
+            let s = f64::from(app.scale);
+            let mut read = 0;
+            for pin in &shown.placed {
+                let Some((x, y, _)) = &pin.label else {
+                    continue;
+                };
+                let lx = ((tx + k * f64::from(*x)) / s) as f32 + pane.x;
+                let ly = ((ty + k * f64::from(*y)) / s) as f32 + pane.y;
+                let line = map::LABEL * map::LINE;
+                let at = colour_at(
+                    &rgb,
+                    w,
+                    (lx - 1.0).floor() as u32,
+                    (ly + line / 2.0).floor() as u32,
+                );
+                // 0.75 of the ground over whatever the map has there.
+                let (lo, hi) = match dark {
+                    true => (0x12u8, 0x12 + 0x40),
+                    false => (0xbf, 0xff),
+                };
+                assert!(
+                    at.iter().all(|c| (lo..=hi).contains(c)),
+                    "the ground left of a name in dark {dark}: {at:?}, want {lo}..={hi}"
+                );
+                read += 1;
+            }
+            assert!(read >= 2, "Anna's and Ben's names: {read}");
+        }
+    }
+
+    /// 1730: More's word reads inside its own border, the rectangle inset
+    /// by 4 px on every side, with the menu open and closed, in both
+    /// themes; and every word of the compact window's bar (Chats, the
+    /// title, More) reads against its ground at 4.5:1 at least.
+    #[test]
+    fn mores_word_and_the_compact_bar_read_against_their_ground() {
+        let (w, h) = (900, 560);
+        for dark in [false, true] {
+            for open in [false, true] {
+                let (mut app, _rx) = florence_two("Anna", None, w, h);
+                app.system_dark = dark;
+                let _ = run(&mut app);
+                if open {
+                    let _ = app.update(Message::MapMenu);
+                }
+                assert_eq!(app.map_menu, open);
+                let rgb = shoot(&app, w, h);
+                let node =
+                    leviculum_ui_iced::headless::layout(app.view(), w, h).expect("a renderer");
+                let words = children_at(&node, &[1, 1, 0]);
+                let more = *words.last().expect("More");
+                let inside = Rectangle::new(
+                    Point::new(more.x + 4.0, more.y + 4.0),
+                    Size::new(more.width - 8.0, more.height - 8.0),
+                );
+                let (_, ink) = ground_and_ink(&rgb, w, inside);
+                assert!(
+                    ink.is_some_and(|c| c >= 4.5),
+                    "More inside its border, dark {dark}, menu {open}: {ink:?} at {inside:?}"
+                );
+            }
+        }
+        let (w, h) = (600u32, 700u32);
+        for dark in [false, true] {
+            let (mut app, _rx) = chat_window();
+            app.system_dark = dark;
+            app.window = Size::new(w as f32, h as f32);
+            let _ = app.update(Message::Intent(Intent::ShowMap { peer: None }));
+            assert_eq!(app.screen, Screen::Map);
+            assert_eq!(app.class(), LayoutClass::Compact);
+            let rgb = shoot(&app, w, h);
+            let node = leviculum_ui_iced::headless::layout(app.view(), w, h).expect("a renderer");
+            // The bar's row: the lead (Chats, the title, a gap), the
+            // credit, the notices, the zoom, More last.
+            let bar = children_at(&node, &[0, 1, 0]);
+            let lead = children_at(&node, &[0, 1, 0, 0]);
+            let words = [
+                ("Chats", lead[0]),
+                ("the title", lead[1]),
+                ("More", *bar.last().expect("More")),
+            ];
+            for (what, word) in words {
+                let (_, ink) = ground_and_ink(&rgb, w, word);
+                assert!(
+                    ink.is_some_and(|c| c >= 4.5),
+                    "{what} on the compact bar, dark {dark}: {ink:?} at {word:?}"
+                );
+            }
+        }
     }
 
     /// 1699 3b, 3c, 3e: every word of the map's bottom bar, every row of
@@ -8159,7 +8280,8 @@ mod tests {
     fn a_map_half_off_its_frame_shows_its_ground_not_black() {
         let (w, h) = (480u32, 320u32);
         let mut app = window_over_florence(Vec::new(), 16 * MILLI);
-        app.seen.style = Style::SCREEN.in_theme(leviculum_mapfill::style::MapTheme::Dark);
+        // The config's `dark`: unset follows the window, light here (1730).
+        app.seen.map_flag = Some(leviculum_ui::theme::ThemeFlag::Dark);
         let _ = run(&mut app);
         assert!(app.shown.is_some(), "a frame at rest");
         app.view.pan(i32::try_from(w / 2).expect("small"), 0);
