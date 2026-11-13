@@ -129,6 +129,12 @@ final class MapView extends View {
     private final Paint live = new Paint(Paint.ANTI_ALIAS_FLAG);
     /** The layer a stale pin is drawn through: grey, its colours taken. */
     private final Paint grey = new Paint();
+    /** The scale bar's line and word (1701). */
+    private final Paint bar = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint barGround = new Paint(Paint.ANTI_ALIAS_FLAG);
+    /** The last frame's scale bar: its length in the frame's pixels, its word; 0 for none. */
+    private long scalePx;
+    private String scaleWord = "";
     /** The age label's ground, reused: a frame allocates nothing. */
     private final RectF labelBox = new RectF();
     /** One slow alpha cycle of a live pin's ring, in milliseconds (1209). */
@@ -765,6 +771,34 @@ final class MapView extends View {
         canvas.restore();
         drawOwn(canvas);
         drawMarks(canvas);
+        drawScale(canvas);
+    }
+
+    /**
+     * The scale bar (1701), bottom left over the map, above the credit: the
+     * core's round length and word for the last frame. A pinch scales it
+     * with the frame, so it stays true while the fingers move; the next
+     * frame rounds it anew.
+     */
+    private void drawScale(Canvas canvas) {
+        if (scalePx <= 0 || scaleWord.isEmpty()) {
+            return;
+        }
+        float len = scale * scalePx;
+        float left = 12 * density;
+        float base = getHeight() - 34 * density;
+        float text = 12 * density;
+        bar.setTextSize(text);
+        float wide = Math.max(len, bar.measureText(scaleWord)) + 8 * density;
+        barGround.setColor(0xbfffffff);
+        canvas.drawRect(left - 4 * density, base - text - 9 * density,
+                left - 4 * density + wide, base + 4 * density, barGround);
+        bar.setColor(0xff101010);
+        float w = 2 * density;
+        canvas.drawRect(left, base - w, left + len, base, bar);
+        canvas.drawRect(left, base - 7 * density, left + w, base, bar);
+        canvas.drawRect(left + len - w, base - 7 * density, left + len, base, bar);
+        canvas.drawText(scaleWord, left + 4 * density, base - 7 * density, bar);
     }
 
     /**
@@ -1050,6 +1084,8 @@ final class MapView extends View {
                     x = Core.num(shown, "x");
                     y = Core.num(shown, "y");
                     zoomMilli = Core.num(shown, "zoom_milli");
+                    scalePx = Core.num(shown, "scale_px");
+                    scaleWord = Core.str(shown, "scale_word");
                     marks = Core.list(shown, "marks");
                     marksAt = SystemClock.uptimeMillis();
                     ownX = shown.get("own_x") instanceof Number ? Core.num(shown, "own_x") : null;

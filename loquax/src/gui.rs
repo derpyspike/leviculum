@@ -3887,6 +3887,11 @@ impl canvas::Program<Message> for MapCanvas<'_> {
         let mut frame = Frame::new(renderer, bounds.size());
         let app = self.app;
         let scale = app.scale;
+        // The scale bar (1701), bottom left over the map, from the view on
+        // screen: it follows the wheel and the pan before a frame lands.
+        if let Some(bar) = loquax::ui::scale::of_exact(&app.view, f64::from(scale)) {
+            scale_bar(&mut frame, &bar, bounds.height);
+        }
         let Some((shown, tx, ty, k)) = app.onto() else {
             return vec![frame.into_geometry()];
         };
@@ -3989,6 +3994,36 @@ impl canvas::Program<Message> for MapCanvas<'_> {
             (false, false) => mouse::Interaction::default(),
         }
     }
+}
+
+/// The scale bar's corner (1701): its distance from the map's left and
+/// bottom edges, in logical pixels.
+const SCALE_BAR_INSET: f32 = 12.0;
+
+/// `bar` at the bottom left of a map `height` logical pixels high: a line
+/// with an end tick at each side and its word above its left end, dark on
+/// a light ground as the pins' names are, so it reads on any street.
+fn scale_bar(frame: &mut Frame, bar: &loquax::ui::scale::ScaleBar, height: f32) {
+    let len = bar.len as f32;
+    let (x, y) = (SCALE_BAR_INSET, height - SCALE_BAR_INSET);
+    let word = 12.0;
+    let ground_w = len.max(word * 0.6 * bar.word.chars().count() as f32) + 8.0;
+    frame.fill_rectangle(
+        Point::new(x - 4.0, y - word - 12.0),
+        Size::new(ground_w, word + 16.0),
+        Color::from_rgba8(0xff, 0xff, 0xff, 0.75),
+    );
+    let ink = Color::from_rgb8(0x10, 0x10, 0x10);
+    frame.fill_rectangle(Point::new(x, y - 2.0), Size::new(len, 2.0), ink);
+    frame.fill_rectangle(Point::new(x, y - 7.0), Size::new(2.0, 7.0), ink);
+    frame.fill_rectangle(Point::new(x + len - 2.0, y - 7.0), Size::new(2.0, 7.0), ink);
+    frame.fill_text(canvas::Text {
+        content: bar.word.clone(),
+        position: Point::new(x + 4.0, y - word - 10.0),
+        color: ink,
+        size: iced::Pixels(word),
+        ..canvas::Text::default()
+    });
 }
 
 /// What the held microphone follows (1276): the pointer's moves and the
@@ -7728,6 +7763,49 @@ mod tests {
         let _ = app.update(Message::Intent(Intent::Theme));
         assert!(app.dark());
         assert_eq!(theme(&app), MapTheme::Dark);
+    }
+
+    /// 1701: the scale bar over the map's bottom left, its line in the
+    /// rendered pixels as long as the core's bar for the window's view
+    /// says; a step in, and the line is another length or the word
+    /// another.
+    #[test]
+    fn the_window_draws_the_scale_bar_the_core_measures() {
+        let (w, h) = (900, 560);
+        let (mut app, _rx) = florence_two("Anna", None, w, h);
+        let _ = run(&mut app);
+        // The longest run of the bar's ink in any row of the shot.
+        let longest = |app: &App| {
+            let rgb = shoot(app, w, h);
+            let mut best = 0;
+            for y in 0..h {
+                let mut run = 0;
+                for x in 0..w {
+                    let [r, g, b] = colour_at(&rgb, w, x, y);
+                    match r < 0x30 && g < 0x30 && b < 0x30 {
+                        true => run += 1,
+                        false => run = 0,
+                    }
+                    best = best.max(run);
+                }
+            }
+            best
+        };
+        let bar = loquax::ui::scale::of_exact(&app.view, f64::from(app.scale)).expect("a bar");
+        let drawn = longest(&app);
+        assert!(
+            (f64::from(drawn) - bar.len).abs() <= 1.5,
+            "{drawn} px drawn for {bar:?}"
+        );
+        app.view
+            .zoom_about(app.view.zoom_milli() + 1000, 450.0, 280.0);
+        let next = loquax::ui::scale::of_exact(&app.view, f64::from(app.scale)).expect("a bar");
+        assert_ne!(next, bar);
+        let drawn = longest(&app);
+        assert!(
+            (f64::from(drawn) - next.len).abs() <= 1.5,
+            "{drawn} px drawn for {next:?}"
+        );
     }
 
     /// 1699 3b, 3c, 3e: every word of the map's bottom bar, every row of

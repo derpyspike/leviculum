@@ -661,6 +661,77 @@ where
     Ok(())
 }
 
+/// The scale bar's longest line on the panel, in pixels (1701): a third
+/// of the picture's width, so the bar and its word stay in the left half
+/// and the chosen pin's name keeps the right.
+pub const SCALE_PX: f64 = 96.0;
+
+/// The scale bar of `view` (1701): the core's round length
+/// ([`loquax::ui::scale`]) at most [`SCALE_PX`] of the panel's pixels.
+pub fn scale_bar(view: &Viewport) -> Option<loquax::ui::scale::ScaleBar> {
+    loquax::ui::scale::of_viewport(view, 1.0, SCALE_PX)
+}
+
+/// The scale bar's row: the picture's last, above the bottom row, so the
+/// hint and the card never cover it.
+pub const SCALE_ROW: u16 = PICTURE.height - 1;
+
+/// The cells `bar` takes in [`SCALE_ROW`] (col, row, width), for the label
+/// pass to keep the names off: its word after a space, then its line.
+pub fn scale_cells(bar: &loquax::ui::scale::ScaleBar) -> (u16, u16, u16) {
+    let word = fit_width(&bar.word) as u16 + 2;
+    let line = libm::ceil(bar.len / f64::from(CELL_PX.0)) as u16 + 1;
+    (0, SCALE_ROW, (word + line).min(PICTURE.width))
+}
+
+/// `bar` over the picture's last row (1701): " 500 m " on the bar's
+/// colours as the other words over the picture, then the line on the
+/// same ground with an end tick at each side. The panel's draw is one
+/// short text and five rectangles: the M9 draws it on every map frame,
+/// as it follows the zoom, and needs no jump in its place.
+pub fn scale<D>(
+    bar: &loquax::ui::scale::ScaleBar,
+    look: &Look,
+    font: &MonoFont<'_>,
+    panel: &mut D,
+) -> Result<(), MapError>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    use embedded_graphics::primitives::{PrimitiveStyle, StyledDrawable};
+    let chrome = look.tokens.chrome;
+    let (fg, bg) = (rgb565(chrome.fg), rgb565_or(chrome.bg, Rgb565::BLACK));
+    let style = MonoTextStyleBuilder::new()
+        .font(font)
+        .text_color(fg)
+        .background_color(bg)
+        .build();
+    let (cw, ch) = (i32::from(CELL_PX.0), i32::from(CELL_PX.1));
+    let top = i32::from(SCALE_ROW) * ch;
+    let word = format!(" {} ", bar.word);
+    let x0 = i32::try_from(fit_width(&word)).unwrap_or(0) * cw;
+    Text::with_baseline(&word, Point::new(0, top), style, Baseline::Top)
+        .draw(panel)
+        .map_err(|_| MapError::Draw)?;
+    let len = libm::round(bar.len) as i32;
+    let (_, _, width) = scale_cells(bar);
+    let right = i32::from(width) * cw;
+    let mut rect = |x: i32, y: i32, w: i32, h: i32, c: Rgb565| {
+        Rectangle::new(
+            Point::new(x, y),
+            Size::new(w.max(0) as u32, h.max(0) as u32),
+        )
+        .draw_styled(&PrimitiveStyle::with_fill(c), panel)
+        .map_err(|_| MapError::Draw)
+    };
+    rect(x0, top, right - x0, ch, bg)?;
+    let base = top + ch - 6;
+    rect(x0, base - 2, len, 2, fg)?;
+    rect(x0, base - 8, 2, 8, fg)?;
+    rect(x0 + len - 2, base - 8, 2, 8, fg)?;
+    Ok(())
+}
+
 /// The cells the overview's words take ([`notes`]): its second row and
 /// its last, whole, for the label pass to keep clear of.
 pub fn overview_rows() -> [(u16, u16, u16); 2] {

@@ -3138,6 +3138,15 @@ pub struct MapShown {
     /// frame again as the minute turns, so the clocks go on.
     #[serde(default)]
     pub time_zones: bool,
+    /// The scale bar (1701, [`loquax::ui::scale`]): its length in the
+    /// frame's pixels at the view it shows, and its word, "500 m". Java
+    /// draws it bottom left over the map, at the pinch's scale while the
+    /// fingers move, so it stays true until the next frame rounds it
+    /// anew. Zero and empty where no bar fits; an older core sends none.
+    #[serde(default)]
+    pub scale_px: u32,
+    #[serde(default)]
+    pub scale_word: String,
 }
 
 /// An entry of the map menu's time window sheet (1419).

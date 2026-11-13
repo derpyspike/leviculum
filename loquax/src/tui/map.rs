@@ -1519,6 +1519,20 @@ impl MapPainter {
         if area.y + area.height >= bounds.bottom() {
             return;
         }
+        // The scale bar at the row's left end (1701), where it does not
+        // reach the credit: the credit is the licence's, the bar a help.
+        if let Some(bar) = &shown.scale {
+            let need = bar.chars().count() as u16 + 2;
+            if area.x + need <= x {
+                buf.set_stringn(
+                    area.x + 1,
+                    area.y + area.height,
+                    bar,
+                    usize::from(need),
+                    muted,
+                );
+            }
+        }
         buf.set_stringn(
             x,
             area.y + area.height,
@@ -2127,6 +2141,7 @@ mod tests {
             tracks: Vec::new(),
             radar: None,
             window_word: None,
+            scale: None,
             moving: false,
             pins: vec![PinCell {
                 peer: [1; 16],
@@ -2208,6 +2223,31 @@ mod tests {
         assert!(row.contains("This week · "), "{row:?}");
     }
 
+    /// The scale bar (1701) at the credit row's left end, and never over
+    /// the credit: where the two do not fit side by side, the credit
+    /// stays and the bar goes.
+    #[test]
+    fn the_scale_bar_stands_left_of_the_credit_and_yields_to_it() {
+        let row_of = |bar: &str| {
+            let mut painter = MapPainter::new(Maps::default(), Graphics::Halfblocks, None);
+            let mut view = shown(painter.setup().cell_px);
+            view.scale = Some(bar.to_string());
+            let mut terminal = Terminal::new(TestBackend::new(32, 10)).expect("terminal");
+            let Ok(_) = terminal.draw(|f| painter.render(f, &view, Style::default()));
+            (0..32)
+                .filter_map(|x| terminal.backend().buffer().cell((x, 9)))
+                .map(|c| c.symbol().to_string())
+                .collect::<String>()
+        };
+        let row = row_of("├┤ 1 m");
+        // The picture starts at column 1, the bar a cell inside it.
+        assert!(row.starts_with("  ├┤ 1 m"), "{row:?}");
+        assert!(row.contains("Natural Earth"), "{row:?}");
+        let row = row_of("├────────┤ 5000 km");
+        assert!(!row.contains('├'), "{row:?}");
+        assert!(row.contains("Natural Earth"), "{row:?}");
+    }
+
     /// The smallest shift by which every column of `cols` repeats, the
     /// copies of the world side by side; `None` where none does.
     fn period<T: PartialEq>(cols: &[T]) -> Option<usize> {
@@ -2227,6 +2267,7 @@ mod tests {
             tracks: Vec::new(),
             radar: None,
             window_word: None,
+            scale: None,
             moving: false,
             area: leviculum_ui::Rect::new(1, 1, cols, rows),
             viewport: view,
@@ -2297,6 +2338,7 @@ mod tests {
             tracks: Vec::new(),
             radar: None,
             window_word: None,
+            scale: None,
             moving: false,
             pins: vec![PinCell {
                 peer: [1; 16],
@@ -2362,6 +2404,7 @@ mod tests {
             tracks: Vec::new(),
             radar: None,
             window_word: None,
+            scale: None,
             moving,
             pins: Vec::new(),
         };
@@ -2411,6 +2454,7 @@ mod tests {
             tracks: Vec::new(),
             radar: None,
             window_word: None,
+            scale: None,
             moving: false,
             area,
             viewport: Viewport::new(
@@ -2473,6 +2517,7 @@ mod tests {
             tracks: Vec::new(),
             radar: None,
             window_word: None,
+            scale: None,
             moving: false,
             pins: vec![PinCell {
                 peer: [1; 16],
@@ -3253,6 +3298,7 @@ mod tests {
             tracks: Vec::new(),
             radar: None,
             window_word: None,
+            scale: None,
             moving: false,
             pins: vec![PinCell {
                 peer: [1; 16],
@@ -3376,6 +3422,7 @@ mod tests {
             tracks: Vec::new(),
             radar: None,
             window_word: None,
+            scale: None,
             moving: false,
             area: leviculum_ui::Rect::new(0, 0, cols, rows),
             viewport: Viewport::new(

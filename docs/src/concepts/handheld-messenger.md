@@ -264,7 +264,7 @@ renderer can serve. Two findings the spike settles beyond the choice:
   atlas (embedded-graphics-unicodefonts 0.2.0, the 6x10 mapping) covers
   Latin, Greek, Cyrillic and the box/geometric runs, but not U+2713,
   U+2714 or U+25F7 — the tick ladder does not render. The model already
-  carries the switch (`ascii`, `loquax/src/ui.rs:1206`); the M9 frontend
+  carries the switch (`ascii`, `loquax/src/ui.rs:1207`); the M9 frontend
   sets it, which closes gui-toolkit's open glyph question without a
   custom font.
 - **mousefood's own frame is redundant on the M9.** Its `framebuffer`
@@ -518,7 +518,7 @@ halves stay: the store in flash, the scancodes, the send over the mesh.
   screen of one pane shows the pane the keys are in. That builds the Wide
   scene and drops its chat: the list's peak then carries the chat's.
 - **The list's cursor is the reader's** (1546, `list_top`,
-  `loquax/src/ui.rs:2650`). The model keeps the selected peer and the line
+  `loquax/src/ui.rs:2651`). The model keeps the selected peer and the line
   it stands on; while it stays selected, a pull or an arrival that sorts
   rows in above it moves the window, not the cursor. A key moves the line
   by as many rows as the selection moved in the order. Before, the window
@@ -1110,7 +1110,7 @@ twenty times slower (`docs/drafts/map-measurement-2026-10.md`).
   feature range-checked. The region's tiles are already geometry; there
   is no other decode.
 - **Pixels** is the map core's filler painting the view straight into
-  the panel's frame (`Painter::picture`, `loquax-m9/src/map.rs:781`); the
+  the panel's frame (`Painter::picture`, `loquax-m9/src/map.rs:852`); the
   whole screen adds the bar's and the legend's cells and the pins
   (`Renderer::show`, `loquax-m9/src/render.rs:260`).
 - **Cells** is the terminal's way (`leviculum_map::cells`): the view
@@ -1129,7 +1129,7 @@ in place:
 | the 2 km region, z10 to z15 | 820,244 B | flash, read in place: none in PSRAM |
 | the fixture region the image carries | 197,972 B | flash |
 | the view's tiles, read out of a card instead | 81,850 to 201,070 B | PSRAM, per view |
-| the painter's storage, made once (`Painter`, `loquax-m9/src/map.rs:733`) | 217,508 B | PSRAM |
+| the painter's storage, made once (`Painter`, `loquax-m9/src/map.rs:804`) | 217,508 B | PSRAM |
 | a map draw's heap peak (census, below) | 75,404 B | PSRAM |
 | the cells' own per view, besides the painter's (source and cells) | 191,436 B braille, 120,204 B quadrants | PSRAM |
 | the panel's frame | 153,600 B | SRAM or PSRAM |
@@ -1152,7 +1152,7 @@ renderer is written twice; the cell renderer keeps the bar and the
 legend.
 
 **The screen** (`lines`, `loquax-m9/src/map.rs:252`; `pins`,
-`loquax-m9/src/map.rs:889`), as 1531 left it after Lew's evening at
+`loquax-m9/src/map.rs:960`), as 1531 left it after Lew's evening at
 the board on 2026-11-07: the map is in the light table; the UI around it
 keeps its dark tokens. Since 1565 the picture is the phone's
 (`Style::SCREEN`: casings, round joins, buildings from z16), its edges
@@ -1185,11 +1185,11 @@ cells first, every row in the map's ground, then the map over them, the
 names, the pins and the words; ratatui draws only cells that changed,
 so the next map leaves the blank rows alone, and the renderer clears
 its cells when the screen leaves the map (`leave_map`,
-`loquax-m9/src/render.rs:399`), or the list would keep map pixels where
+`loquax-m9/src/render.rs:412`), or the list would keep map pixels where
 its cells are blank.
 
 **The pins are the model's**, as on every target (`map_pins`,
-`loquax/src/ui.rs:6929`): the shares the store kept, a `lev.position`
+`loquax/src/ui.rs:6931`): the shares the store kept, a `lev.position`
 announce, and the board's own fix. That last one is new in the core:
 the shell's own fix (`UiEvent::OwnFix`, from the receiver or typed by
 hand) is now our pin where it is newer than our last share, so a board
@@ -1198,7 +1198,7 @@ places them in the picture's cells (`map::place`), the M9 asks for the
 ASCII markers: the atlas has `●` but not the chosen pin's `◉`. Each pin
 is set in the atlas on the bar's colours, the chosen one reversed, an
 old one's and a nearby node's muted. Where the picture is, the M9 tells
-the model (`map_picture`, `loquax/src/ui.rs:1395`): the fit, the pan's
+the model (`map_picture`, `loquax/src/ui.rs:1396`): the fit, the pan's
 step and the pins' cells go by its 53 x 21 cells, not by the terminal's
 conversation pane.
 
@@ -1992,7 +1992,7 @@ words, and the picture was the shorter one while the bottom row had
 words. Now the picture always takes the bottom row and its names keep
 clear of the pins only; the hint, the pin's card and the credit are
 drawn over the copy (`Renderer::show`, `loquax-m9/src/render.rs:260`;
-`Kept`, `loquax-m9/src/map.rs:1127`), so a word that goes uncovers the
+`Kept`, `loquax-m9/src/map.rs:1198`), so a word that goes uncovers the
 picture kept under it. A name under a word stays hidden while the word
 stands. `the_words_over_the_map_never_draw_its_picture_again`
 (`loquax-m9/tests/map.rs:219`) walks the board's chrome clock: open with
@@ -2070,7 +2070,7 @@ plus decode under 100 ms for the long chat, window 16's to prove.
 
 **An invitation keeps its row.** A group the reader is invited to that
 no message reached has the invitation's listing, "Einladung", from when
-the invitation came (`UiModel::listing_for`, `loquax/src/ui.rs:2377`);
+the invitation came (`UiModel::listing_for`, `loquax/src/ui.rs:2378`);
 the index keeps the group's name from the invitation, so both boots
 name and list it alike.
 
@@ -2128,7 +2128,7 @@ entries with a 360-entry tail resume in 22 ms decoding the 360, against
 That test found a model bug on the way: a chat listed from its kept row
 counted only its loaded messages once a live one came in, 96 of 776
 unread. The unread beyond the received messages loaded now counts a row
-each (`Conversation::unread_rows`, `loquax/src/ui.rs:989`), on a live
+each (`Conversation::unread_rows`, `loquax/src/ui.rs:990`), on a live
 pull as on the tail boot.
 
 ### The pull starved both cores in the allocator (1569)
@@ -2187,7 +2187,7 @@ the model, the model asks the cursor chat's page
 (`behind_the_list`, `loquax-m9/src/home.rs:292`), so no read mark is
 queued — `route` takes marks only from `take_marks`, and the hidden
 fold queues none. The summary write beside it is the touched row with
-its unread as it was (`UiModel::row`, `loquax/src/ui.rs:2441`, the
+its unread as it was (`UiModel::row`, `loquax/src/ui.rs:2442`, the
 a80038c2 rule); the cursor moves because the folded page gives the
 chat its real activity and the list re-sorts under a selection that
 follows the chat. A preload, not an open: nothing to stop for 1562/1564.
@@ -2487,9 +2487,9 @@ the same order.
 Two blocks of the rebuild grew with the ring whatever the chats were,
 and both went: the batch's note scope held one peer per folded entry
 (8192 x 16 B), now each conversation once (`Batch::fold`,
-`loquax/src/ui.rs:3740`); and every received message left a toast that a
+`loquax/src/ui.rs:3741`); and every received message left a toast that a
 board, which never ticks, never aged out, now at most `TOAST_KEEP`
-(`loquax/src/ui.rs:199`). The model after a rebuild holds about 470 KB
+(`loquax/src/ui.rs:200`). The model after a rebuild holds about 470 KB
 less on the host. `a_rebuild_of_short_chats_asks_for_no_block_that_grows_with_the_ring`
 (`leviculum-heap-lab/tests/rebuild.rs:173`) rebuilds 4400 entries under
 the firmware's TLSF heap and holds the largest block to 64 KiB: red at

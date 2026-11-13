@@ -169,6 +169,7 @@ pub mod recording;
 pub mod relayed;
 pub mod replies;
 pub mod rooms;
+pub mod scale;
 pub mod scene;
 pub mod search;
 pub mod selection;
@@ -7089,6 +7090,12 @@ impl<B> UiModel<B> {
                 .track_window
                 .title_word()
                 .map(|w| w.text(self.lang).to_string()),
+            scale: crate::ui::scale::of_viewport(
+                &viewport,
+                f64::from(self.map_setup.cell_px.0.max(1)),
+                f64::from(crate::ui::scale::MAX_CELLS),
+            )
+            .map(|bar| crate::ui::scale::cells(&bar, self.ascii)),
             moving: self.map_press.as_ref().is_some_and(|p| p.dragging),
         })
     }
@@ -15737,6 +15744,23 @@ pub(crate) mod tests {
             UiEvent::TrackWindow(tracks::TrackWindow::Episode),
         );
         assert_eq!(model.map_view().expect("open").window_word, None);
+    }
+
+    /// The scale bar (1701): the map's scene carries it for the
+    /// terminal's credit row, and it follows the zoom, a step in being a
+    /// shorter length or a longer bar.
+    #[test]
+    fn the_map_scene_carries_a_scale_bar_that_follows_the_zoom() {
+        let mut model = mapped();
+        update(&mut model, key(KeyCode::Char('M')));
+        let before = model.map_view().expect("open").scale.expect("a bar");
+        assert!(before.starts_with('├') && before.contains('┤'), "{before}");
+        update(&mut model, key(KeyCode::Char('+')));
+        let after = model.map_view().expect("open").scale.expect("a bar");
+        assert_ne!(before, after, "the zoom moved the bar");
+        model.ascii = true;
+        let ascii = model.map_view().expect("open").scale.expect("a bar");
+        assert!(ascii.starts_with('|'), "{ascii}");
     }
 
     #[test]

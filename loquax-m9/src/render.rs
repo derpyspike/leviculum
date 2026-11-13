@@ -311,6 +311,16 @@ where
         if drawn == map::Drawn::Overview {
             taken.extend(map::overview_rows());
         }
+        // The scale bar (1701) over the picture's last row, its cells kept
+        // clear of names. Not over the overview, whose last row says how a
+        // region gets onto the board, nor where no region is (`bare`),
+        // whose cells say so there.
+        let bar = matches!(drawn, map::Drawn::Detail(_))
+            .then(|| map::scale_bar(&view))
+            .flatten();
+        if let Some(bar) = &bar {
+            taken.push(map::scale_cells(bar));
+        }
         // The fields apart: the region is read while the painter and the
         // kept picture are written.
         let map::Map {
@@ -376,6 +386,9 @@ where
             panel,
         )
         .map_err(|_| DrawError)?;
+        if let Some(bar) = &bar {
+            map::scale(bar, look, &font, panel).map_err(|_| DrawError)?;
+        }
         self.names_kept = stats.names;
         self.map_stats = Some(stats);
         self.map_drawn = true;
