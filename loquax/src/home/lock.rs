@@ -15,8 +15,10 @@
 //! unlocked, as before the lock existed: a script that sends while the
 //! screen is open is a use the messenger has, and the home node's is not.
 
-use std::fs::{File, OpenOptions, TryLockError};
+use std::fs::{File, OpenOptions};
 use std::path::Path;
+
+use leviculum_std::file_lock::{self, TryLock};
 
 /// The lock's file under the loquax home.
 pub const LOCK_FILE: &str = "delivery.lock";
@@ -48,17 +50,21 @@ impl DeliveryLock {
             .truncate(false)
             .open(&path)
             .map_err(|error| format!("{}: {error}", path.display()))?;
-        match file.try_lock() {
-            Ok(()) => {}
-            Err(TryLockError::WouldBlock) => {
+        // Through `leviculum_std::file_lock`, never std's `File::try_lock`:
+        // std has no file locking on Android, where every call answers
+        // "try_lock() not supported", and the phone's mailbox died on it at
+        // its first step (1798, render walk 2026-11-13 finding 2).
+        match file_lock::exclusive(&file) {
+            TryLock::Held => {}
+            TryLock::Busy => {
                 // Held shared: only sends and fetches, which wrote nothing,
                 // so the file still names whoever held it last.
-                let holder = match file.try_lock_shared() {
-                    Ok(()) => {
-                        let _ = file.unlock();
+                let holder = match file_lock::shared(&file) {
+                    TryLock::Held => {
+                        file_lock::unlock(&file);
                         "a loquax send or fetch".to_string()
                     }
-                    Err(_) => holder(&path),
+                    TryLock::Busy | TryLock::Failed(_) => holder(&path),
                 };
                 return Err(format!(
                     "{holder} already runs on this Loquax home ({}), and two would \
@@ -66,7 +72,7 @@ impl DeliveryLock {
                     path.display()
                 ));
             }
-            Err(TryLockError::Error(error)) => return Err(format!("{}: {error}", path.display())),
+            TryLock::Failed(error) => return Err(format!("{}: {error}", path.display())),
         }
         // Who holds it, for the refusal another process prints.
         let said = format!("{what} (pid {})\n", std::process::id());
@@ -88,9 +94,9 @@ impl DeliveryLock {
             .truncate(false)
             .open(&path)
             .map_err(|error| format!("{}: {error}", path.display()))?;
-        match file.try_lock_shared() {
-            Ok(()) => Ok(Some(Self { _file: file })),
-            Err(TryLockError::WouldBlock) => {
+        match file_lock::shared(&file) {
+            TryLock::Held => Ok(Some(Self { _file: file })),
+            TryLock::Busy => {
                 let holder = holder(&path);
                 match holder.starts_with(HOME_NODE) || holder.starts_with(LEGACY_HOME_NODE) {
                     true => Err(format!(
@@ -101,7 +107,7 @@ impl DeliveryLock {
                     false => Ok(None),
                 }
             }
-            Err(TryLockError::Error(error)) => Err(format!("{}: {error}", path.display())),
+            TryLock::Failed(error) => Err(format!("{}: {error}", path.display())),
         }
     }
 }
