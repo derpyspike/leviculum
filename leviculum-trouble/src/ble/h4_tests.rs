@@ -694,13 +694,30 @@ fn run_columba_against_a_scripted_h4_controller() {
     });
     b.link_up(0x0070, addr_d, pd);
     b.until("D up over our peripheral", |b| b.peer_ups(pd) == 1);
+    // Every wait below is satisfiable only by D's central link: the
+    // log is read from where it stood before 0x0071 connected (A's
+    // duplicate line is older), the line must name D, and the torn
+    // link must be one of D's two handles.
     let links_with_d = super::links_claimed();
+    let log_mark = b.log.len();
+    let disconnects_before = b.script.air().disconnects.len();
     b.script.central_connected(0x0071, addr_d, pd);
-    b.until("the duplicate resolved", |b| {
-        b.log.contains("BLE_LINK_DUP") || b.log.contains("BLE_LINK_REPLACED")
+    b.until("D's duplicate decided after the central link", |b| {
+        let fresh = &b.log[log_mark..];
+        fresh.contains("BLE_LINK_DUP peer=d4d4d4d4")
+            || fresh.contains("BLE_LINK_REPLACED peer=d4d4d4d4")
     });
+    let torn_of_d = |b: &Bench| {
+        b.script.air().disconnects[disconnects_before..]
+            .iter()
+            .filter(|h| **h == 0x0070 || **h == 0x0071)
+            .count()
+    };
+    b.until("exactly one of D's links torn down", |b| torn_of_d(b) == 1);
     b.until("one link for D", |_| super::links_claimed() == links_with_d);
     b.settle(100);
+    assert_eq!(torn_of_d(&b), 1, "one of D's two links, not both");
+    assert_eq!(super::links_claimed(), links_with_d);
     assert_eq!(b.peer_ups(pd), 1, "one PeerUp for D across both roles");
     assert_eq!(b.peer_losts(pd), 0, "D never went away");
     assert_eq!(columba::live_peer_count(), 2);
