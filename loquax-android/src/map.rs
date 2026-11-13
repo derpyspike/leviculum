@@ -674,8 +674,6 @@ impl Renderer {
             _ => None,
         };
         let (room_north, room_south) = room(&shot.shows);
-        // The scale bar (1701) in logical pixels, sent in the frame's.
-        let bar = loquax::ui::scale::of_exact(&shot.shows, f64::from(scale));
         let shown = MapShown {
             v: VERSION,
             ok: true,
@@ -723,10 +721,6 @@ impl Renderer {
             title: window.title(lang),
             track_windows: track_choices(window, lang),
             time_zones: self.time_zones && !request.own_only,
-            scale_px: bar
-                .as_ref()
-                .map_or(0, |b| (b.len * f64::from(scale)).round() as u32),
-            scale_word: bar.map(|b| b.word).unwrap_or_default(),
         };
         shown
     }

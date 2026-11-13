@@ -209,45 +209,6 @@ fn the_frame_is_the_shared_renderers_with_names_and_a_pin() {
     same_as("map-florence-z16.png", &rgba, W, H);
 }
 
-/// The scale bar (1701) as the frame says it: a round length's word and
-/// its length in the frame's pixels, which at a denser screen is as many
-/// times longer, the same word; and the length is the distance the word
-/// names, measured between two points of the view.
-#[test]
-fn the_frame_says_its_scale_bar_in_its_own_pixels() {
-    let home = home();
-    let mut asked = request(home.path(), false);
-    let (one, _) = frame(&loquax_android::map::render(&asked, None, now()));
-    assert!(one.scale_word.ends_with(" m"), "{one:?}");
-    assert!(one.scale_px > 0, "{one:?}");
-    let metres: f64 = one
-        .scale_word
-        .trim_end_matches(" m")
-        .parse()
-        .expect("metres at z16");
-    let view = ExactView::new(World { x: one.x, y: one.y }, one.zoom_milli, W, H);
-    let len = f64::from(one.scale_px);
-    let a = view.to_world(100.0, 160.0);
-    let b = view.to_world(100.0 + len, 160.0);
-    let measured = loquax::ui::radar::metres(a, b);
-    assert!(
-        (measured - metres).abs() / metres < 0.01,
-        "{measured} m for {} px said {}",
-        one.scale_px,
-        one.scale_word
-    );
-    asked.density_milli = 2000;
-    asked.w = 2 * W;
-    asked.h = 2 * H;
-    asked.zoom = Some(17);
-    let (two, _) = frame(&loquax_android::map::render(&asked, None, now()));
-    assert_eq!(two.scale_word, one.scale_word);
-    assert!(
-        two.scale_px.abs_diff(2 * one.scale_px) <= 1,
-        "{one:?} {two:?}"
-    );
-}
-
 /// The map menu's time window (1419) as the frame says it: without a
 /// running session the default, the title "Map" alone, and the sheet's six
 /// entries with the current movement first and chosen; a word Java sends

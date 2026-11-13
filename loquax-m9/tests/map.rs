@@ -736,33 +736,3 @@ fn the_time_zone_view_writes_the_boards_clocks() {
     );
     assert!(names.iter().any(|n| n.text == "14:00"), "{names:?}");
 }
-
-/// 1701: the scale bar over the picture's last row, its line as long as
-/// the core's bar for the view, in the bar's ink from the first tick to
-/// the last, on its own ground after it; a step in a shorter length or a
-/// longer line.
-#[test]
-fn the_scale_bar_stands_over_the_pictures_last_row_and_follows_the_zoom() {
-    let line_of = |zoom: u8| {
-        let model = at_zoom(zoom);
-        let (view, _) = map::view(&model).expect("map");
-        let bar = map::scale_bar(&view).expect("a bar");
-        assert!(bar.len <= map::SCALE_PX, "{bar:?}");
-        let frame = drawn(&model);
-        let ink = frame.pixel(5, u32::from(map::SCALE_ROW) * 20 + 6);
-        let word = format!(" {} ", bar.word);
-        let x0 = word.chars().count() as u32 * u32::from(CELL_PX.0);
-        let y = (u32::from(map::SCALE_ROW) + 1) * u32::from(CELL_PX.1) - 7;
-        let len = bar.len.round() as u32;
-        let inked = (x0..x0 + len).filter(|&x| frame.pixel(x, y) != ink).count();
-        assert_eq!(inked as u32, len, "z{zoom}: {bar:?}");
-        assert_eq!(
-            frame.pixel(x0 + len + 1, y),
-            ink,
-            "z{zoom}: the line ends at its length"
-        );
-        bar
-    };
-    let (fifteen, sixteen) = (line_of(15), line_of(16));
-    assert_ne!(fifteen, sixteen);
-}
