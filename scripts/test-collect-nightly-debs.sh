@@ -194,8 +194,8 @@ EOF
         || { echo "could not build the fixture git repo"; exit 1; }
 }
 
-run_collect() {  # [VAR=value ...] passed to the script's environment
-    ( cd "$TREE" && env PATH="$BIN" LEVICULUM_BUILD_ID="fixture-build" "$@" \
+run_collect() {
+    ( cd "$TREE" && env PATH="$BIN" LEVICULUM_BUILD_ID="fixture-build" \
         bash "$TREE/scripts/collect-nightly-debs.sh" ) > "$TREE/../out" 2>&1
     echo $? > "$TREE/../rc"
 }
