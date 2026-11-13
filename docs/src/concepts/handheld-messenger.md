@@ -344,7 +344,7 @@ a home. What that needs, measured against the code:
   (`loquax/src/home/client.rs:10`). The board port is the same request
   flow over `leviculum-core`'s links and the firmware's clock — a seam
   cut like the store's (`StoreWrite`, `loquax/src/ui/history.rs:130`)
-  and (`StoreRead`, `loquax/src/ui/history.rs:206`): the
+  and (`StoreRead`, `loquax/src/ui/history.rs:209`): the
   retry ladder and budgets move down to `no_std`, the waiting stays
   with the platform. Rendezvous over TCP does not exist here and is not
   needed: over LoRa the client reaches the home destination through the
@@ -704,7 +704,7 @@ draws is the scene the terminal, the window and the phone already draw.
   is a store on disk with signed messages, which the board has neither of
   yet, so the board's two screens have goldens of their own,
   `m9-fw-chats.png` and `m9-fw-chat.png`, walked to with the board's keys
-  (`Screen::model`, `loquax-m9/src/fixture.rs:636`).
+  (`Screen::model`, `loquax-m9/src/fixture.rs:638`).
 - **The keyboard:** the controller's answer is read as the community port
   reads it, register 0x01 of 0x6D, eight bytes a poll. Every answer goes
   out raw, `KBRAW <ms> <hex>`, one a 10 ms poll, and `parse_raw`
@@ -971,12 +971,12 @@ group's row in the list has its member count as the avatar from the
 scene; a group with no line yet says "Invitation" or "3 members" where
 the last line would be. Every word goes through `narrow`.
 
-**The fixture's groups** (`group_model`, `loquax-m9/src/fixture.rs:467`):
+**The fixture's groups** (`group_model`, `loquax-m9/src/fixture.rs:469`):
 Jürgen's "Familie", the reader in it and Ünal gone; the reader's own
 "Kletterhalle", Ivan still invited; Jürgen's "Chor", the reader invited.
 `FRAME_DUMP` names nine screens now, one byte each in `SCREENS`
-(`loquax-m9/src/fixture.rs:512`), walked with the board's keys through
-`press` (`Screen::walk`, `loquax-m9/src/fixture.rs:626`):
+(`loquax-m9/src/fixture.rs:514`), walked with the board's keys through
+`press` (`Screen::walk`, `loquax-m9/src/fixture.rs:628`):
 
 | byte | screen | the walk | dump |
 |---:|---|---|---:|
@@ -1002,7 +1002,7 @@ fresh draw after every key (`a_group_redraw_is_the_frame_a_fresh_draw_gives`).
 
 **The census** (`loquax-android/tests/m9_fixture_census.rs`, 64-bit
 host, debug build), every screen of `SCREENS` with the M9's cursor, held
-to `Screen::budget` (`loquax-m9/src/fixture.rs:538`). The group's
+to `Screen::budget` (`loquax-m9/src/fixture.rs:540`). The group's
 screens have a budget of their own (`SHEET`,
 `loquax-m9/src/census.rs:202`), about double the largest of them; the
 board prints the same lines at boot:
@@ -1028,7 +1028,7 @@ grows by 17,248 B to 944,768 B (`just build-m9`).
 board needs: `Create` (`/group`), `Add` (`/groupadd`), `Delete`
 (`/groupdelete`, its `Ok` the group it deleted), and `State`, the
 member's Join, Leave or the admin's Remove, which the model makes a state
-message to the group (`group_state`, `loquax/src/ui/groups.rs:1679`) and
+message to the group (`group_state`, `loquax/src/ui/groups.rs:1818`) and
 the home sends as any message (`/send`). `ask_of`
 (`loquax-m9/src/group.rs:363`) turns the model's effect into that verb,
 with the board's fresh client id; a plain message is no group's ask.
@@ -1220,7 +1220,7 @@ its cells when the screen leaves the map (`leave_map`,
 its cells are blank.
 
 **The pins are the model's**, as on every target (`map_pins`,
-`loquax/src/ui.rs:6857`): the shares the store kept, a `lev.position`
+`loquax/src/ui.rs:6966`): the shares the store kept, a `lev.position`
 announce, and the board's own fix. That last one is new in the core:
 the shell's own fix (`UiEvent::OwnFix`, from the receiver or typed by
 hand) is now our pin where it is newer than our last share, so a board
