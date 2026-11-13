@@ -536,7 +536,7 @@ another firmware's header.
   the map measurement), 16 MB flash. How much SRAM is free beside the
   radio stack — and later WiFi or BLE — is unmeasured ("Open"). The
   `leviculum-esp` heap is a 64 KiB placeholder today (`HEAP_SIZE`,
-  `leviculum-esp/src/lib.rs:426`); the UI budgets on the messenger page
+  `leviculum-esp/src/lib.rs:424`); the UI budgets on the messenger page
   say what has to replace it.
 - **Radio.** The LR1110 through `leviculum-lr11xx`, usable ceiling about
   +17 dBm ("What the community port measured"). For the UI it is the
@@ -638,49 +638,6 @@ the loop does, one no-op-waker poll a turn.
 from the M9 until an open controller exists. The bench criteria for
 the spike (boot proof, sniffer, Columba phone, five-node room, soak)
 are in order 1715's bank list and judge the first option on hardware.
-
-## WiFi: AutoInterface over raw frames (1479, 1754)
-
-Lew, 2026-11-07: every chip of the M9 runs Leviculum, and AutoInterface
-over WiFi is on by default. A board that `lnflash --wifi` gave a WLAN
-starts esp-radio's station on the same scheduler BLE uses
-(`leviculum-esp/src/radio.rs` starts it once, before either carrier),
-joins, and runs AutoInterface on the driver's raw Ethernet frames
-(`leviculum-esp/src/wifi.rs`). A board without a WLAN keeps the radio
-dark.
-
-**No IP stack.** AutoInterface needs a link-local address, UDP to and
-from link-local and multicast addresses, an answer to the kernel's
-neighbour solicitation and an MLDv2 report, so the board builds and
-parses exactly those (`leviculum_core::lan_frame`) under the peer table
-of `leviculum_core::auto_wire` (`leviculum_core::auto_lan`). Both are
-`no_std` and host-tested; the wire facts are Python's and come from the
-one copy the daemon also uses: group `ff12:0:d70b:fb1c:16e4:5e39:485e:31e1`
-for group id `reticulum`, discovery port 29716, data port 42671, a token
-every 1.6 s, a peer gone after 22 s silent, reverse peering on port
-29717. The board's address is the modified EUI-64 of its station MAC.
-
-**Failure says what it is.** Every join, refusal and loss is a
-`[WIFI] state=` line with the driver's reason (wrong passphrase, no
-access point, beacon timeout); the supervisor retries from 2 s,
-doubling to a minute. A loss tears the interface down, so the paths
-over it go and the bar's way falls back to whichever carrier still
-hears the home. The interface's medium is WiFi, the bar's
-"Postfach über WLAN", the LAN rung.
-
-**What it costs, at link time on 1754's image:** WiFi's IRAM code
-(`.rwtext.wifi` is 52,556 B with both carriers, where BLE's blobs alone
-had taken about 29 KiB) and the WiFi blobs' statics took 43,056 B from
-the internal bank core 0's stack is what is left of (STACK_HEADROOM
-107,400 → 64,344 B before the trade below). The
-ESP-IDF bootloader's memory (`dram2_seg`, 72 KiB used) is free once the
-app runs and now carries the blobs' heap at no stack cost; the BLE
-top-up region went from 44 to 8 KiB and the UI stack from 88 to 80 KiB
-to pay for the rest, and the pool the blobs allocate from grew from 44
-to 80 KiB. After it: core 0 109,400 B (release) and 101,008 B (bench)
-over a need of 94,976 B, the UI core 81,920 B over 65,504 B. Flash grew by 356,032 B (FLASH_HEADROOM used 7,149,808 → 7,505,840 B,
-release). The runtime take is the boot's
-`[WIFI] heap` line, owed to the bench.
 
 ## Decided
 
@@ -862,9 +819,7 @@ compared with the T1000-E's numbers.
 - **GPIO10's direction:** the GNSS idle interrupt (input) or a line held
   high (output); in the community port's bench (cedrivard/Leviculum, rp2350-m9-net, 2026-10) the board file and the README disagree.
 - **SRAM after WiFi and BLE:** how much of the 512 KB is left once both
-  stacks are up. The link-time split is in "WiFi: AutoInterface over
-  raw frames"; what the blobs take at runtime is the `[BLE ] heap` and
-  `[WIFI] heap` lines on the bench.
+  stacks are up.
 - **WiFi as a TCP interface** without a host attached.
 - **The keyboard:** which controller it is (ESP32-S2 or STC8H). Its
   protocol is measured (one code per press, "The keyboard controller,
