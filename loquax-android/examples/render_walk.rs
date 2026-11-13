@@ -548,6 +548,85 @@ impl Walk {
         map::tune_tiles(&home, None, true);
     }
 
+    /// The 1799 item 0 proof: the zoom strip from the farthest view to
+    /// street level, every half zoom step, on the phone frame, `t`
+    /// printed per image — pins and labels judged as every ladder frame
+    /// is. The pictures are the proof; the rules ride along.
+    fn strip(&mut self, size: Size, centre: Centre) {
+        let home = self.home(&format!("strip-{}-{}", size.name, centre.name));
+        map::hold_rung(&home, Some(0));
+        let mut java = Java::new(&home, size);
+        let at = project(LatLon::from_degrees(centre.lat, centre.lon));
+        let first = MapRequest {
+            x: Some(at.x),
+            y: Some(at.y),
+            zoom_milli: Some(0),
+            ..java.ask(false)
+        };
+        let probe = java.draw(&first, None);
+        let (floor, top) = match probe.shown.ok {
+            true => (
+                probe.shown.min_zoom_milli,
+                u32::from(probe.shown.max_zoom) * MILLI,
+            ),
+            false => (2 * MILLI, 16 * MILLI),
+        };
+        let shape = match self.variant.as_str() {
+            "globe" => leviculum_map::blend::Shape::Globe,
+            _ => leviculum_map::blend::Shape::EqualEarth,
+        };
+        let mut zooms = vec![floor];
+        let mut z = floor.div_ceil(MILLI / 2) * (MILLI / 2);
+        if z == floor {
+            z += MILLI / 2;
+        }
+        while z <= top {
+            zooms.push(z);
+            z += MILLI / 2;
+        }
+        let mut times: Vec<f64> = Vec::new();
+        for zoom in zooms {
+            let ask = MapRequest {
+                x: Some(at.x),
+                y: Some(at.y),
+                zoom_milli: Some(zoom),
+                ..java.ask(false)
+            };
+            let drawn = java.settle(ask, self.fault);
+            times.push(drawn.ms);
+            let image = format!(
+                "{}-strip-{}-{}-z{:05}",
+                self.variant, size.name, centre.name, zoom
+            );
+            let verdicts = self.judge(&java, &drawn, true, &image);
+            let t = leviculum_map::blend::Blend::new(
+                shape,
+                at,
+                f64::from(zoom) / f64::from(MILLI),
+                size.w,
+                size.h,
+            )
+            .t();
+            let words = format!("{:.3} t={t:.3}", f64::from(zoom) / f64::from(MILLI));
+            self.rows(
+                ["frame", "strip", size.name, centre.name, &words, &image],
+                &verdicts,
+            );
+        }
+        times.sort_by(f64::total_cmp);
+        let q = |p: f64| times[(((times.len() - 1) as f64) * p) as usize];
+        println!(
+            "strip {} {}: {} frames, p50 {:.1} ms, p95 {:.1} ms, worst {:.1} ms",
+            size.name,
+            centre.name,
+            times.len(),
+            q(0.5),
+            q(0.95),
+            times[times.len() - 1]
+        );
+        map::tune_tiles(&home, None, true);
+    }
+
     /// A gesture: `steps` moving frames from the settled view `start`,
     /// each asked by `step` from the last frame, then a frame at rest.
     /// Every frame judged; the frame times and the heap judged at the end.
@@ -818,12 +897,14 @@ fn main() {
     let mut quick = false;
     let mut selftest = false;
     let mut fault = None;
+    let mut strip = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--out" => out = args.next().map(PathBuf::from),
             "--variant" => variant = args.next(),
             "--quick" => quick = true,
+            "--strip" => strip = true,
             "--selftest" => selftest = true,
             "--inject" => {
                 let word = args.next().unwrap_or_default();
@@ -852,7 +933,17 @@ fn main() {
     let started = Instant::now();
     let [phone, _, _, window, _] = SIZES;
     let [germany, _, north, _, _, berlin, _] = CENTRES;
-    if selftest {
+    if strip {
+        // The 1799 item 0 proof strip: Germany and the Sahara on the
+        // phone frame, every half zoom.
+        let sahara = Centre {
+            name: "sahara",
+            lat: 25.0,
+            lon: 5.0,
+        };
+        walk.strip(phone, germany);
+        walk.strip(phone, sahara);
+    } else if selftest {
         // The positive controls' small walk: one screen, the quick
         // ladder over Berlin's data, and every gesture.
         walk.ladder(phone, berlin, true);
