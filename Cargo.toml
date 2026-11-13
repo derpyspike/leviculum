@@ -2,6 +2,9 @@
 resolver = "2"
 members = [
     "leviculum-core",
+    # The one global allocator of every program (1805): mimalloc v3, huge
+    # pages off, freed memory handed back. The only mimalloc dependency.
+    "leviculum-alloc",
     "leviculum-micron",
     # Reticulum Relay Chat (#232, 1379): the envelope codec and a client's
     # link state, `no_std`, for Loquax's Rooms.
@@ -55,6 +58,7 @@ members = [
 # member so `-p leviculum-ffi`, `--workspace`, and `build-ffi` still work.
 default-members = [
     "leviculum-core",
+    "leviculum-alloc",
     "leviculum-micron",
     "leviculum-rrc",
     "leviculum-mapfill",

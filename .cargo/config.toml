@@ -63,6 +63,29 @@ rustflags = ["-C", "link-self-contained=yes"]
 [target.aarch64-unknown-linux-musl]
 linker = "rust-lld"
 
+# Huge pages off in mimalloc's C build, on every triple (1805,
+# docs/src/architecture.md "Memory allocator"). mimalloc reads
+# MI_DEFAULT_ALLOW_THP at compile time (libmimalloc-sys 0.1.49,
+# c_src/mimalloc/v3/src/options.c:103-108) and, at 0, sets
+# PR_SET_THP_DISABLE itself when it initialises. That is the only switch that
+# is early enough on glibc, where mimalloc initialises in a constructor
+# before `main`: the allocator study measured 6.8 MB `--version` with the
+# prctl in `main` and 2.9 MB with the define (2026-11-13). The crate's
+# `no_thp` feature only drops an madvise and does nothing under THP "always".
+#
+# Why [env] CFLAGS and not CFLAGS_<triple> in the package scripts: the define
+# has to reach every build of every triple, a developer's `cargo build`
+# included, and this file is the one every cargo invocation in the tree
+# reads; a per-script variable reaches only the builds that script runs.
+# cc-rs adds CFLAGS to every C compile, so SQLite, bz2 and libdbus see the
+# define too, which names nothing of theirs. Not forced: a CFLAGS (or a
+# CFLAGS_<triple>, which cc-rs prefers) already set in the environment wins,
+# and the bytes half of scripts/check-allocator.py then refuses the binary
+# (`MIMALLOC_VERBOSE=1 <bin> --version` prints `option 'allow_thp': 1`).
+# leviculum-alloc's `huge_pages_are_off_at_compile_time` test reads it too.
+[env]
+CFLAGS = "-DMI_DEFAULT_ALLOW_THP=0"
+
 [alias]
 # Development workflow
 test-core = "test -p leviculum-core --lib"
