@@ -20,10 +20,19 @@
 //!   hold its area. A screen's box a running load brings is not asked
 //!   twice, and that load ranks as the screen's, so the cells wait for
 //!   it too (1616).
-//! - A box that failed backs off, 30 s doubling to an hour, so a source that
-//!   is down is not asked again on every key. A box that found no internet
-//!   does not: the next view asks again, and "offline" holds only until a
-//!   load starts.
+//! - A box that failed stays queued and the loader retries it on its own
+//!   clock (1811, the load walk's `fault_recovers`): a box for the screen
+//!   after [`SCREEN_RETRY_FIRST_MS`] doubling to [`SCREEN_RETRY_MAX_MS`],
+//!   any other after [`BACKOFF_FIRST_MS`] doubling to [`BACKOFF_MAX_MS`],
+//!   so a transient fault heals with no key and no new decision, and a
+//!   source that is down is not asked again on every frame. While a box
+//!   for the screen waits to retry nothing else starts: the link is not
+//!   spent next to a screen that lacks its data. A landing clears every
+//!   wait: the source answers again. A box that found no internet is no
+//!   failure of the box: it retries after [`OFFLINE_RETRY_MS`], and
+//!   "offline" holds only until a load starts. An ask of a box already
+//!   waiting is "queued": [`Loader::ask`] is also called on every frame
+//!   (a place, the pins), and a wait a frame could end is no wait.
 //! - No internet is said once, not per box, until a load succeeds again.
 //! - The region is written in place under its own name, as its tiles
 //!   arrive (1291): coarse to fine, a round at a time, and a painter draws
@@ -56,7 +65,7 @@ use std::vec::Vec;
 use leviculum_map::region::{Bounds, Region};
 use leviculum_mapcut::cut::Progress;
 use leviculum_mapcut::http::{self, HttpRange};
-use leviculum_mapcut::load::{cut_planned, plan, Loaded, TooLarge, Want};
+use leviculum_mapcut::load::{cut_planned, plan, Empty, Loaded, TooLarge, Want};
 use leviculum_mapcut::pmtiles::Archive;
 
 use crate::picture::{is_auto, Maps, AUTO_PREFIX};
@@ -68,10 +77,18 @@ use crate::ui::map::{LoadReason, MapWant};
 pub const LOAD_CAP: u64 = 64 << 20;
 /// The autoloaded regions' cap when the config names none.
 pub const CACHE_DEFAULT_MB: u64 = 500;
-/// A failed box's first wait before it is asked again.
+/// A failed box's first wait before the loader retries it.
 pub const BACKOFF_FIRST_MS: u64 = 30_000;
 /// The longest a failed box waits.
 pub const BACKOFF_MAX_MS: u64 = 3_600_000;
+/// A failed box for the screen retries sooner (1811): what the reader
+/// looks at must fill by itself once the source answers again.
+pub const SCREEN_RETRY_FIRST_MS: u64 = 3_000;
+/// The longest a failed box for the screen waits.
+pub const SCREEN_RETRY_MAX_MS: u64 = 30_000;
+/// A box that found no internet retries after this: no fault of the box,
+/// and the map must come back by itself when the internet does.
+pub const OFFLINE_RETRY_MS: u64 = 10_000;
 /// The most loads that run at once: one for an area the view left, which
 /// runs on, and one for the screen.
 pub const MAX_RUNNING: usize = 2;
@@ -227,6 +244,8 @@ impl Rank {
 struct Queued {
     want: MapWant,
     rank: Rank,
+    /// The box failed and waits: not started before this time. 0 is due.
+    retry_at: u64,
 }
 
 /// A failed box's wait.
@@ -241,6 +260,9 @@ struct Running {
     rank: Rank,
     started: Instant,
     done: Receiver<Result<Landed, Failure>>,
+    /// Tiles written and planned, packed done << 32 | planned, as the
+    /// cut's rounds report them ([`LoadState::Running`]).
+    counts: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Why a load failed, as the thread hands it back.
@@ -248,6 +270,23 @@ struct Failure {
     detail: String,
     unreachable: bool,
     too_large: bool,
+    /// The box itself cannot load (too large, no tiles there): retrying
+    /// cannot help, the box is not requeued.
+    permanent: bool,
+}
+
+/// One box's state as the loader tells it (1811, exposed for 1812's
+/// loading view): beside it the box's bounds and rank. "Complete" is the
+/// regions' to say, "no internet" [`Loader::offline`]'s.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoadState {
+    /// The load runs: tiles written, of the tiles planned (0 of 0 until
+    /// the plan is made).
+    Running { done: u32, planned: u32 },
+    /// The box waits in the queue at this place, first is 0.
+    Waiting { place: usize },
+    /// The box failed and retries in this many milliseconds.
+    Retrying { in_ms: u64 },
 }
 
 /// The loader the shell holds.
@@ -281,9 +320,26 @@ impl Loader {
         }
     }
 
-    /// Whether a load runs or waits.
+    /// Whether a load runs or waits to start. A box waiting to retry
+    /// after a failure is not loading (1811): its state is "failed,
+    /// retry in t" ([`LoadState::Retrying`]), and the chip and the
+    /// offline word must not claim activity the loader postponed.
     pub fn busy(&self) -> bool {
-        !self.running.is_empty() || !self.queue.is_empty()
+        if !self.running.is_empty() {
+            return true;
+        }
+        // Mirror [`Loader::start_next`]: an off-screen box behind an
+        // on-screen box waiting to retry does not start, so it is not
+        // loading either.
+        let mut screen_waits = false;
+        for queued in &self.queue {
+            match (queued.retry_at > 0, queued.rank.on_screen()) {
+                (true, on_screen) => screen_waits |= on_screen,
+                (false, false) if screen_waits => {}
+                (false, _) => return true,
+            }
+        }
+        false
     }
 
     /// Whether a load runs or waits for what the user looks at: a box
@@ -291,7 +347,10 @@ impl Loader {
     /// "Loading the map of this area" for these only.
     pub fn loading_here(&self) -> bool {
         self.running.iter().any(|r| r.rank.on_screen())
-            || self.queue.iter().any(|q| q.rank.on_screen())
+            || self
+                .queue
+                .iter()
+                .any(|q| q.rank.on_screen() && q.retry_at == 0)
     }
 
     /// Whether the last load that ended found no internet and none started
@@ -311,32 +370,61 @@ impl Loader {
             .collect()
     }
 
+    /// Every box the loader holds with its state (1811, for 1812): the
+    /// running loads first with their progress, then the queue in order,
+    /// each waiting at its place or retrying after its failure.
+    pub fn report(&self, now_ms: u64) -> Vec<(Bounds, Rank, LoadState)> {
+        let mut out: Vec<(Bounds, Rank, LoadState)> = self
+            .running
+            .iter()
+            .map(|r| {
+                let packed = r.counts.load(std::sync::atomic::Ordering::Relaxed);
+                let state = LoadState::Running {
+                    done: (packed >> 32) as u32,
+                    planned: packed as u32,
+                };
+                (r.want.bounds, r.rank, state)
+            })
+            .collect();
+        for (place, q) in self.queue.iter().enumerate() {
+            let state = match q.retry_at.saturating_sub(now_ms) {
+                0 => LoadState::Waiting { place },
+                in_ms => LoadState::Retrying { in_ms },
+            };
+            out.push((q.want.bounds, q.rank, state));
+        }
+        out
+    }
+
     /// Whether `bounds` is queued or loading.
     fn has(&self, bounds: &Bounds) -> bool {
         self.running.iter().any(|r| r.want.bounds == *bounds)
             || self.queue.iter().any(|q| q.want.bounds == *bounds)
     }
 
-    /// Why `want` cannot be queued now, if it cannot.
-    fn refuse(&self, want: &MapWant, now_ms: u64) -> Option<&'static str> {
+    /// Why `want` cannot be queued now, if it cannot. A box waiting to
+    /// retry is "queued": it stays and retries on the loader's clock.
+    fn refuse(&self, want: &MapWant) -> Option<&'static str> {
         if self.has(&want.bounds) {
             return Some("queued");
         }
-        if self
-            .backoff
-            .iter()
-            .any(|b| b.bounds == want.bounds && now_ms < b.until_ms)
-        {
-            return Some("backoff");
-        }
         self.maps.dir().is_none().then_some("no-maps-dir")
+    }
+
+    /// When a new box of `bounds` may start: now, or after the wait its
+    /// failures earned it.
+    fn backoff_until(&self, bounds: &Bounds, now_ms: u64) -> u64 {
+        self.backoff
+            .iter()
+            .find(|b| b.bounds == *bounds && now_ms < b.until_ms)
+            .map_or(0, |b| b.until_ms)
     }
 
     /// Queue `want`, asked for by hand, before every box the view asked
     /// for, and start it when nothing runs. `now_ms` is the shell's
     /// monotonic clock.
     pub fn ask(&mut self, want: MapWant, now_ms: u64) -> Vec<Step> {
-        if let Some(why) = self.refuse(&want, now_ms) {
+        if let Some(why) = self.refuse(&want) {
             return vec![Step::Skipped { want, why }];
         }
         let at = self
@@ -349,9 +437,10 @@ impl Loader {
             Queued {
                 want,
                 rank: Rank::Asked,
+                retry_at: 0,
             },
         );
-        self.start_next()
+        self.start_next(now_ms)
     }
 
     /// The scheduler's decision (1292, [`crate::ui::viewload`]): `here`
@@ -399,23 +488,32 @@ impl Loader {
             keyed.push((key, queued));
         }
         for (i, want) in here.into_iter().enumerate() {
-            if self.refuse(&want, now_ms).is_none()
+            if self.refuse(&want).is_none()
                 && !keyed.iter().any(|k| k.1.want.bounds == want.bounds)
                 && !self.brought(&want)
             {
                 let rank = Self::rank_here(&want);
-                keyed.push(((rank, i), Queued { want, rank }));
+                let retry_at = self.backoff_until(&want.bounds, now_ms);
+                keyed.push((
+                    (rank, i),
+                    Queued {
+                        want,
+                        rank,
+                        retry_at,
+                    },
+                ));
             }
         }
         for (i, want) in ahead.into_iter().enumerate() {
-            if self.refuse(&want, now_ms).is_none()
-                && !keyed.iter().any(|k| k.1.want.bounds == want.bounds)
+            if self.refuse(&want).is_none() && !keyed.iter().any(|k| k.1.want.bounds == want.bounds)
             {
+                let retry_at = self.backoff_until(&want.bounds, now_ms);
                 keyed.push((
                     (Rank::Ahead, i),
                     Queued {
                         want,
                         rank: Rank::Ahead,
+                        retry_at,
                     },
                 ));
             }
@@ -432,7 +530,7 @@ impl Loader {
             })
             .map(|k| k.1)
             .collect();
-        self.start_next()
+        self.start_next(now_ms)
     }
 
     /// Whether `want`, the screen's own box (1527), is what a load
@@ -466,12 +564,13 @@ impl Loader {
                     detail: "the load stopped".to_string(),
                     unreachable: false,
                     too_large: false,
+                    permanent: false,
                 }),
             };
             let running = self.running.remove(n);
             steps.push(self.ended(running, result, now_ms));
         }
-        steps.extend(self.start_next());
+        steps.extend(self.start_next(now_ms));
         steps
     }
 
@@ -483,7 +582,11 @@ impl Loader {
             Ok(landed) => {
                 self.offline = false;
                 self.offline_said = false;
-                self.backoff.retain(|b| b.bounds != want.bounds);
+                // The source answers: every wait is over (1811).
+                self.backoff.clear();
+                for queued in &mut self.queue {
+                    queued.retry_at = 0;
+                }
                 self.maps.changed();
                 Step::Done {
                     want,
@@ -492,12 +595,34 @@ impl Loader {
                 }
             }
             Err(failure) => {
-                // No internet is no fault of the box: the next view asks
-                // again, and the state holds until then.
+                // No internet is no fault of the box: it retries soon,
+                // and the state holds until a load starts.
                 self.offline = failure.unreachable;
-                if !failure.unreachable {
-                    self.back_off(want.bounds, now_ms);
+                let (retry_at, failures) = match failure.unreachable {
+                    true => (now_ms.saturating_add(OFFLINE_RETRY_MS), 0),
+                    false => self.back_off(want.bounds, now_ms, running.rank.on_screen()),
+                };
+                // The box stays, at its rank's tail, and retries by
+                // itself (1811): a transient fault heals with no key. A
+                // permanent failure is not retried: a box too large wants
+                // zooming in, one with no tiles has nothing to fetch.
+                if !failure.permanent {
+                    let at = self
+                        .queue
+                        .iter()
+                        .position(|q| q.rank > running.rank)
+                        .unwrap_or(self.queue.len());
+                    self.queue.insert(
+                        at,
+                        Queued {
+                            want: want.clone(),
+                            rank: running.rank,
+                            retry_at,
+                        },
+                    );
                 }
+                // One line per box, not one per retry (1811): the first
+                // failure speaks, the loader's own retries stay quiet.
                 let toast = match (failure.unreachable, failure.too_large) {
                     (true, _) if self.offline_said => None,
                     (true, _) => {
@@ -505,6 +630,7 @@ impl Loader {
                         Some("map: no internet; the map shows what is here".to_string())
                     }
                     (false, true) => Some(format!("map: {}; zoom in", failure.detail)),
+                    (false, false) if failures > 1 => None,
                     (false, false) => Some(format!("map: {}", failure.detail)),
                 };
                 Step::Failed {
@@ -517,40 +643,64 @@ impl Loader {
         }
     }
 
-    fn back_off(&mut self, bounds: Bounds, now_ms: u64) {
+    /// Book `bounds`'s failure and say when it may try again and how
+    /// often it failed: the screen's ladder for a box the reader looks
+    /// at, the long one else.
+    fn back_off(&mut self, bounds: Bounds, now_ms: u64, on_screen: bool) -> (u64, u32) {
         let failures = self
             .backoff
             .iter()
             .find(|b| b.bounds == bounds)
             .map_or(0, |b| b.failures)
             + 1;
-        let wait = BACKOFF_FIRST_MS
-            .saturating_mul(1 << (failures - 1).min(16))
-            .min(BACKOFF_MAX_MS);
+        let (first, max) = match on_screen {
+            true => (SCREEN_RETRY_FIRST_MS, SCREEN_RETRY_MAX_MS),
+            false => (BACKOFF_FIRST_MS, BACKOFF_MAX_MS),
+        };
+        let wait = first.saturating_mul(1 << (failures - 1).min(16)).min(max);
+        let until_ms = now_ms.saturating_add(wait);
         self.backoff.retain(|b| b.bounds != bounds);
         self.backoff.push(Backoff {
             bounds,
             failures,
-            until_ms: now_ms.saturating_add(wait),
+            until_ms,
         });
+        (until_ms, failures)
     }
 
     /// Start the queue's first boxes: one when nothing runs, one for the
     /// screen beside loads for areas the view left, and the screen's own
-    /// box (1527) beside any load but another for the screen itself.
-    fn start_next(&mut self) -> Vec<Step> {
+    /// box (1527) beside any load but another for the screen itself. A
+    /// box waiting to retry is passed over when the reader does not look
+    /// at it; one the reader looks at blocks what is behind it (1811):
+    /// the link is not spent next to a screen that lacks its data.
+    fn start_next(&mut self, now_ms: u64) -> Vec<Step> {
         let mut steps = Vec::new();
-        while let Some(first) = self.queue.first() {
-            let beside = match first.rank {
-                Rank::Screen => !self.running.iter().any(|r| r.rank <= Rank::Screen),
-                rank if rank.on_screen() => !self.running.iter().any(|r| r.rank.on_screen()),
-                _ => false,
-            };
-            let free = self.running.is_empty() || self.running.len() < MAX_RUNNING && beside;
-            if !free {
+        loop {
+            let mut candidate = None;
+            let mut screen_waits = false;
+            for (n, queued) in self.queue.iter().enumerate() {
+                if queued.retry_at > now_ms {
+                    screen_waits |= queued.rank.on_screen();
+                    continue;
+                }
+                if screen_waits && !queued.rank.on_screen() {
+                    break;
+                }
+                let beside = match queued.rank {
+                    Rank::Screen => !self.running.iter().any(|r| r.rank <= Rank::Screen),
+                    rank if rank.on_screen() => !self.running.iter().any(|r| r.rank.on_screen()),
+                    _ => false,
+                };
+                if self.running.is_empty() || self.running.len() < MAX_RUNNING && beside {
+                    candidate = Some(n);
+                }
                 break;
             }
-            let queued = self.queue.remove(0);
+            let Some(n) = candidate else {
+                break;
+            };
+            let queued = self.queue.remove(n);
             steps.extend(self.start(queued));
         }
         steps
@@ -558,11 +708,12 @@ impl Loader {
 
     /// Start `queued` on a thread of its own.
     fn start(&mut self, queued: Queued) -> Vec<Step> {
-        let Queued { want, rank } = queued;
+        let Queued { want, rank, .. } = queued;
         let Some(dir) = self.maps.dir() else {
             return Vec::new();
         };
         let (tx, rx) = channel();
+        let counts = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let job = Job {
             dir: dir.to_path_buf(),
             maps: self.maps.clone(),
@@ -570,6 +721,7 @@ impl Loader {
             resolved: Arc::clone(&self.resolved),
             want: want.clone(),
             cache_bytes: self.cache_bytes,
+            counts: Arc::clone(&counts),
         };
         let spawned = std::thread::Builder::new()
             .name("map-load".to_string())
@@ -590,6 +742,7 @@ impl Loader {
             rank,
             started: Instant::now(),
             done: rx,
+            counts,
         });
         vec![Step::Started(want)]
     }
@@ -612,14 +765,21 @@ struct Job {
     resolved: Arc<Mutex<Option<String>>>,
     want: MapWant,
     cache_bytes: u64,
+    /// Tiles written and planned, packed done << 32 | planned, for
+    /// [`Loader::report`].
+    counts: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Job {
     fn run(self) -> Result<Landed, Failure> {
-        self.load().map_err(|e| Failure {
-            unreachable: http::unreachable(e.as_ref()),
-            too_large: e.downcast_ref::<TooLarge>().is_some(),
-            detail: e.to_string(),
+        self.load().map_err(|e| {
+            let too_large = e.downcast_ref::<TooLarge>().is_some();
+            Failure {
+                unreachable: http::unreachable(e.as_ref()),
+                too_large,
+                permanent: too_large || e.downcast_ref::<Empty>().is_some(),
+                detail: e.to_string(),
+            }
         })
     }
 
@@ -676,7 +836,12 @@ impl Job {
         let threads = crate::picture::cores();
         let maps = self.maps.clone();
         let mut bumped: Option<Instant> = None;
+        let counts = Arc::clone(&self.counts);
         let mut progress = |p: Progress| {
+            counts.store(
+                (p.done as u64) << 32 | p.tiles as u64 & u64::from(u32::MAX),
+                std::sync::atomic::Ordering::Relaxed,
+            );
             let due =
                 bumped.is_none_or(|at| at.elapsed().as_millis() >= u128::from(PROGRESS_EVERY_MS));
             // A file written beside the region it replaces is no painter's
@@ -1020,7 +1185,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_source_toasts_once_per_failure_and_backs_off() {
+    fn a_failing_box_toasts_its_first_failure_and_retries_quietly() {
         let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
         serve.fail(true);
         let dir = tempfile::tempdir().expect("tmp");
@@ -1036,28 +1201,40 @@ mod tests {
             panic!("{steps:?}");
         };
         assert!(toast.contains("503"), "{toast}");
+        // The box stays queued, not loading; inside its wait nothing
+        // goes out, on a key or a frame.
+        assert_eq!(loader.order().len(), 1);
+        assert!(!loader.busy(), "waiting to retry is not loading");
         let asked = serve.requests();
-        // Asked again inside the wait: nothing goes out.
-        for now in [1, 10_000, BACKOFF_FIRST_MS - 1] {
-            assert_eq!(
-                loader.ask(w.clone(), now),
-                [Step::Skipped {
-                    want: w.clone(),
-                    why: "backoff"
-                }]
-            );
+        for now in [1, 1_000, SCREEN_RETRY_FIRST_MS - 1] {
+            assert!(loader.poll(now).is_empty(), "not due at {now}");
         }
         assert_eq!(serve.requests(), asked, "no retry storm");
-        // After it, one try; failing again doubles the wait.
+        // When due the loader retries by itself; the retry's failure
+        // says nothing again, and the wait doubles.
         assert!(matches!(
-            loader.ask(w.clone(), BACKOFF_FIRST_MS).as_slice(),
+            loader.poll(SCREEN_RETRY_FIRST_MS).as_slice(),
             [Step::Started(_)]
         ));
-        settle(&mut loader, BACKOFF_FIRST_MS);
+        let steps = settle(&mut loader, SCREEN_RETRY_FIRST_MS);
+        assert!(
+            matches!(steps.as_slice(), [Step::Failed { toast: None, .. }]),
+            "quiet retry: {steps:?}"
+        );
+        assert!(loader.poll(3 * SCREEN_RETRY_FIRST_MS - 1).is_empty());
+        // An ask inside the wait is "queued", not a retry: asks come on
+        // every frame too, and a wait a frame could end is no wait.
+        let steps = loader.ask(w.clone(), 3 * SCREEN_RETRY_FIRST_MS - 1);
+        assert!(
+            matches!(steps.as_slice(), [Step::Skipped { why: "queued", .. }]),
+            "{steps:?}"
+        );
+        // The doubled wait ends: the loader retries by itself.
         assert!(matches!(
-            loader.ask(w.clone(), 2 * BACKOFF_FIRST_MS).as_slice(),
-            [Step::Skipped { why: "backoff", .. }]
+            loader.poll(3 * SCREEN_RETRY_FIRST_MS).as_slice(),
+            [Step::Started(_)]
         ));
+        settle(&mut loader, 3 * SCREEN_RETRY_FIRST_MS);
         assert_eq!(maps.epoch(), 0, "nothing landed");
         assert_eq!(std::fs::read_dir(dir.path()).expect("dir").count(), 0);
     }
@@ -1312,7 +1489,7 @@ mod tests {
     /// internet sets it, the next view's ask tries the same box again at
     /// once, with no wait, and while that load runs the state is unknown.
     #[test]
-    fn offline_is_tested_again_by_the_next_ask() {
+    fn offline_is_retried_by_the_loader_itself() {
         let serve = Serve::start(Vec::new()).expect("serve");
         let url = serve.url("o.pmtiles");
         drop(serve);
@@ -1329,11 +1506,18 @@ mod tests {
             matches!(steps.as_slice(), [Step::Failed { toast: Some(_), .. }]),
             "{steps:?}"
         );
+        // The box stays and waits, not loading: offline is a state, not
+        // a latch, and the map comes back by itself when the internet
+        // does (1811), while the map says "Offline", not "loading".
         assert!(loader.offline() && !loader.busy());
-        let steps = loader.schedule(vec![a.clone()], Vec::new(), 1);
-        assert_eq!(steps, [Step::Started(a.clone())], "tried again, no backoff");
+        assert_eq!(loader.order().len(), 1, "the box stays queued");
+        // The same view's frames start nothing new inside the wait.
+        assert!(loader.schedule(vec![a.clone()], Vec::new(), 1).is_empty());
+        assert!(loader.poll(OFFLINE_RETRY_MS - 1).is_empty());
+        let steps = loader.poll(OFFLINE_RETRY_MS);
+        assert_eq!(steps, [Step::Started(a.clone())], "retried by itself");
         assert!(!loader.offline(), "unknown while it runs");
-        let steps = settle(&mut loader, 1);
+        let steps = settle(&mut loader, OFFLINE_RETRY_MS);
         assert!(
             matches!(steps.as_slice(), [Step::Failed { toast: None, .. }]),
             "said once: {steps:?}"
@@ -1378,5 +1562,179 @@ mod tests {
         let evicted = evict(dir.path(), 0, "none").expect("evict");
         assert_eq!(evicted.len(), 2);
         assert!(dir.path().join("berlin.lmr").exists());
+    }
+
+    /// A transient fault heals by itself (1811, the load walk's
+    /// `fault_recovers`): a box for the screen that failed stays queued
+    /// and the loader retries it on its own clock
+    /// ([`SCREEN_RETRY_FIRST_MS`]), with no new decision and no key, so
+    /// the view fills once the source answers again.
+    #[test]
+    fn a_failed_screen_box_retries_by_itself_and_fills() {
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        serve.fail(true);
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut loader = Loader::new(maps.clone(), Source::Url(serve.url("o.pmtiles")), 1 << 30);
+        let s = screen(1);
+        loader.schedule(vec![s.clone()], Vec::new(), 0);
+        let steps = settle(&mut loader, 0);
+        assert!(
+            matches!(steps.as_slice(), [Step::Failed { .. }]),
+            "{steps:?}"
+        );
+        assert_eq!(
+            loader.order(),
+            [(s.bounds, Rank::Screen, false)],
+            "the failed box stays queued"
+        );
+        assert!(!loader.busy(), "waiting to retry is not loading");
+        // The source answers again; the loader alone retries when due.
+        serve.fail(false);
+        assert!(
+            loader.poll(SCREEN_RETRY_FIRST_MS - 1).is_empty(),
+            "not due yet"
+        );
+        let steps = loader.poll(SCREEN_RETRY_FIRST_MS);
+        assert!(matches!(steps.as_slice(), [Step::Started(_)]), "{steps:?}");
+        let steps = settle(&mut loader, SCREEN_RETRY_FIRST_MS);
+        assert!(matches!(steps.as_slice(), [Step::Done { .. }]), "{steps:?}");
+        assert_eq!(maps.epoch(), 1);
+    }
+
+    /// A landing says the source answers: every backoff is cleared and a
+    /// queued box waiting to retry is due at once (1811).
+    #[test]
+    fn a_landing_clears_every_backoff() {
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        serve.fail(true);
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut loader = Loader::new(maps, Source::Url(serve.url("o.pmtiles")), 1 << 30);
+        let s = screen(1);
+        loader.schedule(vec![s.clone()], Vec::new(), 0);
+        let steps = settle(&mut loader, 0);
+        assert!(
+            matches!(steps.as_slice(), [Step::Failed { .. }]),
+            "{steps:?}"
+        );
+        // The user asks another box by hand; the source answers now.
+        serve.fail(false);
+        let a = nth(30);
+        assert!(matches!(
+            loader.ask(a.clone(), 10).as_slice(),
+            [Step::Started(_)]
+        ));
+        let steps = settle(&mut loader, 10);
+        // The hand-asked box lands; the failed screen box, cleared of its
+        // wait by the landing, starts in the same poll.
+        assert!(
+            steps
+                .iter()
+                .any(|st| matches!(st, Step::Done { want, .. } if want.bounds == a.bounds)),
+            "{steps:?}"
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|st| matches!(st, Step::Started(w) if w.bounds == s.bounds)),
+            "cleared and started: {steps:?}"
+        );
+    }
+
+    /// While a box for the screen waits to retry, nothing else starts
+    /// (1811, the walk's `screen_first` under a fault): the link is not
+    /// spent next to a screen that lacks its data.
+    #[test]
+    fn nothing_starts_behind_a_screen_box_waiting_to_retry() {
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        serve.fail(true);
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut loader = Loader::new(maps, Source::Url(serve.url("o.pmtiles")), 1 << 30);
+        let (s, n) = (screen(1), nth(5));
+        loader.schedule(vec![s.clone()], vec![n.clone()], 0);
+        // Both fail: the screen box first, the ahead cell after it.
+        settle(&mut loader, 0);
+        while loader.order().iter().any(|(_, _, running)| *running) {
+            settle(&mut loader, 0);
+        }
+        serve.fail(false);
+        // Before the screen box is due, the ahead cell must not start.
+        let steps = loader.poll(1_000);
+        assert!(
+            !steps
+                .iter()
+                .any(|st| matches!(st, Step::Started(w) if w.bounds == n.bounds)),
+            "the ahead cell waited: {steps:?}"
+        );
+        // When the screen box is due it goes first.
+        let steps = loader.poll(SCREEN_RETRY_FIRST_MS);
+        assert!(
+            matches!(steps.as_slice(), [Step::Started(w)] if w.bounds == s.bounds),
+            "{steps:?}"
+        );
+    }
+
+    /// A box the source holds no tiles for fails for good (1811, the
+    /// phone's first-frame walk: a z10 screen box past the archive): it
+    /// is not requeued and not retried, as retrying cannot help, so its
+    /// failures never spend the link beside a box that can load.
+    #[test]
+    fn a_box_with_no_tiles_is_not_retried() {
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut loader = Loader::new(maps, Source::Url(serve.url("o.pmtiles")), 1 << 30);
+        // A box far from the fixture: the plan finds nothing there.
+        let far = MapWant {
+            reason: LoadReason::Screen,
+            ..want(900_000_000)
+        };
+        loader.schedule(vec![far.clone()], Vec::new(), 0);
+        let steps = settle(&mut loader, 0);
+        let [Step::Failed { detail, .. }] = steps.as_slice() else {
+            panic!("{steps:?}");
+        };
+        assert!(detail.contains("no tiles"), "{detail}");
+        assert!(loader.order().is_empty(), "not requeued");
+        assert!(loader.poll(60_000).is_empty(), "not retried");
+    }
+
+    /// What the loader tells the map about each box (1811, for 1812):
+    /// running with its tiles done of planned, waiting at its place,
+    /// failed with its retry in milliseconds.
+    #[test]
+    fn the_loader_reports_each_boxes_state() {
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        serve.fail(true);
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut loader = Loader::new(maps, Source::Url(serve.url("o.pmtiles")), 1 << 30);
+        let s = screen(1);
+        loader.schedule(vec![s.clone()], Vec::new(), 0);
+        settle(&mut loader, 0);
+        let report = loader.report(1_000);
+        assert_eq!(report.len(), 1);
+        assert_eq!(report[0].0, s.bounds);
+        let LoadState::Retrying { in_ms } = report[0].2 else {
+            panic!("{:?}", report[0].2);
+        };
+        assert!(in_ms > 0 && in_ms <= SCREEN_RETRY_FIRST_MS, "{in_ms}");
+        // A stalling source: the load runs, the box behind it waits.
+        let (_held, source) = stalling();
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut loader = Loader::new(Maps::new(Some(dir.path().to_path_buf())), source, 1 << 30);
+        loader.schedule(vec![screen(1)], vec![nth(5)], 0);
+        let report = loader.report(0);
+        assert_eq!(report.len(), 2);
+        assert!(
+            matches!(report[0].2, LoadState::Running { .. }),
+            "{report:?}"
+        );
+        assert!(
+            matches!(report[1].2, LoadState::Waiting { place: 0 }),
+            "{report:?}"
+        );
     }
 }
