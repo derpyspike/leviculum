@@ -111,10 +111,10 @@ fn zoom_showing(px: f64, km: f64) -> f64 {
 /// The view zooms the globe blends toward Mercator between (1799
 /// item 0): the projection is a pure sphere (`t = 0`) as long as any
 /// part of the limb is inside the view or within a margin of it — the
-/// blend starts only once the limb is [`LIMB_CLEAR`] half-diagonals out
+/// blend starts only once the limb is `LIMB_CLEAR` half-diagonals out
 /// of the view on all sides and the short side shows at most
-/// [`BLEND_START_KM`] of ground — and it is Mercator exactly (`t = 1`)
-/// from where the short side shows [`BLEND_END_KM`]. Start and end
+/// `BLEND_START_KM` of ground — and it is Mercator exactly (`t = 1`)
+/// from where the short side shows `BLEND_END_KM`. Start and end
 /// follow the limb and the visible ground extent, never bare zoom
 /// numbers, so the rule holds at every frame size.
 pub fn globe_window(width: u32, height: u32) -> (f64, f64) {
