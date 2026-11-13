@@ -136,6 +136,12 @@ exclude = ["leviculum-nrf", "leviculum-esp", "leviculum-lr11xx", "leviculum-mapf
 # glyph blended in place in tiny-skia's arithmetic without a pipeline,
 # the same bytes tiny-skia writes, held to it by leviculum-ui-iced's
 # `fast_paths` tests.
+# Since 1699 `Renderer::draw` in `src/lib.rs` clips every image, in its
+# images loop, to the image's own clip bounds intersected with the
+# layer's; upstream clipped an image to the layer's bounds alone. That
+# covers `image` widgets as well as a canvas's pictures: the map's frame,
+# drawn an eighth past each edge of its canvas, covered the rail and the
+# bar beside the map before it.
 [patch.crates-io]
 crossterm = { path = "vendor/crossterm" }
 termbg = { path = "vendor/termbg" }
