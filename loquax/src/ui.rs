@@ -15896,6 +15896,129 @@ pub(crate) mod tests {
             !a_message_fix_names(&model, PEER, PEER),
             "an INVALID message shows no fix"
         );
+        // The store's row goes too.
+        let forgets = model
+            .take_writes()
+            .iter()
+            .filter(|w| {
+                matches!(
+                    w,
+                    StoreWrite::ForgetPosition { peer, fix_time }
+                        if *peer == PEER && *fix_time == two_pm() - 600
+                )
+            })
+            .count();
+        assert_eq!(forgets, 1, "one delete for the one kept row");
+    }
+
+    /// A valid verdict does not end the judging: a copy nobody vouches
+    /// for stays nobody's, and the refusal is said again with its new
+    /// reason.
+    #[test]
+    fn a_valid_verdict_on_an_unvouched_copy_still_refuses_and_says_so() {
+        let mut model = reader_with_peers_pin(&[PEER]);
+        arrive_unverified(
+            &mut model,
+            STRANGER,
+            2,
+            "",
+            copied_report(PEER, 1, 10_000_000, 60),
+        );
+        let effects = verdict(&mut model, STRANGER, 2, true);
+        assert_eq!(model.positions[&PEER].location.latitude_e6, 52_000_000);
+        assert!(!model.positions.contains_key(&STRANGER));
+        assert!(
+            effects.iter().any(|e| matches!(
+                e,
+                UiEffect::Log(line) if line.starts_with("POSITION_REFUSED source=5e5e")
+                    && line.contains("reason=unvouched")
+            )),
+            "{effects:?}"
+        );
+    }
+
+    /// A member marked left from epoch 2 still vouches for a copy of
+    /// epoch 1, written while it was in (Lew 2026-11-13, rule 4); its
+    /// copies from epoch 2 on are nobody's.
+    #[test]
+    fn a_member_marked_left_at_a_later_epoch_vouches_for_copies_before_it() {
+        let mut model = reader_with_peers_pin(&[PEER, OTHER]);
+        in_group(
+            &mut model,
+            groups::Standing::Joined,
+            &[(READER, false), (PEER, false)],
+        );
+        // Epoch 2 lists PEER as left.
+        let mut left = membership(2, &[]);
+        if let Some(members) = &mut left.members {
+            members.members.push(leviculum_lxmf::lev::Member {
+                address: PEER,
+                name: String::new(),
+                flags: leviculum_lxmf::lev::MEMBER_LEFT,
+            });
+        }
+        arrive(&mut model, GROUP, 2, "", lev_only(left));
+        let copy = |epoch| leviculum_lxmf::lev::Lev {
+            group_copy: Some(copy_claim(PEER, epoch)),
+            ..leviculum_lxmf::lev::Lev::default()
+        };
+        arrive(&mut model, GROUP, 3, "", lev_with_fix(copy(2), 11_000_000));
+        assert_eq!(
+            model.positions[&PEER].location.latitude_e6, 52_000_000,
+            "left from epoch 2: its epoch-2 copy is nobody's"
+        );
+        arrive(&mut model, GROUP, 4, "", lev_with_fix(copy(1), 10_000_000));
+        assert_eq!(
+            model.positions[&PEER].location.latitude_e6, 10_000_000,
+            "written while it was in"
+        );
+    }
+
+    /// The store's member epochs read back as written, a longer array
+    /// from a later version is read past, and bytes that are no epochs
+    /// leave the members unchanged.
+    #[test]
+    fn member_epochs_read_back_and_unknown_bytes_change_nothing() {
+        use leviculum_lxmf::msgpack;
+        let member = groups::GroupMember {
+            address: PEER,
+            name: String::new(),
+            admin: false,
+            joined: true,
+            left: false,
+            since: Some(3),
+            left_from: Some(7),
+        };
+        let info = groups::GroupInfo {
+            members: vec![member.clone()],
+            ..groups::GroupInfo::new(GROUP)
+        };
+        let bytes = info.epochs_bytes();
+        let mut blank = groups::GroupMember {
+            since: None,
+            left_from: None,
+            ..member.clone()
+        };
+        groups::GroupInfo::epochs_from(core::slice::from_mut(&mut blank), Some(&bytes));
+        assert_eq!(blank, member);
+        // A later version's fourth element is skipped, the epochs read.
+        let mut longer = Vec::new();
+        msgpack::array(&mut longer, 1);
+        msgpack::array(&mut longer, 4);
+        msgpack::bin(&mut longer, &PEER);
+        msgpack::uint(&mut longer, 4 + 1);
+        msgpack::uint(&mut longer, 0);
+        msgpack::string(&mut longer, "later");
+        let mut m = member.clone();
+        groups::GroupInfo::epochs_from(core::slice::from_mut(&mut m), Some(&longer));
+        assert_eq!((m.since, m.left_from), (Some(4), None));
+        // Bytes that are no epochs, and none at all: unchanged.
+        let mut m = member.clone();
+        groups::GroupInfo::epochs_from(core::slice::from_mut(&mut m), Some(b"nonsense"));
+        assert_eq!(m, member);
+        let mut m = member.clone();
+        groups::GroupInfo::epochs_from(core::slice::from_mut(&mut m), None);
+        assert_eq!(m, member);
     }
 
     /// Membership at the copy's epoch (Lew 2026-11-13, rule 4): a member
