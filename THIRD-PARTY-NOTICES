@@ -33,9 +33,9 @@ Linked into lnsd, lnstest, lncp, lnstatus, lnprobe, lnpath,
 lnmgmt, lnomad, lblogd, lnpnd, loquax and lnflash. Built for
 x86_64-unknown-linux-musl and aarch64-unknown-linux-musl.
 
-541 third-party crates, by licence:
+542 third-party crates, by licence:
 
-  Apache-2.0                   353
+  Apache-2.0                   354
   BSD-2-Clause                 5
   BSD-3-Clause                 12
   CC0-1.0                      1
@@ -242,6 +242,7 @@ Applies to:
   crossbeam-deque 0.8.7
   crossbeam-epoch 0.9.20
   crossbeam-utils 0.8.22
+  cty 0.2.2
   curve25519-dalek-derive 0.1.1
   der-parser 9.0.0
   displaydoc 0.2.6
