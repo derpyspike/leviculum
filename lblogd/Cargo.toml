@@ -104,17 +104,7 @@ enable = true
 start = true
 restart-after-upgrade = true
 
-[features]
-# The daemon's allocator, as lnsd's (leviculum-cli/Cargo.toml, #437): built by
-# cargo zigbuild for a musl triple (the arm64 package and tarball) it would
-# otherwise run on Zig's libc malloc, which keeps every slab it ever took
-# (1750). `--no-default-features` builds it on the libc allocator.
-default = ["alloc-mimalloc"]
-alloc-mimalloc = ["dep:mimalloc"]
-
 [dependencies]
-# `alloc-mimalloc` only, a default feature; see it.
-mimalloc = { version = "0.1", optional = true, default-features = false }
 leviculum-core = { path = "../leviculum-core" }
 leviculum-std = { path = "../leviculum-std" }
 axum.workspace = true

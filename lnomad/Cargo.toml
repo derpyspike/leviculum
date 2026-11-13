@@ -67,12 +67,7 @@ changelog = "../target/deb-changelog/lnomad"
 [features]
 # leviculum-std's interface families, forwarded and on by default (#463);
 # see lnpnd's manifest for why they are forwarded and not inherited.
-default = ["std", "ble", "serial", "i2p", "tui", "alloc-mimalloc"]
-# The binary's allocator, as lnsd's (leviculum-cli/Cargo.toml, #437): built by
-# cargo zigbuild for a musl triple (the arm64 package and tarball) it would
-# otherwise run on Zig's libc malloc, which keeps every slab it ever took
-# (1750). Off in the board and phone builds, which leave the defaults.
-alloc-mimalloc = ["dep:mimalloc"]
+default = ["std", "ble", "serial", "i2p", "tui"]
 # The platform layer (slice 4a of docs/src/concepts/lnomad-everywhere.md):
 # fetching over a shared instance (`fetch`, `browser`, `transfer`), the files
 # (`download`, `identify`, `identity`, the store halves of `bookmarks` and
@@ -118,9 +113,6 @@ tui = [
 gui = ["std", "dep:iced", "dep:leviculum-ui-iced"]
 
 [dependencies]
-# `alloc-mimalloc` only, a default feature; see it. The same line as lnsd's,
-# so the workspace links one mimalloc.
-mimalloc = { version = "0.1", optional = true, default-features = false }
 leviculum-micron = { path = "../leviculum-micron" }
 # Default features off: its `std` half (the terminal editor's table) is
 # lnomad's `std`.

@@ -251,7 +251,6 @@ skip  loquax           mailbox_setup              # spawns the loquax binary ove
 skip  loquax           store_newer                # spawns loquax tui over a temporary home; subject is the code; loquax-tui
 skip  loquax           python_interop             # drives Python over sockets; Tier 1
 skip  loquax           send_cli                   # spawns the loquax binary
-skip  loquax           alloc_retention            # spawns `loquax alloc-probe` and measures its resident set; cargo test and just alloc-retention
 skip  loquax           stamp_timing               # tokio runtime around the stamp solver
 skip  loquax           tui_snapshot               # spawns loquax tui against an in-process daemon over sockets
 skip  loquax           scene_golden               # a golden of the scene built from the ugly store; subject is the code; loquax-tui
