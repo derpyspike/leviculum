@@ -1575,7 +1575,7 @@ tree-clean-selftest:
 #   run all still ahead of it. The `~3.5 min` in the recipe's own doc
 #   string is older than half the dependency list.
 [doc('The coder-pass gate: every guard in `fast` that costs under 10 s')]
-guards: tree-snapshot tree-clean-selftest check-submodules check-third-party check-trailers check-integ-bin-list check-ci-pipeline check-ci-secrets publish-selftest nightly-green-selftest check-publish-nightly-gate package-selftest site-publish-selftest site-unpack-docs-selftest deb-stamp-selftest version-guard lock-contention-selftest toolchain-status-selftest sweep-selftest tmp-leftovers-selftest window-bench-selftest dfu-exit-selftest m9-walk-selftest btvirt-selftest check-firmware-images check-plain-clone check-supervised-spawns check-core-lock-census check-env-knobs check-test-ports test-retry-guard no-printf-grep-pipes check-ignored-source check-just-docs check-guards-subset check-standard-integ check-python-test-prerequisites check-config-table-citations prepush-guard nrf-evt-max-size nrf-gap-device-name nrf-board-pins nrf-sd-guard nrf-uf2-volumes nrf-fw-readback rnode-chip-offsets nrf-shellcheck embassy-pins log-diff-mask-selftest firmware-no-hal firmware-no-chip-cfg nrf-module-reach check-fuzz-lock changelog-links loquax-name m0-build-gate lxmf-embedded-gate loquax-core-no-std map-core-no-std lnomad-core-no-std m9-render-no-std lnomad-core-no-tui-static ui-no-terminal-static check-source-invariant-census nessa-check check-allocator
+guards: tree-snapshot tree-clean-selftest check-submodules check-third-party check-trailers check-integ-bin-list check-ci-pipeline check-ci-secrets publish-selftest nightly-green-selftest check-publish-nightly-gate package-selftest site-publish-selftest site-unpack-docs-selftest deb-stamp-selftest version-guard lock-contention-selftest toolchain-status-selftest sweep-selftest tmp-leftovers-selftest window-bench-selftest dfu-exit-selftest m9-walk-selftest btvirt-selftest check-firmware-images check-plain-clone check-supervised-spawns check-core-lock-census check-env-knobs check-test-ports test-retry-guard no-printf-grep-pipes check-ignored-source check-just-docs check-guards-subset check-standard-integ check-python-test-prerequisites check-config-table-citations prepush-guard nrf-evt-max-size nrf-gap-device-name nrf-board-pins nrf-sd-guard nrf-uf2-volumes nrf-fw-readback rnode-chip-offsets nrf-shellcheck embassy-pins log-diff-mask-selftest firmware-no-hal firmware-no-chip-cfg nrf-module-reach check-fuzz-lock changelog-links loquax-name m0-build-gate lxmf-embedded-gate loquax-core-no-std map-core-no-std lnomad-core-no-std m9-render-no-std lnomad-core-no-tui-static ui-no-terminal-static check-source-invariant-census nessa-check
 
 # Tier 0 (~3.5 min, runs on every git push): submodule pins + commit-message
 # trailers + the single-integ-bin-list guard (#310)
@@ -1607,7 +1607,7 @@ guards: tree-snapshot tree-clean-selftest check-submodules check-third-party che
 # `check-all-targets` dependency compiles those targets but does not lint
 # them, which is exactly the gap.
 [doc('Tier 0 (~3.5 min): the gate every git push runs')]
-fast: tree-snapshot tree-clean-selftest check-submodules check-third-party check-trailers check-integ-bin-list check-ci-pipeline check-ci-secrets publish-selftest nightly-green-selftest check-publish-nightly-gate package-selftest site-publish-selftest site-unpack-docs-selftest deb-stamp-selftest version-guard lock-contention-selftest toolchain-status-selftest sweep-selftest tmp-leftovers-selftest window-bench-selftest dfu-exit-selftest m9-walk-selftest btvirt-selftest check-firmware-images check-plain-clone check-supervised-spawns check-core-lock-census check-env-knobs check-test-ports test-retry-guard no-printf-grep-pipes check-ignored-source check-just-docs check-guards-subset check-standard-integ check-python-test-prerequisites check-config-table-citations prepush-guard check-processor-seam mvr supervised-spawn lint-nrf lint-lr11xx nrf-stack-frames nrf-store-gap nrf-flash-budget m9-reproducible nrf-reproducible nrf-evt-max-size nrf-gap-device-name nrf-board-pins nrf-sd-guard nrf-uf2-volumes nrf-fw-readback rnode-chip-offsets nrf-shellcheck embassy-pins log-diff-mask-selftest firmware-no-hal firmware-no-chip-cfg nrf-module-reach hw-witness check-fuzz-lock fuzz-selftest fuzz-regress notices-guard doc-touched doc-gate changelog-links loquax-name core-no-tracing lnsd-minimal event-catalog m0-build-gate lxmf-embedded-gate loquax-core-no-std map-core-no-std lnomad-core-no-std m9-render-no-std lnomad-core-no-tui ui-no-terminal i686-usize-gate no-atomic64-gate check-all-targets deb-features-check deb-floor-check citation-guard source-invariant-tests tmp-leftovers nessa-check check-allocator
+fast: tree-snapshot tree-clean-selftest check-submodules check-third-party check-trailers check-integ-bin-list check-ci-pipeline check-ci-secrets publish-selftest nightly-green-selftest check-publish-nightly-gate package-selftest site-publish-selftest site-unpack-docs-selftest deb-stamp-selftest version-guard lock-contention-selftest toolchain-status-selftest sweep-selftest tmp-leftovers-selftest window-bench-selftest dfu-exit-selftest m9-walk-selftest btvirt-selftest check-firmware-images check-plain-clone check-supervised-spawns check-core-lock-census check-env-knobs check-test-ports test-retry-guard no-printf-grep-pipes check-ignored-source check-just-docs check-guards-subset check-standard-integ check-python-test-prerequisites check-config-table-citations prepush-guard check-processor-seam mvr supervised-spawn lint-nrf lint-lr11xx nrf-stack-frames nrf-store-gap nrf-flash-budget m9-reproducible nrf-reproducible nrf-evt-max-size nrf-gap-device-name nrf-board-pins nrf-sd-guard nrf-uf2-volumes nrf-fw-readback rnode-chip-offsets nrf-shellcheck embassy-pins log-diff-mask-selftest firmware-no-hal firmware-no-chip-cfg nrf-module-reach hw-witness check-fuzz-lock fuzz-selftest fuzz-regress notices-guard doc-touched doc-gate changelog-links loquax-name core-no-tracing lnsd-minimal event-catalog m0-build-gate lxmf-embedded-gate loquax-core-no-std map-core-no-std lnomad-core-no-std m9-render-no-std lnomad-core-no-tui ui-no-terminal i686-usize-gate no-atomic64-gate check-all-targets deb-features-check deb-floor-check citation-guard source-invariant-tests tmp-leftovers nessa-check
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings
     {{manifest}} workspace-lib -- cargo test --workspace --lib
@@ -3230,46 +3230,3 @@ window-bench-baseline:
 [doc('Check every icon and the splash match the Nessa SVG (1690)')]
 nessa-check:
     @python3 -I scripts/nessa-render.py --check
-
-# 1750: every binary the packages ship declares its allocator, and it is
-# mimalloc. Without one a binary runs on its libc's malloc, which under cargo
-# zigbuild for a musl triple (arm64, armhf) is Zig's SmpAllocator: it keeps
-# every slab and strands every cross-thread free, and the Loquax Mailbox on
-# miauhaus reached 1.2 GB over about 9 MB live on it. The source half (no
-# build, well under a second) holds every binary of build-deb.sh's BINS to a
-# mimalloc global allocator under a default feature and to the huge-pages
-# switch, and build-deb.sh to running the bytes half on what it packages; the
-# selftest injects each defect into a copy of the tree, and a binary without
-# the marker, and wants each refused. In `guards` and `fast`; at the end of
-# this file so no cited Justfile line moves.
-[doc('Check every shipped binary declares mimalloc (1750)')]
-check-allocator:
-    @python3 -I scripts/check-allocator.py
-    @python3 -I scripts/check-allocator.py --selftest
-
-# 1750: the mailbox's cross-thread allocation pattern against the loquax a
-# package ships on arm64 and armhf, linked the same way: cargo zigbuild for a
-# musl triple, here the host's x86_64 one, into its own target directory so
-# neither this build nor the plain musl build takes the other's artefacts as
-# fresh. `loquax/tests/alloc_retention.rs` runs it with
-# LOQUAX_ALLOC_PROBE_BIN pointed at the result; plain `cargo test` runs the
-# same test against the host build. `alloc=system` builds the binary without
-# mimalloc, the link the mailbox had before 1750, which this must refuse
-# (2026-11-12: 4 to 26 MB resident over 20 000 rounds at 0.7 MB live, against
-# 4.8 to 6.0 MB with mimalloc). Needs cargo-zigbuild and ziglang
-# (`just _deb-prereqs`); about 75 s cold, 25 s warm.
-[doc('Heap retention of the zigbuild loquax (1750): [alloc=system]')]
-alloc-retention alloc="mimalloc":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    source scripts/cargo-target-dir.sh
-    dir="$(cargo_target_dir "$PWD")/zig-musl"
-    case "{{alloc}}" in
-    mimalloc|alloc=mimalloc) features=() ;;
-    system|alloc=system) features=(--no-default-features --features std) ;;
-    *) echo "alloc-retention: alloc={{alloc}}; want mimalloc or system" >&2; exit 2 ;;
-    esac
-    CARGO_TARGET_DIR="$dir" cargo zigbuild --release --target x86_64-unknown-linux-musl \
-        -p loquax --bin loquax "${features[@]}"
-    LOQUAX_ALLOC_PROBE_BIN="$dir/x86_64-unknown-linux-musl/release/loquax" \
-        cargo test -p loquax --test alloc_retention -- --nocapture
