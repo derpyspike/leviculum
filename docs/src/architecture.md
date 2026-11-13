@@ -304,7 +304,7 @@ cross-thread free. Zig is the cross C compiler for arm64 and armhf
 (`scripts/zig-cc.sh`, `scripts/zig-ar.sh`) and links nothing musl. On armv7
 libmimalloc-sys asks for `-latomic`; armv7-A has native 64-bit atomics, so
 `DEP_ATOMIC = "c"` names libc instead and rust-lld would fail loudly on an
-`__atomic_*` call. The glibc desktop loquax still links through cargo
+`__atomic_*` call. The glibc desktop `loquax` still links through cargo
 zigbuild at glibc 2.31. The packaging pins ziglang 0.16.0 and cargo-zigbuild
 0.23.4.
 
