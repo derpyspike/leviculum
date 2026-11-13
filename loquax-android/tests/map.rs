@@ -1811,6 +1811,35 @@ fn the_world_view_is_a_map_and_shows_no_chip() {
     }
 }
 
+/// Lew's smoke of bbbdf610 and the 13:44/13:45 screenshots (order
+/// 1799): on the globe the own dot stood in space above the disk and
+/// the "LC" pin sat on Iceland instead of Great Britain — pins and the
+/// own position were projected through the flat view while the ground
+/// was the blend's. Every mark goes through the frame's own blend: on
+/// its ground within a pixel, and a pin on the far side of the sphere
+/// is not drawn at all.
+#[test]
+fn marks_project_through_the_blend_of_the_frame() {
+    use leviculum_map::blend::{Blend, Shape};
+    let view_at = project(LatLon::from_degrees(50.0, 0.0));
+    let (w, h) = (480u32, 320u32);
+    let shows = leviculum_map::viewport::ExactView::new(view_at, 2000, w, h);
+    let blend = Blend::with_t(Shape::Globe, view_at, 2.0, w, h, 0.0);
+    let london = pin(7, "lew", 51.5, -0.1);
+    let far = pin(8, "far", -45.0, 179.0);
+    let pins = vec![london.clone(), far];
+    let marks = loquax_android::map::marks(&pins, &shows, Some(&blend), (0, 0), 1.0, 20_000, None);
+    assert_eq!(marks.len(), 1, "the far-side pin is not drawn: {marks:?}");
+    let (bx, by) = blend.to_screen(london.at);
+    let m = &marks[0];
+    assert!(
+        (f64::from(m.x) - bx).abs() <= 1.0 && (f64::from(m.y) - by).abs() <= 1.0,
+        "mark at ({}, {}), the blend puts the ground at ({bx:.1}, {by:.1})",
+        m.x,
+        m.y
+    );
+}
+
 /// The Maps page's call (1201, 1207) for `home`: no frame, the regions;
 /// a refusal as `ok: false`.
 fn regions(home: &Path, change: impl FnOnce(&mut (Option<String>, Option<bool>))) -> MapRegions {

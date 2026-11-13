@@ -665,10 +665,15 @@ impl Renderer {
             Err(error) => return failed(error),
         };
         let (w, h) = shot.view.size();
+        // The blend the frame was drawn through, when it is curved
+        // (1799): marks and the own dot are placed with it, never with
+        // the flat view over a sphere.
+        let curved = loquax::mapframe::turns(&shot.shows);
         let marks = match request.avatars {
             true => marks(
                 pins,
                 &shot.shows,
+                curved.as_ref(),
                 (mx, my),
                 scale,
                 ceiling.max(floor),
@@ -686,10 +691,14 @@ impl Renderer {
         let name = |peer: [u8; 16]| pins.iter().find(|p| p.peer == peer).map(|p| p.words());
         let own = match (request.own_lat_e6, request.own_lon_e6) {
             (Some(lat), Some(lon)) => {
-                let (x, y) = shot.shows.to_screen(project(LatLon::from_e6(lat, lon)));
+                let ground = project(LatLon::from_e6(lat, lon));
+                let on = match &curved {
+                    Some(b) => b.facing(ground).then(|| b.to_screen(ground)),
+                    None => Some(shot.shows.to_screen(ground)),
+                };
                 let pixel =
                     |v: f64| v.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
-                Some((pixel(x), pixel(y)))
+                on.map(|(x, y)| (pixel(x), pixel(y)))
             }
             _ => None,
         };
@@ -834,6 +843,7 @@ pub fn track_choices(shown: TrackWindow, lang: Lang) -> Vec<TrackChoice> {
 pub fn marks(
     pins: &[MapPin],
     shows: &ExactView,
+    blend: Option<&leviculum_map::blend::Blend>,
     margin: (u32, u32),
     scale: f32,
     max_milli: u32,
@@ -844,9 +854,20 @@ pub fn marks(
     let in_frame = |(x, y): (f64, f64)| {
         (-mx..f64::from(w) + mx).contains(&x) && (-my..f64::from(h) + my).contains(&y)
     };
+    // A curved frame's marks go through its blend (1799: the own dot
+    // stood in space over the disk, the "LC" pin on Iceland): the same
+    // projection the ground was drawn with, and a pin on the far side
+    // of the sphere is not drawn.
     let landed: Vec<(&MapPin, (f64, f64))> = pins
         .iter()
-        .map(|pin| (pin, shows.to_screen(pin.at)))
+        .filter(|pin| blend.is_none_or(|b| b.facing(pin.at)))
+        .map(|pin| {
+            let at = match blend {
+                Some(b) => b.to_screen(pin.at),
+                None => shows.to_screen(pin.at),
+            };
+            (pin, at)
+        })
         .filter(|(_, at)| in_frame(*at))
         .collect();
     let points: Vec<(f64, f64)> = landed.iter().map(|(_, at)| *at).collect();
