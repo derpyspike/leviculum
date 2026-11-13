@@ -3,7 +3,7 @@
 //! Every binary of the workspace, now and in future, installs this crate's
 //! allocator and starts it first thing in `main`:
 //!
-//! ```ignore
+//! ```no_run
 //! #[global_allocator]
 //! static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
 //!
