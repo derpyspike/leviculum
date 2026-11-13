@@ -3218,6 +3218,7 @@ dependencies = [
  "hex",
  "hmac",
  "if-addrs",
+ "leviculum-alloc",
  "leviculum-announce-policy",
  "leviculum-ble-tx",
  "leviculum-channel-access",

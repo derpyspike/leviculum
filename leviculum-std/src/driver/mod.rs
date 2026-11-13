@@ -6866,7 +6866,13 @@ fn begin_flush(
             }
             std::thread::sleep(FLUSH_SLICE_PAUSE);
         }
-        (snapshot.write(), holds)
+        let outcome = snapshot.write();
+        // The snapshot and the write's encode buffers are freed by now, the
+        // size of the whole store; mimalloc would keep them 10 to 20 s.
+        // Back at once instead (1805, docs/src/architecture.md "Memory
+        // allocator"; tests/flush_release_memory.rs).
+        leviculum_alloc::release();
+        (outcome, holds)
     }))
 }
 
@@ -6888,7 +6894,12 @@ fn settle_flush(
                 replaced
             };
             if let Some(replaced) = replaced {
-                tokio::task::spawn_blocking(move || drop(replaced));
+                tokio::task::spawn_blocking(move || {
+                    drop(replaced);
+                    // The old table, as large as the store: back at once on
+                    // the thread that freed it (1805).
+                    leviculum_alloc::release();
+                });
             }
             tracing::debug!(
                 event = "FLUSH_LOCK_HOLD",
