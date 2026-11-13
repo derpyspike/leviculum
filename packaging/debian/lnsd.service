@@ -23,21 +23,6 @@ ExecStart=/usr/bin/lnsd -c /etc/reticulum
 Restart=on-failure
 RestartSec=5
 
-# Memory (1750): lnsd on mimalloc held 103 to 108 MB resident on the soak
-# node under ~26 000 allocations a second (#437, 766), and its tables are
-# capped near 339 MB at the desktop profile's ceiling
-# (leviculum-core/src/memory_storage.rs); 512 MB is that ceiling plus half
-# again, so a full table never trips it and a leak does.
-MemoryMax=512M
-MemorySwapMax=64M
-# A unit that reaches MemoryMax= is OOM-killed inside its own cgroup, so
-# only this service dies: systemd marks it `oom-kill`, which Restart=
-# on-failure counts as a failure, and the start limit above still ends a
-# loop. MemorySwapMax= as well, because a memory limit alone does not bound
-# swap: on miauhaus a 400 MB MemoryMax= on the mailbox held while 832 MB of
-# it sat in swap (1750). 64 MB of swap lets the kernel page out what a
-# long-idle daemon never touches again and no more.
-
 # Socket + storage files created by the daemon are owned leviculum:leviculum
 # with mode 0660 / dir 0770 — only members of the `leviculum` group can
 # reach the shared-instance socket.
