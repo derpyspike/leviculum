@@ -1134,16 +1134,26 @@ fn gui_args(args: &Args) -> GuiArgs {
 
 /// Measured live heap for the mailbox census, under the default-off
 /// `heap-accounting` feature (order 1585): lnpnd's shim
-/// (`lnpnd/src/main.rs`), counting and forwarding to `System`.
+/// (`lnpnd/src/main.rs`), counting and forwarding to the allocator below.
 #[cfg(feature = "heap-accounting")]
 #[global_allocator]
-static ALLOC: leviculum_std::heap_accounting::CountingAllocator =
-    leviculum_std::heap_accounting::CountingAllocator;
+static ALLOC: leviculum_std::heap_accounting::CountingOver<leviculum_alloc::Global> =
+    leviculum_std::heap_accounting::CountingOver(leviculum_alloc::GLOBAL);
 
-/// The starter first (1469): on an x86-64-v3 CPU the packaged baseline
-/// build hands the process to the v3 build before a thread or a runtime
-/// exists ([`cpu`]); everything else is [`messenger`].
+/// The one allocator of every Leviculum program (1805,
+/// docs/src/architecture.md "Memory allocator"). Before it the Loquax
+/// Mailbox, linked by cargo zigbuild, ran on Zig's SmpAllocator and held
+/// 1.2 GB over about 9 MB live after 37 h on miauhaus.
+#[cfg(not(feature = "heap-accounting"))]
+#[global_allocator]
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
+
+/// The allocator's housekeeping first (1805), then the starter (1469): on an
+/// x86-64-v3 CPU the packaged baseline build hands the process to the v3
+/// build before a runtime exists ([`cpu`]); the release thread the first
+/// line started ends with the exec. Everything else is [`messenger`].
 fn main() -> ExitCode {
+    leviculum_alloc::start();
     cpu::start();
     messenger()
 }

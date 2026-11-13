@@ -5,6 +5,12 @@
 //! without adding a debug print to the daemon. See the crate docs for why the
 //! decoder shares no code with the writer.
 
+/// The one allocator of every Leviculum program (1805,
+/// docs/src/architecture.md "Memory allocator"); `leviculum_alloc::start()`
+/// runs first in `main`.
+#[global_allocator]
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
+
 use std::io::{Read, Write};
 
 use clap::Parser;
@@ -44,6 +50,7 @@ struct Args {
 }
 
 fn main() {
+    leviculum_alloc::start();
     let args = Args::parse();
     let now = args.now.unwrap_or_else(|| {
         std::time::SystemTime::now()

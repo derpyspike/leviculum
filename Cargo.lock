@@ -2952,6 +2952,7 @@ dependencies = [
  "clap",
  "futures",
  "hex",
+ "leviculum-alloc",
  "leviculum-core",
  "leviculum-micron",
  "leviculum-std",
@@ -3005,10 +3006,10 @@ name = "leviculum-cli"
 version = "0.10.0-dev.10"
 dependencies = [
  "clap",
+ "leviculum-alloc",
  "leviculum-core",
  "leviculum-lxmf",
  "leviculum-std",
- "mimalloc",
  "rand_core 0.6.4",
  "rmpv",
  "rusqlite",
@@ -3106,6 +3107,7 @@ dependencies = [
 name = "leviculum-lxmf-node"
 version = "0.10.0-dev.10"
 dependencies = [
+ "leviculum-alloc",
  "leviculum-core",
  "leviculum-lxmf",
  "leviculum-std",
@@ -3133,11 +3135,11 @@ dependencies = [
  "clap",
  "embedded-graphics",
  "flate2",
+ "leviculum-alloc",
  "leviculum-map",
  "leviculum-mapcut",
  "leviculum-mapfill",
  "libm",
- "mimalloc",
  "serde_json",
  "tempfile",
  "ureq",
@@ -3176,6 +3178,7 @@ name = "leviculum-proxy"
 version = "0.10.0-dev.10"
 dependencies = [
  "clap",
+ "leviculum-alloc",
  "leviculum-core",
  "leviculum-std",
  "nix 0.29.0",
@@ -3419,6 +3422,7 @@ version = "0.10.0-dev.10"
 dependencies = [
  "clap",
  "ed25519-dalek",
+ "leviculum-alloc",
  "leviculum-core",
  "rand_core 0.6.4",
  "serde_json",
@@ -3430,6 +3434,7 @@ name = "lnflash"
 version = "0.10.0-dev.10"
 dependencies = [
  "clap",
+ "leviculum-alloc",
  "leviculum-core",
  "leviculum-map",
  "libc",
@@ -3447,6 +3452,7 @@ dependencies = [
  "axum",
  "clap",
  "hex",
+ "leviculum-alloc",
  "leviculum-core",
  "leviculum-map",
  "leviculum-mapcut",
@@ -3469,6 +3475,7 @@ dependencies = [
  "hex",
  "iced",
  "image",
+ "leviculum-alloc",
  "leviculum-core",
  "leviculum-micron",
  "leviculum-std",
@@ -3497,11 +3504,11 @@ dependencies = [
  "clap",
  "futures",
  "hex",
+ "leviculum-alloc",
  "leviculum-announce-policy",
  "leviculum-core",
  "leviculum-lxmf",
  "leviculum-std",
- "mimalloc",
  "rand_core 0.6.4",
  "tempfile",
  "tokio",
@@ -3537,6 +3544,7 @@ dependencies = [
  "hex",
  "iced",
  "image",
+ "leviculum-alloc",
  "leviculum-core",
  "leviculum-lxmf",
  "leviculum-map",
@@ -3609,6 +3617,7 @@ version = "0.1.0"
 dependencies = [
  "ab_glyph",
  "embedded-graphics",
+ "leviculum-alloc",
  "leviculum-core",
  "leviculum-log-line",
  "leviculum-lxmf",

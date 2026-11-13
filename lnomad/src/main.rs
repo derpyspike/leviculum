@@ -7,6 +7,12 @@
 //! is not a terminal, it fetches and prints a single page and exits, for
 //! scripting and acceptance tests.
 
+/// The one allocator of every Leviculum program (1805,
+/// docs/src/architecture.md "Memory allocator"); `leviculum_alloc::start()`
+/// runs first in `main`.
+#[global_allocator]
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
+
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -175,8 +181,16 @@ fn detect_width() -> usize {
         .unwrap_or(FALLBACK_WIDTH)
 }
 
+/// The allocator's housekeeping first (1805): a plain `main`, because
+/// `#[tokio::main]` builds the runtime and its worker threads ahead of the
+/// body's first line.
+fn main() -> ExitCode {
+    leviculum_alloc::start();
+    tokio_main()
+}
+
 #[tokio::main]
-async fn main() -> ExitCode {
+async fn tokio_main() -> ExitCode {
     let args = Args::parse();
 
     // Print-once mode: also chosen automatically when stdout is not a tty, so a

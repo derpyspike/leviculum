@@ -4,6 +4,12 @@
 //! compatible with Python's rncp. Connects to a running daemon
 //! (lnsd or rnsd) via shared instance IPC.
 
+/// The one allocator of every Leviculum program (1805,
+/// docs/src/architecture.md "Memory allocator"); `leviculum_alloc::start()`
+/// runs first in `main`.
+#[global_allocator]
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
+
 use std::path::PathBuf;
 
 use clap::{ArgAction, Parser};
@@ -137,8 +143,16 @@ fn output_levels(verbose: u8, quiet: u8, silent: bool) -> (&'static str, bool) {
     (filter, quiet >= 1)
 }
 
+/// The allocator's housekeeping first (1805): a plain `main`, because
+/// `#[tokio::main]` builds the runtime and its worker threads ahead of the
+/// body's first line.
+fn main() {
+    leviculum_alloc::start();
+    tokio_main()
+}
+
 #[tokio::main]
-async fn main() {
+async fn tokio_main() {
     let args = Args::parse();
 
     // RUST_LOG env takes precedence; otherwise use -v/-q flags.

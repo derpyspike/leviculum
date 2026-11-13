@@ -9,6 +9,12 @@
 //! lives in the library's `config`, `content`, `node`, and `web` modules;
 //! main only wires them.
 
+/// The one allocator of every Leviculum program (1805,
+/// docs/src/architecture.md "Memory allocator"); `leviculum_alloc::start()`
+/// runs first in `main`.
+#[global_allocator]
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
+
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -23,8 +29,16 @@ use lblogd::{watcher, web};
 
 type MainError = Box<dyn std::error::Error + Send + Sync>;
 
+/// The allocator's housekeeping first (1805): a plain `main`, because
+/// `#[tokio::main]` builds the runtime and its worker threads ahead of the
+/// body's first line.
+fn main() -> ExitCode {
+    leviculum_alloc::start();
+    tokio_main()
+}
+
 #[tokio::main]
-async fn main() -> ExitCode {
+async fn tokio_main() -> ExitCode {
     let args = Args::parse();
     match run(args).await {
         Ok(()) => ExitCode::SUCCESS,

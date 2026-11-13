@@ -6,6 +6,12 @@
 //! sends probe packets and reports round-trip time and hop count from
 //! the delivery proofs the probed destination returns.
 
+/// The one allocator of every Leviculum program (1805,
+/// docs/src/architecture.md "Memory allocator"); `leviculum_alloc::start()`
+/// runs first in `main`.
+#[global_allocator]
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
+
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -112,6 +118,7 @@ fn log_filter(verbose: u8) -> &'static str {
 }
 
 fn main() {
+    leviculum_alloc::start();
     let args = Args::parse();
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,

@@ -14,6 +14,9 @@ publish = false
 unsafe_code = "forbid"
 
 [dependencies]
+# The one allocator of every program (1805, docs/src/architecture.md
+# "Memory allocator"): the binary installs it and starts it first in `main`.
+leviculum-alloc = { path = "../leviculum-alloc" }
 leviculum-core = { path = "../leviculum-core" }
 leviculum-std = { path = "../leviculum-std" }
 # The piece split reads the region file's own index (version 4, index

@@ -417,7 +417,7 @@ records keep tag 0 forever. The host closed both halves this week —
 it always computes (8f470aa7, leviculum#442 D6,
 `leviculum-lxmf/src/propagation_node.rs:490-497`) and re-prices an
 old store once at start (645e3580, `reprice_stored_values`,
-`lnpnd/src/validation.rs:114`, run at `lnpnd/src/main.rs:681-692`).
+`lnpnd/src/validation.rs:114`, run at `lnpnd/src/main.rs:679-690`).
 What a stock peer sees: a fresh board's whole early store never
 syncs out of it. The messages are served to their *recipients* on
 `/get` unharmed (the serve does not filter by value); what is lost
@@ -703,7 +703,7 @@ conformance cells already run, pointed at a board.
 
 **D18 — no client allow/ignore lists on the board.** lnpnd carries
 the reference's `auth_required`/`allowed` and `ignored` lists
-(`lnpnd/src/main.rs:718-733`); on the board every identified client
+(`lnpnd/src/main.rs:716-731`); on the board every identified client
 may `/get` its mailbox and anyone may upload.
 What an operator sees: a board mailbox cannot be restricted to a
 user set. Class: semantic. Price: 16 B flash per hash plus a lookup

@@ -46,6 +46,12 @@
 //! `[DISP]`, `[MAP]`, `[LOOP]`) go to stderr in the firmware's shape. Exit
 //! 0 when the script ran, 2 on a usage error, 1 on any other.
 
+/// The one allocator of every Leviculum program (1805,
+/// docs/src/architecture.md "Memory allocator"); `leviculum_alloc::start()`
+/// runs first in `main`.
+#[global_allocator]
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
+
 mod board;
 mod flash;
 #[cfg(test)]
@@ -164,6 +170,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
 }
 
 fn main() -> ExitCode {
+    leviculum_alloc::start();
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let args = match parse(&argv) {
         Ok(args) => args,

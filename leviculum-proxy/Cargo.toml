@@ -15,6 +15,9 @@ name = "lora-proxy"
 path = "src/main.rs"
 
 [dependencies]
+# The one allocator of every program (1805, docs/src/architecture.md
+# "Memory allocator"): the binary installs it and starts it first in `main`.
+leviculum-alloc = { path = "../leviculum-alloc" }
 leviculum-core = { path = "../leviculum-core" }
 tokio = { workspace = true }
 tokio-serial = { workspace = true }

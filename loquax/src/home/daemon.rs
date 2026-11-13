@@ -1798,7 +1798,7 @@ fn census_dump(
         leviculum_std::census::compose_multi_node_dump(&nodes, &own, census.tables() as u64);
     #[cfg(feature = "heap-accounting")]
     dump.push_str(&leviculum_std::heap_accounting::measured_live_line(
-        "system",
+        leviculum_alloc::NAME,
     ));
     dump
 }

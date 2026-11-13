@@ -8,6 +8,12 @@
 //! index. Cutting and serving stay separate programs — the store at
 //! home runs this by hand or from cron, `lnmapd` only ever reads.
 
+/// The one allocator of every Leviculum program (1805,
+/// docs/src/architecture.md "Memory allocator"); `leviculum_alloc::start()`
+/// runs first in `main`.
+#[global_allocator]
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -60,6 +66,7 @@ struct Args {
 }
 
 fn main() -> ExitCode {
+    leviculum_alloc::start();
     let args = Args::parse();
     match run(&args) {
         Ok(index) => {

@@ -161,6 +161,7 @@ restart-after-upgrade = true
 default = ["std"]
 std = [
     "dep:leviculum-std",
+    "dep:leviculum-alloc",
     "dep:clap",
     "dep:tokio",
     "leviculum-lxmf/compression",
@@ -285,6 +286,9 @@ gui = [
 ]
 
 [dependencies]
+# The one allocator of every program (1805, docs/src/architecture.md
+# "Memory allocator"): the binary installs it and starts it first in `main`.
+leviculum-alloc = { path = "../leviculum-alloc", optional = true }
 # The LXMF router, node and message codec. Everything protocol-shaped lives
 # there; this crate is wiring, a CLI and a bounded run loop.
 leviculum-lxmf = { path = "../leviculum-lxmf", default-features = false, features = ["pow"] }
