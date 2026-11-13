@@ -113,7 +113,7 @@ live in `loquax-android/src/render_walk.rs`.
 | `label_overlap` | a settled frame | two shown names overlap |
 | `label_current_zoom` | a settled frame | a name is from a deeper zoom than the frame's, or is still fading out |
 | `label_on_world` | a turning globe | a name floats in space: three of its box's corners and middle are space |
-| `frame_p95` | a gesture | the 95th percentile frame time is over half a frame at 60 Hz (8.3 ms) |
+| `frame_p95` | a gesture | the 95th percentile frame time is over one frame at 60 Hz (16.7 ms, the host gate of 1799); the half-frame line (8.3 ms) stays in the note as information |
 | `heap_returns` | a gesture | the live heap ends more than 160 MB above its start |
 | `heap_peak` | a gesture | the live heap grows more than 320 MB during the gesture |
 | `view_kept` | the rotation | the centre or the zoom moved |

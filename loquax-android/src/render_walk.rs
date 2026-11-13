@@ -39,7 +39,9 @@
 //! The gesture rules ([`sequence_rules`]):
 //!
 //! - [`FRAME_P95`]: the 95th percentile of the gesture's frame times is at
-//!   most half a frame of the display (the GPU rule: 8.3 ms at 60 Hz).
+//!   most one frame of the display (the host gate of 1799: 16.7 ms at
+//!   60 Hz); the half-frame GPU line (8.3 ms) stays in the note as
+//!   information.
 //! - [`HEAP_RETURNS`]: the live heap at the gesture's end is at most
 //!   [`HEAP_KEPT_MAX_MB`] above its start.
 //! - [`HEAP_PEAK`]: the live heap never grows more than [`HEAP_PEAK_MAX_MB`]
@@ -516,20 +518,24 @@ pub fn quantile(ms: &[f64], q: f64) -> f64 {
 /// The gesture rules of the module's list.
 pub fn sequence_rules(p: &Played) -> Vec<Verdict> {
     let mb = |b: usize| b as f64 / (1u64 << 20) as f64;
-    let half = 1000.0 / p.hz.max(1.0) / 2.0;
+    // The gate is a whole frame of the display on the host (16.7 ms at
+    // 60 Hz; the 1799 decision); the half-frame GPU line stays in the
+    // note as information.
+    let whole = 1000.0 / p.hz.max(1.0);
     let p95 = quantile(&p.frame_ms, 0.95);
     let mut out = vec![
         Verdict::at_most(
             FRAME_P95,
             p95,
-            half,
+            whole,
             format!(
-                "p50 {:.1} ms, p95 {:.1} ms, max {:.1} ms, {} frames, target {:.0} Hz",
+                "p50 {:.1} ms, p95 {:.1} ms, max {:.1} ms, {} frames, target {:.0} Hz, half frame {:.1} ms",
                 quantile(&p.frame_ms, 0.5),
                 p95,
                 quantile(&p.frame_ms, 1.0),
                 p.frame_ms.len(),
-                p.hz
+                p.hz,
+                whole / 2.0
             ),
         ),
         Verdict::at_most(
@@ -839,8 +845,16 @@ mod tests {
         assert_eq!(v.len(), 4);
         assert!(v.iter().all(|v| v.pass), "{v:?}");
         let mut slow = good.clone();
-        slow.frame_ms = vec![9.0; 40];
+        slow.frame_ms = vec![18.0; 40];
         assert!(!verdict(&sequence_rules(&slow), FRAME_P95).pass);
+        // The 1799 decision: on the host the gate is a whole frame
+        // (16.7 ms at 60 Hz); the half-frame line stays in the note as
+        // information.
+        let mut half = good.clone();
+        half.frame_ms = vec![9.0; 40];
+        let v = verdict(&sequence_rules(&half), FRAME_P95);
+        assert!(v.pass, "{v:?}");
+        assert!(v.note.contains("half frame 8.3 ms"), "{v:?}");
         let mut kept = good.clone();
         kept.heap_end = 300 * mb;
         assert!(!verdict(&sequence_rules(&kept), HEAP_RETURNS).pass);
