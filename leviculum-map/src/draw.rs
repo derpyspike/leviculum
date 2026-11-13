@@ -30,7 +30,7 @@ use embedded_graphics::primitives::Rectangle;
 use leviculum_mapfill::coverage::{Clip, Coverage};
 use leviculum_mapfill::fill::Scratch;
 use leviculum_mapfill::fixture::{Feature, Features, Fixture};
-use leviculum_mapfill::render::{Clock, Look, Pass, Placement, RenderStats, Work};
+use leviculum_mapfill::render::{Clock, Look, Pass, Placement, RenderStats, Warp, Work};
 use leviculum_mapfill::style::{Class, Profile, Style, AREAS};
 
 use crate::buildings::{Bbox, Buildings, BUILDING_ZOOM};
@@ -155,13 +155,44 @@ where
     D: Coverage<Color = Rgb565>,
     C: Clock,
 {
+    draw_in_warped(
+        tiles, area, profile, ink, style, percent, None, target, scratch, work, clock,
+    )
+}
+
+/// [`draw_in_scaled`] with each placed point bent through `warp` when
+/// one is given (1799): the region's tiles drawn through the globe's
+/// handover, over the world picture already there — a warped pass never
+/// clears its area, since the region's box is no rectangle on the
+/// sphere and the picture below is its ground.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_in_warped<D, C>(
+    tiles: &[DrawTile<'_>],
+    area: Rectangle,
+    profile: Profile,
+    ink: Ink,
+    style: Style,
+    percent: u32,
+    warp: Option<&Warp<'_>>,
+    target: &mut D,
+    scratch: &mut Scratch<'_>,
+    work: &mut Work<'_>,
+    clock: &mut C,
+) -> Result<RenderStats, D::Error>
+where
+    D: Coverage<Color = Rgb565>,
+    C: Clock,
+{
     let target = &mut Clip::new(target, &area);
     // Every tile of one view is at the view's zoom less its overzoom.
     let zoom = tiles
         .first()
         .map_or(0, |t| t.tile.id.z.saturating_add(t.tile.overzoom));
     let look = ink.look(zoom, style).scaled(percent);
-    let mut pass = Pass::begin(target, scratch, look, clock)?;
+    let mut pass = match warp {
+        Some(_) => Pass::begin_over(target, scratch, look, clock),
+        None => Pass::begin(target, scratch, look, clock)?,
+    };
     let mut cursors: Vec<_> = tiles
         .iter()
         .map(|t| {
@@ -177,7 +208,7 @@ where
         for (at, features) in &mut cursors {
             // `<=`: a blob out of class order still has every feature drawn.
             while let Some(f) = features.next_if(|f| f.class <= class) {
-                pass.feature(&f, *at, profile, target, work, clock)?;
+                pass.feature_warped(&f, *at, warp, profile, target, work, clock)?;
             }
         }
     }
@@ -206,29 +237,29 @@ where
     let cased = look.casing > 0 && look.mono.is_none();
     if cased {
         for (at, f) in &tunnels {
-            pass.casing(f, *at, profile, target, work, clock)?;
+            pass.casing_warped(f, *at, warp, profile, target, work, clock)?;
         }
     }
     for (at, f) in &tunnels {
-        pass.feature(f, *at, profile, target, work, clock)?;
+        pass.feature_warped(f, *at, warp, profile, target, work, clock)?;
     }
     if cased {
         walk(cursors.clone(), lines, |at, f| match Layer::of(&f) {
-            Layer::Ground => pass.casing(&f, at, profile, target, work, clock),
+            Layer::Ground => pass.casing_warped(&f, at, warp, profile, target, work, clock),
             _ => Ok(()),
         })?;
     }
     walk(cursors, lines, |at, f| match Layer::of(&f) {
-        Layer::Ground => pass.feature(&f, at, profile, target, work, clock),
+        Layer::Ground => pass.feature_warped(&f, at, warp, profile, target, work, clock),
         _ => Ok(()),
     })?;
     if cased {
         for (at, f) in &bridges {
-            pass.casing(f, *at, profile, target, work, clock)?;
+            pass.casing_warped(f, *at, warp, profile, target, work, clock)?;
         }
     }
     for (at, f) in &bridges {
-        pass.feature(f, *at, profile, target, work, clock)?;
+        pass.feature_warped(f, *at, warp, profile, target, work, clock)?;
     }
     Ok(pass.stats)
 }

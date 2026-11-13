@@ -747,8 +747,9 @@ where
 
 /// [`draw_world`] through the blended world projection (1710): the same
 /// layers, every point through [`Blend::to_screen_sub`], so the world
-/// view is Equal Earth or the globe on its way into Mercator. The caller
-/// keeps regions off this path: a blended view draws no tiles.
+/// view is Equal Earth or the globe on its way into Mercator. A region
+/// that reaches into the view draws over this picture through the same
+/// blend, each placed point warped (1799 item 0).
 pub fn draw_world_view<D>(
     world: &World,
     blend: &Blend,

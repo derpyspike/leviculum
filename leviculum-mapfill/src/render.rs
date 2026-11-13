@@ -107,11 +107,20 @@ pub struct Placement {
     pub origin: Point,
 }
 
-/// Project `f` into `w`: the number of rings, the bounding box and the
-/// number of vertices, or `None` when it does not fit.
+/// A bending of placed sub-pixel points into their drawn place: how the
+/// map core projects a tile's Mercator-linear geometry through a curved
+/// world projection (the globe's handover) without this crate knowing
+/// any float or projection. `None` everywhere else: the placed point is
+/// the drawn point.
+pub type Warp<'w> = dyn Fn(Point) -> Point + 'w;
+
+/// Project `f` into `w`, each placed point through `warp` where one is
+/// given: the number of rings, the bounding box and the number of
+/// vertices, or `None` when it does not fit.
 fn project_feature(
     f: &Feature<'_>,
     at: Placement,
+    warp: Option<&Warp<'_>>,
     w: &mut Work<'_>,
 ) -> Option<(usize, Bbox, usize)> {
     let (mut n, mut nr) = (0usize, 0usize);
@@ -121,10 +130,13 @@ fn project_feature(
             return None;
         }
         for (x, y) in ring.points() {
-            let p = Point::new(
+            let mut p = Point::new(
                 project(f.offset.x + i32::from(x), at.shift) + at.origin.x,
                 project(f.offset.y + i32::from(y), at.shift) + at.origin.y,
             );
+            if let Some(warp) = warp {
+                p = warp(p);
+            }
             x0 = x0.min(p.x);
             y0 = y0.min(p.y);
             x1 = x1.max(p.x);
@@ -249,25 +261,42 @@ impl<'s, 'a> Pass<'s, 'a> {
         D: Coverage<Color = Rgb565>,
         C: Clock,
     {
-        let mut stats = RenderStats::default();
-        let clip = target.bounding_box();
         let t = clock.now();
         target.clear(look.theme.palette().background)?;
+        let mut pass = Self::begin_over(target, scratch, look, clock);
+        pass.stats.phases.clear += u64::from(pass.prev.wrapping_sub(t));
+        Ok(pass)
+    }
+
+    /// [`begin`](Self::begin) without the clear: a pass that draws over a
+    /// picture already there — a region's tiles over the drawn globe in
+    /// the handover (1799) — still clipped to the target's bounding box.
+    pub fn begin_over<D, C>(
+        target: &mut D,
+        scratch: &'s mut Scratch<'a>,
+        look: Look,
+        clock: &mut C,
+    ) -> Self
+    where
+        D: Coverage<Color = Rgb565>,
+        C: Clock,
+    {
+        let stats = RenderStats::default();
+        let clip = target.bounding_box();
         let prev = clock.now();
-        stats.phases.clear += u64::from(prev.wrapping_sub(t));
         let sub = crate::fill::SUBPIXEL;
         let (vl, vt) = (clip.top_left.x * sub, clip.top_left.y * sub);
         let (vr, vb) = (
             vl + clip.size.width as i32 * sub,
             vt + clip.size.height as i32 * sub,
         );
-        Ok(Self {
+        Self {
             filler: Filler::new(scratch, clip),
             view: (vl, vt, vr, vb),
             prev,
             look,
             stats,
-        })
+        }
     }
 
     /// The look this pass inks by.
@@ -283,10 +312,12 @@ impl<'s, 'a> Pass<'s, 'a> {
 
     /// Project `f` and test it against the view, counting it when
     /// `count`: the rings, or `None` when it is skipped.
+    #[allow(clippy::too_many_arguments)]
     fn prepare<C: Clock>(
         &mut self,
         f: &Feature<'_>,
         at: Placement,
+        warp: Option<&Warp<'_>>,
         pad: i32,
         work: &mut Work<'_>,
         clock: &mut C,
@@ -297,7 +328,7 @@ impl<'s, 'a> Pass<'s, 'a> {
         if count {
             st.features += 1;
         }
-        let projected = project_feature(f, at, work);
+        let projected = project_feature(f, at, warp, work);
         let visible = projected.map(|(_, (x0, y0, x1, y1), n)| {
             n > 0 && x1 + pad >= vl && x0 - pad < vr && y1 + pad >= vt && y0 - pad < vb
         });
@@ -339,6 +370,27 @@ impl<'s, 'a> Pass<'s, 'a> {
         D: Coverage<Color = Rgb565>,
         C: Clock,
     {
+        self.feature_warped(f, at, None, profile, target, work, clock)
+    }
+
+    /// [`feature`](Self::feature) with each placed point bent through
+    /// `warp` (1799): how a region's tiles draw through the globe's
+    /// handover.
+    #[allow(clippy::too_many_arguments)]
+    pub fn feature_warped<D, C>(
+        &mut self,
+        f: &Feature<'_>,
+        at: Placement,
+        warp: Option<&Warp<'_>>,
+        profile: Profile,
+        target: &mut D,
+        work: &mut Work<'_>,
+        clock: &mut C,
+    ) -> Result<(), D::Error>
+    where
+        D: Coverage<Color = Rgb565>,
+        C: Clock,
+    {
         // A class the look leaves out is skipped as one the profile does:
         // a line class at width 0, every area in the lines-only look.
         let width = match f.kind {
@@ -349,7 +401,7 @@ impl<'s, 'a> Pass<'s, 'a> {
         if !profile.includes(f.class) || (f.kind == Kind::Line && width == 0) {
             return Ok(());
         }
-        let Some(nr) = self.prepare(f, at, width, work, clock, true) else {
+        let Some(nr) = self.prepare(f, at, warp, width, work, clock, true) else {
             return Ok(());
         };
         let palette = self.look.theme.palette();
@@ -537,6 +589,26 @@ impl<'s, 'a> Pass<'s, 'a> {
         D: Coverage<Color = Rgb565>,
         C: Clock,
     {
+        self.casing_warped(f, at, None, profile, target, work, clock)
+    }
+
+    /// [`casing`](Self::casing) with each placed point bent through
+    /// `warp` (1799), as [`feature_warped`](Self::feature_warped).
+    #[allow(clippy::too_many_arguments)]
+    pub fn casing_warped<D, C>(
+        &mut self,
+        f: &Feature<'_>,
+        at: Placement,
+        warp: Option<&Warp<'_>>,
+        profile: Profile,
+        target: &mut D,
+        work: &mut Work<'_>,
+        clock: &mut C,
+    ) -> Result<(), D::Error>
+    where
+        D: Coverage<Color = Rgb565>,
+        C: Clock,
+    {
         let line = line_width(&self.look.widths, f.class);
         if f.kind != Kind::Line
             || self.look.mono.is_some()
@@ -548,7 +620,7 @@ impl<'s, 'a> Pass<'s, 'a> {
             return Ok(());
         }
         let width = line + self.look.casing;
-        let Some(nr) = self.prepare(f, at, width, work, clock, false) else {
+        let Some(nr) = self.prepare(f, at, warp, width, work, clock, false) else {
             return Ok(());
         };
         let color = self.look.theme.palette().casing_of(f.class);

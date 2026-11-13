@@ -25,12 +25,15 @@
 //! shapes themselves allow. The globe's centre scale is one in every
 //! direction; nothing slides.
 //!
-//! `t` is a smooth step of the view zoom ([`t_of_zoom`]): 0 up to
-//! [`WORLD_ZOOM`], 1 from [`MERCATOR_ZOOM`] on, `6u⁵-15u⁴+10u³` between —
-//! C² at both ends, no kink. From `t = 1` the view is Mercator exactly
-//! and every tile, golden and drawer below stays as it is; a blended view
-//! never draws a region's tiles, so no raster or tile is ever reprojected
-//! (`crate::choice::drawn` keeps regions on the linear path).
+//! `t` is a smooth step of the view zoom ([`t_of_zoom`]): 0 below the
+//! window, 1 past it, `6u⁵-15u⁴+10u³` between — C² at both ends, no
+//! kink. The globe's window follows the limb and the visible ground
+//! ([`globe_window`], 1799 item 0); Equal Earth's is [`WORLD_ZOOM`] to
+//! [`MERCATOR_ZOOM`]. From `t = 1` the view is Mercator exactly and
+//! every tile, golden and drawer below stays as it is. A region whose
+//! zooms reach into a blended view draws through the blend, each placed
+//! point warped (1799, `leviculum_mapfill::render::Warp`); no raster is
+//! ever reprojected.
 //!
 //! Because both mappings put the centre on the same pixel at the same
 //! local scale, what is in the middle of the screen does not move during
@@ -335,6 +338,13 @@ impl Blend {
     /// Width and height in pixels.
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    /// Mercator world units a pixel of this view spans: what a caller
+    /// that lays a Mercator-linear grid under the blend (the region
+    /// tiles at globe zooms, 1799) sizes that grid by.
+    pub fn unit(&self) -> f64 {
+        self.unit
     }
 
     /// The central meridian and the centre's latitude, radians: what the

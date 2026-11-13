@@ -43,12 +43,14 @@ use embedded_graphics::prelude::Point;
 use embedded_graphics::primitives::Rectangle;
 use leviculum_map::blend::{Blend, Shape};
 use leviculum_map::choice::{drawn, view_zooms};
-use leviculum_map::draw::{attach_buildings, draw_in_scaled, draw_tiles, draws_buildings, Ink};
+use leviculum_map::draw::{
+    attach_buildings, draw_in_scaled, draw_in_warped, draw_tiles, draws_buildings, Ink,
+};
 use leviculum_map::labels::ViewLabel;
 use leviculum_map::outline;
 use leviculum_map::region::{Header, Region, TileId};
 use leviculum_map::timezones;
-use leviculum_map::viewport::{ViewTile, Viewport};
+use leviculum_map::viewport::{ViewTile, Viewport, MAX_VIEW_ZOOM};
 use leviculum_mapfill::coverage::{Coverage, Hard};
 use leviculum_mapfill::fill::{Edge, Filler, Scratch};
 use leviculum_mapfill::frame::{Frame, RgbaFrame};
@@ -423,10 +425,10 @@ impl Painter {
 
     /// The blended world mapping of `view` at its own whole zoom, when
     /// this painter blends world views at all
-    /// ([`set_world_shape`](Self::set_world_shape)), the blend is not
-    /// yet Mercator there, and
-    /// no region reaches into the view — the view that shows the world
-    /// outline alone, so no region tile is ever reprojected.
+    /// ([`set_world_shape`](Self::set_world_shape)) and the blend is not
+    /// yet Mercator there. A region that reaches into the view draws
+    /// through the blend, warped point by point (1799 item 0); no raster
+    /// is ever reprojected.
     pub fn world_blend(&mut self, view: &Viewport) -> Option<Blend> {
         let shape = self.world_shape?;
         self.world_blend_as(shape, view, f64::from(view.zoom()))
@@ -434,18 +436,20 @@ impl Painter {
 
     /// [`world_blend`](Self::world_blend) with the shape and the exact
     /// zoom given: what a tile cache asks for a frame between the steps.
+    /// Since 1799 the blend holds wherever `t` is below one; a region
+    /// that reaches into the view draws through it, warped point by
+    /// point ([`Painter::draw_with`]), instead of forcing the view flat.
     pub fn world_blend_as(&mut self, shape: Shape, view: &Viewport, zoom: f64) -> Option<Blend> {
         let (w, h) = view.size();
         let blend = Blend::new(shape, view.centre, zoom, w, h);
         if blend.t() >= 1.0 {
             return None;
         }
-        self.world_only(view).then_some(blend)
+        Some(blend)
     }
 
     /// Whether `view` shows the world picture alone: no installed region
-    /// reaches into it at its zoom. The blend holds only there, so no
-    /// region tile is ever reprojected.
+    /// reaches into it at its zoom.
     pub fn world_only(&mut self, view: &Viewport) -> bool {
         self.refresh();
         drawn(
@@ -500,7 +504,7 @@ impl Painter {
         let mut fb = vec![0u16; (w as usize) * (h as usize)];
         let (attribution, pending) = match Frame::new(&mut fb, w, h) {
             Some(mut frame) => match blend {
-                Some(b) => self.draw_world_into(b, ink, style, &mut frame),
+                Some(b) => self.draw_world_into(b, ink, style, percent, &mut frame),
                 None => self.draw_into(view, ink, style, percent, &mut frame),
             },
             None => (outline::ATTRIBUTION.to_string(), 0),
@@ -533,7 +537,9 @@ impl Painter {
         let blend = self.world_blend(view);
         let (attribution, pending) = match RgbaFrame::new(&mut rgba, w, h) {
             Some(frame) => match &blend {
-                Some(b) => self.draw_world_into(b, ink, style, &mut frame.smoothed(smooth)),
+                Some(b) => {
+                    self.draw_world_into(b, ink, style, percent, &mut frame.smoothed(smooth))
+                }
                 None => self.draw_into(view, ink, style, percent, &mut frame.smoothed(smooth)),
             },
             None => (outline::ATTRIBUTION.to_string(), 0),
@@ -562,20 +568,27 @@ impl Painter {
         blend: &Blend,
         ink: Ink,
         style: Style,
+        percent: u32,
         smooth: bool,
         rgba: &mut [u8],
     ) -> Option<(String, usize)> {
         let (w, h) = blend.size();
         let frame = RgbaFrame::new(rgba, w, h)?;
-        Some(self.draw_world_into(blend, ink, style, &mut frame.smoothed(smooth)))
+        Some(self.draw_world_into(blend, ink, style, percent, &mut frame.smoothed(smooth)))
     }
 
-    /// [`draw_world_onto`](Self::draw_world_onto)'s picture into `frame`.
+    /// [`draw_world_onto`](Self::draw_world_onto)'s picture into `frame`:
+    /// the world outline through the blend, and over it every region that
+    /// reaches into the view at its zoom, its tiles drawn through the
+    /// blend point by point (1799 item 0) — never flat over the sphere,
+    /// never cleared to a rectangle, since a region's box is no rectangle
+    /// on the curved picture and the world below is its ground.
     fn draw_world_into<D>(
         &mut self,
         blend: &Blend,
         ink: Ink,
         style: Style,
+        percent: u32,
         frame: &mut D,
     ) -> (String, usize)
     where
@@ -584,6 +597,41 @@ impl Painter {
         self.refresh();
         let mut attribution = outline::ATTRIBUTION.to_string();
         let Ok(_) = outline::draw_world_view(&outline::WORLD, blend, ink, style.theme, frame);
+        let mut pending = 0;
+        let (aux, warp) = blend_grid(blend);
+        let order = drawn(
+            self.regions
+                .iter()
+                .map(|r| (r.name.as_str(), r.region.header())),
+            &aux,
+        );
+        let mut shown: Vec<usize> = Vec::new();
+        for &i in &order {
+            let installed = &self.regions[i];
+            let area = warped_area(aux.area_of(&installed.region.header().bounds), &warp, frame);
+            if area.is_zero_sized() {
+                continue;
+            }
+            if let Some(owed) = region_into_warped(
+                &installed.region,
+                &aux,
+                &warp,
+                area,
+                ink,
+                style,
+                percent,
+                &mut self.read,
+                &mut self.scratch,
+                frame,
+            ) {
+                attribution = installed.region.attribution().to_string();
+                shown.push(i);
+                pending += owed;
+            }
+        }
+        for i in shown {
+            self.viewed(i);
+        }
         if self.time_zones.is_some() {
             let (_, h) = blend.size();
             self.scratch.heads.resize(h as usize, 0);
@@ -604,7 +652,7 @@ impl Painter {
             );
             attribution = format!("{attribution} · {}", timezones::ATTRIBUTION);
         }
-        (attribution, 0)
+        (attribution, pending)
     }
 
     /// [`draw`](Self::draw)'s picture into `frame`: its credit and the
@@ -712,7 +760,44 @@ impl Painter {
             };
         }
         if let Some(b) = &blend {
+            // The regions' names anchor through the blend too (1799
+            // item 0): placed on the blend's linear grid, each anchor
+            // and line point warped onto the curved picture, so a name
+            // sits on its blended ground.
+            self.refresh();
             let mut out = Vec::new();
+            let (aux, warp) = blend_grid(b);
+            let bend = |p: (i64, i64)| {
+                let q = warp(Point::new(
+                    p.0.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+                    p.1.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+                ));
+                (i64::from(q.x), i64::from(q.y))
+            };
+            let order = drawn(
+                self.regions
+                    .iter()
+                    .map(|r| (r.name.as_str(), r.region.header())),
+                &aux,
+            );
+            for i in order {
+                let mut found = Vec::new();
+                if self.regions[i]
+                    .region
+                    .view_labels(&aux, lines, &mut found)
+                    .is_ok()
+                {
+                    for mut l in found {
+                        l.anchor = bend(l.anchor);
+                        for piece in &mut l.line {
+                            for p in piece.iter_mut() {
+                                *p = bend(*p);
+                            }
+                        }
+                        out.push(l);
+                    }
+                }
+            }
             outline::names_view(outline::NAMES_50M, b, &mut out);
             return out;
         }
@@ -772,6 +857,137 @@ impl Painter {
         }
         self.viewed.insert(name, now);
     }
+}
+
+/// The Mercator-linear grid a blended view's region tiles are placed on
+/// (1799 item 0): a viewport at the blend's nearest whole zoom, centred
+/// as the blend and sized for the blend's own coverage (whose unit
+/// carries the globe's shrink), and the warp that takes a sub-pixel
+/// placed on that grid to its place on the blended screen — the grid
+/// point's ground, projected through the blend.
+fn blend_grid(blend: &Blend) -> (Viewport, impl Fn(Point) -> Point + '_) {
+    const WORLD_F: f64 = 4_294_967_296.0;
+    let (w, h) = blend.size();
+    let zt = blend.zoom().round().clamp(0.0, f64::from(MAX_VIEW_ZOOM)) as u8;
+    let unit_t = (24.0 - f64::from(zt)).exp2();
+    let cover = |px: u32| ((f64::from(px) * blend.unit() / unit_t).ceil() as u32).saturating_add(2);
+    let aux = Viewport::new(blend.centre(), zt, cover(w), cover(h));
+    let (aw, ah) = aux.size();
+    let (acx, acy) = (f64::from(aw) / 2.0, f64::from(ah) / 2.0);
+    let sub = f64::from(leviculum_mapfill::SUBPIXEL);
+    let centre = blend.centre();
+    let warp = move |p: Point| -> Point {
+        let gx = f64::from(centre.x) + (f64::from(p.x) / sub - acx) * unit_t;
+        let gy = f64::from(centre.y) + (f64::from(p.y) / sub - acy) * unit_t;
+        let wrapped = gx.rem_euclid(WORLD_F);
+        let ground = leviculum_map::mercator::World {
+            x: if wrapped >= WORLD_F {
+                0
+            } else {
+                wrapped as u32
+            },
+            y: gy.clamp(0.0, WORLD_F - 1.0) as u32,
+        };
+        let (x, y) = blend.to_screen_sub(ground);
+        Point::new(x as i32, y as i32)
+    };
+    (aux, warp)
+}
+
+/// Where the grid rectangle `on_grid` (the region's box on the blend's
+/// linear grid, [`blend_grid`]) lands on `frame`: the warped corners'
+/// and edge midpoints' bounding box, a pixel of pad, cut to the frame.
+fn warped_area<D>(on_grid: Rectangle, warp: &dyn Fn(Point) -> Point, frame: &D) -> Rectangle
+where
+    D: Coverage<Color = Rgb565, Error = core::convert::Infallible>,
+{
+    if on_grid.is_zero_sized() {
+        return on_grid;
+    }
+    let sub = leviculum_mapfill::SUBPIXEL;
+    let (x0, y0) = (on_grid.top_left.x, on_grid.top_left.y);
+    let (x1, y1) = (
+        x0 + on_grid.size.width as i32,
+        y0 + on_grid.size.height as i32,
+    );
+    let (xm, ym) = ((x0 + x1) / 2, (y0 + y1) / 2);
+    let mut lo = Point::new(i32::MAX, i32::MAX);
+    let mut hi = Point::new(i32::MIN, i32::MIN);
+    for (x, y) in [
+        (x0, y0),
+        (xm, y0),
+        (x1, y0),
+        (x0, ym),
+        (x1, ym),
+        (x0, y1),
+        (xm, y1),
+        (x1, y1),
+    ] {
+        let p = warp(Point::new(x * sub, y * sub));
+        lo = Point::new(lo.x.min(p.x), lo.y.min(p.y));
+        hi = Point::new(hi.x.max(p.x), hi.y.max(p.y));
+    }
+    let corner = Point::new(lo.x.div_euclid(sub) - 1, lo.y.div_euclid(sub) - 1);
+    let size = (
+        (hi.x.div_euclid(sub) + 2 - corner.x).max(0) as u32,
+        (hi.y.div_euclid(sub) + 2 - corner.y).max(0) as u32,
+    );
+    Rectangle::new(corner, size.into()).intersection(&frame.bounding_box())
+}
+
+/// Draw `region`'s tiles of the grid view `aux` through `warp` into
+/// `area` of `frame` (1799 item 0): as [`region_into`], but every placed
+/// point bent onto the blended screen, nothing cleared, and no building
+/// footprints — the blend never reaches the zooms that draw them. How
+/// many tiles are not there yet; `None` when a tile could not be read.
+#[allow(clippy::too_many_arguments)]
+fn region_into_warped<D>(
+    region: &Region<File>,
+    aux: &Viewport,
+    warp: &dyn Fn(Point) -> Point,
+    area: Rectangle,
+    ink: Ink,
+    style: Style,
+    percent: u32,
+    read: &mut Vec<(ViewTile, Vec<u8>)>,
+    fill: &mut FillScratch,
+    frame: &mut D,
+) -> Option<usize>
+where
+    D: Coverage<Color = Rgb565, Error = core::convert::Infallible>,
+{
+    let Ok(pending) = region.read_view(aux, read) else {
+        return None;
+    };
+    let Ok(tiles) = draw_tiles(read) else {
+        return None;
+    };
+    let h = frame.bounding_box().size.height;
+    // A bucket head a row of the frame.
+    fill.heads.resize(h as usize, 0);
+    let mut scratch = Scratch {
+        edges: &mut fill.edges,
+        heads: &mut fill.heads,
+        active: &mut fill.active,
+    };
+    let mut work = Work {
+        points: &mut fill.points,
+        ring_ends: &mut fill.ring_ends,
+    };
+    let Ok(_) = draw_in_warped(
+        &tiles,
+        area,
+        Profile::Full,
+        ink,
+        style,
+        percent,
+        Some(warp),
+        frame,
+        &mut scratch,
+        &mut work,
+        &mut NoClock,
+    );
+    Some(pending)
 }
 
 /// Draw `region`'s tiles of `view` into `area` of `frame`, with their
@@ -840,6 +1056,69 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 1799 item 0: a region's tiles draw through the blend the caller
+    /// holds, warped point by point onto the curved picture, instead of
+    /// vanishing into the world outline alone. The probes are the flat
+    /// picture's own: pixels deep inside a uniformly coloured region
+    /// feature keep their colour at the blend's place for their ground.
+    #[test]
+    fn a_region_draws_through_the_blend_the_caller_holds() {
+        use leviculum_map::blend::{Blend, Shape};
+        use leviculum_map::mercator::{project, LatLon};
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../leviculum-map/fixtures/firenze.lmr");
+        let dir = tempfile::tempdir().expect("tmp");
+        std::fs::copy(&fixture, dir.path().join("firenze.lmr")).expect("copy");
+        let mut painter = Painter::new(Maps::new(Some(dir.path().to_path_buf())));
+        let at = project(LatLon::from_degrees(43.7714, 11.2542));
+        let (w, h) = (480u32, 320u32);
+        let view = Viewport::new(at, 11, w, h);
+        let flat = painter.draw_with(&view, None, Ink::Colour, Style::SCREEN, 100);
+        let blend = Blend::with_t(Shape::Globe, at, 11.0, w, h, 0.5);
+        let curved = painter.draw_with(&view, Some(&blend), Ink::Colour, Style::SCREEN, 100);
+        // A colour as the frame holds it: Rgb565, big-endian.
+        use embedded_graphics::pixelcolor::raw::{RawData, RawU16};
+        let background = RawU16::from(Style::SCREEN.theme.palette().background)
+            .into_inner()
+            .to_be();
+        // Probes: flat pixels whose 5x5 patch is one colour that is not
+        // the plain background — the inside of the region's areas.
+        let px = |fb: &Vec<u16>, x: u32, y: u32| fb[(y * w + x) as usize];
+        let mut held = 0usize;
+        let mut probes = 0usize;
+        for y in (4..h - 4).step_by(3) {
+            for x in (4..w - 4).step_by(3) {
+                let c = px(&flat.fb, x, y);
+                if c == background {
+                    continue;
+                }
+                let uniform =
+                    (0..3).all(|dy| (0..3).all(|dx| px(&flat.fb, x + dx - 1, y + dy - 1) == c));
+                if !uniform {
+                    continue;
+                }
+                probes += 1;
+                let ground = view.to_world(x as i32, y as i32);
+                let (bx, by) = blend.to_screen(ground);
+                if bx < 0.0 || by < 0.0 || bx >= f64::from(w) || by >= f64::from(h) {
+                    probes -= 1;
+                    continue;
+                }
+                if px(&curved.fb, bx as u32, by as u32) == c {
+                    held += 1;
+                }
+            }
+        }
+        assert!(
+            probes >= 20,
+            "only {probes} uniform probes in the flat view"
+        );
+        assert!(
+            held * 10 >= probes * 8,
+            "{held} of {probes} probes kept their colour at the blend's place"
+        );
+    }
 
     /// 1683: where no region fills the view the world view's own names
     /// come with its picture — a country's, a sea's and a range's at the

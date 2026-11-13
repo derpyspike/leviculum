@@ -339,12 +339,11 @@ impl TileCache {
     }
 
     /// The blended mapping of `view` when the blend holds there: the
-    /// shape is set, `t` is below one at the view's exact zoom, and no
-    /// region reaches into it (the painter's own check, so the frame and
-    /// the whole-view drawers agree on the condition). The blend carries
-    /// the view's own size and the screen's `t`
-    /// ([`set_screen`](Self::set_screen)); the region check widens to the
-    /// whole zoom below, which only errs towards Mercator.
+    /// shape is set and `t` is below one at the view's exact zoom. A
+    /// region that reaches into the view draws through the blend inside
+    /// the whole-frame painter (1799 item 0). The blend carries the
+    /// view's own size and the screen's `t`
+    /// ([`set_screen`](Self::set_screen)).
     pub fn world_blend(&mut self, view: &ExactView) -> Option<Blend> {
         let shape = self.world_shape?;
         let zoom = view.zoom();
@@ -358,9 +357,10 @@ impl TileCache {
         if self.painters.is_empty() {
             self.painters.push(Painter::new(self.maps.clone()));
         }
-        let floor = view.tile_zoom().min(zoom as u8);
-        let whole = view.at_zoom(floor);
-        self.painters[0].world_only(&whole).then_some(blend)
+        // Since 1799 a region that reaches into a blended view draws
+        // through the blend inside the whole-frame painter, so the blend
+        // holds wherever `t` is below one.
+        Some(blend)
     }
 
     pub fn workers(&self) -> usize {
@@ -472,8 +472,14 @@ impl TileCache {
         if let Some(blend) = self.world_blend(&frame.view) {
             // Straight into `rgba` (1797): no frame-sized buffer beside it.
             let smooth = frame.smooth || frame.resmooth;
-            let drawn =
-                self.painters[0].draw_world_onto(&blend, Ink::Colour, frame.style, smooth, rgba);
+            let drawn = self.painters[0].draw_world_onto(
+                &blend,
+                Ink::Colour,
+                frame.style,
+                percent,
+                smooth,
+                rgba,
+            );
             if !frame.moving {
                 self.keep_near(frame.zoom);
             }
