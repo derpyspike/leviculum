@@ -61,9 +61,12 @@ fn the_centre_never_moves() {
 fn t_one_is_mercator_exactly() {
     for shape in SHAPES {
         for centre in centres() {
-            let b = Blend::new(shape, centre, 6.0, 480, 320);
+            // Past both windows: Equal Earth's fixed one and the globe's
+            // ground-driven one (1799 item 0, Mercator from ~z8 at this
+            // frame).
+            let b = Blend::new(shape, centre, 9.0, 480, 320);
             assert_eq!(b.t(), 1.0);
-            let view = ExactView::new(centre, 6 * MILLI, 480, 320);
+            let view = ExactView::new(centre, 9 * MILLI, 480, 320);
             for (dlat, dlon) in [(0.0, 0.0), (0.3, 0.4), (-0.2, 0.7), (0.5, -0.9)] {
                 let at = unproject(centre);
                 let w = project(LatLon::from_degrees(
@@ -285,7 +288,7 @@ fn the_zoom_ramp_moves_the_middle_third_gently() {
         let mut worst_shaped = 0.0f64;
         for (i, centre) in centres().into_iter().enumerate() {
             let mut z = 1.0;
-            while z < 7.0 - 1e-9 {
+            while z < 9.0 - 1e-9 {
                 let (raw, shaped) = step_residual(shape, centre, z, 0.1);
                 if raw > worst_raw.0 {
                     worst_raw = (raw, z, i);
@@ -308,13 +311,15 @@ fn the_zoom_ramp_moves_the_middle_third_gently() {
         // The globe's radius at the world is the zoom's alone since 1762,
         // wherever it is turned to, so at 65 N it still has Mercator's
         // 1/cos 65° = 2.37 to grow through the handover on top of the
-        // zoom: a tenth of a zoom there is up to 0.18 of one in scale.
-        // That is the raw 5.52 px measured at z3.4, and the shape morph
-        // per step grows with the step to 1.29 px (0.59 before, when the
-        // globe was 2.37 times too large at the world instead).
+        // zoom. Since the window follows the ground (1799 item 0) the
+        // handover spans about 2.2 zooms instead of 3, so one tenth of a
+        // zoom carries a larger slice of that growth: the raw 7.04 px
+        // measured at z6.8. The shape morph itself fell to 0.14 px a
+        // step (from 1.29): at the later handover the view shows a
+        // country, where the sphere and Mercator barely differ in shape.
         let (shaped_bound, raw_bound) = match shape {
             Shape::EqualEarth => (1.0, 3.5),
-            Shape::Globe => (1.5, 6.0),
+            Shape::Globe => (0.5, 8.0),
         };
         assert!(
             worst_shaped < shaped_bound,

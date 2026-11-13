@@ -469,3 +469,73 @@ fn a_drag_turns_the_globe_by_the_arcball_amount() {
         "{la}/{lo}"
     );
 }
+
+/// 1799 item 0 (after 1762 point 7): the projection is a pure sphere as
+/// long as any part of the limb is inside the view or within a margin of
+/// it. The blend toward Mercator starts only once the limb is well
+/// outside the view on all sides AND the short side shows about a
+/// country (all of Germany, ~900 km, is still the sphere or the very
+/// start of the blend), and close to the ground the view is Mercator
+/// exactly. Start and end follow the limb and the visible ground, never
+/// bare zoom numbers: the same rule must hold at every frame size.
+#[test]
+fn the_sphere_holds_while_the_limb_is_near_the_view() {
+    let centre = at(55.0, 20.0);
+    // Phone portrait and landscape, a desktop window, the M9's frame.
+    for (w, h) in [(1224u32, 2197u32), (2197, 1224), (1860, 1024), (320, 240)] {
+        let half_diag = f64::from(w).hypot(f64::from(h)) / 2.0;
+        let short = f64::from(w.min(h));
+        let mut blending = false;
+        let mut z = 0.0;
+        while z < 14.0 {
+            let b = Blend::new(Shape::Globe, centre, z, w, h);
+            // The pure sphere's limb radius at this zoom, pixels.
+            let r0 = 256.0 * z.exp2() / core::f64::consts::TAU;
+            // Ground across the short side on the pure sphere, km.
+            let ground = 2.0 * (short / (2.0 * r0)).min(1.0).asin() * 6371.0;
+            if r0 <= 1.5 * half_diag {
+                assert_eq!(b.t(), 0.0, "{w}x{h} z{z}: limb near the view, t > 0");
+            }
+            if ground > 950.0 {
+                assert_eq!(b.t(), 0.0, "{w}x{h} z{z}: {ground:.0} km across, t > 0");
+            }
+            if ground < 150.0 {
+                assert_eq!(b.t(), 1.0, "{w}x{h} z{z}: {ground:.0} km across, t < 1");
+            }
+            blending |= b.t() > 0.0 && b.t() < 1.0;
+            z += 0.125;
+        }
+        assert!(blending, "{w}x{h}: the handover never happens");
+    }
+}
+
+/// Lew's screenshot of 2026-11-13 (`2026-11-13-globe-polar-tile.png`,
+/// order 1799): above the north pole a straight-edged quad of sea colour
+/// stuck out of the globe's round limb — Mercator's polar cap, blended
+/// in while the limb was still on the screen. At a view like the
+/// screenshot's (centre 55 N 20 E, the disk wider than the screen)
+/// nothing may be drawn outside the globe's disk but the space ground,
+/// at the south pole as at the north.
+#[test]
+fn nothing_sticks_out_of_the_disk_while_the_limb_is_in_view() {
+    for lat in [55.0, -55.0] {
+        // The phone's map pane; the disk wider than the screen, its top
+        // and bottom inside the view as in the picture.
+        let (w, h) = (1224u32, 2197u32);
+        let blend = Blend::new(Shape::Globe, at(lat, 20.0), 4.28, w, h);
+        let fb = picture(&outline::WORLD, &blend);
+        let space = raw(outline::space(THEME));
+        let r = blend.radius();
+        let (cx, cy) = (f64::from(w) / 2.0, f64::from(h) / 2.0);
+        let mut out = 0usize;
+        for y in 0..h {
+            for x in 0..w {
+                let d = (f64::from(x) + 0.5 - cx).hypot(f64::from(y) + 0.5 - cy);
+                if d > r + 2.0 && fb[(y * w + x) as usize] != space {
+                    out += 1;
+                }
+            }
+        }
+        assert_eq!(out, 0, "{lat} N: {out} pixels drawn outside the disk");
+    }
+}

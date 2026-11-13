@@ -454,18 +454,31 @@ fn the_buildings_draw_their_goldens_from_z16() {
 
 /// The blended world views (1710): central Europe out of Equal Earth
 /// and out of the orthographic globe, at the world (`t = 0`) and in the
-/// middle of the handover (z3.5), pinned pixel for pixel. The linear
-/// goldens at z6 below pin the other end: from `t = 1` the blend is
-/// today's Mercator exactly, which `tests/blend.rs` holds to a
+/// middle of each shape's handover, pinned pixel for pixel — Equal
+/// Earth's fixed window has its middle at z3.5, the globe's
+/// ground-driven one (1799 item 0) at about z6.9 on this frame. The
+/// linear goldens at z6 below pin the other end: from `t = 1` the blend
+/// is today's Mercator exactly, which `tests/blend.rs` holds to a
 /// nanopixel.
 #[test]
 fn the_blended_world_views_draw_their_goldens() {
     use leviculum_map::blend::{Blend, Shape};
     let at = project(LatLon::from_degrees(50.0, 10.0));
     for (sname, shape) in [("ee", Shape::EqualEarth), ("globe", Shape::Globe)] {
-        for (zname, zoom) in [("z2", 2.0), ("z35", 3.5)] {
+        let handover = match shape {
+            Shape::EqualEarth => ("z35", 3.5),
+            Shape::Globe => ("z69", 6.9),
+        };
+        for (zname, zoom) in [("z2", 2.0), handover] {
             let (w, h) = (480u32, 320u32);
             let blend = Blend::new(shape, at, zoom, w, h);
+            if zname != "z2" {
+                assert!(
+                    (0.3..0.7).contains(&blend.t()),
+                    "{sname} {zname}: t {} is not mid-handover",
+                    blend.t()
+                );
+            }
             let mut fb = vec![0u16; (w * h) as usize];
             let mut frame = Frame::new(&mut fb, w, h).expect("frame");
             let Ok(_) = leviculum_map::outline::draw_world_view(
@@ -493,8 +506,9 @@ fn the_blended_world_views_draw_their_goldens() {
 /// world (`t = 0`), the Americas across the western limb seen from
 /// Africa, the Pacific with Antarctica and both Americas across the
 /// horizon, and the Arctic from near the pole; and the view of Lew's
-/// second screenshot, 40 S 75 E in the handover (z3, phone portrait at
-/// half size), in both shapes.
+/// second screenshot, 40 S 75 E at z3 (phone portrait at half size), in
+/// both shapes — for the globe the pure sphere since 1799 item 0 moved
+/// the handover to where the limb is well off the screen.
 #[test]
 fn the_turned_globe_draws_its_goldens() {
     use leviculum_map::blend::{Blend, Shape};

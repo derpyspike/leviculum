@@ -63,12 +63,65 @@ const TAU: f64 = core::f64::consts::TAU;
 /// The world's width in world units.
 const WORLD_F: f64 = 4_294_967_296.0;
 
-/// Up to this view zoom the world projection stands alone (`t = 0`).
+/// Up to this view zoom Equal Earth stands alone (`t = 0`). The globe's
+/// window follows the limb and the ground instead ([`globe_window`]).
 pub const WORLD_ZOOM: f64 = 2.0;
-/// From this view zoom on the view is Mercator exactly (`t = 1`): below
-/// the shallowest zoom regions are cut at, so their tiles never see the
-/// blend.
+/// From this view zoom on an Equal Earth view is Mercator exactly
+/// (`t = 1`). The Equal Earth far view is dropped (1799); its window
+/// stays as it was until its code goes.
 pub const MERCATOR_ZOOM: f64 = 5.0;
+
+/// Earth's mean radius in kilometres: what the visible ground extent of
+/// a view of the sphere is measured against.
+const EARTH_KM: f64 = 6371.0;
+
+/// The blend may start only once the sphere's limb is this many of the
+/// view's half-diagonals from the view centre: well outside the view on
+/// all sides, never while any of it is in the view or near it (1799
+/// item 0, after 1762 point 7).
+const LIMB_CLEAR: f64 = 2.0;
+
+/// ... and only once the view's short side shows at most this much
+/// ground: all of Germany across the phone's short side is still the
+/// sphere or the very start of the blend (1799 item 0).
+const BLEND_START_KM: f64 = 900.0;
+
+/// The blend is Mercator exactly once the short side shows this little
+/// ground: close to the ground, where the sphere and Mercator agree to a
+/// few pixels across the view, so the handover has nothing left to bend.
+const BLEND_END_KM: f64 = 200.0;
+
+/// The zoom at which the pure sphere's limb, `256·2^z / 2π` pixels from
+/// the disk's centre, has the radius `radius_px`.
+fn zoom_of_radius(radius_px: f64) -> f64 {
+    libm::log2(radius_px.max(1.0) * TAU / 256.0)
+}
+
+/// The zoom at which `px` pixels across the middle of the pure sphere's
+/// disk span `km` of ground: the orthographic projection puts a point
+/// `c` radians from the centre at `R sin c` pixels.
+fn zoom_showing(px: f64, km: f64) -> f64 {
+    let c = (km / 2.0 / EARTH_KM).min(PI / 2.0);
+    zoom_of_radius(px / 2.0 / libm::sin(c).max(1e-9))
+}
+
+/// The view zooms the globe blends toward Mercator between (1799
+/// item 0): the projection is a pure sphere (`t = 0`) as long as any
+/// part of the limb is inside the view or within a margin of it — the
+/// blend starts only once the limb is [`LIMB_CLEAR`] half-diagonals out
+/// of the view on all sides and the short side shows at most
+/// [`BLEND_START_KM`] of ground — and it is Mercator exactly (`t = 1`)
+/// from where the short side shows [`BLEND_END_KM`]. Start and end
+/// follow the limb and the visible ground extent, never bare zoom
+/// numbers, so the rule holds at every frame size.
+pub fn globe_window(width: u32, height: u32) -> (f64, f64) {
+    let (w, h) = (f64::from(width.max(1)), f64::from(height.max(1)));
+    let half_diag = libm::hypot(w, h) / 2.0;
+    let short = if w < h { w } else { h };
+    let lo = zoom_of_radius(LIMB_CLEAR * half_diag).max(zoom_showing(short, BLEND_START_KM));
+    let hi = zoom_showing(short, BLEND_END_KM).max(lo + 0.5);
+    (lo, hi)
+}
 
 /// Newton stops within this of the asked pixel.
 pub const INVERSE_EPS_PX: f64 = 0.03125;
@@ -179,14 +232,24 @@ pub struct Blend {
 }
 
 impl Blend {
-    /// The blend for a view: `t` from the zoom by [`t_of_zoom`], between
-    /// [`WORLD_ZOOM`] — or the view's [`world_floor`] where a screen's
-    /// world floor is deeper, so the smallest world a frontend shows is
-    /// the shape itself (1796) — and [`MERCATOR_ZOOM`], kept at least one
-    /// zoom above the lower bound.
+    /// The blend for a view: `t` from the zoom by [`t_of_zoom`]. The
+    /// globe's window follows the limb and the visible ground extent
+    /// ([`globe_window`], 1799 item 0), never shallower than the view's
+    /// [`world_floor`], so the smallest world a frontend shows is the
+    /// shape itself (1796). Equal Earth keeps its old fixed window,
+    /// [`WORLD_ZOOM`] to [`MERCATOR_ZOOM`], until its code goes (1799).
     pub fn new(shape: Shape, centre: World, zoom: f64, width: u32, height: u32) -> Self {
-        let lo = WORLD_ZOOM.max(world_floor(shape, width, height));
-        let hi = MERCATOR_ZOOM.max(lo + 1.0);
+        let (lo, hi) = match shape {
+            Shape::Globe => {
+                let (lo, hi) = globe_window(width, height);
+                let lo = lo.max(world_floor(shape, width, height));
+                (lo, hi.max(lo + 0.5))
+            }
+            Shape::EqualEarth => {
+                let lo = WORLD_ZOOM.max(world_floor(shape, width, height));
+                (lo, MERCATOR_ZOOM.max(lo + 1.0))
+            }
+        };
         let t = t_of_zoom(zoom, lo, hi);
         Self::with_t(shape, centre, zoom, width, height, t)
     }
