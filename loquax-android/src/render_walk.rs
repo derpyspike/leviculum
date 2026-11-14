@@ -623,6 +623,24 @@ pub fn globe_disk_fixed(now: (f64, f64, f64), reference: (f64, f64, f64)) -> Ver
     )
 }
 
+/// [`GLOBE_DISK_FIXED`] for a CENTRED zoom gesture (audit of 1818,
+/// condition 12): the disk grows and shrinks about its centre, so the
+/// radius is free, but the fitted centre holds to the rest frame's
+/// within [`DISK_MAX_PX`]. The note reports both fits, so the row
+/// carries the deviation per gesture frame and size.
+pub fn globe_disk_centred(now: (f64, f64, f64), reference: (f64, f64, f64)) -> Verdict {
+    let value = (now.0 - reference.0).abs().max((now.1 - reference.1).abs());
+    Verdict::at_most(
+        GLOBE_DISK_FIXED,
+        value,
+        DISK_MAX_PX,
+        format!(
+            "zooming: centre ({:.1}, {:.1}) r {:.1}, at rest ({:.1}, {:.1}) r {:.1}",
+            now.0, now.1, now.2, reference.0, reference.1, reference.2
+        ),
+    )
+}
+
 /// [`ZOOM_KEEPS_THE_PLACE`]: how far the ground that started under the
 /// pinch focus is from it in this frame, screen pixels.
 pub fn zoom_keeps_the_place(off: f64, note: String) -> Verdict {

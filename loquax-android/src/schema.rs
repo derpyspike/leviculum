@@ -2863,6 +2863,23 @@ pub struct MapRequest {
     pub pan_x: i32,
     #[serde(default)]
     pub pan_y: i32,
+    /// The pan's fraction beyond the whole pixels above, thousandths of
+    /// a pixel: on a turning frame the ground held is the one drawn at
+    /// (about + pan), and re-picking it on a whole-pixel grid walked the
+    /// held ground half a pixel a frame — a seed the zoom then magnified
+    /// to thousands of pixels at street level (order 1833). Flat frames
+    /// ignore it; a whole-pixel pan stays whole.
+    #[serde(default)]
+    pub pan_x_milli: i32,
+    #[serde(default)]
+    pub pan_y_milli: i32,
+    /// The pan is a pointer's gesture: in a blended view the ground
+    /// drawn under (about + pan) follows the pointer to the about point
+    /// (order 1833). Without it the pan is the fling's coast or a
+    /// programmatic move and keeps the whole-pixel Mercator contract
+    /// the room accounting rests on.
+    #[serde(default)]
+    pub pan_about: bool,
     /// Zooms by this many steps about the pixel `(about_x, about_y)` of the
     /// view, after the pan.
     #[serde(default)]
@@ -3119,6 +3136,26 @@ pub struct MapShown {
     /// turned. An older core sends none, false, and the app slides it.
     #[serde(default)]
     pub turns: bool,
+    /// Where the ground the request's gesture held — the ground drawn
+    /// under `(about_x + pan_x, about_y + pan_y)` of the LAST frame —
+    /// sits in THIS frame's view, millionths of a pixel: present on a
+    /// turning frame that absorbed a pan or a zoom. A moving frame is
+    /// drawn at the tile step's zoom, not the asked one, and on the
+    /// globe the app cannot reconstruct the leftover transform from
+    /// Mercator numbers as it does flat, so it anchors the leftover at
+    /// this point (order 1833, `MapView.place`); a coarser anchor seeded
+    /// what the zoom magnifies. Absent when the focus is off the world.
+    #[serde(default)]
+    pub held_x_micro: Option<i64>,
+    #[serde(default)]
+    pub held_y_micro: Option<i64>,
+    /// The frame is drawn blended (`t < 1`): its picture is not
+    /// Mercator, so the app's flat leftover arithmetic does not apply to
+    /// it and the anchor above is the only sound reconstruction (order
+    /// 1833). Equal Earth blends without turning, so `turns` alone does
+    /// not say this.
+    #[serde(default)]
+    pub blended: bool,
     /// How many view pixels the view's centre may still move north, and
     /// south, before the view is held at the world's edge (1131, 1188):
     /// what a coast may travel. x has no edge, the world goes round.

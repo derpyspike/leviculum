@@ -523,21 +523,70 @@ impl Renderer {
         }
         let held = |v: ExactView| hold(v, zooms.0, zooms.1);
         view = held(view);
-        if request.pan_x != 0 || request.pan_y != 0 {
-            self.frames
-                .pan(f64::from(request.pan_x), f64::from(request.pan_y), now);
+        let about = |v: i32, of: u16| f64::from(v.clamp(0, i32::from(of)));
+        let by = i64::from(request.zoom_by) * i64::from(MILLI) + i64::from(request.zoom_by_milli);
+        let pan = (
+            f64::from(request.pan_x) + f64::from(request.pan_x_milli) / 1000.0,
+            f64::from(request.pan_y) + f64::from(request.pan_y_milli) / 1000.0,
+        );
+        let pans = pan != (0.0, 0.0);
+        // The ground the gesture holds: drawn under (about + pan) of the
+        // last frame, the about point's ground after the pan. A turning
+        // answer says where this ground sits in ITS view (held_x_milli),
+        // the anchor for the app's leftover transform (order 1833).
+        let gesture_held = match pans || by != 0 {
+            true => loquax::mapframe::ground_under_as(
+                loquax::picture::world_shape(),
+                &view,
+                about(request.about_x, area.width) + pan.0,
+                about(request.about_y, area.height) + pan.1,
+            ),
+            false => None,
+        };
+        if pans {
+            self.frames.pan(pan.0, pan.1, now);
             // At globe zooms the drag turns the sphere about its centre
-            // (1762); elsewhere it pans.
-            loquax::mapframe::drag(&mut view, request.pan_x, request.pan_y);
+            // (1762); elsewhere it pans. A pointer's pan in a blended
+            // view holds the ground drawn under the finger (order 1833):
+            // the request's about point is the gesture's focus. A
+            // pointer-less pan (the coast) keeps the Mercator contract.
+            match request.pan_about {
+                true => loquax::mapframe::drag_about(
+                    &mut view,
+                    pan.0,
+                    pan.1,
+                    about(request.about_x, area.width),
+                    about(request.about_y, area.height),
+                ),
+                #[allow(clippy::cast_possible_truncation)]
+                false => {
+                    loquax::mapframe::drag(&mut view, pan.0.round() as i32, pan.1.round() as i32)
+                }
+            }
             view = held(view);
         }
-        let by = i64::from(request.zoom_by) * i64::from(MILLI) + i64::from(request.zoom_by_milli);
+        if request.pan_x != 0 || request.pan_y != 0 || by != 0 {
+            // One line per gesture frame, greppable from logcat: a real
+            // device's pinch is replayed from exactly these (order 1833).
+            tracing::debug!(
+                "MAPGESTURE w={} h={} x={:?} y={:?} zoom_milli={:?} pan_x={} pan_y={} by_milli={} about_x={} about_y={}",
+                request.w,
+                request.h,
+                request.x,
+                request.y,
+                request.zoom_milli,
+                request.pan_x,
+                request.pan_y,
+                by,
+                request.about_x,
+                request.about_y
+            );
+        }
         self.frames.zoom(by);
         self.frames.asked(now);
         if by != 0 {
             let zoom = (i64::from(view.zoom_milli()) + by)
                 .clamp(i64::from(floor), i64::from(ceiling.max(floor)));
-            let about = |v: i32, of: u16| f64::from(v.clamp(0, i32::from(of)));
             // Through the blend where the frame is blended (1818): the
             // geographic point under the fingers stays under them.
             loquax::mapframe::zoom_about(
@@ -709,10 +758,33 @@ impl Renderer {
         // coast has all the room it wants, the turn stops at the pole.
         let turns =
             loquax::mapframe::turns_as(loquax::picture::world_shape(), &shot.shows).is_some();
+        // The held ground's place in this frame's view (order 1833): the
+        // app's anchor for what the fingers did. Filled for flat frames
+        // too: the app's flat reconstruction is exact only flat-to-flat,
+        // and the handover's crossing frame (a blended frame answered by
+        // a flat one) seeded 1.4 px without the anchor, which the zoom
+        // then magnified.
+        let held_shown = gesture_held.map(|g| {
+            // Through the drawn picture's own projection: Equal Earth
+            // blends without turning, so `curved` is None there while
+            // Mercator's numbers are not what is drawn; at t = 1 the
+            // blend IS Mercator and nothing changes.
+            let (sw, sh) = shot.shows.size();
+            leviculum_map::blend::Blend::new(
+                loquax::picture::world_shape(),
+                shot.shows.centre,
+                shot.shows.zoom(),
+                sw,
+                sh,
+            )
+            .to_screen(g)
+        });
+        let micro = |v: f64| (v * 1e6).round().clamp(-9.0e15, 9.0e15) as i64;
         let (room_north, room_south) = match turns {
             true => (u32::MAX >> 1, u32::MAX >> 1),
             false => room(&shot.shows),
         };
+        let blended = loquax::mapframe::blends_as(loquax::picture::world_shape(), &shot.shows);
         let shown = MapShown {
             v: VERSION,
             ok: true,
@@ -731,6 +803,9 @@ impl Renderer {
             pending: shot.missing > 0 || shot.fading,
             min_zoom: zoom_floor(area, &setup),
             min_zoom_milli: floor,
+            held_x_micro: held_shown.map(|(x, _)| micro(x)),
+            held_y_micro: held_shown.map(|(_, y)| micro(y)),
+            blended,
             max_zoom: setup.zooms.1,
             selected: selected.map(|p| loquax::address::to_hex(&p)),
             attribution: shot.attribution,

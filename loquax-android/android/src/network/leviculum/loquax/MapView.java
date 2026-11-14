@@ -228,13 +228,47 @@ final class MapView extends View {
     private float offY;
     /**
      * The last frame is the globe, which a drag turns about its centre (1762):
-     * the frame is drawn in place, scaled about the screen's middle, and the
-     * fingers' offset goes to the core as the turn.
+     * the frame is drawn in place, and the fingers' offset goes to the core as
+     * the turn — except a pinch's share (pinchX, pinchY), which scales the
+     * frame about the fingers so the picture follows them until the next
+     * frame lands (order 1833, the device finding of 2026-11-14).
      */
     private boolean turns;
-    /** The offset the last request carried, which the frame it answers turned by. */
+    /** The last frame is drawn blended (t < 1): its picture is not Mercator. */
+    private boolean blended;
+    /**
+     * The pinch events' share of (offX, offY): drags move off alone, a zoom
+     * about (fx, fy) folds into both. On the globe the drag share is a turn
+     * the next frame absorbs and the frame stays in place under it, while
+     * the pinch share must show at once or the picture leaves the fingers.
+     */
+    private float pinchX;
+    private float pinchY;
+    /**
+     * The last gesture's focus in view pixels: the pinch's fingers, a double
+     * tap, a fly's moving point, or a scroll's finger. The request's zoom is
+     * asked ABOUT this point, so the library holds the geographic point under
+     * the fingers — asking about the screen's centre encoded the focus as a
+     * bitmap-linear pan, which on the globe's projection lost the place by
+     * hundreds of kilometres (order 1833: pixel-identical drift in APKs
+     * 057b65e0 and 97e8144b4, the fix of 74c266230 never on this path).
+     */
+    private float focusX;
+    private float focusY;
+    private boolean focused;
+    /** What the last request carried: the frame it answers absorbed these. */
     private float askedX;
     private float askedY;
+    /**
+     * The about point and the pan the request carried, the pan in full
+     * float precision (the request carries its fraction as thousandths):
+     * the ground drawn at (about + pan) of the then-current frame is the
+     * one the library held, the anchor place() uses.
+     */
+    private float askedAboutX;
+    private float askedAboutY;
+    private float askedPanX;
+    private float askedPanY;
     /** A finger is on the map. */
     private boolean touching;
     /** A fling coasts (1188): frames are asked as while a finger moves. */
@@ -319,6 +353,11 @@ final class MapView extends View {
                 synchronized (MapView.this) {
                     offX -= dx;
                     offY -= dy;
+                    // The drag's finger: the library holds the ground
+                    // under it through a blended view (order 1833).
+                    focusX = b.getX();
+                    focusY = b.getY();
+                    focused = true;
                 }
                 invalidate();
                 ask();
@@ -364,6 +403,11 @@ final class MapView extends View {
             scale *= by;
             offX = by * (offX - fx) + fx;
             offY = by * (offY - fy) + fy;
+            pinchX = by * (pinchX - fx) + fx;
+            pinchY = by * (pinchY - fy) + fy;
+            focusX = fx;
+            focusY = fy;
+            focused = true;
         }
         invalidate();
         ask();
@@ -564,7 +608,12 @@ final class MapView extends View {
                     // Scale about where the point is, then move it on.
                     offX = by * (offX - last[0]) + px;
                     offY = by * (offY - last[1]) + py;
+                    pinchX = by * (pinchX - last[0]) + px;
+                    pinchY = by * (pinchY - last[1]) + py;
                     scale *= by;
+                    focusX = px;
+                    focusY = py;
+                    focused = true;
                 }
                 last[0] = px;
                 last[1] = py;
@@ -776,14 +825,21 @@ final class MapView extends View {
         drawMarks(canvas);
     }
 
-    /** Where the frame's left edge is drawn: the fingers' offset, or for a turning globe in place. */
+    /**
+     * Where the frame's left edge is drawn: the fingers' offset. For a
+     * turning globe the drag share stays out — the next frame absorbs the
+     * turn and the disk must not slide (1762) — but the pinch share shows,
+     * or the picture would zoom about the screen's middle while the fingers
+     * pinch elsewhere and the dot would leave them between frames (order
+     * 1833; before, the whole offset was dropped).
+     */
     private float shownX() {
-        return turns ? (1 - scale) * getWidth() / 2f : offX;
+        return turns ? pinchX : offX;
     }
 
     /** Where the frame's top edge is drawn, as {@link #shownX}. */
     private float shownY() {
-        return turns ? (1 - scale) * getHeight() / 2f : offY;
+        return turns ? pinchY : offY;
     }
 
     /**
@@ -1001,14 +1057,35 @@ final class MapView extends View {
                 // them as asked. None while the globe turns (1762).
                 mx = MapFrame.margin(w, turns);
                 my = MapFrame.margin(h, turns);
-                // The frame's pixel under the screen's centre becomes the
-                // new frame's centre, at the scale's exact zoom.
-                float cx = w / 2f;
-                float cy = h / 2f;
-                int panX = Math.round((cx - offX) / scale - cx);
-                int panY = Math.round((cy - offY) / scale - cy);
+                // The gesture since the last frame is one transform of
+                // the drawn frame, screen = scale * p + off. It goes to
+                // the library as "pan, then zoom about the fingers":
+                // about the last gesture's focus, with the pan computed
+                // about that same point, which on a flat map is the same
+                // transform whatever the point, and in a blended view
+                // lets the library hold the geographic point under the
+                // fingers. Asking about the screen's centre folded the
+                // focus into a bitmap-linear pan, exact on Mercator and
+                // hundreds of kilometres off on the globe (order 1833).
+                // A pure pinch about a still focus is pan 0, zoom alone.
+                // The about point whole, so the ground the library
+                // picks is exactly the anchor's; the pan's fraction
+                // rides along as thousandths — re-picking the held
+                // ground on a whole-pixel grid walked it half a pixel a
+                // frame, and the zoom magnified that seed to thousands
+                // of pixels at street level (order 1833).
+                float ax = Math.round(focused ? focusX : w / 2f);
+                float ay = Math.round(focused ? focusY : h / 2f);
+                float panXf = (ax - offX) / scale - ax;
+                float panYf = (ay - offY) / scale - ay;
+                int panX = Math.round(panXf);
+                int panY = Math.round(panYf);
                 askedX = offX;
                 askedY = offY;
+                askedAboutX = ax;
+                askedAboutY = ay;
+                askedPanX = panXf;
+                askedPanY = panYf;
                 long byMilli = Math.round(1000 * Math.log(scale) / Math.log(2));
                 request = Core.map("dir", dir,
                         "w", (long) w, "h", (long) h,
@@ -1018,8 +1095,13 @@ final class MapView extends View {
                         "density_milli", (long) Math.round(getResources().getDisplayMetrics().density * 1000),
                         "dark", dark(),
                         "pan_x", (long) panX, "pan_y", (long) panY,
+                        "pan_x_milli", (long) Math.round((panXf - panX) * 1000f),
+                        "pan_y_milli", (long) Math.round((panYf - panY) * 1000f),
+                        // A pointer's pan anchors at the focus; the
+                        // coast keeps the Mercator room contract (1188).
+                        "pan_about", focused && !coasting,
                         "zoom_by_milli", byMilli,
-                        "about_x", (long) (w / 2), "about_y", (long) (h / 2),
+                        "about_x", (long) ax, "about_y", (long) ay,
                         "avatars", true);
                 if (x != null) {
                     request.put("x", x);
@@ -1076,6 +1158,7 @@ final class MapView extends View {
                     x = Core.num(shown, "x");
                     y = Core.num(shown, "y");
                     zoomMilli = Core.num(shown, "zoom_milli");
+                    blended = Core.bool(shown, "blended");
                     marks = Core.list(shown, "marks");
                     marksAt = SystemClock.uptimeMillis();
                     ownX = shown.get("own_x") instanceof Number ? Core.num(shown, "own_x") : null;
@@ -1194,19 +1277,48 @@ final class MapView extends View {
             scale = 1f;
             offX = 0;
             offY = 0;
+            pinchX = 0;
+            pinchY = 0;
+            focused = false;
             return;
         }
         // A pixel q of the new view is the pixel p = a q + b of the last
         // one: a the ratio of their scales, b from their centres' distance
         // in the last view's pixels, x across the antimeridian the short way.
         double a = Math.pow(2, (zoomMilli - z1) / 1000.0);
-        if (Core.bool(shown, "turns")) {
-            // The globe turned by the offset the request carried (1762), not
-            // by the Mercator distance of the centres: what is left is what
-            // the fingers did since.
-            offX -= askedX;
-            offY -= askedY;
-            scale = (float) (scale * a);
+        // `blended` still holds the LAST frame's word here: the anchor
+        // is needed whenever either side of the step is a blended frame
+        // — the flat reconstruction below is exact only flat to flat;
+        // the handover's crossing frame seeded 1.4 px without it, and
+        // Equal Earth's blend, which never `turns`, drifted 0.16 px a
+        // frame through the flat formula (order 1833).
+        if (blended || Core.bool(shown, "blended")) {
+            // A moving frame is drawn at the tile step's zoom, not the
+            // asked one, and a turning view's leftover cannot be read
+            // from Mercator numbers as the flat branch below reads it.
+            // The frame says where the ground the request held sits in
+            // its view (held_x_milli): the leftover anchors there, so
+            // the held ground keeps displaying where the fingers put it
+            // — for an absorbed pure drag the anchor lands on the focus
+            // and the leftover is zero, the frame in place (1762). The
+            // old `off -= asked` left (scale / askedScale - 1) * asked
+            // behind, hundreds of pixels over a fast pinch with frames
+            // landing mid-gesture (order 1833).
+            float sigma = (float) (scale * a);
+            if (shown.get("held_x_micro") instanceof Number) {
+                float heldX = Core.num(shown, "held_x_micro") / 1e6f;
+                float heldY = Core.num(shown, "held_y_micro") / 1e6f;
+                float heldOldX = askedAboutX + askedPanX;
+                float heldOldY = askedAboutY + askedPanY;
+                offX = scale * heldOldX + offX - sigma * heldX;
+                offY = scale * heldOldY + offY - sigma * heldY;
+            } else {
+                offX -= sigma * askedX;
+                offY -= sigma * askedY;
+            }
+            pinchX = offX;
+            pinchY = offY;
+            scale = sigma;
             return;
         }
         double unit = Math.pow(2, 24 - zoomMilli / 1000.0);
@@ -1218,5 +1330,9 @@ final class MapView extends View {
         offX = (float) (scale * bx + offX);
         offY = (float) (scale * by + offY);
         scale = (float) (scale * a);
+        // The pinch share is only read while the globe turns; across the
+        // handover the whole leftover is the best stand-in.
+        pinchX = offX;
+        pinchY = offY;
     }
 }

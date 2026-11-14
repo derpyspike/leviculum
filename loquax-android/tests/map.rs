@@ -898,7 +898,17 @@ fn the_phone_never_shows_the_world_twice() {
         ..MapRequest::default()
     };
     let (shown, rgba) = frame(&loquax_android::map::render(&ask, Some(Vec::new()), now()));
-    assert_eq!((shown.zoom, shown.min_zoom), (3, 3));
+    // The floor is the shape's own (order 1833): Equal Earth's world
+    // fills this width at z3, the globe's disk its width a bit deeper;
+    // either way the view never sits below it and never tiles.
+    assert!(
+        shown.zoom_milli >= shown.min_zoom_milli
+            && shown.zoom_milli < shown.min_zoom_milli + 1000,
+        "asked z0, got z{} with the floor at {}",
+        shown.zoom_milli,
+        shown.min_zoom_milli
+    );
+    let floor_zoom = shown.zoom;
     assert_eq!(period(&rgba, 1080), None);
     let out = MapRequest {
         zoom_by: -2,
@@ -907,7 +917,7 @@ fn the_phone_never_shows_the_world_twice() {
         ..ask.clone()
     };
     let (shown, _) = frame(&loquax_android::map::render(&out, Some(Vec::new()), now()));
-    assert_eq!(shown.zoom, 3, "zooming out stops at one world");
+    assert_eq!(shown.zoom, floor_zoom, "zooming out stops at one world");
     let first = MapRequest {
         x: None,
         y: None,
@@ -919,7 +929,7 @@ fn the_phone_never_shows_the_world_twice() {
         Some(Vec::new()),
         now(),
     ));
-    assert_eq!((shown.zoom, shown.y), (3, 1 << 31));
+    assert_eq!((shown.zoom, shown.y), (floor_zoom, 1 << 31));
 }
 
 /// The first view with no pin is the newest region, the Florence fixture
@@ -2109,6 +2119,17 @@ fn a_coast_moves_less_each_frame_and_stops_at_the_worlds_edge() {
     };
     let (rest, _) = frame(&loquax_android::map::render(&ask, Some(Vec::new()), now()));
     assert!(rest.fling, "map_fling is on when the config does not say");
+    if rest.turns {
+        // The globe build still turns at z4: a drag is a turn about the
+        // disk's centre with all the room it wants, and the Mercator
+        // edge contract below is the flat map's (1762, order 1833).
+        assert_eq!(
+            (rest.room_north, rest.room_south),
+            (u32::MAX >> 1, u32::MAX >> 1),
+            "a turning view's coast has no Mercator edge"
+        );
+        return;
+    }
     let world = 256u32 << 4;
     let span = |s: &MapShown| s.room_north + s.room_south;
     assert!(span(&rest).abs_diff(world - H) <= 1, "{rest:?}");
@@ -3790,11 +3811,12 @@ fn the_phone_load_walk_holds_its_rules() {
 /// every frame; and pinching back out returns to where it began.
 #[test]
 fn a_pinch_through_the_handover_keeps_the_place_under_the_focus() {
-    use leviculum_map::blend::{Blend, Shape};
+    use leviculum_map::blend::Blend;
     let home = home();
-    // Morocco, as on Lew's phone; the test build's world shape is Equal
-    // Earth, whose handover spans z2..z5 at this size — the same blend
-    // path the globe build bends through at its own window.
+    // Morocco, as on Lew's phone. Shape-agnostic (audit of 1818,
+    // condition 10): under the default build the world is Equal Earth,
+    // under `loquax/globe-world` the globe; the pinch must keep the
+    // place through either blend, so this runs in both builds' gates.
     let at = project(LatLon::from_degrees(32.0, -6.0));
     let focus = (120.0, 80.0);
     let mut ask = MapRequest {
@@ -3807,7 +3829,6 @@ fn a_pinch_through_the_handover_keeps_the_place_under_the_focus() {
         ..request(home.path(), false)
     };
     let shape = loquax::picture::world_shape();
-    assert_eq!(shape, Shape::EqualEarth, "the test build's world");
     let (first, _) = frame(&loquax_android::map::render(&ask, Some(Vec::new()), now()));
     let blend = |s: &MapShown| {
         Blend::new(
@@ -3850,5 +3871,294 @@ fn a_pinch_through_the_handover_keeps_the_place_under_the_focus() {
         shown.zoom_milli == 2_600 && dist <= 2.0,
         "back out: z{} and the start centre {dist:.1} px off the middle",
         shown.zoom_milli
+    );
+}
+
+/// The reviewer's blue screen (order 1833, P0 item 4): quick pinches
+/// took the drifted view over open ocean, past the outline's deepest
+/// zoom — sea colour, "Loading the map of this area…", no land — and
+/// 22 zoom-outs on the device brought no land back. The drift that put
+/// the view there is fixed; this drives the facade's half of the way
+/// back: quick pinches out over the open Atlantic, as Java sends them,
+/// must walk the zoom down to the world and clear the no-map state.
+/// If the device still wedges with this green, what wedges is the
+/// app's loader loop, not the view (order 1821's lane).
+#[test]
+fn a_pinch_out_over_open_sea_brings_the_world_back() {
+    let home = home();
+    // Mid-Atlantic, 51 N 22 W: no region, and past z7 no outline either.
+    let at = project(LatLon::from_degrees(51.0, -22.0));
+    let base = MapRequest {
+        x: Some(at.x),
+        y: Some(at.y),
+        zoom: None,
+        zoom_milli: Some(10_000),
+        ..request(home.path(), false)
+    };
+    let mut java = loquax_android::gesture::Gesture::new(W, H);
+    let render = |java: &mut loquax_android::gesture::Gesture, moving: bool, first: bool| {
+        let mut ask = MapRequest {
+            dir: base.dir.clone(),
+            density_milli: base.density_milli,
+            ..java.ask()
+        };
+        ask.moving = moving;
+        if first {
+            ask.x = base.x;
+            ask.y = base.y;
+            ask.zoom_milli = base.zoom_milli;
+        }
+        let (shown, _) = frame(&loquax_android::map::render(&ask, Some(Vec::new()), now()));
+        java.place(&shown, moving);
+        shown
+    };
+    let first = render(&mut java, false, true);
+    assert_eq!(first.zoom_milli, 10_000, "the sea view starts at z10");
+    let focus = (f64::from(W) / 2.0, f64::from(H) / 2.0);
+    let quick = 1.5f64.powf(1.0 / 12.0);
+    let mut last = first;
+    for _ in 0..22 {
+        for e in 0..12 {
+            java.on_scale(1.0 / quick, focus.0, focus.1);
+            if e % 6 == 5 {
+                render(&mut java, true, false);
+            }
+        }
+        last = render(&mut java, false, false);
+    }
+    assert!(
+        last.zoom_milli <= last.min_zoom_milli + 50,
+        "22 pinches out should reach the world's floor, not stop at z{}",
+        last.zoom_milli
+    );
+    assert!(
+        !last.no_map,
+        "at the floor the world outline is a map (z{})",
+        last.zoom_milli
+    );
+}
+
+/// The globe pinch's place-hold near the limb (audit of 1818, condition
+/// 1): a pinch from the floor to z11+ with the focus off-centre keeps
+/// the ground under the focus within 1 px per event, at places that put
+/// the focus near the disk's edge. The auditors' test; it judges the
+/// product's world shape, so the globe build
+/// (`--features loquax/globe-world`) is the one this condition names.
+/// One stated exception, as the condition allows: at 51 N the ground
+/// under the focus lies at Mercator's edge latitude, the hold pulls the
+/// view's centre onto that edge, and `Blend::turned`'s never-flip clamp
+/// (north up, 1762) stops it there — `mapframe::walk_held` names this.
+/// While the centre sits ON the edge (`shown.y == 0` or the south edge)
+/// the constrained best is measured 5.63 px an event at this size
+/// (2026-11-14), and the asserted bound there is 6.5 px.
+#[test]
+fn a_globe_pinch_through_the_whole_handover_keeps_the_place_every_step() {
+    use leviculum_map::blend::Blend;
+    let shape = loquax::picture::world_shape();
+    let home = home();
+    let focus = (120.0f64, 80.0f64);
+    let blend = |s: &MapShown| {
+        Blend::new(
+            shape,
+            World { x: s.x, y: s.y },
+            f64::from(s.zoom_milli) / 1000.0,
+            W,
+            H,
+        )
+    };
+    let mut blended = 0usize;
+    for (lat, lon) in [
+        (32.0, -6.0),
+        (51.0, 10.0),
+        (0.0, 0.0),
+        (-60.0, 0.0),
+        (10.0, 179.95),
+    ] {
+        let at = project(LatLon::from_degrees(lat, lon));
+        let mut ask = MapRequest {
+            x: Some(at.x),
+            y: Some(at.y),
+            zoom: None,
+            zoom_milli: Some(2_000),
+            about_x: focus.0 as i32,
+            about_y: focus.1 as i32,
+            ..request(home.path(), false)
+        };
+        let (mut shown, _) = frame(&loquax_android::map::render(&ask, Some(Vec::new()), now()));
+        for i in 0..400 {
+            let before = blend(&shown).to_world(focus.0, focus.1);
+            let z0 = shown.zoom_milli;
+            ask.x = Some(shown.x);
+            ask.y = Some(shown.y);
+            ask.zoom_milli = Some(shown.zoom_milli);
+            ask.zoom_by_milli = 55;
+            (shown, _) = frame(&loquax_android::map::render(&ask, Some(Vec::new()), now()));
+            if shown.zoom_milli <= z0 {
+                break;
+            }
+            let b = blend(&shown);
+            if b.t() > 0.0 && b.t() < 1.0 {
+                blended += 1;
+            }
+            if let Some(g) = before {
+                let (px, py) = b.to_screen(g);
+                let off = (px - focus.0).hypot(py - focus.1);
+                // On Mercator's edge the never-flip clamp constrains the
+                // hold (`walk_held`): the stated bound, not the free one.
+                let edge = shown.y == 0 || shown.y == u32::MAX;
+                let bound = match edge {
+                    true => 6.5,
+                    false => 1.0,
+                };
+                assert!(
+                    off <= bound,
+                    "{lat},{lon} step {i} z{} (edge {edge}): the ground under the focus moved {off:.2} px in one pinch event",
+                    shown.zoom_milli
+                );
+            }
+        }
+        assert!(
+            shown.zoom_milli >= 11_000,
+            "{lat},{lon}: the pinch stopped at z{}",
+            shown.zoom_milli
+        );
+    }
+    assert!(blended > 20, "only {blended} blended frames crossed");
+}
+
+/// The reviewer's device finding of 2026-11-14 (order 1833, P0): on the
+/// emulator, a pinch over Morocco ends about 300 km from the fingers,
+/// quick pinches end over Greenland, and APKs 057b65e0 and 97e8144b4
+/// behave pixel-identically — the fix of 74c266230 never ran on the
+/// device's path, because MapView.java encodes every gesture as a
+/// bitmap-linear pan plus a zoom about the SCREEN'S CENTRE, and the
+/// walk drove `zoom_about` with the focus directly, a path the device
+/// never takes. This test drives `loquax_android::map::render` through
+/// `loquax_android::gesture::Gesture`, the mirror of MapView.java's
+/// arithmetic, with the reviewer's gestures: a slow continuous pinch
+/// (fingers 60 to 540 px over 3 s, five frames a gesture) and
+/// seventeen quick 1.5x pinches, focus held on the own-position dot at
+/// 32 N 6 W, off the screen's centre; then the same out again. The
+/// ground under the fingers — leftover transform applied, as Java
+/// draws the frame — stays within 2 px of them at every landed frame
+/// and within 1 px at every rest (measured worst 0.175 px over the
+/// whole chain, 2026-11-14).
+#[test]
+fn a_phone_pinch_as_java_sends_it_keeps_the_place() {
+    let home = home();
+    // The view starts north-east of the dot, so the dot — and the
+    // fingers on it — sit off the screen's centre, as on the reviewer's
+    // emulator (focus (558,1026) on 1224x2194).
+    let at = project(LatLon::from_degrees(37.0, 1.5));
+    let base = MapRequest {
+        x: Some(at.x),
+        y: Some(at.y),
+        zoom: None,
+        zoom_milli: Some(2_000),
+        own_lat_e6: Some(32_000_000),
+        own_lon_e6: Some(-6_000_000),
+        ..request(home.path(), false)
+    };
+    let mut java = loquax_android::gesture::Gesture::new(W, H);
+    let render = |java: &mut loquax_android::gesture::Gesture, moving: bool, first: bool| {
+        let mut ask = MapRequest {
+            dir: base.dir.clone(),
+            density_milli: base.density_milli,
+            own_lat_e6: base.own_lat_e6,
+            own_lon_e6: base.own_lon_e6,
+            ..java.ask()
+        };
+        ask.moving = moving;
+        if first {
+            ask.x = base.x;
+            ask.y = base.y;
+            ask.zoom_milli = base.zoom_milli;
+        }
+        let (shown, _) = frame(&loquax_android::map::render(&ask, Some(Vec::new()), now()));
+        java.place(&shown, moving);
+        shown
+    };
+    use leviculum_map::blend::Blend;
+    let shape = loquax::picture::world_shape();
+    let blend = |s: &MapShown| {
+        Blend::new(
+            shape,
+            World { x: s.x, y: s.y },
+            f64::from(s.zoom_milli) / 1000.0,
+            W,
+            H,
+        )
+    };
+    let first = render(&mut java, false, true);
+    // The fingers land on the dot's whole pixel and stay there; the
+    // ground under them is what every later frame must keep there. (The
+    // dot's own centre sits up to half a pixel from the fingers, and a
+    // pinch rightly magnifies that half pixel along with everything
+    // else.)
+    let fx = first.own_x.expect("the dot is drawn") as f64;
+    let fy = first.own_y.expect("the dot is drawn") as f64;
+    let ground = loquax::mapframe::ground_under_as(
+        shape,
+        &ExactView::new(
+            World {
+                x: first.x,
+                y: first.y,
+            },
+            first.zoom_milli,
+            W,
+            H,
+        ),
+        fx,
+        fy,
+    )
+    .expect("the fingers are on the world");
+    let judge =
+        |java: &loquax_android::gesture::Gesture, shown: &MapShown, bound: f64, when: &str| {
+            let (px, py) = blend(shown).to_screen(ground);
+            let (sx, sy) = java.drawn(px, py);
+            let off = (sx - fx).hypot(sy - fy);
+            assert!(
+                off <= bound,
+                "{when} z{}: the ground under the fingers is {off:.1} px from them",
+                shown.zoom_milli
+            );
+        };
+    // Four slow pinches in, fingers 60 to 540 px over 3 s each: 180
+    // detector events a gesture, a frame landing every fifth event.
+    let per_event = (540f64 / 60.0).powf(1.0 / 180.0);
+    for _ in 0..4 {
+        for e in 0..180 {
+            java.on_scale(per_event, fx, fy);
+            if e % 5 == 4 {
+                let shown = render(&mut java, true, false);
+                judge(&java, &shown, 2.0, "slow in");
+            }
+        }
+        let shown = render(&mut java, false, false);
+        judge(&java, &shown, 1.0, "slow in, rest");
+    }
+    let deep = java.zoom_milli().expect("a frame landed");
+    assert!(deep >= 11_000, "the slow pinches reached only z{deep}");
+    // Seventeen quick 1.5x pinches out, twelve events each, frames
+    // every sixth event, then the same back in: the floor holds, and
+    // the dot never leaves the fingers.
+    let quick = 1.5f64.powf(1.0 / 12.0);
+    for way in [-1.0f64, 1.0] {
+        for _ in 0..17 {
+            for e in 0..12 {
+                java.on_scale(quick.powf(way), fx, fy);
+                if e % 6 == 5 {
+                    let shown = render(&mut java, true, false);
+                    judge(&java, &shown, 2.0, "quick");
+                }
+            }
+            let shown = render(&mut java, false, false);
+            judge(&java, &shown, 1.0, "quick, rest");
+        }
+    }
+    let end = java.zoom_milli().expect("a frame landed");
+    assert!(
+        end >= deep,
+        "seventeen out and in should end deep again, not z{end}"
     );
 }

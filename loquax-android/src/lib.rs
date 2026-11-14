@@ -27,6 +27,7 @@ pub mod bitmap;
 pub mod browser;
 pub mod explore;
 pub mod friends;
+pub mod gesture;
 pub mod heights;
 pub mod links;
 #[cfg(target_os = "android")]

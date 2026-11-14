@@ -3002,6 +3002,7 @@ load-walk *ARGS:
 [doc('Run the loquax map tests with the globe world (order 1818)')]
 loquax-globe:
     cargo test -p loquax --features "picture screenmap globe-world" mapframe::
+    cargo test -p loquax-android --test map --features loquax/globe-world
 
 # 1422, #474: the map's frame budget measured (the eye candy study of
 # 2026-11-04, section 4). `REGION` is the Frankfurt region the study cut
