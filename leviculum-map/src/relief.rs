@@ -667,7 +667,7 @@ impl Grounds {
 /// The grounds of a plane's neighbourhood as the pack has them; `None`
 /// without the centre's. A missing tile needs no stand-in value: the
 /// field [`compute_in`] lays between the tile centres leaves it out of
-/// every cell it corners ([`field_of`]).
+/// every cell it corners (`field_of`).
 pub fn fill_ground(g: &[Option<Ground>; 9]) -> Option<Grounds> {
     g[4]?;
     Some(Grounds(*g))
@@ -777,7 +777,7 @@ pub fn compute(dem: &Plane, res: f32, sky_m: f32) -> ShadePlane {
 
 /// [`compute`] with the [`Ground`] of each of the nine tiles of the
 /// plane's neighbourhood ([`Grounds`]; a missing neighbour drops out of
-/// the interpolation, [`field_of`]): the noise floor and the sky-view
+/// the interpolation, `field_of`): the noise floor and the sky-view
 /// exaggeration are fields interpolated between the tile centres, so
 /// neighbouring planes agree on their shared ground.
 pub fn compute_in(dem: &Plane, res: f32, sky_m: f32, ground: &Grounds) -> ShadePlane {
