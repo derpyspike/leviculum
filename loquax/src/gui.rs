@@ -4743,6 +4743,58 @@ mod tests {
         );
     }
 
+    /// Lew on the desktop build fcb3785e5 (order 1799, P0): fully
+    /// zoomed out, dragging the globe, "it shifts a bit while turning
+    /// and then jumps back. It wobbles." The window kept showing its
+    /// last frame through a drag (`covers`: the frame is drawn larger
+    /// than the screen, by its margins) and placed it by the centres'
+    /// Mercator offset, the flat map's placement, while the core turned
+    /// the globe about its fixed centre, so the disk moved with the
+    /// pointer and snapped back when the turned frame landed. Driven
+    /// here through the window's own path (audit of 1818, condition 4,
+    /// replacing an arithmetic-only test of `onto`): a drag over the
+    /// globe at its floor, and after every pointer event, before and
+    /// after the worker's jobs, the frame on screen sits centre on
+    /// centre, so the disk does not move. The control: on the flat map
+    /// the frame on screen pans with the pointer.
+    #[test]
+    fn a_globe_drag_on_the_window_never_moves_the_disk() {
+        let mut app = window_over_florence(Vec::new(), 0);
+        let (rest, _) = run(&mut app);
+        let rest = rest.expect("a frame at rest");
+        let (fw, fh) = rest.view.size();
+        assert!(
+            fw > 480 && fh > 320,
+            "the frame is drawn larger than the screen: {fw}x{fh}"
+        );
+        let centred = |app: &App, what: &str| {
+            let (shown, x, y, k) = app.onto().expect("a frame on screen");
+            let (w, h) = shown.view.size();
+            let (cx, cy) = (x + f64::from(w) * k / 2.0, y + f64::from(h) * k / 2.0);
+            assert!(
+                (cx - 240.0).abs() < 0.5 && (cy - 160.0).abs() < 0.5,
+                "{what}: the disk's centre is at ({cx:.1}, {cy:.1}), the screen's at (240, 160)"
+            );
+        };
+        app.apply(Message::Pointer(Pointer::Down(Point::new(300.0, 200.0))));
+        for step in 1..=12 {
+            let p = Point::new(300.0 - 6.0 * step as f32, 200.0 - 3.0 * step as f32);
+            app.apply(Message::Pointer(Pointer::Move(p)));
+            centred(&app, &format!("step {step}, before its frame"));
+            run(&mut app);
+            centred(&app, &format!("step {step}, after its frame"));
+        }
+        app.apply(Message::Pointer(Pointer::Up));
+        // The control: on the flat map the frame pans with the pointer.
+        let mut flat = window_over_florence(Vec::new(), 16 * MILLI);
+        run(&mut flat);
+        let (_, x0, _, _) = flat.onto().expect("a frame");
+        flat.apply(Message::Pointer(Pointer::Down(Point::new(200.0, 150.0))));
+        flat.apply(Message::Pointer(Pointer::Move(Point::new(160.0, 150.0))));
+        let (_, x1, _, _) = flat.onto().expect("a frame");
+        assert!((x1 - (x0 - 40.0)).abs() < 1e-6, "{x0} {x1}");
+    }
+
     use leviculum_ui_iced::select::Pick;
     use loquax::outbox::OutboxEvent;
     use loquax::ui::selection::{Part, RunKey};

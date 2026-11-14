@@ -1619,39 +1619,6 @@ mod tests {
         }
     }
 
-    /// Lew on the desktop build fcb3785e5 (order 1799, P0): fully
-    /// zoomed out, dragging the globe, "it shifts a bit while turning
-    /// and then jumps back. It wobbles." The frontend translated the
-    /// last frame by the pointer delta — the flat map's placement —
-    /// while the core turned the globe about its fixed centre, so the
-    /// disk moved and snapped back when the turned frame landed. On the
-    /// globe a drag is a rotation only: the frame on screen is never
-    /// moved, it stays placed centre on centre through every step of
-    /// the drag until the next frame replaces it. The flat map keeps
-    /// its exact pan placement.
-    #[test]
-    fn a_turning_globes_frame_stays_in_place() {
-        let at = project(LatLon::from_degrees(50.0, 10.0));
-        let (w, h) = (1860u32, 1024u32);
-        let zoom = floor_milli(w, h, 0);
-        let drawn = ExactView::new(at, zoom, w, h);
-        let mut view = drawn;
-        for step in 0..30 {
-            drag(&mut view, 7, -3);
-            let (x, y, k) = onto(&drawn, &view);
-            assert!(
-                x.abs() < 1e-9 && y.abs() < 1e-9 && (k - 1.0).abs() < 1e-9,
-                "step {step}: the frame moved to ({x}, {y}, {k})"
-            );
-        }
-        // The control: on the flat map the frame pans with the view.
-        let flat = ExactView::new(at, 12_000, w, h);
-        let mut moved = flat;
-        drag(&mut moved, 40, 0);
-        let (x, _, k) = onto(&flat, &moved);
-        assert!((x + 40.0).abs() < 1e-9 && (k - 1.0).abs() < 1e-9, "{x} {k}");
-    }
-
     /// Lew on his phone, APK 057b65e0 (order 1818, P0): "Zooming closer,
     /// somewhere below country level, the position jumps: suddenly I am
     /// maybe 1000 km away. I wanted to zoom in on Morocco and was in
