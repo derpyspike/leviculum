@@ -5,16 +5,14 @@
 //! through here; today it is the entry point the host measures the phone's
 //! decode cost through (`examples/height_decode.rs`).
 
-use std::ops::Range;
-
-use leviculum_map::elevation::{split, Block, TileDecoder, TILE_CELLS};
+use leviculum_map::elevation::{PackIndex, TileDecoder, TILE_CELLS};
 
 /// A height pack and the decoder state one tile needs, allocated once.
+/// The pack is found and decoded through [`PackIndex`], the one reader
+/// the desktop's relief store (`loquax/src/relief.rs`) shares.
 pub struct HeightPack {
     bytes: Vec<u8>,
-    blocks: Vec<Range<usize>>,
-    tile_zoom: u8,
-    block_zoom: u8,
+    index: PackIndex,
     decoder: TileDecoder,
     scratch: Vec<i16>,
 }
@@ -22,19 +20,10 @@ pub struct HeightPack {
 impl HeightPack {
     /// Check the whole pack's layout and keep it.
     pub fn open(bytes: Vec<u8>) -> Result<Self, String> {
-        let (tile_zoom, block_zoom, blocks) = {
-            let (directory, ranges) = split(&bytes).map_err(|e| format!("height pack: {e:?}"))?;
-            (
-                directory.tile_zoom(),
-                directory.block_zoom(),
-                ranges.into_iter().skip(1).collect::<Vec<_>>(),
-            )
-        };
+        let index = PackIndex::of(&bytes).map_err(|e| format!("height pack: {e:?}"))?;
         Ok(HeightPack {
             bytes,
-            blocks,
-            tile_zoom,
-            block_zoom,
+            index,
             decoder: TileDecoder::new(),
             scratch: vec![0; TILE_CELLS],
         })
@@ -42,27 +31,12 @@ impl HeightPack {
 
     /// The zooms a tile can be asked for: the block zoom to the tile zoom.
     pub fn zooms(&self) -> std::ops::RangeInclusive<u8> {
-        self.block_zoom..=self.tile_zoom
+        self.index.zooms()
     }
 
     /// Every tile the pack covers at `zoom`, block by block.
     pub fn tiles(&self, zoom: u8) -> Vec<(u32, u32)> {
-        if !self.zooms().contains(&zoom) {
-            return Vec::new();
-        }
-        let per = 1u32 << (zoom - self.block_zoom);
-        let mut out = Vec::new();
-        for range in &self.blocks {
-            if let Ok(block) = Block::parse(&self.bytes[range.clone()]) {
-                let (bx, by) = block.position();
-                for y in by * per..(by + 1) * per {
-                    for x in bx * per..(bx + 1) * per {
-                        out.push((x, y));
-                    }
-                }
-            }
-        }
-        out
+        self.index.tiles(zoom)
     }
 
     /// The heights of tile (x, y) at `zoom` into `out` (256 x 256 metres,
@@ -71,18 +45,19 @@ impl HeightPack {
         if !self.zooms().contains(&zoom) {
             return Err(format!("zoom {zoom} outside the pack"));
         }
-        let shift = zoom - self.block_zoom;
-        let (bx, by) = (x >> shift, y >> shift);
-        for range in &self.blocks {
-            let block =
-                Block::parse(&self.bytes[range.clone()]).map_err(|e| format!("block: {e:?}"))?;
-            if block.position() == (bx, by) {
-                return block
-                    .heights(&mut self.decoder, zoom, x, y, out, &mut self.scratch)
-                    .map_err(|e| format!("z{zoom} {x}/{y}: {e:?}"));
-            }
-        }
-        Err(format!("z{zoom} {x}/{y}: no block holds it"))
+        let range = self
+            .index
+            .block_for(zoom, x, y)
+            .ok_or_else(|| format!("z{zoom} {x}/{y}: no block holds it"))?;
+        self.index
+            .decode(
+                &self.bytes[range],
+                (zoom, x, y),
+                &mut self.decoder,
+                out,
+                &mut self.scratch,
+            )
+            .map_err(|e| format!("z{zoom} {x}/{y}: {e:?}"))
     }
 }
 
