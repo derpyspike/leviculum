@@ -140,6 +140,22 @@ def screens(out, log):
             raise RuntimeError(f"{' '.join(cmd)} did not run")
 
 
+def globe_tests(out, log):
+    """The loquax map tests on the globe build (order 1818): the carried
+    names' far-side and limb-box drops and the zoom hold only run with
+    the globe feature on, which no plain test run enables. One row says
+    how they went; a red run fails the walk."""
+    done = subprocess.run(["just", "loquax-globe"], cwd=ROOT,
+                          capture_output=True, text=True)
+    log.write(done.stdout + done.stderr)
+    verdict = "pass" if done.returncode == 0 else "FAIL"
+    note = "" if done.returncode == 0 else "just loquax-globe is red; its log is in build.log"
+    with open(os.path.join(out, "rows-globe-tests.tsv"), "w") as f:
+        f.write("\t".join(["globe", "tests", "loquax-globe", "", "", "", "",
+                           "globe_map_tests", str(int(done.returncode == 0)),
+                           "1.000", verdict, note]) + "\n")
+
+
 def m9(out, log):
     """The M9 host sim's walks: their dumps, and a row for their verdict."""
     done = subprocess.run(["just", "m9-sim-walk"], cwd=ROOT, capture_output=True, text=True)
@@ -341,6 +357,7 @@ def main():
             walk(bins[variant], out, variant, mode)
         if not args.no_screens:
             screens(out, log)
+            globe_tests(out, log)
         if args.m9:
             m9(out, log)
     rows = read_rows(out)

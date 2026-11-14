@@ -2036,6 +2036,91 @@ mod tests {
         );
     }
 
+    /// Order 1818 condition 1, on the globe build itself: a drag at the
+    /// globe minimum on the phone's frame, 24 steps, and after every
+    /// step each shown name sits within a pixel of its ground projected
+    /// through that frame's blend, its ground faces the viewer, and
+    /// every corner of its boxes is inside the disk. The drag is long
+    /// enough that rest names' grounds go behind the limb, so the
+    /// far-side and limb-box drops both run: the control asserts a
+    /// non-facing ground occurs, and that no name is drawn for one.
+    #[cfg(feature = "globe-world")]
+    #[test]
+    fn a_globe_drag_keeps_every_name_on_its_ground_and_inside_the_disk() {
+        use leviculum_map::blend::Blend;
+        let shape = crate::picture::world_shape();
+        assert_eq!(shape, Shape::Globe, "the globe build");
+        let (w, h) = (1224u32, 2197u32);
+        let centre = project(LatLon::from_degrees(32.0, -6.0));
+        let zoom = floor_milli_as(shape, w, h, 0);
+        let mut view = ExactView::new(centre, zoom, w, h);
+        // A globe the fingers turn is asked with no margins, as the
+        // phone asks it (map.rs, 1796).
+        let bare = |view: ExactView, moving: bool| Ask {
+            margin: (0, 0),
+            ..ask(view, moving, 1.0, MapTheme::Light)
+        };
+        let mut frames = florence();
+        frames.frame(&bare(view, false));
+        let rest = frames.drawn_names();
+        assert!(rest.len() > 5, "{} names at rest", rest.len());
+        let rest_blend = Blend::new(shape, view.centre, view.zoom(), w, h);
+        let grounds: HashMap<String, _> = rest
+            .iter()
+            .filter_map(|n| Some((n.text.clone(), rest_blend.to_world(n.at.0, n.at.1)?)))
+            .collect();
+        let mut judged = 0usize;
+        let mut gone_behind = 0usize;
+        for step in 0..24 {
+            drag_as(shape, &mut view, 37, -23);
+            frames.frame(&bare(view, true));
+            let b = Blend::new(shape, view.centre, view.zoom(), w, h);
+            let (cx, cy) = (f64::from(w) / 2.0, f64::from(h) / 2.0);
+            let r = b.radius();
+            let shown = frames.drawn_names();
+            for (text, &ground) in &grounds {
+                let name = shown
+                    .iter()
+                    .find(|n| n.shown && n.alpha > 0 && &n.text == text);
+                if !b.facing(ground) {
+                    gone_behind += 1;
+                    assert!(
+                        name.is_none(),
+                        "step {step}: {text} shown with its ground behind the limb"
+                    );
+                    continue;
+                }
+                let Some(name) = name else {
+                    continue;
+                };
+                judged += 1;
+                let (x, y) = b.to_screen(ground);
+                let off = (name.at.0 - x).hypot(name.at.1 - y);
+                assert!(
+                    off <= 1.0,
+                    "step {step}: {text} is {off:.2} px off its ground"
+                );
+                for bx in &name.boxes {
+                    for px in [bx.x0, bx.x1] {
+                        for py in [bx.y0, bx.y1] {
+                            let out = (f64::from(px) - cx).hypot(f64::from(py) - cy);
+                            assert!(
+                                out <= r + 0.5,
+                                "step {step}: {text} has a corner {out:.1} px from \
+                                 the centre, the disk ends at {r:.1}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(judged > 60, "only {judged} names judged over the drag");
+        assert!(
+            gone_behind > 0,
+            "the drag never pushed a rest name's ground behind the limb"
+        );
+    }
+
     /// The frames over the committed Florence region, which carries its
     /// names.
     fn florence() -> Frames {
