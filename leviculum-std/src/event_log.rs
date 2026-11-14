@@ -879,6 +879,15 @@ pub const EVENT_CATALOG: &[EventSchema] = &[
     // Loquax's rendezvous (1196, `loquax/src/home/rendezvous.rs`): one
     // line per change of the entry that carries a phone's or a mailbox's
     // traffic, and the phone's path request for its mailbox on every up.
+    // One line per map frame on the phone (order 1840,
+    // `loquax-android/src/map.rs`): the request Java built and the
+    // library's answer, so a device's pinch replays from logcat.
+    EventSchema {
+        name: "MAPGESTURE",
+        required_keys: &[
+            "w", "h", "moving", "x", "y", "z", "by", "to_x", "to_y", "to_z",
+        ],
+    },
     EventSchema {
         name: "HOME_ABOUT",
         required_keys: &["host", "version", "ours", "started", "devices"],

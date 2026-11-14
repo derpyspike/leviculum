@@ -565,23 +565,6 @@ impl Renderer {
             }
             view = held(view);
         }
-        if request.pan_x != 0 || request.pan_y != 0 || by != 0 {
-            // One line per gesture frame, greppable from logcat: a real
-            // device's pinch is replayed from exactly these (order 1833).
-            tracing::debug!(
-                "MAPGESTURE w={} h={} x={:?} y={:?} zoom_milli={:?} pan_x={} pan_y={} by_milli={} about_x={} about_y={}",
-                request.w,
-                request.h,
-                request.x,
-                request.y,
-                request.zoom_milli,
-                request.pan_x,
-                request.pan_y,
-                by,
-                request.about_x,
-                request.about_y
-            );
-        }
         self.frames.zoom(by);
         self.frames.asked(now);
         if by != 0 {
@@ -848,6 +831,7 @@ impl Renderer {
             track_windows: track_choices(window, lang),
             time_zones: self.time_zones && !request.own_only,
         };
+        said_gesture(request, &shown);
         shown
     }
 
@@ -1272,6 +1256,43 @@ pub fn hold_rung(dir: &Path, rung: Option<u8>) {
             held.push((dir.to_path_buf(), rung));
         }
     }
+}
+
+/// One line per frame, request and answer, catalogued (`MAPGESTURE`,
+/// `leviculum-std/src/event_log.rs`): logcat carries it (`adb logcat -s
+/// loquax`), so a device's pinch is replayed from exactly what Java asked
+/// and what the library answered (order 1840). Until 1840 this was a
+/// `debug!` line no device ever showed: the phone's subscriber renders
+/// catalogued events only.
+fn said_gesture(request: &MapRequest, shown: &MapShown) {
+    tracing::info!(
+        event = "MAPGESTURE",
+        w = request.w,
+        h = request.h,
+        mx = request.margin_x,
+        my = request.margin_y,
+        moving = request.moving,
+        x = request.x.unwrap_or(0),
+        y = request.y.unwrap_or(0),
+        z = request.zoom_milli.unwrap_or(0),
+        pan_x = request.pan_x,
+        pan_y = request.pan_y,
+        pan_xm = request.pan_x_milli,
+        pan_ym = request.pan_y_milli,
+        pan_about = request.pan_about,
+        by = request.zoom_by_milli,
+        about_x = request.about_x,
+        about_y = request.about_y,
+        to_x = shown.x,
+        to_y = shown.y,
+        to_z = shown.zoom_milli,
+        held_x = shown.held_x_micro.unwrap_or(i64::MIN),
+        held_y = shown.held_y_micro.unwrap_or(i64::MIN),
+        blended = shown.blended,
+        turns = shown.turns,
+        own_x = shown.own_x.unwrap_or(i32::MIN),
+        own_y = shown.own_y.unwrap_or(i32::MIN),
+    );
 }
 
 /// The config's word for a map theme; unset follows the phone.
