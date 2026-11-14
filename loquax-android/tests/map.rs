@@ -1856,6 +1856,56 @@ fn marks_project_through_the_blend_of_the_frame() {
     );
 }
 
+/// Audit of 1818 condition 3: a pin at a known place sits within 1 px
+/// of the blend's own `to_screen` of that place at every step of the
+/// handover, t = 0, 0.25, 0.5, 0.75 and 1, at z4, z6 and z8 of the
+/// globe blend. The control is the flat view's own projection, which
+/// in the middle of the ladder is pixels away: the test can tell a mark
+/// that skipped the blend.
+#[test]
+fn a_pin_sits_on_its_ground_at_every_step_of_the_handover() {
+    use leviculum_map::blend::Blend;
+    let view_at = project(LatLon::from_degrees(50.0, 0.0));
+    let (w, h) = (480u32, 320u32);
+    let pins = vec![pin(7, "lew", 50.3, 0.4), pin(9, "ann", 49.8, -0.3)];
+    let mut apart = 0.0f64;
+    for zoom in [4u32, 6, 8] {
+        let shows = leviculum_map::viewport::ExactView::new(view_at, zoom * 1000, w, h);
+        for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let blend = Blend::with_t(view_at, f64::from(zoom), w, h, t);
+            // One pin a call: near z4 the two would join in a cluster.
+            for p in &pins {
+                let marks = loquax_android::map::marks(
+                    core::slice::from_ref(p),
+                    &shows,
+                    Some(&blend),
+                    (0, 0),
+                    1.0,
+                    20_000,
+                    None,
+                );
+                assert_eq!(marks.len(), 1, "z{zoom} t{t}: {marks:?}");
+                let m = &marks[0];
+                let (bx, by) = blend.to_screen(p.at);
+                let off = (f64::from(m.x) - bx).hypot(f64::from(m.y) - by);
+                assert!(
+                    off <= 1.0,
+                    "z{zoom} t{t} {}: the mark at ({}, {}), its ground at ({bx:.1}, {by:.1})",
+                    p.label,
+                    m.x,
+                    m.y
+                );
+                let (fx, fy) = shows.to_screen(p.at);
+                apart = apart.max((fx - bx).hypot(fy - by));
+            }
+        }
+    }
+    assert!(
+        apart > 3.0,
+        "the flat projection is {apart:.2} px from the blend's at most"
+    );
+}
+
 /// 1693: each avatar pin carries its peer's hue for either map, the
 /// colour its track takes there (`loquax::ui::tracks::colour`), and the
 /// ink its initials take on it: the phone paints the pin in the hue,
