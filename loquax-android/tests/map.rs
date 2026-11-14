@@ -4173,33 +4173,26 @@ fn a_phone_pinch_as_java_sends_it_keeps_the_place() {
     );
 }
 
-/// The reviewer's emulator finding of 2026-11-14 on b74eb7e34
-/// (`attachments/2026-11-14-pinch-b74eb7e3`): slow pinches from the
-/// globe with the fingers on the own dot, off the screen's centre, lose
-/// the place by a fixed distance on the ground (48 km at 32 N, 53 km at
-/// 51 N, 150 km at 60 S), made in the first two pinches and then carried.
-/// The device's logcat (order 1840, MAPGESTURE and Java's own lines)
-/// shows the mechanism: a frame that is `pending` makes Java ask again at
-/// once, with no new event, 7 to 15 frames between two scale events. The
-/// zoom's thousandths leave a remainder of scale (1.0000844 after a step
-/// of 45 millizooms) that Java encodes as a pan about the about point,
-/// (1/s - 1) * about = -0.047 px at (558, 773); the next ask has neither
-/// pan nor zoom, the library answered it with no held ground, and Java's
-/// fallback (`off -= sigma * asked`) dropped the offset the first frame
-/// had left. Every two frames the ground slid 0.05 px towards the view's
-/// top left corner, about a hundred times a pinch. This drives
-/// `loquax_android::map::render` through the mirror of MapView.java with
-/// the device's size and density, the reviewer's slow pinch (fingers
-/// 60 to 540 px from the focus, the scale detector silent under a span
-/// of 490 px) and `ASKS_BETWEEN` frames asked between two events, at the
-/// reviewer's three places.
-#[test]
-fn a_pinch_whose_frames_ask_again_between_events_keeps_the_place() {
+/// A slow pinch on the emulator's map view through the device's entry
+/// (orders 1833 and 1840): `loquax_android::map::render` driven by the
+/// mirror of MapView.java at the size and density of lev-apk's
+/// `levapk-phone`, the globe at its floor turned so the own dot sits
+/// where the reviewer's fresh start showed it, the fingers `frac` off
+/// the dot's pixel, `pinches` of the reviewer's slow pinch (fingers 60
+/// to 540 px from the focus, the scale detector silent under a span of
+/// 490 px) with `asks_between` frames asked after each event's frame.
+/// The ground first under the fingers stays within 2 px of them on every
+/// frame and within 1 px at every rest.
+fn device_pinch(
+    places: &[(f64, f64, (f64, f64))],
+    frac: (f64, f64),
+    pinches: usize,
+    asks_between: usize,
+) {
     use leviculum_map::blend::Blend;
     // The emulator's map view and density (lev-apk's `levapk-phone`).
     const DW: u32 = 1224;
     const DH: u32 = 2194;
-    const ASKS_BETWEEN: usize = 2;
     let shape = loquax::picture::world_shape();
     let blend = |s: &MapShown| {
         Blend::new(
@@ -4212,11 +4205,7 @@ fn a_pinch_whose_frames_ask_again_between_events_keeps_the_place() {
     };
     // The places and where the reviewer's fresh globe showed the dot,
     // in the view's pixels (screen y less the view's top, 253).
-    for (lat, lon, dot) in [
-        (32.0, -6.0, (558.0, 773.0)),
-        (51.0, 10.0, (678.0, 620.0)),
-        (-60.0, 179.9, (564.0, 840.0)),
-    ] {
+    for &(lat, lon, dot) in places {
         let home = home();
         // Moving frames at the cheapest rung: the geometry is the same at
         // every rung, and a device-sized frame at the full one costs a
@@ -4293,10 +4282,7 @@ fn a_pinch_whose_frames_ask_again_between_events_keeps_the_place() {
             (ox - f64::from(DW) / 2.0).hypot(oy - f64::from(DH) / 2.0) >= 150.0,
             "{lat},{lon}: the dot at ({ox}, {oy}) is too near the centre to tell a pinch about it from one about the centre"
         );
-        // The scale detector's focal point on the emulator (MAPTOUCH,
-        // fingers at the dot's centroid 557.5 px): a fraction off the
-        // dot's pixel.
-        let (fx, fy) = (ox - 0.07, oy - 0.15);
+        let (fx, fy) = (ox + frac.0, oy + frac.1);
         let ground = loquax::mapframe::ground_under_as(
             shape,
             &ExactView::new(
@@ -4320,7 +4306,7 @@ fn a_pinch_whose_frames_ask_again_between_events_keeps_the_place() {
         let mut worst_moving = 0.0f64;
         let mut at_rest = Vec::new();
         let mut last = first.clone();
-        for _ in 0..1 {
+        for _ in 0..pinches {
             let mut prev: Option<f64> = None;
             for step in 0..=60 {
                 let span = 120.0 + 960.0 * f64::from(step) / 60.0;
@@ -4333,7 +4319,7 @@ fn a_pinch_whose_frames_ask_again_between_events_keeps_the_place() {
                 prev = Some(span);
                 // The event's frame, then the frames a pending answer
                 // asks again before the next event.
-                for _ in 0..=ASKS_BETWEEN {
+                for _ in 0..=asks_between {
                     let a = ask(&mut java);
                     let shown = land(&mut java, a, true);
                     worst_moving = worst_moving.max(off(&java, &shown));
@@ -4372,6 +4358,56 @@ fn a_pinch_whose_frames_ask_again_between_events_keeps_the_place() {
             rests.join(" ")
         );
     }
+}
+
+/// The reviewer's emulator finding of 2026-11-14 on b74eb7e34
+/// (`attachments/2026-11-14-pinch-b74eb7e3`): slow pinches from the
+/// globe with the fingers on the own dot, off the screen's centre, lose
+/// the place by a fixed distance on the ground (48 km at 32 N, 53 km at
+/// 51 N, 150 km at 60 S), made in the first two pinches and then carried.
+/// The device's logcat (order 1840, MAPGESTURE and Java's own lines)
+/// shows the mechanism: a frame that is `pending` makes Java ask again at
+/// once, with no new event, 7 to 15 frames between two scale events. The
+/// zoom's thousandths leave a remainder of scale (1.0000844 after a step
+/// of 45 millizooms) that Java encodes as a pan about the about point,
+/// (1/s - 1) * about = -0.047 px at (558, 773); the next ask has neither
+/// pan nor zoom, the library answered it with no held ground, and Java's
+/// fallback (`off -= sigma * asked`) dropped the offset the first frame
+/// had left. Every two frames the ground slid 0.05 px towards the view's
+/// top left corner, about a hundred times a pinch. This drives
+/// `loquax_android::map::render` through the mirror of MapView.java with
+/// the device's size and density, the reviewer's slow pinch (fingers
+/// 60 to 540 px from the focus, the scale detector silent under a span
+/// of 490 px) and `ASKS_BETWEEN` frames asked between two events, at the
+/// reviewer's three places.
+#[test]
+fn a_pinch_whose_frames_ask_again_between_events_keeps_the_place() {
+    // The scale detector's focal point on the emulator (MAPTOUCH,
+    // fingers at the dot's centroid 557.5 px): a fraction off the dot's
+    // pixel. One pinch: the ratchet showed 3.8 px in it.
+    device_pinch(
+        &[
+            (32.0, -6.0, (558.0, 773.0)),
+            (51.0, 10.0, (678.0, 620.0)),
+            (-60.0, 179.9, (564.0, 840.0)),
+        ],
+        (-0.07, -0.15),
+        1,
+        2,
+    );
+}
+
+/// The focus between pixels (order 1840, the second mechanism of the
+/// emulator's run on b74eb7e34): Java rounded the about point to a whole
+/// pixel while it showed the zoom about the fingers, and on the globe the
+/// turn that holds the ground under the rounded pixel changes the
+/// foreshortening there, so the fingers' own ground slid a hundredth of a
+/// pixel an event, which the pinch magnified: with the focus half a pixel
+/// off, 0.4, 1.0, 2.1 and 4.9 px at the rests of four slow pinches at
+/// 51 N (2.3 km after six). The about point now carries its thousandths.
+#[test]
+fn a_pinch_whose_focus_lies_between_pixels_keeps_the_place() {
+    device_pinch(&[(51.0, 10.0, (678.0, 620.0))], (-0.5, -0.5), 4, 0);
 }
 
 /// The first auditor's test of order 1833's round 2 (finding 3): the own

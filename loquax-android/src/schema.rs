@@ -2893,6 +2893,17 @@ pub struct MapRequest {
     pub about_x: i32,
     #[serde(default)]
     pub about_y: i32,
+    /// The about point's fraction beyond the whole pixels above,
+    /// thousandths of a pixel (order 1840): the fingers' focal point is
+    /// rarely on a whole pixel, and on the globe a zoom about the rounded
+    /// pixel is not the zoom Java shows about the fingers (the turn that
+    /// holds the ground changes the foreshortening there), a seed of a
+    /// hundredth of a pixel an event that the pinch magnified to 2.3 km
+    /// at 51 N from a half-pixel focus. Absent from an older app: zero.
+    #[serde(default)]
+    pub about_x_milli: i32,
+    #[serde(default)]
+    pub about_y_milli: i32,
     /// A tap at this pixel of the last frame: the pin there is selected
     /// and named.
     #[serde(default)]

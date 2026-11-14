@@ -1086,16 +1086,27 @@ final class MapView extends View {
                 // ground on a whole-pixel grid walked it half a pixel a
                 // frame, and the zoom magnified that seed to thousands
                 // of pixels at street level (order 1833).
-                float ax = Math.round(focused ? focusX : w / 2f);
-                float ay = Math.round(focused ? focusY : h / 2f);
-                float panXf = (ax - offX) / scale - ax;
-                float panYf = (ay - offY) / scale - ay;
+                // The about point's fraction goes as thousandths too
+                // (order 1840): on the globe a zoom about the rounded
+                // pixel is not the zoom shown about the fingers, a seed
+                // of a hundredth of a pixel an event that the pinch
+                // magnified to kilometres.
+                float fx = focused ? focusX : w / 2f;
+                float fy = focused ? focusY : h / 2f;
+                float ax = Math.round(fx);
+                float ay = Math.round(fy);
+                int axMilli = Math.round((fx - ax) * 1000f);
+                int ayMilli = Math.round((fy - ay) * 1000f);
+                float px = ax + axMilli / 1000f;
+                float py = ay + ayMilli / 1000f;
+                float panXf = (px - offX) / scale - px;
+                float panYf = (py - offY) / scale - py;
                 int panX = Math.round(panXf);
                 int panY = Math.round(panYf);
                 askedX = offX;
                 askedY = offY;
-                askedAboutX = ax;
-                askedAboutY = ay;
+                askedAboutX = px;
+                askedAboutY = py;
                 askedPanX = panXf;
                 askedPanY = panYf;
                 long byMilli = Math.round(1000 * Math.log(scale) / Math.log(2));
@@ -1114,6 +1125,7 @@ final class MapView extends View {
                         "pan_about", focused && !coasting,
                         "zoom_by_milli", byMilli,
                         "about_x", (long) ax, "about_y", (long) ay,
+                        "about_x_milli", (long) axMilli, "about_y_milli", (long) ayMilli,
                         "avatars", true);
                 if (x != null) {
                     request.put("x", x);

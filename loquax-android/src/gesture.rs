@@ -49,7 +49,7 @@ fn zoom_by(scale: f64, by: f64, zoom_milli: i64, min_zoom_milli: i64) -> f64 {
 #[derive(Clone, Copy, Default)]
 struct Asked {
     off: (f64, f64),
-    /// The about point (whole pixels) and the pan in full precision:
+    /// The about point (to a thousandth) and the pan in full precision:
     /// the ground drawn at (about + pan) of the then-current frame is
     /// the one the library held, the anchor `place` uses.
     about: (f64, f64),
@@ -158,21 +158,23 @@ impl Gesture {
         let h = self.h;
         let mx = margin(w, self.turns);
         let my = margin(h, self.turns);
-        // The about point whole, the pan's fraction as thousandths
-        // (MapView.java drawFrames, order 1833): re-picking the held
-        // ground on a whole-pixel grid walked it half a pixel a frame.
+        // The about point whole with its fraction as thousandths, the
+        // pan's fraction too (MapView.java drawFrames, orders 1833 and
+        // 1840): re-picking the held ground on a whole-pixel grid walked
+        // it half a pixel a frame, and a zoom about the rounded pixel is
+        // not the one shown about the fingers.
         #[allow(clippy::cast_precision_loss)]
-        let (ax, ay) = {
-            let (fx, fy) = self.focus.unwrap_or((w as f64 / 2.0, h as f64 / 2.0));
-            (fx.round(), fy.round())
-        };
-        let pan_xf = (ax - self.off.0) / self.scale - ax;
-        let pan_yf = (ay - self.off.1) / self.scale - ay;
+        let (fx, fy) = self.focus.unwrap_or((w as f64 / 2.0, h as f64 / 2.0));
+        let (ax, ay) = (fx.round(), fy.round());
+        let (ax_milli, ay_milli) = (((fx - ax) * 1000.0).round(), ((fy - ay) * 1000.0).round());
+        let (px, py) = (ax + ax_milli / 1000.0, ay + ay_milli / 1000.0);
+        let pan_xf = (px - self.off.0) / self.scale - px;
+        let pan_yf = (py - self.off.1) / self.scale - py;
         let pan_x = pan_xf.round();
         let pan_y = pan_yf.round();
         self.asked = Asked {
             off: self.off,
-            about: (ax, ay),
+            about: (px, py),
             pan: (pan_xf, pan_yf),
         };
         let by_milli = (1000.0 * self.scale.log2()).round();
@@ -190,6 +192,8 @@ impl Gesture {
             zoom_by_milli: by_milli as i32,
             about_x: ax as i32,
             about_y: ay as i32,
+            about_x_milli: ax_milli as i32,
+            about_y_milli: ay_milli as i32,
             x: self.shown.map(|(x, _, _)| x),
             y: self.shown.map(|(_, y, _)| y),
             zoom_milli: self.shown.map(|(_, _, z)| z),

@@ -523,7 +523,12 @@ impl Renderer {
         }
         let held = |v: ExactView| hold(v, zooms.0, zooms.1);
         view = held(view);
-        let about = |v: i32, of: u16| f64::from(v.clamp(0, i32::from(of)));
+        // The about point with its thousandths (order 1840), on the view.
+        let about = |v: i32, milli: i32, of: u16| {
+            (f64::from(v) + f64::from(milli.clamp(-999, 999)) / 1000.0).clamp(0.0, f64::from(of))
+        };
+        let about_x = about(request.about_x, request.about_x_milli, area.width);
+        let about_y = about(request.about_y, request.about_y_milli, area.height);
         let by = i64::from(request.zoom_by) * i64::from(MILLI) + i64::from(request.zoom_by_milli);
         let pan = (
             f64::from(request.pan_x) + f64::from(request.pan_x_milli) / 1000.0,
@@ -547,8 +552,8 @@ impl Renderer {
         let gesture_held = loquax::mapframe::ground_under_as(
             loquax::picture::world_shape(),
             &view,
-            about(request.about_x, area.width) + pan.0,
-            about(request.about_y, area.height) + pan.1,
+            about_x + pan.0,
+            about_y + pan.1,
         );
         if pans {
             self.frames.pan(pan.0, pan.1, now);
@@ -558,13 +563,7 @@ impl Renderer {
             // the request's about point is the gesture's focus. A
             // pointer-less pan (the coast) keeps the Mercator contract.
             match request.pan_about {
-                true => loquax::mapframe::drag_about(
-                    &mut view,
-                    pan.0,
-                    pan.1,
-                    about(request.about_x, area.width),
-                    about(request.about_y, area.height),
-                ),
+                true => loquax::mapframe::drag_about(&mut view, pan.0, pan.1, about_x, about_y),
                 #[allow(clippy::cast_possible_truncation)]
                 false => {
                     loquax::mapframe::drag(&mut view, pan.0.round() as i32, pan.1.round() as i32)
@@ -582,8 +581,8 @@ impl Renderer {
             loquax::mapframe::zoom_about(
                 &mut view,
                 u32::try_from(zoom).unwrap_or(floor),
-                about(request.about_x, area.width),
-                about(request.about_y, area.height),
+                about_x,
+                about_y,
             );
             view = held(view);
         }
@@ -1290,6 +1289,8 @@ fn said_gesture(request: &MapRequest, shown: &MapShown) {
         by = request.zoom_by_milli,
         about_x = request.about_x,
         about_y = request.about_y,
+        about_xm = request.about_x_milli,
+        about_ym = request.about_y_milli,
         to_x = shown.x,
         to_y = shown.y,
         to_z = shown.zoom_milli,
