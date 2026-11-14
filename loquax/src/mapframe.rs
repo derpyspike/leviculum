@@ -1642,7 +1642,7 @@ pub fn zoom_about(view: &mut ExactView, zoom_milli: u32, x: f64, y: f64) {
 /// was in Spain", order 1818). Here the point under the fingers is the
 /// blend's own ([`Blend::to_world`]), and at the new zoom the centre is
 /// turned ([`Blend::turned`], the same move a drag makes) until that
-/// point lands under the fingers again, within [`HELD_EPS_PX`]. A focus
+/// point lands under the fingers again, within `HELD_EPS_PX`. A focus
 /// off the world (off the globe's disk) zooms about the centre, which
 /// both mappings pin to the middle pixel.
 pub fn zoom_about_as(shape: Shape, view: &mut ExactView, zoom_milli: u32, x: f64, y: f64) {
