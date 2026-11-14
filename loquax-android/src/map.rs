@@ -70,7 +70,7 @@ use loquax::ui::map::{
 };
 use loquax::ui::radar;
 use loquax::ui::strings::Lang;
-use loquax::ui::tracks::{self, TrackWindow};
+use loquax::ui::tracks::TrackWindow;
 use loquax::ui::viewload::ViewLoads;
 use loquax::when::WallTime;
 
@@ -936,8 +936,6 @@ pub fn marks(
         .map(|members| {
             let (x, y) = points[members[0]];
             let pin = landed[members[0]].0;
-            // The peer's one colour on either map (1693).
-            let hue = |dark: bool| tracks::peer_colour(&pin.peer, dark);
             let way = radar
                 .filter(|r| members.len() == 1 && pin.at != r.centre)
                 .map(|r| radar::relative(r.centre, pin.at));
@@ -957,10 +955,6 @@ pub fn marks(
                 ),
                 way,
                 low_battery: members.len() == 1 && pin.low_battery(),
-                hue: tracks::hex(hue(false)),
-                hue_dark: tracks::hex(hue(true)),
-                ink: tracks::hex(tracks::ink_on(hue(false))),
-                ink_dark: tracks::hex(tracks::ink_on(hue(true))),
             }
         })
         .collect()

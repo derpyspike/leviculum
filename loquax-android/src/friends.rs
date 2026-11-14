@@ -17,7 +17,7 @@
 
 use loquax::telemetry::Fix;
 use loquax::ui::strings::Lang;
-use loquax::ui::{chat, scene, tracks, UiModel};
+use loquax::ui::{chat, scene, UiModel};
 
 use crate::schema::{self, FriendRow, VERSION};
 
@@ -148,8 +148,6 @@ pub fn friends<B>(
             initials: list.initials,
             icon_fg: list.icon.as_ref().map(|(fg, _)| fg.clone()),
             icon_bg: list.icon.map(|(_, bg)| bg),
-            hue: tracks::hex(tracks::peer_colour(peer, false)),
-            ink: tracks::hex(tracks::ink_on(tracks::peer_colour(peer, false))),
             photo: photo(peer),
             at,
             lat_e6: place.0,
@@ -285,52 +283,6 @@ mod tests {
         };
         assert!(!row(&walker).nearby, "added, a friend");
         assert!(row(&loquax::mesh_position::delivery_of(&[2u8; 16])).nearby);
-    }
-
-    /// 1693: a friend's row carries the peer's hue, the one its pin and
-    /// its track are drawn in (`loquax::ui::tracks`), and the ink its
-    /// initials take on it, so the sheet's entry and the card's avatar are
-    /// in that hue whatever icon the peer chose.
-    #[test]
-    fn a_friends_row_carries_its_hue_and_the_ink_on_it() {
-        use loquax::ui::tracks;
-        use loquax::ui::UiEvent;
-        const NOW: i64 = 1_793_500_000;
-        let mut model = UiModel::<crate::session::Line>::new(&[]);
-        update_clock(&mut model, NOW);
-        for (identity, lat) in [([1u8; 16], 43_773_100), ([3u8; 16], 43_774_100)] {
-            loquax::ui::update(
-                &mut model,
-                UiEvent::MeshPosition {
-                    identity,
-                    fix: leviculum_lxmf::telemetry::Location {
-                        latitude_e6: lat,
-                        longitude_e6: 11_256_000,
-                        altitude_e2: 0,
-                        speed_e2: 0,
-                        bearing_e2: 0,
-                        accuracy_e2: 0,
-                        last_update: NOW - 60,
-                    },
-                    name: Some("Walker".to_string()),
-                    age: 0,
-                },
-            );
-        }
-        let sheet = friends(&model, NOW, None, Lang::En, |_| None);
-        assert_eq!(sheet.friends.len(), 2);
-        for row in &sheet.friends {
-            let peer = loquax::address::parse(&row.peer).expect("hex");
-            let hue = tracks::colour(tracks::hue(&peer, false), false);
-            let hex = |[r, g, b]: [u8; 3]| format!("{r:02x}{g:02x}{b:02x}");
-            let value = serde_json::to_value(row).expect("json");
-            assert_eq!(value["hue"], serde_json::json!(hex(hue)), "{value}");
-            assert_eq!(
-                value["ink"],
-                serde_json::json!(hex(tracks::ink_on(hue))),
-                "{value}"
-            );
-        }
     }
 
     /// The model's clock at `now`, unix seconds.

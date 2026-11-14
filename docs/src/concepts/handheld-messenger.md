@@ -216,7 +216,7 @@ messenger core holds the same types a board will.
 Lew, 2026-11-02: Loquax is the M9's UI. The board's facts are in one
 place on [The ThinkNode M9](thinknode-m9.md), "The board as the UI sees
 it"; the frontend renders the scene the other three targets already
-render (`Scene`, `loquax/src/ui/scene.rs:1060`), and this section records
+render (`Scene`, `loquax/src/ui/scene.rs:1045`), and this section records
 what was measured for the plan, the budgets, and the slices. The host
 numbers below are 64-bit figures from a counting allocator, upper bounds
 for the 32-bit board (the 1337 pattern); the spike code ran under
@@ -1152,7 +1152,7 @@ renderer is written twice; the cell renderer keeps the bar and the
 legend.
 
 **The screen** (`lines`, `loquax-m9/src/map.rs:262`; `pins`,
-`loquax-m9/src/map.rs:1042`), as 1531 left it after Lew's evening at
+`loquax-m9/src/map.rs:1041`), as 1531 left it after Lew's evening at
 the board on 2026-11-07: the map is in the light table; the UI around it
 keeps its dark tokens. Since 1565 the picture is the phone's
 (`Style::SCREEN`: casings, round joins, buildings from z16), its edges
@@ -1370,7 +1370,7 @@ is not, because its renderer is still host-only. On the renderer it needs
 a branch in `lines` (`loquax-m9/src/screen.rs:227`) for the scene's
 `rooms` node (`RoomsNode`, `node`, `loquax/src/ui/rooms.rs:1096`), which
 the model already returns while the tab is in front (`rooms_scene`,
-`loquax/src/ui/scene.rs:1242`), and its tab in the tab bar the screen
+`loquax/src/ui/scene.rs:1227`), and its tab in the tab bar the screen
 already draws: the hub's line under the top bar, then either the room
 list (name, unread count) or the open room's one live line and its lines
 as `who text`, and one input line at the bottom on the chat's editor
@@ -2017,7 +2017,7 @@ words, and the picture was the shorter one while the bottom row had
 words. Now the picture always takes the bottom row and its names keep
 clear of the pins only; the hint, the pin's card and the credit are
 drawn over the copy (`Renderer::show`, `loquax-m9/src/render.rs:260`;
-`Kept`, `loquax-m9/src/map.rs:1293`), so a word that goes uncovers the
+`Kept`, `loquax-m9/src/map.rs:1279`), so a word that goes uncovers the
 picture kept under it. A name under a word stays hidden while the word
 stands. `the_words_over_the_map_never_draw_its_picture_again`
 (`loquax-m9/tests/map.rs:219`) walks the board's chrome clock: open with

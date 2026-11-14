@@ -17463,23 +17463,6 @@ pub(crate) mod tests {
         assert!(list[0].starts_with("bob") && list[1].starts_with("Alice"));
     }
 
-    /// 1693: the card's avatar and the locations list's entry are in the
-    /// peer's hue, the colour its pin and track are drawn in, whatever icon
-    /// the peer chose; the initials in the ink the one rule picks for it.
-    #[test]
-    fn a_cards_avatar_is_in_its_peers_hue() {
-        use crate::ui::tracks::{ink_on, peer_colour};
-        let model = mapped();
-        let cards = pin_card::cards(&model);
-        let rgb = |c: [u8; 3]| u32::from_be_bytes([0, c[0], c[1], c[2]]);
-        for card in cards.iter().filter(|c| !c.own && !c.nearby) {
-            let hue = peer_colour(&card.peer, false);
-            assert_eq!(card.avatar.bg, rgb(hue), "{}", card.name);
-            assert_eq!(card.avatar.fg, rgb(ink_on(hue)), "{}", card.name);
-        }
-        assert!(cards.iter().any(|c| !c.own && !c.nearby));
-    }
-
     /// The shell's own fix is our pin where it is newer than the one we
     /// shared (1375): a board's GNSS shows it before it shared anything,
     /// and the older one does not move it back. The map's picture is the

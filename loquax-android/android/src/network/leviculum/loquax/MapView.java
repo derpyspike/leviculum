@@ -205,8 +205,6 @@ final class MapView extends View {
     private List<Map<String, Object>> marks = Collections.emptyList();
     /** When the last frame's marks came, uptime ms: a live ring pulses from then (1455). */
     private long marksAt;
-    /** The marks' frame is in the map's dark table: their pins take the dark set of hues (1693). */
-    private boolean marksDark;
     /** The last frame's view size and deepest zoom. */
     private int viewW;
     private int viewH;
@@ -941,15 +939,7 @@ final class MapView extends View {
             }
             ring.setColor(getContext().getColor(peer.equals(carded) ? R.color.accent : R.color.background));
             canvas.drawCircle(cx, cy, side / 2f + (peer.equals(carded) ? 2 * edge : edge), ring);
-            // The peer's hue in the map's table, the colour its track is
-            // drawn in on this ground (1693); a nearby node stays grey.
-            int[] colours = AvatarView.colours(peer, row);
-            int hue = AvatarView.colour(Core.str(mark, marksDark ? "hue_dark" : "hue"));
-            int ink = AvatarView.colour(Core.str(mark, marksDark ? "ink_dark" : "ink"));
-            if (hue != 0 && ink != 0 && !Core.bool(row, "nearby")) {
-                colours = new int[] {hue, ink};
-            }
-            AvatarView.drawAt(canvas, cx, cy, side, peer, row, colours, circle, letters, picture);
+            AvatarView.drawAt(canvas, cx, cy, side, peer, row, circle, letters, picture);
             int ringColour = AvatarView.ring(getContext(), row);
             if (ringColour != 0) {
                 float width = side * AvatarView.RING;
@@ -1194,7 +1184,6 @@ final class MapView extends View {
                     zoomMilli = Core.num(shown, "zoom_milli");
                     blended = Core.bool(shown, "blended");
                     marks = Core.list(shown, "marks");
-                    marksDark = Core.bool(shown, "dark");
                     marksAt = SystemClock.uptimeMillis();
                     ownX = shown.get("own_x") instanceof Number ? Core.num(shown, "own_x") : null;
                     ownY = shown.get("own_y") instanceof Number ? Core.num(shown, "own_y") : null;

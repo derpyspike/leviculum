@@ -469,20 +469,17 @@ pub fn hue(peer: &[u8; 16], own: bool) -> Option<u8> {
 }
 
 /// The eight hues on a light map (rule 6): blue, orange, green, red,
-/// violet, teal, magenta, ochre; apart in hue and in lightness, so two stay
-/// apart at a quarter of their opacity. Each in a hue bucket of its own (the
-/// wheel in twelve), each at least 3:1 against the light land `#f2efe9`
-/// and the labels' white (1693: orange darkened from `#e07000`, 2.82:1, and
-/// the brown `#8a5a1e`, which shared orange's bucket, turned to ochre).
+/// violet, teal, magenta, brown; apart in hue and in lightness, so two stay
+/// apart at a quarter of their opacity.
 pub const HUE_LIGHT: [[u8; 3]; 8] = [
     [0x1f, 0x5f, 0xd0],
-    [0xd0, 0x64, 0x00],
+    [0xe0, 0x70, 0x00],
     [0x12, 0x8f, 0x4a],
     [0xd0, 0x22, 0x2e],
     [0x7a, 0x3f, 0xc8],
     [0x00, 0x8c, 0x96],
     [0xc0, 0x2a, 0x90],
-    [0x85, 0x70, 0x00],
+    [0x8a, 0x5a, 0x1e],
 ];
 /// The same hues on the dark map, lighter, so they hold against its
 /// ground.
@@ -494,7 +491,7 @@ pub const HUE_DARK: [[u8; 3]; 8] = [
     [0xb8, 0x8c, 0xff],
     [0x3c, 0xd4, 0xd8],
     [0xff, 0x7a, 0xd0],
-    [0xd8, 0xc0, 0x50],
+    [0xd8, 0xa8, 0x68],
 ];
 /// Our own track: neutral grey on either map.
 pub const OWN_LIGHT: [u8; 3] = [0x60, 0x60, 0x60];
@@ -508,53 +505,6 @@ pub fn colour(hue: Option<u8>, dark: bool) -> [u8; 3] {
         (None, false) => OWN_LIGHT,
         (None, true) => OWN_DARK,
     }
-}
-
-/// A peer's colour on a light or a dark map: its [`hue`]'s ([`colour`]).
-/// Every target paints a peer's pin marker, its name, its track, its entry
-/// in the people list and the card's avatar from this one function (1693);
-/// the pin's shape differs per target, the colour does not.
-pub fn peer_colour(peer: &[u8; 16], dark: bool) -> [u8; 3] {
-    colour(hue(peer, false), dark)
-}
-
-/// The ink on a ground of `colour`: [`INK_LIGHT`] or [`INK_DARK`], whichever
-/// holds the higher contrast, so a phone's initials stay legible inside the
-/// pin of every hue (1693; at least 4.5:1 on all sixteen).
-pub fn ink_on(colour: [u8; 3]) -> [u8; 3] {
-    match contrast(colour, INK_LIGHT) >= contrast(colour, INK_DARK) {
-        true => INK_LIGHT,
-        false => INK_DARK,
-    }
-}
-
-/// The light ink on a hue: white.
-pub const INK_LIGHT: [u8; 3] = [0xff, 0xff, 0xff];
-/// The dark ink on a hue: near black.
-pub const INK_DARK: [u8; 3] = [0x10, 0x10, 0x10];
-
-/// The WCAG contrast ratio of two sRGB colours, 1 to 21.
-pub fn contrast(a: [u8; 3], b: [u8; 3]) -> f32 {
-    let (a, b) = (luminance(a), luminance(b));
-    (a.max(b) + 0.05) / (a.min(b) + 0.05)
-}
-
-/// The WCAG relative luminance of an sRGB colour.
-fn luminance([r, g, b]: [u8; 3]) -> f32 {
-    let lin = |c: u8| {
-        let c = f32::from(c) / 255.0;
-        if c <= 0.039_28 {
-            c / 12.92
-        } else {
-            libm::powf((c + 0.055) / 1.055, 2.4)
-        }
-    };
-    0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
-}
-
-/// `colour` as `rrggbb`, as the phone's facade carries a colour.
-pub fn hex([r, g, b]: [u8; 3]) -> String {
-    format!("{r:02x}{g:02x}{b:02x}")
 }
 
 /// The ANSI colour of a hue for a terminal of sixteen: blue, yellow,
@@ -1415,130 +1365,6 @@ mod tests {
         let seen: alloc::collections::BTreeSet<u8> =
             (0..=255u8).filter_map(|b| hue(&[b; 16], false)).collect();
         assert_eq!(seen.len(), 8);
-    }
-
-    /// The WCAG relative luminance of an sRGB colour, for the tests' own
-    /// check of the palette (independent of [`contrast`]).
-    fn luminance_of([r, g, b]: [u8; 3]) -> f64 {
-        let lin = |c: u8| {
-            let c = f64::from(c) / 255.0;
-            if c <= 0.039_28 {
-                c / 12.92
-            } else {
-                ((c + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
-    }
-
-    fn ratio(a: [u8; 3], b: [u8; 3]) -> f64 {
-        let (a, b) = (luminance_of(a), luminance_of(b));
-        (a.max(b) + 0.05) / (a.min(b) + 0.05)
-    }
-
-    /// The hue angle of a colour in degrees, 0..360.
-    fn degrees([r, g, b]: [u8; 3]) -> f64 {
-        let (r, g, b) = (f64::from(r), f64::from(g), f64::from(b));
-        let (max, min) = (r.max(g).max(b), r.min(g).min(b));
-        let d = max - min;
-        if d == 0.0 {
-            return 0.0;
-        }
-        let h = if max == r {
-            ((g - b) / d).rem_euclid(6.0)
-        } else if max == g {
-            (b - r) / d + 2.0
-        } else {
-            (r - g) / d + 4.0
-        };
-        h * 60.0
-    }
-
-    /// Rule 6 (1693): each of the eight holds against the ground it is
-    /// drawn on, at least 3:1 (WCAG's floor for graphics): the light set
-    /// on the light map's land (`#f2efe9`) and on the labels' white, the
-    /// lighter set on the dark map's (`#161616`, `#181818`).
-    #[test]
-    fn every_hue_holds_against_its_ground() {
-        for (i, (&light, &dark)) in HUE_LIGHT.iter().zip(HUE_DARK.iter()).enumerate() {
-            for ground in [[0xf2, 0xef, 0xe9], [0xff, 0xff, 0xff]] {
-                let r = ratio(light, ground);
-                assert!(
-                    r >= 3.0,
-                    "light hue {i} {light:02x?} on {ground:02x?}: {r:.2}"
-                );
-            }
-            for ground in [[0x16, 0x16, 0x16], [0x18, 0x18, 0x18]] {
-                let r = ratio(dark, ground);
-                assert!(
-                    r >= 3.0,
-                    "dark hue {i} {dark:02x?} on {ground:02x?}: {r:.2}"
-                );
-            }
-        }
-    }
-
-    /// Rule 6 (1693): no two of the eight share a hue bucket, the colour
-    /// wheel cut in twelve of 30 degrees with red's centred on 0 (red,
-    /// orange, yellow, ... rose), in either set; so two peers never differ
-    /// by lightness alone.
-    #[test]
-    fn no_two_hues_share_a_bucket() {
-        for set in [HUE_LIGHT, HUE_DARK] {
-            let buckets: Vec<u32> = set
-                .iter()
-                .map(|&c| (((degrees(c) + 15.0) / 30.0).floor() as u32) % 12)
-                .collect();
-            for (i, a) in buckets.iter().enumerate() {
-                for (j, b) in buckets.iter().enumerate().skip(i + 1) {
-                    assert_ne!(
-                        a, b,
-                        "hues {i} {:02x?} and {j} {:02x?} share bucket {a}",
-                        set[i], set[j]
-                    );
-                }
-            }
-            // And each sits inside its bucket, not on an edge.
-            for &c in &set {
-                let off = (degrees(c) + 15.0).rem_euclid(30.0);
-                assert!((2.0..28.0).contains(&off), "{c:02x?} on a bucket edge");
-            }
-        }
-    }
-
-    /// 1693: the initials inside a phone's pin take one rule, white or near
-    /// black by the hue's luminance, and hold at least 4.5:1 on every one
-    /// of the sixteen; [`contrast`] agrees with the tests' own reckoning.
-    #[test]
-    fn the_ink_on_every_hue_is_legible() {
-        for c in HUE_LIGHT.iter().chain(HUE_DARK.iter()).copied() {
-            let ink = ink_on(c);
-            assert!(ink == INK_LIGHT || ink == INK_DARK);
-            let r = ratio(c, ink);
-            assert!(r >= 4.5, "ink {ink:02x?} on {c:02x?}: {r:.2}");
-            let other = if ink == INK_LIGHT {
-                INK_DARK
-            } else {
-                INK_LIGHT
-            };
-            assert!(r >= ratio(c, other), "the better of the two on {c:02x?}");
-            assert!((f64::from(contrast(c, ink)) - r).abs() < 0.01);
-        }
-    }
-
-    /// 1693: a peer's colour is its track's, from the first byte of the
-    /// address, on either map; ours stays grey.
-    #[test]
-    fn a_peers_colour_is_its_tracks() {
-        for b in 0..=255u8 {
-            let peer = [b; 16];
-            for dark in [false, true] {
-                assert_eq!(peer_colour(&peer, dark), colour(hue(&peer, false), dark));
-            }
-        }
-        assert_eq!(peer_colour(&[3; 16], false), HUE_LIGHT[3]);
-        assert_eq!(colour(hue(&[3; 16], true), false), OWN_LIGHT);
-        assert_eq!(hex([0x0a, 0xbc, 0xff]), "0abcff");
     }
 
     /// Rule 7: a wedge above 1.5 m/s, along the field's bearing, or along

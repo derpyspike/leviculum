@@ -84,18 +84,15 @@ fn card<B>(model: &UiModel<B>, pin: &MapPin, own: Option<World>) -> PinCard {
         (None, _) => live,
     };
     let row = list_row(model, &pin.peer);
-    // A friend in its hue, the colour of its pin and track (1693); a node
-    // nearby and our own keep the list's avatar.
-    let avatar = match (pin.nearby, pin.own) {
-        (true, _) => Avatar::of(row.initials, &pin.peer, row.icon.as_ref(), None),
-        (false, true) => Avatar::of(
-            row.initials,
-            &pin.peer,
-            row.icon.as_ref(),
-            Ring::of(liveness.state),
-        ),
-        (false, false) => Avatar::hued(row.initials, &pin.peer, Ring::of(liveness.state)),
-    };
+    let avatar = Avatar::of(
+        row.initials,
+        &pin.peer,
+        row.icon.as_ref(),
+        match pin.nearby {
+            true => None,
+            false => Ring::of(liveness.state),
+        },
+    );
     PinCard {
         peer: pin.peer,
         name: pin.label.clone(),

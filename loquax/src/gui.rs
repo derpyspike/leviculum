@@ -3807,38 +3807,28 @@ impl canvas::Program<Message> for MapCanvas<'_> {
                 ((ty + k * f64::from(y)) / s) as f32,
             )
         };
-        // The map's table, the one its tracks were drawn in: the pins take
-        // the same set of hues (1693) and the labels a ground of that table.
-        let dark = shown.order.style.theme == leviculum_mapfill::style::MapTheme::Dark;
         for pin in &shown.placed {
-            // Every peer in its hue, the one its track is drawn in, with a
-            // track or without, chosen or not; the name too (1385, 1693).
-            let [hr, hg, hb] = map::pin_hue(&pin.peer, dark);
-            let hue = Color::from_rgb8(hr, hg, hb);
+            // A peer with a track in its hue, the name too (1385).
+            let hue = map::pin_hue(&shown.order.tracks, &pin.peer, false)
+                .filter(|_| !pin.nearby)
+                .map(|[r, g, b]| Color::from_rgb8(r, g, b));
+            let blue = hue.unwrap_or(Color::from_rgb8(0x20, 0x50, 0xc0));
             let [or, og, ob] = map::OWN_DOT;
-            let ink = match (pin.nearby, pin.stale) {
+            let ink = match (pin.selected, pin.nearby, pin.stale) {
+                (true, ..) => Color::from_rgb8(0xd0, 0x30, 0x30),
                 // Our own position, the blue dot (1449 item 2).
-                (_, stale) if pin.own => {
+                (false, _, stale) if pin.own => {
                     Color::from_rgb8(or, og, ob).scale_alpha(if stale { 0.45 } else { 1.0 })
                 }
                 // A node nearby that is no contact (1302): a neutral grey.
-                (true, false) => Color::from_rgb8(0x80, 0x80, 0x80),
-                (true, true) => Color::from_rgba8(0x80, 0x80, 0x80, 0.45),
-                (false, false) => hue,
-                (false, true) => hue.scale_alpha(0.45),
-            };
-            // The chosen pin is told by a wider ring of the text colour,
-            // never by a colour of its own (1693: it was red).
-            let (ring, ring_w) = match pin.selected {
-                true => {
-                    let [r, g, b] = map::CHOSEN_RING[usize::from(dark)];
-                    (Color::from_rgb8(r, g, b), map::RING_WIDTHS.0)
-                }
-                false => (Color::WHITE, map::RING_WIDTHS.1),
+                (false, true, false) => Color::from_rgb8(0x80, 0x80, 0x80),
+                (false, true, true) => Color::from_rgba8(0x80, 0x80, 0x80, 0.45),
+                (false, false, false) => blue,
+                (false, false, true) => blue.scale_alpha(0.45),
             };
             let centre = to(pin.x, pin.y);
             let radius = map::MARKER / 2.0;
-            frame.fill(&Path::circle(centre, radius + ring_w), ring);
+            frame.fill(&Path::circle(centre, radius + 1.5), Color::WHITE);
             frame.fill(&Path::circle(centre, radius), ink);
             // A battery below a fifth (1386), as the phone's frame draws it.
             if pin.low_battery {
@@ -3868,29 +3858,21 @@ impl canvas::Program<Message> for MapCanvas<'_> {
                 );
             }
             if let Some((x, y, words)) = &pin.label {
-                let plain = match dark {
-                    true => Color::from_rgb8(0xe6, 0xe6, 0xe6),
-                    false => Color::from_rgb8(0x10, 0x10, 0x10),
-                };
-                let text_ink = match (pin.nearby, pin.stale) {
-                    (true, true) => plain.scale_alpha(0.55),
-                    (true, false) => plain,
-                    (false, true) => hue.scale_alpha(0.55),
-                    (false, false) => hue,
+                let text_ink = match (pin.stale, hue) {
+                    (true, Some(hue)) => hue.scale_alpha(0.55),
+                    (false, Some(hue)) => hue,
+                    (true, None) => Color::from_rgba8(0x20, 0x20, 0x20, 0.55),
+                    (false, None) => Color::from_rgb8(0x10, 0x10, 0x10),
                 };
                 let at = to(*x, *y);
                 let width = pin.width / scale;
                 let line = map::LABEL * map::LINE;
                 // A light ground under the text, so a name reads on any
                 // street.
-                let ground = match dark {
-                    true => Color::from_rgba8(0x18, 0x18, 0x18, 0.75),
-                    false => Color::from_rgba8(0xff, 0xff, 0xff, 0.75),
-                };
                 frame.fill_rectangle(
                     Point::new(at.x - 2.0, at.y),
                     Size::new(width + 4.0, line),
-                    ground,
+                    Color::from_rgba8(0xff, 0xff, 0xff, 0.75),
                 );
                 frame.fill_text(canvas::Text {
                     content: words.clone(),
