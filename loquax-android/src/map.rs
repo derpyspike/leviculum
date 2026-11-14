@@ -1077,6 +1077,20 @@ pub fn drawn_names(dir: &Path) -> Option<Vec<DrawnName>> {
         .map(|r| r.frames.drawn_names())
 }
 
+/// The passes the renderer over `dir` ran for its last frame, each with
+/// its microseconds ([`loquax::mapframe::Frames::trace`]): where a slow
+/// frame's time went, for the walk's strip (order 1818).
+pub fn frame_trace(dir: &Path) -> Vec<(leviculum_map::ladder::Pass, u32)> {
+    let renderers = RENDERERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    renderers
+        .iter()
+        .find(|r| r.dir == dir)
+        .map(|r| r.frames.trace().to_vec())
+        .unwrap_or_default()
+}
+
 /// What the last frame that zoomed of the renderer over `dir` spent
 /// placing its names (1225): the measuring tool's row.
 pub fn place_cost(dir: &Path) -> Option<PlaceCost> {

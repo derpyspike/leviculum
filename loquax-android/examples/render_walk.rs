@@ -638,6 +638,21 @@ impl Walk {
             };
             let drawn = java.settle(ask, self.fault);
             times.push(drawn.ms);
+            // Where the frame's time went, pass by pass (order 1818):
+            // the strip is the measuring tool for the handover's cost.
+            let trace = map::frame_trace(&home);
+            let spent: String = trace
+                .iter()
+                .map(|(p, us)| format!("{p:?} {:.1}", f64::from(*us) / 1e3))
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!(
+                "strip-frame {} {} z{:.3} {:.1} ms: {spent}",
+                size.name,
+                centre.name,
+                f64::from(zoom) / f64::from(MILLI),
+                drawn.ms
+            );
             let image = format!(
                 "{}-strip-{}-{}-z{:05}",
                 self.variant, size.name, centre.name, zoom
