@@ -357,12 +357,19 @@ impl FillScratch {
 }
 
 impl Painter {
-    /// A painter over the regions of `maps`, read now.
+    /// A painter over the regions of `maps`, read now, with a relief
+    /// store of its own.
     pub fn new(maps: Maps) -> Self {
+        Self::with_relief(maps, crate::relief::ReliefStore::default())
+    }
+
+    /// A painter over the regions of `maps` sharing `relief` with other
+    /// painters: a tile cache's workers hand each painter a handle on
+    /// one store, so a shade plane one worker computed serves the rest.
+    pub fn with_relief(maps: Maps, relief: crate::relief::ReliefStore) -> Self {
         let epoch = maps.epoch();
         let progress = maps.progress();
         let (regions, _) = maps.load();
-        let mut relief = crate::relief::ReliefStore::default();
         relief.refresh(maps.dir());
         Self {
             maps,
@@ -380,6 +387,11 @@ impl Painter {
         }
     }
 
+    /// The relief store this painter shades from.
+    pub fn relief(&self) -> &crate::relief::ReliefStore {
+        &self.relief
+    }
+
     /// Read the directory again when it changed since, or a region in it
     /// gained tiles; whether it did.
     pub fn refresh(&mut self) -> bool {
@@ -390,6 +402,8 @@ impl Painter {
         self.epoch = epoch;
         self.progress = progress;
         self.regions = self.maps.load().0;
+        // Lists the directory; indexes the packs again only when their
+        // names, lengths or times moved, not on every progress tick.
         self.relief.refresh(self.maps.dir());
         true
     }
@@ -714,7 +728,7 @@ impl Painter {
                 ink,
                 style,
                 percent,
-                shaded.then_some(&mut self.relief),
+                shaded.then_some(&self.relief),
                 &mut self.read,
                 &mut self.buildings,
                 &mut self.scratch,
@@ -1018,7 +1032,7 @@ fn region_into<D>(
     ink: Ink,
     style: Style,
     percent: u32,
-    relief: Option<&mut crate::relief::ReliefStore>,
+    relief: Option<&crate::relief::ReliefStore>,
     read: &mut Vec<(ViewTile, Vec<u8>)>,
     buildings: &mut Vec<(TileId, Vec<u8>)>,
     fill: &mut FillScratch,
@@ -1257,6 +1271,64 @@ mod tests {
             })
             .count();
         assert_eq!(outside_moved, 0, "bare outline ground stays unshaded");
+        // The relief lies under the lines: a pixel a line or a casing
+        // inks (the Rgb565 path has no anti-aliasing, so a line pixel is
+        // exactly its ink) is the same pixel with and without it.
+        let palette = Style::SCREEN.theme.palette();
+        let inks: Vec<u16> = palette
+            .lines
+            .iter()
+            .chain([&palette.road_casing, &palette.casing])
+            .map(|&c| {
+                use embedded_graphics::pixelcolor::raw::RawData;
+                embedded_graphics::pixelcolor::raw::RawU16::from(c).into_inner()
+            })
+            .collect();
+        let mut line_px = 0usize;
+        for (a, b) in with.fb.iter().zip(&without.fb) {
+            if inks.contains(b) {
+                line_px += 1;
+                assert_eq!(a, b, "a line pixel took the relief");
+            }
+        }
+        assert!(
+            line_px > 500,
+            "the fixture's streets: {line_px} line pixels"
+        );
+        // The RGBA path (the window's and the phone's frames) shades the
+        // same ground and leaves the same outside alone.
+        let rgba_with = painter.draw_rgba(&view, Ink::Colour, Style::SCREEN, 100, false);
+        let rgba_without = painter.draw_rgba(
+            &view,
+            Ink::Colour,
+            Style {
+                relief: false,
+                ..Style::SCREEN
+            },
+            100,
+            false,
+        );
+        let (mut moved_in, mut moved_out) = (0usize, 0usize);
+        for (i, (a, b)) in rgba_with
+            .rgba
+            .chunks_exact(4)
+            .zip(rgba_without.rgba.chunks_exact(4))
+            .enumerate()
+        {
+            let p = Point::new((i % 480) as i32, (i / 480) as i32);
+            if a != b {
+                if area.contains(p) {
+                    moved_in += 1;
+                } else {
+                    moved_out += 1;
+                }
+            }
+        }
+        assert!(
+            moved_in * 3 > inside,
+            "the RGBA frame shades the region's ground: {moved_in} of {inside}"
+        );
+        assert_eq!(moved_out, 0, "the RGBA frame leaves bare ground alone");
         // The dark table keeps its ground as it is.
         let dark = Style::SCREEN.in_theme(MapTheme::Dark);
         let a = painter.draw_with(&view, None, Ink::Colour, dark, 100);
