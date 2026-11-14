@@ -2979,14 +2979,17 @@ render-walk *ARGS:
 # request, a cache at its cap) checked by named rules
 # (view_filled_at_rest, screen_first, nothing_lost, no_regress,
 # same_view_same_picture, no_spin, fault_recovers, frame_never_blank;
-# loquax/tests/support/load_walk.rs). Writes OUT/index.html, summary.tsv
-# and a per-frame trace per session, default target/load-walk; red on
-# any failed rule. `--quick` walks the ladder, in-out-in and the pans
-# (28 s warm, measured 2026-11-13); the full set takes about 6 min;
-# `--selftest` injects each fault class into the walk itself and each
-# rule must fire (2 min). The short
-# per-batch set runs in `cargo test` by itself. A measuring tool, never
-# in `guards`.
+# loquax/tests/support/load_walk.rs). The phone's path walks too (1821):
+# two sessions drive the facade's render() with frames asked only as
+# MapView asks them (the fill at rest and the 503 fault that heals hands
+# off; loquax-android/tests/map.rs, the_phone_load_walk_holds_its_rules),
+# their rows and pictures in the same sheet. Writes OUT/index.html,
+# summary.tsv and a per-frame trace per session, default
+# target/load-walk; red on any failed rule. `--quick` walks the ladder,
+# in-out-in and the pans (28 s warm, measured 2026-11-13); the full set
+# takes about 6 min; `--selftest` injects each fault class into the walk
+# itself and each rule must fire (2 min). The short per-batch set runs
+# in `cargo test` by itself. A measuring tool, never in `guards`.
 [doc('Load the map as a user does; check every session by rules (1811)')]
 load-walk *ARGS:
     python3 -I scripts/load-walk.py {{ARGS}}

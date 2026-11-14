@@ -837,34 +837,50 @@ fn overlaps(a: &Bounds, b: &Bounds) -> bool {
     a.west <= b.east && b.west <= a.east && a.south <= b.north && b.south <= a.north
 }
 
-/// Whether the drawn frame `shown` is blank: its most common sampled
-/// pixel covers more than [`BLANK_SHARE`] of it (1821). Every 16th
-/// pixel is read, so a session of thousands of frames is not spent
-/// counting.
+/// The map's own clear colour in the walk's table, as frame pixels: a
+/// frame that lost its picture shows this and nothing else, while a
+/// legitimately uniform picture (the fixture's unbroken forest, drawn
+/// coarse while finer tiles arrive) is drawn data of another colour.
+/// The first cut of 1821 called every uniform frame blank and flagged
+/// the forest stand-in on a slow host.
+fn ground_rgba() -> [u8; 4] {
+    let [r, g, b] = leviculum_mapfill::frame::rgb888(
+        leviculum_mapfill::style::MapTheme::Light
+            .palette()
+            .background,
+    );
+    [r, g, b, 0xff]
+}
+
+/// Whether the drawn frame `shown` is blank: the ground colour
+/// ([`ground_rgba`]) over more than [`BLANK_SHARE`] of it (1821).
+/// Every 16th pixel is read, so a session of thousands of frames is
+/// not spent counting.
 fn frame_blank(shown: &super::Shown) -> bool {
     let super::Handle::Rgba { pixels, .. } = &shown.handle else {
         return false;
     };
-    let mut counts: HashMap<[u8; 4], u32> = HashMap::new();
+    let ground = ground_rgba();
+    let mut hits = 0u32;
     let mut total = 0u32;
     for px in pixels.chunks_exact(4).step_by(16) {
-        *counts.entry([px[0], px[1], px[2], px[3]]).or_default() += 1;
+        hits += u32::from(px == ground);
         total += 1;
     }
-    let top = counts.values().copied().max().unwrap_or(0);
-    f64::from(top) / f64::from(total.max(1)) > BLANK_SHARE
+    f64::from(hits) / f64::from(total.max(1)) > BLANK_SHARE
 }
 
-/// The share of `rgba` its most common pixel covers.
+/// The share of `rgba` the map's own clear colour covers
+/// ([`ground_rgba`], 1821).
 pub fn blank_share(rgba: &[u8]) -> f64 {
-    let mut counts: HashMap<[u8; 4], u32> = HashMap::new();
+    let ground = ground_rgba();
+    let mut hits = 0u32;
     let mut total = 0u32;
     for px in rgba.chunks_exact(4).step_by(4) {
-        *counts.entry([px[0], px[1], px[2], px[3]]).or_default() += 1;
+        hits += u32::from(px == ground);
         total += 1;
     }
-    let top = counts.values().copied().max().unwrap_or(0);
-    f64::from(top) / f64::from(total.max(1))
+    f64::from(hits) / f64::from(total.max(1))
 }
 
 fn hash_of(bytes: &[u8]) -> u64 {

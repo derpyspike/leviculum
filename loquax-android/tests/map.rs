@@ -3191,16 +3191,25 @@ const PHONE_SPIN_STARTS: usize = 2;
 /// window walk's `BLANK_SHARE`).
 const PHONE_BLANK_SHARE: f64 = 0.99;
 
-/// The share of `rgba` its most common sampled pixel covers (every
-/// fourth pixel, as the window walk samples).
-fn phone_blank_share(rgba: &[u8]) -> f64 {
-    let mut counts: std::collections::HashMap<[u8; 4], u32> = std::collections::HashMap::new();
+/// The share of `rgba` the map's own clear colour covers: a frame that
+/// lost its picture shows the ground and nothing else, while a
+/// legitimately uniform picture (the fixture's unbroken forest, drawn
+/// coarse while finer tiles arrive) is drawn data of another colour.
+/// `ground` is the frame's own `MapShown::ground`, `0xAARRGGBB`.
+fn phone_blank_share(rgba: &[u8], ground: u32) -> f64 {
+    let g = [
+        (ground >> 16) as u8,
+        (ground >> 8) as u8,
+        ground as u8,
+        0xff,
+    ];
+    let mut hits = 0u32;
     let mut total = 0u32;
     for px in rgba.chunks_exact(4).step_by(4) {
-        *counts.entry([px[0], px[1], px[2], px[3]]).or_default() += 1;
+        hits += u32::from(px == g);
         total += 1;
     }
-    f64::from(counts.values().copied().max().unwrap_or(0)) / f64::from(total.max(1))
+    f64::from(hits) / f64::from(total.max(1))
 }
 
 /// One verdict row of the phone walk, the walk's columns.
@@ -3225,6 +3234,9 @@ struct PhoneWalk {
     start: std::time::Instant,
     /// Every asked frame: when, uncovered share, blank.
     frames: Vec<(u64, f64, bool)>,
+    /// A blank frame right after a picture, kept as evidence: the rule's
+    /// failure is a picture somebody can look at.
+    blank_evidence: Vec<(u64, Vec<u8>)>,
     /// The pauses: label, filled-within, bound, took, picture.
     checks: Vec<(String, bool, u64, u64, Vec<u8>)>,
     /// When the fault ended and when the view filled after it.
@@ -3267,6 +3279,7 @@ impl PhoneWalk {
             checks: Vec::new(),
             cleared_at: None,
             filled_at: None,
+            blank_evidence: Vec::new(),
         }
     }
 
@@ -3286,7 +3299,10 @@ impl PhoneWalk {
             Some(Vec::new()),
             now(),
         ));
-        let blank = phone_blank_share(&rgba) > PHONE_BLANK_SHARE;
+        let blank = phone_blank_share(&rgba, shown.ground) > PHONE_BLANK_SHARE;
+        if blank && self.frames.last().is_some_and(|f| !f.2) {
+            self.blank_evidence.push((self.now_ms(), rgba.clone()));
+        }
         self.frames
             .push((self.now_ms(), self.uncovered_now(), blank));
         (shown, rgba)
@@ -3400,7 +3416,11 @@ impl PhoneWalk {
                 .map(|t| format!("t={t}"))
                 .collect::<Vec<_>>()
                 .join("; "),
-            image: String::new(),
+            image: self
+                .blank_evidence
+                .first()
+                .map(|(t, _)| format!("load-{}-blank-t{t}", self.name))
+                .unwrap_or_default(),
         });
         // no_spin, from the loader's events through the facade.
         let events = loquax_android::map::load_events(self.home.path()).unwrap_or_default();
@@ -3483,6 +3503,20 @@ impl PhoneWalk {
             std::fs::write(full.join(format!("{}.png", self.image_name(n))), data)
                 .expect("the picture");
         }
+        for (t, rgba) in &self.blank_evidence {
+            let mut data = Vec::new();
+            let mut e = png::Encoder::new(&mut data, W, H);
+            e.set_color(png::ColorType::Rgba);
+            e.set_depth(png::BitDepth::Eight);
+            let mut writer = e.write_header().expect("header");
+            writer.write_image_data(rgba).expect("data");
+            writer.finish().expect("finish");
+            std::fs::write(
+                full.join(format!("load-{}-blank-t{t}.png", self.name)),
+                data,
+            )
+            .expect("the evidence picture");
+        }
     }
 }
 
@@ -3509,7 +3543,10 @@ fn the_phone_load_walk_holds_its_rules() {
             v.limit
         );
         if !v.pass {
-            failed.push(format!("{} {}: {}", v.session, v.rule, v.value));
+            failed.push(format!(
+                "{} {}: {} ({})",
+                v.session, v.rule, v.value, v.note
+            ));
         }
     }
 
