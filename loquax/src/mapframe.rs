@@ -1867,6 +1867,80 @@ mod tests {
         }
     }
 
+    /// Audit of 1818 condition 6: a name carried from a rest frame on
+    /// the sphere (`t <= 0`) into a moving frame in the handover band
+    /// (`0 < t < 1`) whose centre has turned far enough that the name's
+    /// ground went behind the limb is not drawn. In the band the limb-box
+    /// drop does not run (it is the pure sphere's), so the facing guard
+    /// is the only one: without it the blend's place of a far-side
+    /// ground, the sphere's mirror of it mixed with Mercator's, put the
+    /// name on the near side. The control: such a ground occurs, and
+    /// names whose ground still faces are drawn on it.
+    #[test]
+    fn a_carried_name_whose_ground_turned_behind_the_limb_in_the_band_is_not_drawn() {
+        use leviculum_map::blend::Blend;
+        let (w, h) = (1000u32, 700u32);
+        let at = project(LatLon::from_degrees(20.0, 10.0));
+        let rest_view = ExactView::new(at, floor_milli(w, h, 0), w, h);
+        let t_of = |v: &ExactView| Blend::new(v.centre, v.zoom(), w, h).t();
+        assert!(t_of(&rest_view) <= 0.0, "the rest frame is the sphere");
+        let bare = |view: ExactView, moving: bool, now: u64| Ask {
+            margin: (0, 0),
+            now_ms: Some(now),
+            ..ask(view, moving, 1.0, MapTheme::Light)
+        };
+        let mut frames = florence();
+        frames.frame(&bare(rest_view, false, 0));
+        let rest = frames.drawn_names();
+        assert!(rest.len() > 5, "{} names at rest", rest.len());
+        let rest_blend = Blend::new(rest_view.centre, rest_view.zoom(), w, h);
+        frames.hold_rung(Some(2));
+        let (mut behind, mut judged) = (0usize, 0usize);
+        for (step, lon) in [(1u64, 70.0), (2, 95.0), (3, 120.0)] {
+            let turned = project(LatLon::from_degrees(20.0, 10.0 + lon));
+            let band = (rest_view.zoom_milli()..12_000)
+                .step_by(50)
+                .map(|z| ExactView::new(turned, z, w, h))
+                .find(|v| (0.2..0.5).contains(&t_of(v)))
+                .expect("a zoom in the band");
+            frames.frame(&bare(band, true, 16 * step));
+            assert_eq!(
+                frames.set_view.map(|v| v.zoom_milli()),
+                Some(rest_view.zoom_milli()),
+                "the names ride"
+            );
+            let b = Blend::new(band.centre, band.zoom(), w, h);
+            let shown = frames.drawn_names();
+            for was in &rest {
+                let Some(ground) = rest_blend.to_world(was.at.0, was.at.1) else {
+                    continue;
+                };
+                let name = shown
+                    .iter()
+                    .find(|n| n.shown && n.alpha > 0 && n.text == was.text);
+                if !b.facing(ground) {
+                    behind += 1;
+                    assert!(
+                        name.is_none(),
+                        "{lon}° east, t {:.2}: {} drawn at {:?} with its ground behind the limb",
+                        b.t(),
+                        was.text,
+                        name.map(|n| n.at)
+                    );
+                    continue;
+                }
+                if let Some(name) = name {
+                    let (x, y) = b.to_screen(ground);
+                    let off = (name.at.0 - x).hypot(name.at.1 - y);
+                    assert!(off <= 1.0, "{}: {off:.2} px off its ground", was.text);
+                    judged += 1;
+                }
+            }
+        }
+        assert!(behind > 3, "only {behind} grounds went behind the limb");
+        assert!(judged > 0, "no facing name judged");
+    }
+
     /// Order 1818 condition 1, on the globe: a drag at the
     /// globe minimum on the phone's frame, 24 steps, and after every
     /// step each shown name sits within a pixel of its ground projected
