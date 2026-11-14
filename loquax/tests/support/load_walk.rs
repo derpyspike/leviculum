@@ -44,6 +44,11 @@
 //!   frame before it, at the same view, had a picture; a view that
 //!   moved onto ground not loaded yet is legitimately empty and is not
 //!   judged.
+//! - `no_busy_wake`: at no frame does the loader, polled and idle, name
+//!   a wake of 0 ms (1835, the audit of 1821): a wake it names is an
+//!   instant at which a load can start, so a frame-driven frontend (the
+//!   phone, `MapShown::retry_in_ms`) woken at it never redraws for
+//!   nothing until the next real retry.
 //!
 //! With `LOQUAX_LOAD_WALK=DIR` the pictures go to `DIR/full/`, the
 //! verdicts to `DIR/rows-load.tsv` and the per-frame traces to
@@ -126,6 +131,10 @@ pub struct FrameRec {
     /// The view lay inside the archive's box: past it the world is
     /// empty by design, and no picture rule judges the frame.
     pub inside: bool,
+    /// The loader, polled and idle, still named a wake of 0 ms (1835):
+    /// a frame-driven frontend woken at it would start nothing and
+    /// redraw for nothing until the next real retry.
+    pub busy_wake: bool,
 }
 
 /// A loader event on the walk's clock.
@@ -193,6 +202,10 @@ pub enum Inject {
     /// The picture of a repeated view is perturbed before it is checked:
     /// the comparator's positive control.
     PerturbPicture,
+    /// One idle frame is recorded as woken by a named wake at which
+    /// nothing starts (1835): `no_busy_wake`'s positive control, at the
+    /// signal the rule reads.
+    BusyWake,
 }
 
 /// One verdict row, the render walk's columns.
@@ -228,6 +241,8 @@ pub struct Walk {
     deleted: bool,
     /// [`Inject::BlankFrame`] has blanked its one drawn frame.
     blanked: bool,
+    /// [`Inject::BusyWake`] has marked its one idle frame.
+    busy_woken: bool,
     last_ask: Option<Instant>,
     done_wants: Vec<MapWant>,
     /// The last drawn frame said a name still fades.
@@ -299,6 +314,7 @@ impl Walk {
             last_wheel: None,
             deleted: false,
             blanked: false,
+            busy_woken: false,
             last_ask: None,
             done_wants: Vec::new(),
             last_fading: false,
@@ -420,6 +436,18 @@ impl Walk {
             seen.maps = self.maps.epoch();
             self.app.apply(Message::Seen(Box::new(seen)));
         }
+        // The wake the loader would name a frame-driven frontend now,
+        // right after its own poll: 0 while idle means a wake at which
+        // nothing starts (1835) — the phone would redraw every 50 ms.
+        let mut busy_wake = !self.loader.busy() && self.loader.next_due_ms(t) == Some(0);
+        if self.inject == Inject::BusyWake
+            && !self.busy_woken
+            && !self.loader.busy()
+            && !self.checks.is_empty()
+        {
+            busy_wake = true;
+            self.busy_woken = true;
+        }
         self.frames.push(FrameRec {
             t,
             centre: self.app.view.centre,
@@ -431,6 +459,7 @@ impl Walk {
             drew,
             blank,
             inside: inside_archive(&self.view_now().bounds()),
+            busy_wake,
         });
         let next = t + 16;
         let now = self.now_ms();
@@ -1232,6 +1261,29 @@ pub fn rules(walk: &Walk) -> Vec<Verdict> {
         }
         last_drawn = Some(f);
     }
+    // no_busy_wake: the loader, polled and idle, never names a wake of
+    // 0 ms (1835): the wake it names is an instant something can start.
+    let busy_wakes: Vec<u64> = walk
+        .frames
+        .iter()
+        .filter(|f| f.busy_wake)
+        .map(|f| f.t)
+        .collect();
+    out.push(v(
+        "no_busy_wake",
+        busy_wakes.is_empty(),
+        format!("{} idle frames with a 0 ms wake named", busy_wakes.len()),
+        "0".to_string(),
+        busy_wakes
+            .iter()
+            .take(3)
+            .map(|t| format!("t={t}"))
+            .collect::<Vec<_>>()
+            .join("; "),
+        String::new(),
+        String::new(),
+    ));
+
     out.push(v(
         "frame_never_blank",
         blank_checks.is_empty() && blank_frames.is_empty(),
@@ -1307,8 +1359,9 @@ pub fn write_out(
         std::fs::write(full.join(format!("{}.png", image_name(walk, n))), png)
             .expect("the picture");
     }
-    let mut trace =
-        String::from("t\tcentre_x\tcentre_y\tzoom_milli\tuncovered\tsent\tmissing\tdrew\tqueue\n");
+    let mut trace = String::from(
+        "t\tcentre_x\tcentre_y\tzoom_milli\tuncovered\tsent\tmissing\tdrew\tbusy_wake\tqueue\n",
+    );
     for f in &walk.frames {
         let queue: Vec<String> = f
             .order
@@ -1324,7 +1377,7 @@ pub fn write_out(
             })
             .collect();
         trace.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{:.3}\t{}\t{}\t{}\t{}\n",
+            "{}\t{}\t{}\t{}\t{:.3}\t{}\t{}\t{}\t{}\t{}\n",
             f.t,
             f.centre.x,
             f.centre.y,
@@ -1333,6 +1386,7 @@ pub fn write_out(
             f.sent,
             f.missing,
             u8::from(f.drew),
+            u8::from(f.busy_wake),
             queue.join(" ")
         ));
     }
@@ -1622,6 +1676,7 @@ pub fn selftest_cases() -> Vec<(&'static str, Inject, &'static str)> {
             Inject::PerturbPicture,
             "same_view_same_picture",
         ),
+        ("busy-wake", Inject::BusyWake, "no_busy_wake"),
     ]
 }
 

@@ -2788,6 +2788,138 @@ fn a_fault_at_rest_heals_with_frames_asked_only_as_java_asks() {
     );
 }
 
+/// An Ahead box fails before the screen box, and the loader never asks
+/// the phone to wake for nothing (1835, the audit of 1821). The screen
+/// starts covered (the cut start region), so the first boxes to load are
+/// the uncovered cells next to it: they fail and book the off-screen
+/// ladder's 30 s wait. Then the view jumps onto uncovered ground and the
+/// screen's own boxes fail on the screen ladder. Once the Ahead box's
+/// wait has passed it is due but cannot start — `start_next` holds
+/// everything behind the waiting screen boxes — and a loader that names
+/// that overdue instant as its wake (`retry_in_ms` 0) makes MapView
+/// (MapView.java:1145-1156, `max(50, retry_in_ms)`) redraw every 50 ms
+/// for the rest of the screen box's wait. Frames are asked only as
+/// MapView asks them; while nothing is running, no two consecutive
+/// frames may be asked less than 1 s apart, and the wakes over the whole
+/// fault stay countable: one per real retry instant, not hundreds.
+#[test]
+fn audit_an_ahead_fault_before_the_screens_spins_no_frames() {
+    use leviculum_mapcut::serve::Serve;
+    use loquax::mapload::StepKind;
+    use loquax::ui::map::LoadReason;
+    use std::time::{Duration, Instant};
+    let serve = Serve::start(vec![("p.pmtiles".into(), first_tile_archive())]).expect("serve");
+    let home = tempfile::tempdir().expect("home");
+    let maps_dir = home.path().join("maps");
+    std::fs::create_dir_all(&maps_dir).expect("maps");
+    std::fs::write(
+        home.path().join(loquax::config::CONFIG_FILE),
+        format!("map_source = \"{}\"\n", serve.url("p.pmtiles")),
+    )
+    .expect("config");
+    loquax_android::map::hold_rung(home.path(), Some(0));
+    let at = project(LatLon::from_degrees(FIRST_TILE_AT.0, FIRST_TILE_AT.1));
+    // The screen and 600 px around it are on disk before the first
+    // frame: the view owes nothing, its uncovered neighbours everything.
+    start_region(&maps_dir, &serve.url("p.pmtiles"), at, (W, H));
+    serve.fail(true);
+    let view = Viewport::new(at, 16, W, H);
+    // 300 px east: the screen stays on the start region, the grown view
+    // (AHEAD_PX) reaches past its edge, so only Ahead cells are asked.
+    let p1 = view.to_world((W / 2 + 300) as i32, (H / 2) as i32);
+    // 1100 px west: the screen is past the region's west edge entirely,
+    // and the failed east cells leave the grown view (they become Away).
+    let p2 = view.to_world(W as i32 / 2 - 1100, (H / 2) as i32);
+    let mut ask = MapRequest {
+        dir: home.path().display().to_string(),
+        w: W,
+        h: H,
+        density_milli: 1000,
+        x: Some(p1.x),
+        y: Some(p1.y),
+        zoom: Some(16),
+        ..MapRequest::default()
+    };
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let mut t: u64 = 0;
+    let mut moved_at: Option<u64> = None;
+    let mut last_idle: Option<u64> = None;
+    let mut wakes: u32 = 0;
+    loop {
+        loquax_android::map::tune_clock(home.path(), Some(t));
+        let (shown, _) = frame(&loquax_android::map::render(&ask, Some(Vec::new()), now()));
+        let idle = !shown.pending && !shown.filling && !shown.loading_here && !shown.loading;
+        if idle {
+            if let Some(prev) = last_idle {
+                assert!(
+                    t.saturating_sub(prev) >= 1_000,
+                    "two frames {} ms apart while nothing runs: the loader \
+                     named a wake of {:?} ms at which nothing could start",
+                    t - prev,
+                    shown.retry_in_ms
+                );
+            }
+            last_idle = Some(t);
+        } else {
+            last_idle = None;
+        }
+        // Java's reasons to ask for the next frame, MapView's order.
+        let dt = if shown.pending {
+            16
+        } else if shown.filling || shown.loading_here {
+            250
+        } else if shown.loading {
+            1500
+        } else if let Some(wait) = shown.retry_in_ms {
+            // The neighbours sat failed and the frames' only reason is
+            // their wait: the view moves onto uncovered ground — a
+            // user's jump, whose own frame follows the gesture at once
+            // — and the screen's own boxes start failing after them,
+            // long before the neighbours' 30 s wait is over.
+            if moved_at.is_none() {
+                moved_at = Some(t);
+                ask.x = Some(p2.x);
+                ask.y = Some(p2.y);
+                16
+            } else {
+                wakes += 1;
+                wait.max(50)
+            }
+        } else {
+            panic!("the loader stopped naming a wake while boxes wait (t={t})");
+        };
+        t += dt;
+        if moved_at.is_some_and(|from| t >= from + 65_000) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the walk never reached its end (moved: {moved_at:?}, t={t})"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The order the audit asked for: an Ahead box failed first, the
+    // screen's own box after it.
+    let events = loquax_android::map::load_events(home.path()).expect("events");
+    let fails: Vec<_> = events
+        .iter()
+        .filter(|e| e.step == StepKind::Failed)
+        .collect();
+    assert!(
+        fails
+            .first()
+            .is_some_and(|e| e.want.reason != LoadReason::Screen),
+        "an off-screen box failed first: {fails:?}"
+    );
+    assert!(
+        fails.iter().any(|e| e.want.reason == LoadReason::Screen),
+        "the screen's own box failed after it: {fails:?}"
+    );
+    // The wakes over the fault are the real retry instants, not a 50 ms
+    // spin: a bound in tens, where the spin asks hundreds.
+    assert!(wakes <= 48, "{wakes} wakes over {t} ms");
+}
+
 /// The first-tile walk of 1527: the Grunewald, a synthetic archive of it
 /// ([`leviculum_mapcut::pmtiles::padded`]: a real z15 tile in every slot,
 /// each padded with [`FIRST_TILE_PAD`] bytes of its own, so a box's
@@ -3232,8 +3364,10 @@ struct PhoneWalk {
     ask: MapRequest,
     view: Viewport,
     start: std::time::Instant,
-    /// Every asked frame: when, uncovered share, blank.
-    frames: Vec<(u64, f64, bool)>,
+    /// Every asked frame: when, uncovered share, blank, idle (nothing
+    /// pending, filling, loading or owed on screen), and the wake the
+    /// frame named (`retry_in_ms`).
+    frames: Vec<(u64, f64, bool, bool, Option<u64>)>,
     /// A blank frame right after a picture, kept as evidence: the rule's
     /// failure is a picture somebody can look at.
     blank_evidence: Vec<(u64, Vec<u8>)>,
@@ -3303,8 +3437,14 @@ impl PhoneWalk {
         if blank && self.frames.last().is_some_and(|f| !f.2) {
             self.blank_evidence.push((self.now_ms(), rgba.clone()));
         }
-        self.frames
-            .push((self.now_ms(), self.uncovered_now(), blank));
+        let idle = !shown.pending && !shown.filling && !shown.loading_here && !shown.loading;
+        self.frames.push((
+            self.now_ms(),
+            self.uncovered_now(),
+            blank,
+            idle,
+            shown.retry_in_ms,
+        ));
         (shown, rgba)
     }
 
@@ -3421,6 +3561,31 @@ impl PhoneWalk {
                 .first()
                 .map(|(t, _)| format!("load-{}-blank-t{t}", self.name))
                 .unwrap_or_default(),
+        });
+        // no_busy_wake (1835): no frame drawn while the loader is idle
+        // names a wake of 0 ms. MapView asks its next frame at
+        // `max(50, retry_in_ms)` (MapView.java:1145-1156), so a 0 wake
+        // at which nothing can start redraws the phone every 50 ms
+        // until the next real retry.
+        let busy_wakes: Vec<u64> = self
+            .frames
+            .iter()
+            .filter(|f| f.3 && f.4 == Some(0))
+            .map(|f| f.0)
+            .collect();
+        out.push(PhoneVerdict {
+            session: self.name,
+            rule: "no_busy_wake",
+            pass: busy_wakes.is_empty(),
+            value: format!("{} idle frames with a 0 ms wake named", busy_wakes.len()),
+            limit: "0".to_string(),
+            note: busy_wakes
+                .iter()
+                .take(3)
+                .map(|t| format!("t={t}"))
+                .collect::<Vec<_>>()
+                .join("; "),
+            image: String::new(),
         });
         // no_spin, from the loader's events through the facade.
         let events = loquax_android::map::load_events(self.home.path()).unwrap_or_default();

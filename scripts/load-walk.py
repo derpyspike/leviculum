@@ -11,8 +11,8 @@ at its cap) on the window's real path — the same `App`, scheduler,
 loader and painter the window runs, headless against a local range
 server — and checks every session by named rules (view_filled_at_rest,
 screen_first, nothing_lost, no_regress, same_view_same_picture, no_spin,
-fault_recovers, frame_never_blank). The driver, sessions and rules live
-in `loquax/tests/support/load_walk.rs`.
+fault_recovers, frame_never_blank, no_busy_wake). The driver, sessions
+and rules live in `loquax/tests/support/load_walk.rs`.
 
 Writes `OUT/index.html` (the contact sheet: every pause's picture with
 its rule results), `OUT/summary.tsv`, and a per-frame trace per session;
