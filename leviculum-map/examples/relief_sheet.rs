@@ -17,8 +17,8 @@ use std::time::Instant;
 
 use leviculum_map::elevation::{split, Block, TileDecoder, TILE_CELLS};
 use leviculum_map::relief::{
-    self, assemble, fill_ground, measure, sample, shade_rgb, sky_radius_m, Ground, Plane,
-    ShadePlane,
+    self, assemble, fill_ground, measure, sample, shade_rgb, sky_radius_m, tile_res, Ground,
+    Grounds, Plane, ShadePlane,
 };
 
 /// The light table's paper (leviculum-mapfill's LIGHT.background).
@@ -74,7 +74,7 @@ impl<'a> Pack<'a> {
 
     /// The aproned plane of relief tile (x, y) at `zoom`, each
     /// neighbour decoded once across tiles.
-    fn plane(&mut self, zoom: u8, x: u32, y: u32) -> (Plane, [Ground; 9]) {
+    fn plane(&mut self, zoom: u8, x: u32, y: u32) -> (Plane, Grounds) {
         let grid = i64::from(1u32 << zoom);
         let at = |i: usize| {
             let (dx, dy) = ((i % 3) as i64 - 1, (i / 3) as i64 - 1);
@@ -92,23 +92,17 @@ impl<'a> Pack<'a> {
                 .get(&(zoom, nx as u32, ny as u32))
                 .and_then(|o| o.as_deref())
         });
-        // Each tile's ground measured on the tile alone, as the
-        // product's store does, so the sheet shows the product's seams.
-        let res = ground_res(zoom, y);
-        let grounds: [Option<Ground>; 9] =
-            core::array::from_fn(|i| refs[i].map(|t| measure(t, res)));
-        let ground = fill_ground(&grounds).unwrap_or([measure(&[0; TILE_CELLS], res); 9]);
+        // Each tile's ground measured on the tile alone at its own
+        // row's resolution, as the product's store does, so the sheet
+        // shows the product's seams.
+        let grounds: [Option<Ground>; 9] = core::array::from_fn(|i| {
+            let (_, ny) = at(i);
+            refs[i].map(|t| measure(t, tile_res(zoom, ny as u32)))
+        });
+        let ground = fill_ground(&grounds)
+            .unwrap_or_else(|| Grounds::uniform(measure(&[0; TILE_CELLS], tile_res(zoom, y))));
         (assemble(&refs), ground)
     }
-}
-
-/// Ground metres per relief sample at the centre row of tile row `y`.
-fn ground_res(zoom: u8, y: u32) -> f32 {
-    let n = f64::from(1u32 << zoom);
-    let lat = (core::f64::consts::PI * (1.0 - 2.0 * (f64::from(y) + 0.5) / n))
-        .sinh()
-        .atan();
-    (156_543.03 * lat.cos() / n) as f32
 }
 
 /// The plain comparator: one NW light at a mountain gain, damped.

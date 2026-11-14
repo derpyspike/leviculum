@@ -31,3 +31,19 @@ Heights: Copernicus GLO-30, see `../../../fixtures/README.md`. Produced
 using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence
 and Space GmbH 2014-2018 provided under COPERNICUS by the European Union
 and ESA; all rights reserved.
+
+Order 1853 moved eight of the ten goldens again, by at most 17 channel
+steps (the z10 pair is byte-identical: a one-block z10 pack has no
+neighbour tiles, so neither the stand-in rule nor the apron changes
+anything there; the same holds for the earlier before/after pairs at
+z10). What moved: the apron grew from 96 to 128 samples, the form
+band's normalisation window is capped at a third of it, a missing
+tile's heights are filled from where it lies rather than from the
+asking plane's centre, every tile's ground is measured at its own row's
+resolution, and the sky exaggeration needs both a fine-band share over
+one half and a clean-sand floor. Looked at before and after: the Bani
+pair changes least visibly (its sky factor fell from up to 2.10 to at
+most 1.09, but the deep troughs on the stone desert at z14 come from
+the tone bands, not the sky term, and stay); Chegaga's chains and
+Chebbi's star dunes keep their lit and shaded flanks, a shade softer at
+z12 and z14 where the capped window now lifts quiet ground less.

@@ -37,7 +37,7 @@ use std::time::SystemTime;
 
 use leviculum_map::elevation::{PackIndex, TileDecoder, TILE_CELLS};
 use leviculum_map::relief::{
-    self, assemble, fill_ground, measure, sky_radius_m, Ground, ShadePlane,
+    self, assemble, fill_ground, measure, sky_radius_m, tile_res, Ground, ShadePlane,
 };
 use leviculum_map::viewport::Viewport;
 
@@ -127,6 +127,10 @@ struct Shared {
     read: u64,
     /// Planes computed since the store was made.
     computed: u64,
+    /// Bumped by every [`ReliefStore::refresh`] that changed the pack
+    /// set: a plane or ground computed outside the lock from tiles read
+    /// under an older generation is not cached.
+    generation: u64,
 }
 
 impl Shared {
@@ -188,6 +192,7 @@ impl ReliefStore {
                 plane_cap: planes.max(1),
                 read: 0,
                 computed: 0,
+                generation: 0,
             })),
         }
     }
@@ -222,6 +227,7 @@ impl ReliefStore {
             .collect();
         s.read += read;
         s.listing = listing;
+        s.generation += 1;
         s.tiles.clear();
         s.grounds.clear();
         s.planes.clear();
@@ -262,11 +268,26 @@ impl ReliefStore {
     /// `zoom`, computed once and cached. `None` where no pack covers
     /// the tile.
     fn plane(&self, rz: u8, x: u32, y: u32, zoom: u8) -> Option<Arc<ShadePlane>> {
+        self.plane_then(rz, x, y, zoom, || {})
+    }
+
+    /// [`Self::plane`], running `before_insert` once the plane is
+    /// computed, outside the lock, before it is cached: where another
+    /// worker's [`Self::refresh`] can land.
+    fn plane_then(
+        &self,
+        rz: u8,
+        x: u32,
+        y: u32,
+        zoom: u8,
+        before_insert: impl FnOnce(),
+    ) -> Option<Arc<ShadePlane>> {
         let sky = sky_radius_m(zoom) as u32;
         let key = (rz, x, y, sky);
         // The neighbourhood's heights, under the lock: a cache hit or a
-        // block read and decode.
-        let refs: [Option<Heights>; 9] = {
+        // block read and decode, and the pack set's generation they
+        // came from.
+        let (refs, generation): ([Option<Heights>; 9], u64) = {
             let mut s = self.lock();
             let stamp = s.tick();
             if let Some((p, used)) = s.planes.get_mut(&key) {
@@ -284,24 +305,33 @@ impl ReliefStore {
                     *slot = s.tile((rz, nx as u32, ny as u32));
                 }
             }
-            refs
+            (refs, s.generation)
         };
         refs[4].as_ref()?;
-        // Ground metres per sample at the tile's centre row.
-        let lat = tile_centre_lat(rz, y);
-        let res = (156_543.03 * lat.to_radians().cos() / f64::from(1u32 << rz)) as f32;
+        // Ground metres per sample at the tile's centre row; each
+        // neighbour's ground is measured at its own row's, so a tile's
+        // ground is the same whichever plane asks first.
+        let res = tile_res(rz, y);
         let grounds: [Option<Ground>; 9] = core::array::from_fn(|i| {
             let tile = refs[i].as_ref()?;
             let (nx, ny) = (x as i64 + (i as i64 % 3) - 1, y as i64 + (i as i64 / 3) - 1);
-            Some(self.ground((rz, nx as u32, ny as u32), tile, res))
+            let id = (rz, nx as u32, ny as u32);
+            Some(self.ground(id, tile, tile_res(rz, id.2), generation))
         });
         let ground = fill_ground(&grounds)?;
         let borrowed: [Option<&[i16]>; 9] =
             core::array::from_fn(|i| refs[i].as_deref().map(|v| &v[..]));
         let dem = assemble(&borrowed);
         let plane = Arc::new(relief::compute_in(&dem, res, sky as f32, &ground));
+        before_insert();
         let mut s = self.lock();
         s.computed += 1;
+        if s.generation != generation {
+            // A refresh replaced the pack set while this plane was
+            // computed: hand it to the asking frame, keep it out of the
+            // cache.
+            return Some(plane);
+        }
         let stamp = s.tick();
         if !s.planes.contains_key(&key) && s.planes.len() >= s.plane_cap {
             evict(&mut s.planes);
@@ -310,9 +340,10 @@ impl ReliefStore {
         Some(plane)
     }
 
-    /// The ground of tile `id`, measured once on its heights `tile`
-    /// (outside the lock) and cached.
-    fn ground(&self, id: TileId, tile: &[i16], res: f32) -> Ground {
+    /// The ground of tile `id`, measured once on its heights `tile` at
+    /// `res`, the tile's own row's resolution (outside the lock), and
+    /// cached unless the pack set moved past `generation` meanwhile.
+    fn ground(&self, id: TileId, tile: &[i16], res: f32, generation: u64) -> Ground {
         {
             let mut s = self.lock();
             let stamp = s.tick();
@@ -323,6 +354,9 @@ impl ReliefStore {
         }
         let g = measure(tile, res);
         let mut s = self.lock();
+        if s.generation != generation {
+            return g;
+        }
         let stamp = s.tick();
         if s.grounds.len() >= GROUND_CACHE {
             evict(&mut s.grounds);
@@ -374,13 +408,6 @@ fn evict<K: Clone + core::hash::Hash + Eq, V>(map: &mut HashMap<K, (V, u64)>) {
     {
         map.remove(&k);
     }
-}
-
-/// The latitude of the centre row of tile row `y` at `zoom`, degrees.
-fn tile_centre_lat(zoom: u8, y: u32) -> f64 {
-    let n = f64::from(1u32 << zoom);
-    let v = core::f64::consts::PI * (1.0 - 2.0 * (f64::from(y) + 0.5) / n);
-    v.sinh().atan().to_degrees()
 }
 
 /// One view's relief rows, in the view's own pixels.
@@ -574,6 +601,77 @@ mod tests {
         let mut s = store.sampler(&view).expect("the z10 view has relief");
         let (mut t, mut ao) = (vec![0.0f32; 64], vec![1.0f32; 64]);
         assert!(s.row(0, 32, &mut t, &mut ao), "Chegaga shades at z10");
+    }
+
+    /// A tile's ground does not depend on which plane asked for it first:
+    /// two planes one row apart, computed in either order, give the same
+    /// grounds for every tile and the same bytes (the audit of order
+    /// 1851: each neighbour was measured at the asking plane's row).
+    #[test]
+    fn the_draw_order_changes_no_byte() {
+        let dir = tempfile::tempdir().expect("tmp");
+        std::fs::write(dir.path().join("chegaga.lmh"), CHEGAGA).expect("write the pack");
+        let (x0, y0) = tile_at(29.8475, -6.2975);
+        let (x, y) = ((x0 & !3) + 1, (y0 & !3) + 1);
+        let run = |first: (u32, u32), second: (u32, u32)| {
+            let store = ReliefStore::default();
+            store.refresh(Some(dir.path()));
+            let a = store.plane(12, first.0, first.1, 12).expect("first plane");
+            let b = store
+                .plane(12, second.0, second.1, 12)
+                .expect("second plane");
+            let grounds: Vec<(TileId, Ground)> = {
+                let s = store.lock();
+                let mut g: Vec<_> = s.grounds.iter().map(|(k, (g, _))| (*k, *g)).collect();
+                g.sort_by_key(|(k, _)| *k);
+                g
+            };
+            (a, b, grounds)
+        };
+        let (upper, lower) = ((x, y), (x, y + 1));
+        let (u1, l1, g1) = run(upper, lower);
+        let (l2, u2, g2) = run(lower, upper);
+        assert_eq!(
+            g1, g2,
+            "every shared tile's ground, whichever plane asked first"
+        );
+        assert!(u1.t == u2.t && u1.ao == u2.ao, "the upper plane's bytes");
+        assert!(l1.t == l2.t && l1.ao == l2.ao, "the lower plane's bytes");
+    }
+
+    /// A plane read from the pack set a refresh then replaced is not
+    /// cached: the refresh lands between the compute and the insert,
+    /// and afterwards neither the plane nor its grounds are in the
+    /// caches (the audit of order 1851: the stale plane stayed until
+    /// evicted).
+    #[test]
+    fn a_refresh_during_a_compute_keeps_the_stale_plane_out() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let store = store_with(
+            dir.path(),
+            &[("chegaga.lmh", CHEGAGA)],
+            ReliefStore::default(),
+        );
+        let (x0, y0) = tile_at(29.8475, -6.2975);
+        let (x, y) = ((x0 & !3) + 1, (y0 & !3) + 1);
+        let plane = store.plane_then(12, x, y, 12, || {
+            std::fs::write(dir.path().join("chebbi.lmh"), CHEBBI).expect("a second pack");
+            store.refresh(Some(dir.path()));
+        });
+        assert!(plane.is_some(), "the asking frame still gets its plane");
+        let s = store.lock();
+        assert_eq!(s.packs.len(), 2, "the refresh indexed the new set");
+        assert!(s.planes.is_empty(), "the stale plane is not cached");
+        assert!(
+            s.grounds.is_empty(),
+            "nor are grounds measured before the refresh"
+        );
+        drop(s);
+        // The next ask computes afresh from the new set and caches.
+        let before = store.planes_computed();
+        store.plane(12, x, y, 12).expect("the plane again");
+        assert_eq!(store.planes_computed(), before + 1);
+        assert_eq!(store.lock().planes.len(), 1);
     }
 
     /// Clones share one store: a plane one painter's sampler computed is

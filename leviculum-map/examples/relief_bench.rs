@@ -110,7 +110,7 @@ fn main() {
     bench("measure_tile", 1, runs, || {
         std::hint::black_box(relief::measure(&centre, 32.7));
     });
-    let ground = [relief::measure(&centre, 32.7); 9];
+    let ground = relief::Grounds::uniform(relief::measure(&centre, 32.7));
     bench("compute_in_tile", 1, runs, || {
         std::hint::black_box(relief::compute_in(&p, 32.7, 3000.0, &ground));
     });
