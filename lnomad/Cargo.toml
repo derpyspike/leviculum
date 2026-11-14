@@ -179,9 +179,3 @@ path = "src/lib.rs"
 name = "lnomad"
 path = "src/main.rs"
 required-features = ["tui"]
-
-# Spawns the binary, so it needs what the binary needs (1850).
-[[test]]
-name = "main_help"
-path = "tests/main_help.rs"
-required-features = ["tui"]

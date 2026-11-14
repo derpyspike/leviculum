@@ -4,6 +4,10 @@
 //! answers `--help`, and `start()` ran: under `LEVICULUM_ALLOC_SAY` it says
 //! so on stderr. Until 1850 no test spawned this binary, so a `main` that
 //! lost the call, or aborted in it, would have shipped green.
+//!
+//! The binary needs `tui` (its `required-features`), so the test does too.
+
+#![cfg(feature = "tui")]
 
 #[test]
 fn help_runs_main_with_the_allocator_and_exits_zero() {

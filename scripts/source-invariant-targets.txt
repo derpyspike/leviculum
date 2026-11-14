@@ -343,3 +343,8 @@ skip  nmea0183        parsing                    # sentence corpus in-process; s
 skip  vectors-verify  corpus                     # reads the vector corpus, but the subject is the codecs under it
 skip  leviculum-alloc   start   # subject is the code: spawns the release thread and reads /proc; cargo test runs it
 skip  leviculum-std   flush_release_memory   # starts a child process and a node, about 4.5 s; cargo test --workspace runs it
+skip  leviculum-alloc   thp_belt   # subject is the code: start()'s own PR_SET_THP_DISABLE after mimalloc's init; cargo test runs it
+skip  leviculum-map-tool   main_help   # spawns the binary with --help; subject is its main and the allocator start
+skip  leviculum-proxy   main_help   # spawns the binary with --help; subject is its main and the allocator start
+skip  lnmapd          main_help                  # spawns the binary with --help; subject is its main and the allocator start
+skip  lnomad          main_help                  # spawns the binary with --help; subject is its main and the allocator start
