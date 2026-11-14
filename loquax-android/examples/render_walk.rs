@@ -38,13 +38,14 @@ use leviculum_map::blend::Blend;
 use leviculum_map::labels::Rect;
 use leviculum_map::mercator::World;
 use leviculum_map::mercator::{project, LatLon};
-use leviculum_map::viewport::MILLI;
+use leviculum_map::viewport::{ExactView, MILLI};
 use leviculum_mapfill::style::MapTheme;
 use loquax::mapframe::DrawnName;
 use loquax::when::WallTime;
 use loquax_android::map;
 use loquax_android::render_walk::{
-    disk_fit, frame_rules, globe_disk_fixed, java_margin, sequence_rules, zoom_keeps_the_place,
+    disk_fit, frame_rules, globe_disk_centred, globe_disk_fixed, java_margin, sequence_rules,
+    zoom_keeps_the_place,
     FrameFacts, JavaBitmap, Played, Screen, Verdict, SENTINEL,
 };
 use loquax_android::schema::{MapRequest, MapShown};
@@ -707,6 +708,14 @@ impl Walk {
             ..java.ask(false)
         };
         let mut last = java.settle(start, self.fault).shown;
+        // The device's gesture arithmetic (order 1833): MapView.java
+        // accumulates the events between frames and encodes them as one
+        // pan-and-zoom-about-the-focus request; the walk drives exactly
+        // that arithmetic through its mirror, not the library entries
+        // the device never calls — which is how the walk stayed green
+        // (0 of 670) while the APK lost Morocco by 300 km.
+        let mut mirror = loquax_android::gesture::Gesture::new(size.w, size.h);
+        mirror.place(&last, false);
         reset_peak();
         let heap_start = live();
         let mut held: Vec<u8> = Vec::new();
@@ -747,15 +756,60 @@ impl Walk {
                 zoom_milli: Some(exact_zoom),
                 ..java.ask(true)
             };
-            let Some(ask) = step(i, &last, base) else {
+            let Some(intent) = step(i, &last, base) else {
                 break;
             };
-            if (ask.zoom_by_milli != 0 || ask.zoom_by != 0) && ground.is_none() {
-                let (fx, fy) = (f64::from(ask.about_x), f64::from(ask.about_y));
-                ground = blend_of(last.x, last.y, exact_zoom, size.w, size.h)
-                    .to_world(fx, fy)
-                    .map(|g| (g, fx, fy));
+            let by = i64::from(intent.zoom_by) * i64::from(MILLI) + i64::from(intent.zoom_by_milli);
+            if by != 0 && ground.is_none() {
+                // The ground under the fingers as the gesture maths picks
+                // it: the raw inverse answers thousandths of a pixel away,
+                // which the pinch magnifies into the judgement.
+                let (fx, fy) = (f64::from(intent.about_x), f64::from(intent.about_y));
+                ground = loquax::mapframe::ground_under_as(
+                    loquax::picture::world_shape(),
+                    &ExactView::new(
+                        World {
+                            x: last.x,
+                            y: last.y,
+                        },
+                        exact_zoom,
+                        size.w,
+                        size.h,
+                    ),
+                    fx,
+                    fy,
+                )
+                .map(|g| (g, fx, fy));
             }
+            let ask = match intent.at_lat_e6.is_some() {
+                // A tap or the search recentres without fingers: the
+                // request goes as the view asks it.
+                true => intent,
+                false => {
+                    if by != 0 {
+                        #[allow(clippy::cast_precision_loss)]
+                        mirror.on_scale(
+                            2f64.powf(by as f64 / 1000.0),
+                            f64::from(intent.about_x),
+                            f64::from(intent.about_y),
+                        );
+                    }
+                    if intent.pan_x != 0 || intent.pan_y != 0 {
+                        // A drag grabs the middle of the screen.
+                        mirror.on_scroll(
+                            f64::from(intent.pan_x),
+                            f64::from(intent.pan_y),
+                            f64::from(size.w) / 2.0,
+                            f64::from(size.h) / 2.0,
+                        );
+                    }
+                    MapRequest {
+                        dir: java.dir.clone(),
+                        density_milli: size.density_milli,
+                        ..mirror.ask()
+                    }
+                }
+            };
             clock += 16;
             map::tune_clock(&dir, Some(clock));
             let drawn = java.draw(&ask, self.fault);
@@ -764,27 +818,48 @@ impl Walk {
             let mut verdicts = self.judge(&java, &drawn, false, &image);
             if drawn.shown.ok && drawn.shown.turns {
                 if let Some(fit) = disk_fit(&java.screen, space) {
+                    let centred = by != 0
+                        && ask.about_x == (size.w / 2) as i32
+                        && ask.about_y == (size.h / 2) as i32;
                     match disk_ref {
                         Some((z, reference)) if z == drawn.shown.zoom_milli => {
                             verdicts.push(globe_disk_fixed(fit, reference));
+                        }
+                        // A centred pinch scales the disk about its
+                        // centre: the centre holds to the rest frame's,
+                        // the radius is free (audit of 1818, cond. 12).
+                        Some((_, reference)) if centred => {
+                            verdicts.push(globe_disk_centred(fit, reference));
                         }
                         _ => disk_ref = Some((drawn.shown.zoom_milli, fit)),
                     }
                 }
             }
             if drawn.shown.ok {
-                let by = i64::from(ask.zoom_by) * i64::from(MILLI) + i64::from(ask.zoom_by_milli);
                 let lo = i64::from(drawn.shown.min_zoom_milli);
                 let hi = i64::from(drawn.shown.max_zoom) * i64::from(MILLI);
                 exact_zoom = (i64::from(exact_zoom) + by).clamp(lo, hi.max(lo)) as u32;
             }
+            if drawn.shown.ok {
+                mirror.place(&drawn.shown, ask.moving);
+            }
             if let (Some((g, fx, fy)), true) = (ground, drawn.shown.ok) {
-                let (px, py) =
-                    blend_of(drawn.shown.x, drawn.shown.y, exact_zoom, size.w, size.h).to_screen(g);
-                let off = (px - fx).hypot(py - fy);
+                // Where the ground is drawn on the SCREEN: the frame's
+                // own projection, then the leftover transform Java shows
+                // the frame under until the next one lands.
+                let (px, py) = blend_of(
+                    drawn.shown.x,
+                    drawn.shown.y,
+                    drawn.shown.zoom_milli,
+                    size.w,
+                    size.h,
+                )
+                .to_screen(g);
+                let (sx, sy) = mirror.drawn(px, py);
+                let off = (sx - fx).hypot(sy - fy);
                 verdicts.push(zoom_keeps_the_place(
                     off,
-                    format!("focus ({fx:.0}, {fy:.0}), the ground now at ({px:.1}, {py:.1})"),
+                    format!("focus ({fx:.0}, {fy:.0}), the ground now at ({sx:.1}, {sy:.1})"),
                 ));
             }
             let zoom = format!(
@@ -801,12 +876,15 @@ impl Walk {
         }
         map::tune_clock(&dir, None);
         let rest = MapRequest {
-            x: Some(last.x),
-            y: Some(last.y),
-            zoom_milli: Some(exact_zoom),
-            ..java.ask(false)
+            dir: java.dir.clone(),
+            density_milli: size.density_milli,
+            moving: false,
+            ..mirror.ask()
         };
         let drawn = java.settle(rest, self.fault);
+        if drawn.shown.ok {
+            mirror.place(&drawn.shown, false);
+        }
         let image = format!("{}-{name}-{}-rest", self.variant, size.name);
         let mut verdicts = self.judge(&java, &drawn, true, &image);
         // A zoom gesture that comes back to its starting zoom comes back

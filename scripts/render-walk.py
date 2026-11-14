@@ -70,8 +70,11 @@ CONTROLS = {
 }
 STEP = {"frame_p95": 15.0}
 # A fault that only shows on one variant's walk runs on that binary; the
-# disk only turns on the globe (order 1818).
-CONTROL_VARIANT = {"disk-shift": "globe"}
+# disk only turns on the globe (order 1818). A fault both worlds can
+# carry runs on both: the zoom drift was green on the globe's walk while
+# the APK lost Morocco by 300 km, so the drift control must fire on the
+# globe binary too (order 1833).
+CONTROL_VARIANT = {"disk-shift": ["globe"], "zoom-drift": ["equal", "globe"]}
 
 VARIANTS = [("equal", []), ("globe", ["--features", "loquax/globe-world"])]
 
@@ -308,32 +311,32 @@ def selftest(bins, out):
     lines = []
     ok = True
     for fault, rules in CONTROLS.items():
-        variant = CONTROL_VARIANT.get(fault, "equal")
-        clean = clean_for(variant)
-        d = os.path.join(out, fault)
-        os.makedirs(d, exist_ok=True)
-        dirs.append(d)
-        walk(bins[variant], d, fault, "--selftest", fault)
-        injected = read_rows(d)
-        for rule in rules:
-            fired = 0
-            stepped = 0
-            for r in injected:
-                if r["rule"] != rule:
-                    continue
-                c = clean.get((bare(r), rule))
-                if c is None:
-                    continue
-                if r["verdict"] == "FAIL" and c["verdict"] == "pass":
-                    fired += 1
-                elif rule in STEP and float(r["value"]) - float(c["value"]) >= STEP[rule]:
-                    stepped += 1
-            green = sum(1 for (_, ru), c in clean.items() if ru == rule and c["verdict"] == "pass")
-            held = fired > 0 or (rule in STEP and stepped > 0)
-            ok &= held
-            lines.append(f"{'PASS' if held else 'FAIL'} {fault} -> {rule}: red on {fired} rows "
-                         f"the clean walk has green ({green} green there)"
-                         + (f", {stepped} rows {STEP[rule]:.0f}+ higher" if rule in STEP else ""))
+        for variant in CONTROL_VARIANT.get(fault, ["equal"]):
+            clean = clean_for(variant)
+            d = os.path.join(out, f"{fault}-{variant}" if variant != "equal" else fault)
+            os.makedirs(d, exist_ok=True)
+            dirs.append(d)
+            walk(bins[variant], d, fault, "--selftest", fault)
+            injected = read_rows(d)
+            for rule in rules:
+                fired = 0
+                stepped = 0
+                for r in injected:
+                    if r["rule"] != rule:
+                        continue
+                    c = clean.get((bare(r), rule))
+                    if c is None:
+                        continue
+                    if r["verdict"] == "FAIL" and c["verdict"] == "pass":
+                        fired += 1
+                    elif rule in STEP and float(r["value"]) - float(c["value"]) >= STEP[rule]:
+                        stepped += 1
+                green = sum(1 for (_, ru), c in clean.items() if ru == rule and c["verdict"] == "pass")
+                held = fired > 0 or (rule in STEP and stepped > 0)
+                ok &= held
+                lines.append(f"{'PASS' if held else 'FAIL'} {fault} ({variant}) -> {rule}: "
+                             f"red on {fired} rows the clean walk has green ({green} green there)"
+                             + (f", {stepped} rows {STEP[rule]:.0f}+ higher" if rule in STEP else ""))
     rows = [r for d in dirs for r in read_rows(d)]
     return ok, lines, rows
 
@@ -357,7 +360,11 @@ def main():
             ok, lines, rows = selftest(bins, out)
             for line in lines:
                 print(f"render-walk selftest: {line}")
-            for name in ["clean-equal", "clean-globe", *CONTROLS]:
+            names = ["clean-equal", "clean-globe"]
+            for fault in CONTROLS:
+                for variant in CONTROL_VARIANT.get(fault, ["equal"]):
+                    names.append(f"{fault}-{variant}" if variant != "equal" else fault)
+            for name in names:
                 for sub in ("thumb", "full"):
                     src = os.path.join(out, name, sub)
                     if os.path.isdir(src):
