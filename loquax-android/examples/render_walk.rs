@@ -45,8 +45,7 @@ use loquax::when::WallTime;
 use loquax_android::map;
 use loquax_android::render_walk::{
     disk_fit, frame_rules, globe_disk_centred, globe_disk_fixed, java_margin, sequence_rules,
-    zoom_keeps_the_place,
-    FrameFacts, JavaBitmap, Played, Screen, Verdict, SENTINEL,
+    zoom_keeps_the_place, FrameFacts, JavaBitmap, Played, Screen, Verdict, SENTINEL,
 };
 use loquax_android::schema::{MapRequest, MapShown};
 
