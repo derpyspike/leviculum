@@ -666,7 +666,10 @@ Additions (decided):
      an epoch at or before the copy's and not left by then
      (`GroupMember::since` and `left_from`, kept in the store from
      schema 23; where the store cannot date a member, the copy is
-     refused — rule 4); and the `lev` map is the group's own word
+     refused — rule 4; a member listed left and later listed in again
+     starts over at the epoch that lists it again, so neither its gap
+     nor its time before the gap vouches for a copy, the second audit
+     of 1823); and the `lev` map is the group's own word
      (`Lev::said_by`, 1482). The rule is one function in LXMF,
      `Lev::reading_writer` (`copy_writer`, `loquax/src/ui.rs:6834`, the
      audits of 1757, 1787 and 1808), which the node helper's telemetry
