@@ -134,6 +134,9 @@ fn percentiles(px: &[[u8; 3]]) -> (f32, f32, f32) {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// A relief tile's R′ plane and its comparator's tone.
+type Shaded = (ShadePlane, Vec<f32>);
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 8 {
@@ -156,7 +159,9 @@ fn main() {
     let (x0, y0) = (cx - w as f64 / 2.0, cy - h as f64 / 2.0);
     let step = f64::from(1u32 << (zoom - rz)); // display px per relief sample
                                                // Every relief tile the view touches, computed once.
-    let mut shades: HashMap<(u32, u32), (ShadePlane, Vec<f32>)> = HashMap::new();
+                                               // A tile the pack lacks stays paper, as the product's store draws
+                                               // nothing there (the sheet drew the clamped void as stripes).
+    let mut shades: HashMap<(u32, u32), Option<Shaded>> = HashMap::new();
     let mut out = vec![[0u8; 3]; w * h * 2];
     let mut tile_ms: Vec<f64> = Vec::new();
     for py in 0..h {
@@ -165,16 +170,23 @@ fn main() {
             // The relief sample coordinate and its tile.
             let (sx, sy) = (wx / step, wy / step);
             let (tx, ty) = ((sx / 256.0) as u32, (sy / 256.0) as u32);
-            let (sp, plain) = shades.entry((tx, ty)).or_insert_with(|| {
+            let entry = shades.entry((tx, ty)).or_insert_with(|| {
+                pack.tile(rz, tx, ty)?;
                 let t0 = Instant::now();
+                let res = tile_res(rz, ty);
                 let (dem, ground) = pack.plane(rz, tx, ty);
                 let sp = relief::compute_in(&dem, res, sky_radius_m(zoom), &ground);
                 let plain = plain_tone(&dem, res);
                 let ms = t0.elapsed().as_secs_f64() * 1e3;
                 println!("RELIEF tile={rz}/{tx}/{ty} ms={ms:.1}");
                 tile_ms.push(ms);
-                (sp, plain)
+                Some((sp, plain))
             });
+            let Some((sp, plain)) = entry else {
+                out[py * 2 * w + px] = PAPER;
+                out[py * 2 * w + w + px] = PAPER;
+                continue;
+            };
             let (u, v) = (
                 (sx - f64::from(tx) * 256.0) as f32,
                 (sy - f64::from(ty) * 256.0) as f32,
