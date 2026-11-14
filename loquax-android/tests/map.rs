@@ -3064,3 +3064,79 @@ fn the_position_sheet_shows_a_map_with_the_own_dot_alone() {
     assert!(control.zoom >= 15, "the radar's zoom: {}", control.zoom);
     assert!(!control.marks.is_empty(), "the pins as marks");
 }
+
+/// Lew on his phone, APK 057b65e0 (order 1818, P0): "Zooming closer,
+/// somewhere below country level, the position jumps: suddenly I am
+/// maybe 1000 km away. I wanted to zoom in on Morocco and was in
+/// Spain." A pinch holds a GEOGRAPHIC point under the fingers; the view
+/// kept the MERCATOR point of the focus instead
+/// (`ExactView::zoom_about`), which in a blended frame is not the point
+/// drawn there, and every step of a continuous pinch drifted the view a
+/// little more. Through the facade, as Java drives it: a pinch from the
+/// world down past the handover, the focus off the screen's centre,
+/// keeps the ground that started under the focus within 2 px of it in
+/// every frame; and pinching back out returns to where it began.
+#[test]
+fn a_pinch_through_the_handover_keeps_the_place_under_the_focus() {
+    use leviculum_map::blend::{Blend, Shape};
+    let home = home();
+    // Morocco, as on Lew's phone; the test build's world shape is Equal
+    // Earth, whose handover spans z2..z5 at this size — the same blend
+    // path the globe build bends through at its own window.
+    let at = project(LatLon::from_degrees(32.0, -6.0));
+    let focus = (120.0, 80.0);
+    let mut ask = MapRequest {
+        x: Some(at.x),
+        y: Some(at.y),
+        zoom: None,
+        zoom_milli: Some(2_600),
+        about_x: focus.0 as i32,
+        about_y: focus.1 as i32,
+        ..request(home.path(), false)
+    };
+    let shape = loquax::picture::world_shape();
+    assert_eq!(shape, Shape::EqualEarth, "the test build's world");
+    let (first, _) = frame(&loquax_android::map::render(&ask, Some(Vec::new()), now()));
+    let blend = |s: &MapShown| {
+        Blend::new(
+            shape,
+            World { x: s.x, y: s.y },
+            f64::from(s.zoom_milli) / 1000.0,
+            W,
+            H,
+        )
+    };
+    let held = blend(&first)
+        .to_world(focus.0, focus.1)
+        .expect("the focus is on the world");
+    let mut shown = first;
+    let mut worst: f64 = 0.0;
+    let mut steps: Vec<i32> = vec![55; 60];
+    steps.extend(std::iter::repeat_n(-55, 60));
+    for (i, by) in steps.into_iter().enumerate() {
+        ask.x = Some(shown.x);
+        ask.y = Some(shown.y);
+        ask.zoom_milli = Some(shown.zoom_milli);
+        ask.zoom_by_milli = by;
+        (shown, _) = frame(&loquax_android::map::render(&ask, Some(Vec::new()), now()));
+        let (px, py) = blend(&shown).to_screen(held);
+        let off = ((px - focus.0).powi(2) + (py - focus.1).powi(2)).sqrt();
+        worst = worst.max(off);
+        assert!(
+            off <= 2.0,
+            "step {i} (z{}): the ground under the focus moved {off:.1} px \
+             (worst so far {worst:.1})",
+            shown.zoom_milli
+        );
+    }
+    // Back out to where it began: the same place under the focus and the
+    // start's view, within 2 px of its centre.
+    let b = blend(&shown);
+    let (cx, cy) = b.to_screen(at);
+    let dist = ((cx - f64::from(W) / 2.0).powi(2) + (cy - f64::from(H) / 2.0).powi(2)).sqrt();
+    assert!(
+        shown.zoom_milli == 2_600 && dist <= 2.0,
+        "back out: z{} and the start centre {dist:.1} px off the middle",
+        shown.zoom_milli
+    );
+}

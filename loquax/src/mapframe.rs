@@ -1562,6 +1562,154 @@ pub fn drag_as(shape: Shape, view: &mut ExactView, dx: i32, dy: i32) {
     }
 }
 
+/// Whether `view` is drawn blended (`t < 1`) under the product's world
+/// projection: there gesture maths must go through the blend
+/// ([`zoom_about`], [`drag`]), since Mercator's inverse is not the
+/// drawn picture's.
+pub fn blends(view: &ExactView) -> bool {
+    blends_as(crate::picture::world_shape(), view)
+}
+
+/// [`blends`] for a world projection `shape`.
+pub fn blends_as(shape: Shape, view: &ExactView) -> bool {
+    let (w, h) = view.size();
+    Blend::new(shape, view.centre, view.zoom(), w, h).t() < 1.0
+}
+
+/// A held point's zoom walk stops within this of the asked pixel, and
+/// gives up after this many steps: each step turns the centre by the
+/// held point's screen error ([`Blend::turned`]), which near the view's
+/// middle removes almost all of it, so a handful of steps reach this.
+/// The bound is far under a pixel because a pinch compounds it: what an
+/// event leaves over, every later event's zoom magnifies about the held
+/// point — a residual of a THOUSANDTH of a pixel an event still summed
+/// to 1.7 px over a z4-to-z10 pinch at 55 millizooms an event (the
+/// geometric series of `eps · 2^(z_end - z)`); at a millionth the whole
+/// ladder keeps within a fiftieth of a pixel.
+const HELD_EPS_PX: f64 = 1e-6;
+const HELD_STEPS: u32 = 24;
+
+/// `held`, which [`Blend::to_world`] put within a thirty-second of a
+/// pixel of `(x, y)`, pushed to the world grid's floor by Newton on the
+/// forward mapping in continuous world coordinates.
+fn held_refined(
+    b: &Blend,
+    x: f64,
+    y: f64,
+    held: leviculum_map::mercator::World,
+) -> leviculum_map::mercator::World {
+    use leviculum_map::mercator::World;
+    const WORLD_F: f64 = 4_294_967_296.0;
+    let place = |ux: f64, uy: f64| World {
+        x: ux.rem_euclid(WORLD_F) as u32,
+        y: uy.clamp(0.0, WORLD_F - 1.0) as u32,
+    };
+    let (mut ux, mut uy) = (f64::from(held.x), f64::from(held.y));
+    let h = b.unit();
+    for _ in 0..3 {
+        let (px, py) = b.to_screen(place(ux, uy));
+        let (fx, fy) = (px - x, py - y);
+        let (qx, qy) = b.to_screen(place(ux + h, uy));
+        let (rx, ry) = b.to_screen(place(ux, uy + h));
+        let (j11, j21) = ((qx - px) / h, (qy - py) / h);
+        let (j12, j22) = ((rx - px) / h, (ry - py) / h);
+        let det = j11 * j22 - j12 * j21;
+        if libm::fabs(det) < 1e-18 {
+            break;
+        }
+        ux -= (fx * j22 - fy * j12) / det;
+        uy = (uy - (fy * j11 - fx * j21) / det).clamp(0.0, WORLD_F - 1.0);
+    }
+    place(ux, uy)
+}
+
+/// `view` zoomed to `zoom_milli` about the screen point `(x, y)` through
+/// the product's world projection ([`zoom_about_as`]): the GEOGRAPHIC
+/// point drawn under `(x, y)` stays under it, as a pinch's fingers
+/// expect, in flat and in blended views alike.
+pub fn zoom_about(view: &mut ExactView, zoom_milli: u32, x: f64, y: f64) {
+    zoom_about_as(crate::picture::world_shape(), view, zoom_milli, x, y);
+}
+
+/// [`zoom_about`] for a world projection `shape`. Where both the old and
+/// the new view are Mercator exactly (`t = 1`) this is
+/// [`ExactView::zoom_about`], unchanged. In a blended view that rule
+/// kept the MERCATOR point of the focus — which is not the point DRAWN
+/// there: the blend bends away from the centre and the globe's world
+/// term scales by `cos φ₀^(1-t)` — so every step of a continuous pinch
+/// drifted the view a little, and over the handover the drift grew to
+/// Lew's thousand-kilometre jump ("I wanted to zoom in on Morocco and
+/// was in Spain", order 1818). Here the point under the fingers is the
+/// blend's own ([`Blend::to_world`]), and at the new zoom the centre is
+/// turned ([`Blend::turned`], the same move a drag makes) until that
+/// point lands under the fingers again, within [`HELD_EPS_PX`]. A focus
+/// off the world (off the globe's disk) zooms about the centre, which
+/// both mappings pin to the middle pixel.
+pub fn zoom_about_as(shape: Shape, view: &mut ExactView, zoom_milli: u32, x: f64, y: f64) {
+    let (w, h) = view.size();
+    let before = Blend::new(shape, view.centre, view.zoom(), w, h);
+    let zoom = f64::from(zoom_milli) / f64::from(MILLI);
+    if before.t() >= 1.0 && Blend::new(shape, view.centre, zoom, w, h).t() >= 1.0 {
+        view.zoom_about(zoom_milli, x, y);
+        return;
+    }
+    let held = before.to_world(x, y);
+    *view = ExactView::new(view.centre, zoom_milli, w, h);
+    let Some(held) = held else {
+        return;
+    };
+    // The inverse answers within a thirty-second of a pixel; a few more
+    // Newton steps here take that to the world grid's own floor. The
+    // walk below holds the held point where the fingers are, so any
+    // residual between the held point and the fingers' true ground
+    // turns into ground error — which every later event of a
+    // continuous pinch magnifies, a thousandth of a pixel an event
+    // summing to two pixels over a world-to-street pinch.
+    let held = held_refined(&before, x, y, held);
+    // The held point is aimed at its own drawn pixel — which is the
+    // focus within the inverse's guarantee — with its offset from the
+    // focus scaled by the zoom, as the zoom scales everything about the
+    // fingers. Aiming at the focus itself would move the view by the
+    // inverse's residual on every event; keeping the offset unscaled
+    // would zoom about the residual's point instead of the fingers'.
+    // Either way a continuous pinch compounds what an event seeds by
+    // every later event's scale, so the seed has to vanish, not merely
+    // stay small.
+    // The scale change is the blends' own — their pixel unit carries the
+    // globe's `cos φ₀^(1-t)` besides the zoom's power of two.
+    let k = before.unit() / Blend::new(shape, view.centre, zoom, w, h).unit();
+    let (hx, hy) = before.to_screen(held);
+    let (tx, ty) = (x + (hx - x) * k, y + (hy - y) * k);
+    // Newton on the turn: the raw `turned(e)` step answers with only a
+    // part of the error where the held point sits far from the centre
+    // (a third at 51° N near the globe floor), and a pinch compounds
+    // what a capped walk leaves. The Jacobian of the held point's place
+    // against a turn, by finite differences of a pixel, converges in a
+    // handful of steps at any latitude.
+    for _ in 0..HELD_STEPS {
+        let b = Blend::new(shape, view.centre, view.zoom(), w, h);
+        let (px, py) = b.to_screen(held);
+        let (ex, ey) = (px - tx, py - ty);
+        if ex.abs() < HELD_EPS_PX && ey.abs() < HELD_EPS_PX {
+            break;
+        }
+        let step = 1.0;
+        let east = Blend::new(shape, b.turned(step, 0.0), view.zoom(), w, h);
+        let south = Blend::new(shape, b.turned(0.0, step), view.zoom(), w, h);
+        let (qx, qy) = east.to_screen(held);
+        let (rx, ry) = south.to_screen(held);
+        let (j11, j21) = ((qx - px) / step, (qy - py) / step);
+        let (j12, j22) = ((rx - px) / step, (ry - py) / step);
+        let det = j11 * j22 - j12 * j21;
+        if libm::fabs(det) < 1e-12 {
+            break;
+        }
+        let dx = (ex * j22 - ey * j12) / det;
+        let dy = (ey * j11 - ex * j21) / det;
+        view.centre = b.turned(-dx, -dy);
+    }
+}
+
 /// Where the point `c` of the frame `rest` is in the frame `now`: the
 /// pan and the zoom between them. A pan of whole pixels at the same zoom
 /// moves it by whole pixels, so a name drawn again is the same pixels.
@@ -1726,6 +1874,85 @@ mod tests {
         drag_as(Shape::Globe, &mut moved, 40, 0);
         let (x, _, k) = onto_as(Shape::Globe, &flat, &moved);
         assert!((x + 40.0).abs() < 1e-9 && (k - 1.0).abs() < 1e-9, "{x} {k}");
+    }
+
+    /// Lew on his phone, APK 057b65e0 (order 1818, P0): "Zooming closer,
+    /// somewhere below country level, the position jumps: suddenly I am
+    /// maybe 1000 km away. I wanted to zoom in on Morocco and was in
+    /// Spain." `ExactView::zoom_about` keeps the MERCATOR point of the
+    /// focus, which in a blended frame is not the point drawn there, and
+    /// a continuous pinch drifted a little every step. [`zoom_about_as`]
+    /// holds the GEOGRAPHIC point of the blend instead: a pinch ladder
+    /// from the world floor to z12 and back, centred and off-centre, on
+    /// the phone's frame, keeps the ground under the focus within 2 px
+    /// in every frame, for the globe and Equal Earth both; a centred
+    /// zoom leaves the centre's ground on the middle pixel; and zooming
+    /// back out returns to the view it started from.
+    #[test]
+    fn a_zoom_through_the_handover_keeps_the_place_under_the_focus() {
+        use leviculum_map::blend::Blend;
+        let (w, h) = (1224u32, 2197u32);
+        let places = [
+            (32.0, -6.0),   // Morocco, as on Lew's phone
+            (51.0, 10.0),   // Germany
+            (0.0, 0.0),     // the equator
+            (-60.0, 0.0),   // 60 S
+            (10.0, 179.95), // near the antimeridian
+        ];
+        for shape in [Shape::Globe, Shape::EqualEarth] {
+            for (lat, lon) in places {
+                for focus in [(f64::from(w) / 2.0, f64::from(h) / 2.0), (500.0, 980.0)] {
+                    let at = project(LatLon::from_degrees(lat, lon));
+                    let start = floor_milli_as(shape, w, h, 0).max(2_000);
+                    let mut view = ExactView::new(at, start, w, h);
+                    let b0 = Blend::new(shape, view.centre, view.zoom(), w, h);
+                    let held = b0.to_world(focus.0, focus.1).expect("on the world");
+                    // The anchor refined to the grid's floor, and
+                    // measured against the pixel it is DRAWN at (an
+                    // exact forward projection): the inverse's
+                    // thirty-second of a pixel, taken as a ground
+                    // anchor at the world floor, is itself magnified
+                    // by the ladder's whole scale into a false
+                    // two-pixel "drift" at z12.
+                    let held = held_refined(&b0, focus.0, focus.1, held);
+                    let p0 = b0.to_screen(held);
+                    let centred = focus.0 == f64::from(w) / 2.0;
+                    let mut zooms: Vec<u32> = (1..)
+                        .map(|i| start + i * 55)
+                        .take_while(|&z| z < 12_000)
+                        .chain([12_000])
+                        .collect();
+                    let back: Vec<u32> = zooms.iter().rev().skip(1).copied().collect();
+                    zooms.extend(back);
+                    zooms.push(start);
+                    for z in zooms {
+                        zoom_about_as(shape, &mut view, z, focus.0, focus.1);
+                        let b = Blend::new(shape, view.centre, view.zoom(), w, h);
+                        let (px, py) = b.to_screen(held);
+                        let off = libm::hypot(px - p0.0, py - p0.1);
+                        let cap = if centred { 0.1 } else { 2.0 };
+                        if std::env::var("DRIFT_PROBE").is_ok() {
+                            eprintln!("DRIFT {shape:?} {lat},{lon} {focus:?} z{z} off={off:.4}");
+                            continue;
+                        }
+                        assert!(
+                            off <= cap,
+                            "{shape:?} {lat},{lon} focus {focus:?} z{z}: \
+                             the ground under the focus moved {off:.2} px"
+                        );
+                    }
+                    assert_eq!(view.zoom_milli(), start, "back where it began");
+                    let b = Blend::new(shape, view.centre, view.zoom(), w, h);
+                    let (cx, cy) = b.to_screen(at);
+                    let dist = libm::hypot(cx - f64::from(w) / 2.0, cy - f64::from(h) / 2.0);
+                    assert!(
+                        dist <= 2.0,
+                        "{shape:?} {lat},{lon} focus {focus:?}: \
+                         out again, the start centre is {dist:.2} px off the middle"
+                    );
+                }
+            }
+        }
     }
 
     /// A drag on a globe view turns it by the arcball amount and on the

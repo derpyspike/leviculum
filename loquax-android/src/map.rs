@@ -538,7 +538,10 @@ impl Renderer {
             let zoom = (i64::from(view.zoom_milli()) + by)
                 .clamp(i64::from(floor), i64::from(ceiling.max(floor)));
             let about = |v: i32, of: u16| f64::from(v.clamp(0, i32::from(of)));
-            view.zoom_about(
+            // Through the blend where the frame is blended (1818): the
+            // geographic point under the fingers stays under them.
+            loquax::mapframe::zoom_about(
+                &mut view,
                 u32::try_from(zoom).unwrap_or(floor),
                 about(request.about_x, area.width),
                 about(request.about_y, area.height),
