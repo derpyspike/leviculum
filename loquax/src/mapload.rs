@@ -1974,4 +1974,64 @@ mod tests {
              until it does: {report:?}"
         );
     }
+    /// An off-screen box queued behind a screen box that waits to retry
+    /// does not start, so the loader is not busy with it (`busy` mirrors
+    /// `start_next`; the coverage of 1850 found the branch unrun).
+    #[test]
+    fn a_box_held_behind_a_waiting_screen_box_is_not_loading() {
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        serve.fail(true);
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut loader = Loader::new(maps, Source::Url(serve.url("o.pmtiles")), 1 << 30);
+        let (s, b) = (screen(1), nth(7));
+        loader.schedule(vec![s.clone()], Vec::new(), 0);
+        let steps = settle(&mut loader, 0);
+        assert!(
+            steps.iter().any(|st| matches!(st, Step::Failed { .. })),
+            "{steps:?}"
+        );
+        let steps = loader.schedule(vec![s], vec![b.clone()], 10);
+        assert!(
+            !steps.iter().any(|st| matches!(st, Step::Started(_))),
+            "nothing starts beside a screen box that waits: {steps:?}"
+        );
+        let report = loader.report(10);
+        assert!(
+            report.iter().any(|(bounds, _, _)| *bounds == b.bounds),
+            "the off-screen box is queued: {report:?}"
+        );
+        assert!(!loader.busy(), "a held box is not loading: {report:?}");
+        // The wake is the screen box's retry, counted from now.
+        let waits = report
+            .iter()
+            .find_map(|(_, _, st)| match st {
+                LoadState::Retrying { in_ms } => Some(*in_ms),
+                _ => None,
+            })
+            .expect("the screen box retries");
+        assert_eq!(loader.next_due_ms(10), Some(waits), "{report:?}");
+    }
+
+    /// A box due now that the running load holds back names a wake of 0:
+    /// the loader can start it the moment the running load ends.
+    #[test]
+    fn a_due_box_behind_a_running_load_names_a_wake_of_now() {
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut loader = Loader::new(maps, Source::Url(serve.url("o.pmtiles")), 1 << 30);
+        // Two boxes off the screen: the first starts, the second may not
+        // start beside it, and a load stays running until `poll` reads it.
+        let steps = loader.schedule(Vec::new(), vec![nth(3), nth(5)], 0);
+        assert_eq!(
+            steps
+                .iter()
+                .filter(|st| matches!(st, Step::Started(_)))
+                .count(),
+            1,
+            "{steps:?}"
+        );
+        assert_eq!(loader.next_due_ms(0), Some(0));
+    }
 }
