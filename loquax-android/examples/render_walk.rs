@@ -167,7 +167,7 @@ struct Centre {
     lon: f64,
 }
 
-const CENTRES: [Centre; 7] = [
+const CENTRES: [Centre; 9] = [
     Centre {
         name: "germany",
         lat: 51.0,
@@ -205,15 +205,33 @@ const CENTRES: [Centre; 7] = [
         lat: 43.7752,
         lon: 11.266,
     },
+    // The desert relief (1741, its audit 1851): regions and height packs
+    // over Erg Chebbi and Erg Chegaga, each centre the packs' z10 tile.
+    Centre {
+        name: "erg-chebbi",
+        lat: 31.2034,
+        lon: -4.0430,
+    },
+    Centre {
+        name: "erg-chegaga",
+        lat: 29.9930,
+        lon: -6.1523,
+    },
 ];
 
 /// The regions every walk home holds (`leviculum-map/fixtures`).
-const REGIONS: [&str; 4] = [
+const REGIONS: [&str; 6] = [
     "firenze.lmr",
     "berlin/wide.lmr",
     "berlin/mitte.lmr",
     "frankfurt/roemer.lmr",
+    "morocco/merzouga.lmr",
+    "morocco/chegaga.lmr",
 ];
+
+/// The height packs every walk home holds beside the regions: the relief
+/// under the two Moroccan regions from z10 down.
+const PACKS: [&str; 2] = ["erg-chebbi-z10.lmh", "erg-chegaga-z10.lmh"];
 
 const HZ: f64 = 60.0;
 const NOW: WallTime = WallTime {
@@ -456,7 +474,7 @@ impl Walk {
             die(&format!("{}: {e}", maps.display()));
         }
         let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../leviculum-map/fixtures");
-        for region in REGIONS {
+        for region in REGIONS.iter().chain(&PACKS) {
             let to = maps.join(region.replace('/', "-"));
             if let Err(e) = std::fs::copy(fixtures.join(region), &to) {
                 die(&format!("{region}: {e}"));
@@ -1001,7 +1019,7 @@ impl Walk {
 
     /// The five gestures on `size`.
     fn gestures(&mut self, size: Size) {
-        let [germany, _, _, _, _, berlin, _] = CENTRES;
+        let [germany, _, _, _, _, berlin, _, _, _] = CENTRES;
         // Across tile seams at z13 over Berlin's region: 40 px a frame
         // east, 24 frames, three seams.
         self.gesture("pan-seam", size, berlin, 13 * MILLI, 24, &|_, _, ask| {
@@ -1169,7 +1187,7 @@ fn main() {
     };
     let started = Instant::now();
     let [phone, _, _, window, _] = SIZES;
-    let [germany, _, north, _, _, berlin, _] = CENTRES;
+    let [germany, _, north, _, _, berlin, _, _, _] = CENTRES;
     if strip {
         // The 1799 item 0 proof strip: Germany and the Sahara on the
         // phone frame, every half zoom.

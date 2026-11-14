@@ -53,7 +53,11 @@ renderer.
   smallest to the deepest zoom the regions hold.
   - Centres: Germany (51 N 10 E), Morocco (31 N 5 W), both poles (85°),
     the antimeridian (17 S 179.99 E), and Berlin and Florence, where the
-    fixture regions give street level from data.
+    fixture regions give street level from data, and Erg Chebbi and Erg
+    Chegaga (the z10 tiles at 31.20 N 4.04 W and 29.99 N 6.15 W), where
+    two Moroccan fixture regions lie over the height packs
+    `erg-chebbi-z10.lmh` and `erg-chegaga-z10.lmh` that every walk home
+    also holds: the desert relief under the vector map (1741, 1851).
   - Frame sizes: 1224x2197 at a density of 2.75 (Lew's phone), 1080x2400
     at 2.625, 1600x2560 at 2.0, 900x560 at 1.0 (the window), and
     2197x1224 (Lew's phone in landscape).

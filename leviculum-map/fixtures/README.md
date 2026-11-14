@@ -146,6 +146,25 @@ on 2026-11-14 with `leviculum-map-tool heights -o <file> --bbox=<box>
 The same attribution as `erg-chebbi.lmh` applies to each, and the texts
 are inside each file.
 
+`morocco/`: two region files over the relief packs' z10 tiles, for the
+render walk's desert centres (order 1851): `merzouga.lmr` (227,751 bytes,
+sha256 `6636e2af97bcec6c90aacaaf687570fdf966834f0926d3b4353cb77f5eab5ffe`)
+over Erg Chebbi and `chegaga.lmr` (121,944 bytes, sha256
+`dc9c55ff3c8b3011c0ec1916cf6e3c1208e958aba2f0109622007ed563a8d2bf`) over
+Erg Chegaga, zooms 10 to 14, cut on 2026-11-14 with
+
+```sh
+leviculum-map-tool cut -o merzouga.lmr https://build.protomaps.com/20261113.pmtiles \
+    --bbox=-4.2188,31.0529,-3.8672,31.3536 --min-zoom 10 --max-zoom 14 \
+    --locale de --buildings false --pois false
+leviculum-map-tool cut -o chegaga.lmr https://build.protomaps.com/20261113.pmtiles \
+    --bbox=-6.3281,29.8406,-5.9766,30.1451 --min-zoom 10 --max-zoom 14 \
+    --locale de --buildings false --pois false
+```
+
+from the Protomaps daily build of 2026-11-13, © OpenStreetMap
+contributors, ODbL 1.0, as above.
+
 ## The world outline
 
 `../data/ne_50m_land.lwo` is not a test fixture but the table the crate
