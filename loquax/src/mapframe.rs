@@ -1774,6 +1774,99 @@ mod tests {
         );
     }
 
+    /// Audit of 1818 condition 7 (order 1841 item 4): a pinch that
+    /// crosses the handover's edge on a reduced rung carries its names
+    /// without placing them anew, and each must stay on its ground. The
+    /// 1818 pass measured a carried name 40 px off its ground there
+    /// (rest t = 0.59, the moving frame flat). Both directions: from a
+    /// blended rest frame into a flat moving one, and back. The ground
+    /// is the rest frame's own inverse (its blend, or Mercator at
+    /// `t = 1`); the place is the moving screen's.
+    #[test]
+    fn a_carried_name_crosses_the_handovers_edge_on_its_ground() {
+        use leviculum_map::blend::Blend;
+        let centre = project(LatLon::from_degrees(46.0, 9.0));
+        let (w, h) = (1000u32, 700u32);
+        let t_of = |z: u32| Blend::new(centre, f64::from(z) / 1000.0, w, h).t();
+        let flat = (2000..14_000)
+            .step_by(50)
+            .find(|&z| t_of(z) >= 1.0)
+            .expect("a flat zoom");
+        let band = (2000..flat)
+            .step_by(50)
+            .filter(|&z| (0.4..=0.7).contains(&t_of(z)))
+            .last()
+            .expect("a blended zoom");
+        // With a clock, as every frontend asks: without one a frame
+        // runs every pass and places its names anew, and nothing rides.
+        let bare = |view: ExactView, moving: bool, now: u64| Ask {
+            margin: (0, 0),
+            now_ms: Some(now),
+            ..ask(view, moving, 1.0, MapTheme::Light)
+        };
+        let ground_of = |v: &ExactView, at: (f64, f64)| {
+            let (w, h) = v.size();
+            let b = Blend::new(v.centre, v.zoom(), w, h);
+            match b.t() < 1.0 {
+                true => b.to_world(at.0, at.1),
+                false => Some(v.to_world(at.0, at.1)),
+            }
+        };
+        let place_of = |v: &ExactView, g| {
+            let (w, h) = v.size();
+            let b = Blend::new(v.centre, v.zoom(), w, h);
+            match b.t() < 1.0 {
+                true => b.to_screen(g),
+                false => v.to_screen(g),
+            }
+        };
+        // From the blend into the flat map just past the edge and further,
+        // both at a fraction (the frame is drawn at its tile step and
+        // scaled to the screen); and from the flat map into the blend.
+        for (from, to) in [(band, flat), (band, flat + 370), (flat, band)] {
+            let rest_view = ExactView::new(centre, from, w, h);
+            let mut frames = florence();
+            frames.frame(&bare(rest_view, false, 0));
+            let rest = frames.drawn_names();
+            assert!(!rest.is_empty(), "z{from}: no names at rest");
+            // The minimal rung: a moving frame places no names anew.
+            frames.hold_rung(Some(2));
+            let moved_view = ExactView::new(centre, to, w, h);
+            frames.frame(&bare(moved_view, true, 16));
+            assert_eq!(
+                frames.set_view.map(|v| v.zoom_milli()),
+                Some(from),
+                "the moving frame placed no name anew: they ride"
+            );
+            let mut judged = 0usize;
+            for name in frames.drawn_names() {
+                if !name.shown || name.alpha == 0 {
+                    continue;
+                }
+                let Some(was) = rest.iter().find(|r| r.text == name.text) else {
+                    continue;
+                };
+                let Some(ground) = ground_of(&rest_view, was.at) else {
+                    continue;
+                };
+                judged += 1;
+                let (x, y) = place_of(&moved_view, ground);
+                let off = (name.at.0 - x).hypot(name.at.1 - y);
+                assert!(
+                    off <= 1.0,
+                    "z{from} (t {:.2}) to z{to} (t {:.2}): {} is {off:.2} px off its ground",
+                    t_of(from),
+                    t_of(to),
+                    name.text
+                );
+            }
+            assert!(
+                judged >= 1,
+                "z{from} to z{to}: only {judged} carried names judged"
+            );
+        }
+    }
+
     /// Order 1818 condition 1, on the globe: a drag at the
     /// globe minimum on the phone's frame, 24 steps, and after every
     /// step each shown name sits within a pixel of its ground projected
