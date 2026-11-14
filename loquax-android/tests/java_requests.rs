@@ -1218,6 +1218,9 @@ fn the_map_views_requests_decode() {
             ("dark", Java::Bool(true)),
             ("pan_x", Java::Long(-12)),
             ("pan_y", Java::Long(300)),
+            ("pan_x_milli", Java::Long(-124)),
+            ("pan_y_milli", Java::Long(377)),
+            ("pan_about", Java::Bool(true)),
             ("zoom_by_milli", Java::Long(-415)),
             ("about_x", Java::Long(540)),
             ("about_y", Java::Long(1_050)),
@@ -1234,6 +1237,8 @@ fn the_map_views_requests_decode() {
         (first.pan_x, first.pan_y, first.zoom_by_milli),
         (-12, 300, -415)
     );
+    assert_eq!((first.pan_x_milli, first.pan_y_milli), (-124, 377));
+    assert!(first.pan_about, "the pan is a pointer's (order 1833)");
 
     let mut later = base();
     later.extend([
