@@ -3,12 +3,10 @@
 //! Lew's phone, with a quarter screen of margin each side as the app asks,
 //! drawn through the facade's own call into a Bitmap-sized buffer
 //! ([`loquax_android::map::render_into`]). No region is installed, so the
-//! frame is the world outline through the blend: Equal Earth, or the
-//! globe in a build with `loquax/globe-world`.
+//! frame is the world outline through the globe's blend.
 //!
 //! ```sh
-//! cargo run --release -p loquax-android --example globe_fps \
-//!     [--features loquax/globe-world] -- HOME
+//! cargo run --release -p loquax-android --example globe_fps -- HOME
 //! ```
 //!
 //! `HOME` is an empty directory the run makes its `maps/` and `config`

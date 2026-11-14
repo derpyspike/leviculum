@@ -11,8 +11,7 @@
 //! tiles in the tile cache until its 96 MB budget was full, and they
 //! stayed after the view was back where it started; every world frame,
 //! drawn whole, allocated a buffer of the frame's own size beside the
-//! Bitmap and copied it over (10.7 MB for the turning globe, 24 MB for
-//! Equal Earth with its margins).
+//! Bitmap and copied it over (10.7 MB for the turning globe).
 //!
 //! One test in the binary on purpose: the counter is process-wide, and a
 //! second test running beside it would move it.
@@ -205,7 +204,6 @@ impl Phone {
         };
         // Drawn whole when the blend holds at the screen (1710).
         let curved = Blend::new(
-            loquax::picture::world_shape(),
             self.centre,
             f64::from(self.zoom_milli) / 1000.0,
             PHONE.0,

@@ -18,7 +18,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use leviculum_map::blend::{world_floor_milli, Shape};
+use leviculum_map::blend::world_floor_milli;
 use leviculum_map::choice::fit_ceiling;
 use leviculum_map::labels::{self as names, Candidate, LabelKind, ViewLabel};
 use leviculum_map::mercator::{project, unproject, LatLon, World};
@@ -538,25 +538,15 @@ pub fn picture_area(pane: Rect) -> Rect {
     )
 }
 
-/// The world projection the product ships (1710): Equal Earth, Lew's
-/// first decision; the orthographic globe behind the `globe-world` build
-/// switch until he has seen both on pictures.
-pub fn world_shape() -> Shape {
-    match cfg!(feature = "globe-world") {
-        true => Shape::Globe,
-        false => Shape::EqualEarth,
-    }
-}
-
 /// The view of `state` over `area` at `setup`'s cell size, as every
 /// frontend shows it: one world at most ([`Viewport::one_world`]), however
 /// far the state was zoomed out or panned north or south, and the world
 /// never smaller than the picture: the whole zoom at or past the
-/// [`world_floor_milli`] of the product's [`world_shape`] (1796), the
+/// globe's [`world_floor_milli`] (1796), the
 /// window's and the phone's floor rounded up to the terminal's steps.
 pub fn viewport(state: &MapState, area: Rect, setup: &MapSetup) -> Viewport {
     let (w, h) = pixels(area, setup);
-    let floor = world_floor_milli(world_shape(), w, h).div_ceil(MILLI);
+    let floor = world_floor_milli(w, h).div_ceil(MILLI);
     let floor = u8::try_from(floor).unwrap_or(u8::MAX);
     Viewport::new(state.centre, state.zoom.max(floor), w, h).one_world()
 }
@@ -1222,13 +1212,12 @@ mod tests {
     }
 
     /// The terminal's world at its smallest is as wide as its picture
-    /// (1796): settled from z0 the product's world (Equal Earth, the globe
-    /// in the globe build) spans at least the picture's width, the globe
-    /// its shorter side; a step further out settles to the same zoom.
+    /// (1796): settled from z0 the globe's disk spans at least the
+    /// picture's shorter side; a step further out settles to the same
+    /// zoom.
     #[test]
     fn settle_keeps_the_smallest_world_as_wide_as_the_picture() {
         use leviculum_map::blend::Blend;
-        let shape = world_shape();
         let setup = MapSetup {
             cell_px: (2, 4),
             zooms: (0, 20),
@@ -1244,15 +1233,8 @@ mod tests {
             };
             settle(&mut state, area, &setup);
             let view = viewport(&state, area, &setup);
-            let blend = Blend::new(shape, view.centre, f64::from(view.zoom()), w, h);
-            let pi = core::f64::consts::PI;
-            let (across, side) = match shape {
-                Shape::Globe => (2.0 * blend.radius(), w.min(h)),
-                Shape::EqualEarth => (
-                    blend.to_screen_angles(pi, 0.0).0 - blend.to_screen_angles(-pi, 0.0).0,
-                    w,
-                ),
-            };
+            let blend = Blend::new(view.centre, f64::from(view.zoom()), w, h);
+            let (across, side) = (2.0 * blend.radius(), w.min(h));
             assert!(
                 across >= f64::from(side) - 0.5,
                 "{w}x{h}: the world {across:.1} across, the picture {side}"
@@ -1280,13 +1262,9 @@ mod tests {
             selected: None,
         };
         settle(&mut state, phone, &setup);
-        // Mercator's and Equal Earth's floor is z3 on 1080 pixels; the
-        // globe's disk needs z3.73 to be 1080 across (1796), z4 in whole
-        // steps.
-        let floor = match world_shape() {
-            Shape::Globe => 4,
-            Shape::EqualEarth => 3,
-        };
+        // Mercator's floor is z3 on 1080 pixels; the globe's disk needs
+        // z3.73 to be 1080 across (1796), z4 in whole steps.
+        let floor = 4;
         assert_eq!(state.zoom, floor);
         match 256u32 << floor <= 2400 {
             true => assert_eq!(state.centre.y, 1 << 31, "shorter than the view: centred"),

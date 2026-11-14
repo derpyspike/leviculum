@@ -1324,9 +1324,8 @@ final class MapView extends View {
         // `blended` still holds the LAST frame's word here: the anchor
         // is needed whenever either side of the step is a blended frame
         // — the flat reconstruction below is exact only flat to flat;
-        // the handover's crossing frame seeded 1.4 px without it, and
-        // Equal Earth's blend, which never `turns`, drifted 0.16 px a
-        // frame through the flat formula (order 1833).
+        // the handover's crossing frame seeded 1.4 px without it (order
+        // 1833).
         if (blended || Core.bool(shown, "blended")) {
             // A moving frame is drawn at the tile step's zoom, not the
             // asked one, and a turning view's leftover cannot be read

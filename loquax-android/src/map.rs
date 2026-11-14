@@ -437,7 +437,7 @@ impl Renderer {
             .as_deref()
             .and_then(|hex| loquax::address::parse(hex).ok());
         // The world at its smallest fills the screen (1796): the globe's
-        // disk its shorter side, Equal Earth its width.
+        // disk its shorter side.
         let floor = loquax::mapframe::floor_milli(
             area.width.into(),
             area.height.into(),
@@ -549,12 +549,7 @@ impl Renderer {
         // frames towards the view's corner: 48 km at 32 N on the
         // emulator after two slow pinches (the reviewer's run on
         // b74eb7e34), at 60 frames a second.
-        let gesture_held = loquax::mapframe::ground_under_as(
-            loquax::picture::world_shape(),
-            &view,
-            about_x + pan.0,
-            about_y + pan.1,
-        );
+        let gesture_held = loquax::mapframe::ground_under(&view, about_x + pan.0, about_y + pan.1);
         if pans {
             self.frames.pan(pan.0, pan.1, now);
             // At globe zooms the drag turns the sphere about its centre
@@ -745,8 +740,7 @@ impl Renderer {
         };
         // A globe turns where Mercator would stop at the world's edge: a
         // coast has all the room it wants, the turn stops at the pole.
-        let turns =
-            loquax::mapframe::turns_as(loquax::picture::world_shape(), &shot.shows).is_some();
+        let turns = loquax::mapframe::turns(&shot.shows).is_some();
         // The held ground's place in this frame's view (order 1833): the
         // app's anchor for what the fingers did. Filled for flat frames
         // too: the app's flat reconstruction is exact only flat-to-flat,
@@ -754,26 +748,19 @@ impl Renderer {
         // a flat one) seeded 1.4 px without the anchor, which the zoom
         // then magnified.
         let held_shown = gesture_held.map(|g| {
-            // Through the drawn picture's own projection: Equal Earth
-            // blends without turning, so `curved` is None there while
-            // Mercator's numbers are not what is drawn; at t = 1 the
-            // blend IS Mercator and nothing changes.
+            // Through the drawn picture's own projection: in a blended
+            // frame Mercator's numbers are not what is drawn; at t = 1
+            // the blend IS Mercator and nothing changes.
             let (sw, sh) = shot.shows.size();
-            leviculum_map::blend::Blend::new(
-                loquax::picture::world_shape(),
-                shot.shows.centre,
-                shot.shows.zoom(),
-                sw,
-                sh,
-            )
-            .to_screen(g)
+            leviculum_map::blend::Blend::new(shot.shows.centre, shot.shows.zoom(), sw, sh)
+                .to_screen(g)
         });
         let micro = |v: f64| (v * 1e6).round().clamp(-9.0e15, 9.0e15) as i64;
         let (room_north, room_south) = match turns {
             true => (u32::MAX >> 1, u32::MAX >> 1),
             false => room(&shot.shows),
         };
-        let blended = loquax::mapframe::blends_as(loquax::picture::world_shape(), &shot.shows);
+        let blended = loquax::mapframe::blends(&shot.shows);
         let shown = MapShown {
             v: VERSION,
             ok: true,

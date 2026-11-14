@@ -725,9 +725,8 @@ impl Canvas {
     /// technique's cells.
     fn paint(&mut self, ask: Ask) -> Painted {
         // The terminal draws whole views, never a cache's square tiles:
-        // its world views blend into Equal Earth or the globe (1710).
-        self.painter
-            .set_world_shape(Some(loquax::picture::world_shape()));
+        // its world views blend into the globe (1710, 1809).
+        self.painter.set_world_blend(true);
         let started = Instant::now();
         let mut painted = self.paint_view(ask);
         painted.paint_us = u32::try_from(started.elapsed().as_micros()).unwrap_or(u32::MAX);
@@ -2279,7 +2278,10 @@ mod tests {
     /// view as asked is a blended world view and holds the world once by
     /// construction: Mercator's 256-column tiling, the old control,
     /// cannot appear at any zoom. The names are off: they are placed per
-    /// view (1683), not per copy of the world.
+    /// view (1683), not per copy of the world. Since 1809 the world is
+    /// the globe, whose disk leaves the ground alone at both sides of a
+    /// wide pane; those columns are all alike and would read as a
+    /// period, so the columns that cross the sphere are judged.
     #[test]
     fn the_terminal_never_shows_the_world_twice() {
         let setup = MapSetup {
@@ -2296,7 +2298,47 @@ mod tests {
         assert_ne!(period(&halfblock_columns(asked)), Some(256), "the control");
         let view = loquax::ui::map::viewport(&state, area, &setup);
         assert_eq!(view.zoom(), 1);
-        assert_eq!(period(&halfblock_columns(view)), None);
+        let cols = halfblock_columns(view);
+        let ground = cols[0].clone();
+        let sphere: Vec<_> = cols.into_iter().filter(|c| *c != ground).collect();
+        assert!(
+            sphere.len() > 100,
+            "{} columns cross the sphere",
+            sphere.len()
+        );
+        assert_eq!(period(&sphere), None);
+    }
+
+    /// The terminal's world outline is the globe (order 1809): a pane
+    /// wider than its height at the world's zoom draws the disk, its
+    /// diameter the pane's short side rounded up to the terminal's whole
+    /// zoom, standing on the ground, so the pane's outer columns are the
+    /// ground alone, one colour from top to bottom, and the middle column
+    /// crosses the sphere. Equal Earth filled the width with the world.
+    #[test]
+    fn the_terminal_draws_the_world_as_the_globe() {
+        let setup = MapSetup {
+            cell_px: (1, 2),
+            ..MapSetup::default()
+        };
+        let area = leviculum_ui::Rect::new(1, 1, 300, 60);
+        let state = loquax::ui::map::MapState {
+            centre: project(LatLon::from_degrees(30.0, 10.0)),
+            zoom: 0,
+            selected: None,
+        };
+        let view = loquax::ui::map::viewport(&state, area, &setup);
+        let cols = halfblock_columns(view);
+        let uniform = |col: &[(Color, Color)]| col.iter().all(|&c| c == col[0] && c.0 == c.1);
+        let (first, last) = (&cols[0], &cols[cols.len() - 1]);
+        assert!(uniform(first), "the left column is not the ground alone");
+        assert!(uniform(last), "the right column is not the ground alone");
+        assert_eq!(first[0], last[0], "one ground on both sides");
+        let middle = &cols[cols.len() / 2];
+        assert!(
+            middle.iter().any(|&c| c != first[0]),
+            "the middle column crosses the sphere"
+        );
     }
 
     /// The names of the Florence fixture over its picture in braille, with

@@ -452,52 +452,45 @@ fn the_buildings_draw_their_goldens_from_z16() {
     assert!(moved.is_empty(), "moved:\n{}", moved.join("\n"));
 }
 
-/// The blended world views (1710): central Europe out of Equal Earth
-/// and out of the orthographic globe, at the world (`t = 0`) and in the
-/// middle of each shape's handover, pinned pixel for pixel — Equal
-/// Earth's fixed window has its middle at z3.5, the globe's
-/// ground-driven one (1799 item 0) at about z6.9 on this frame. The
-/// linear goldens at z6 below pin the other end: from `t = 1` the blend
-/// is today's Mercator exactly, which `tests/blend.rs` holds to a
-/// nanopixel.
+/// The blended world view (1710): central Europe on the orthographic
+/// globe, at the world (`t = 0`) and in the middle of the handover,
+/// pinned pixel for pixel — the ground-driven window (1799 item 0) has
+/// its middle at about z6.9 on this frame. The linear goldens at z6
+/// below pin the other end: from `t = 1` the blend is today's Mercator
+/// exactly, which `tests/blend.rs` holds to a nanopixel. The globe is
+/// the only world view (1809); Equal Earth's goldens went with it.
 #[test]
 fn the_blended_world_views_draw_their_goldens() {
-    use leviculum_map::blend::{Blend, Shape};
+    use leviculum_map::blend::Blend;
     let at = project(LatLon::from_degrees(50.0, 10.0));
-    for (sname, shape) in [("ee", Shape::EqualEarth), ("globe", Shape::Globe)] {
-        let handover = match shape {
-            Shape::EqualEarth => ("z35", 3.5),
-            Shape::Globe => ("z69", 6.9),
-        };
-        for (zname, zoom) in [("z2", 2.0), handover] {
-            let (w, h) = (480u32, 320u32);
-            let blend = Blend::new(shape, at, zoom, w, h);
-            if zname != "z2" {
-                assert!(
-                    (0.3..0.7).contains(&blend.t()),
-                    "{sname} {zname}: t {} is not mid-handover",
-                    blend.t()
-                );
-            }
-            let mut fb = vec![0u16; (w * h) as usize];
-            let mut frame = Frame::new(&mut fb, w, h).expect("frame");
-            let Ok(_) = leviculum_map::outline::draw_world_view(
-                &leviculum_map::outline::WORLD,
-                &blend,
-                Ink::Colour,
-                Style::SCREEN.theme,
-                &mut frame,
-            );
-            let mut rgb = Vec::with_capacity(fb.len() * 3);
-            let frame = Frame::new(&mut fb, w, h).expect("frame");
-            frame.rgb888_into(&mut rgb);
-            same_as(
-                &format!("world-blend-{sname}-480x320-{zname}.png"),
-                &rgb,
-                w,
-                h,
+    for (zname, zoom) in [("z2", 2.0), ("z69", 6.9)] {
+        let (w, h) = (480u32, 320u32);
+        let blend = Blend::new(at, zoom, w, h);
+        if zname != "z2" {
+            assert!(
+                (0.3..0.7).contains(&blend.t()),
+                "{zname}: t {} is not mid-handover",
+                blend.t()
             );
         }
+        let mut fb = vec![0u16; (w * h) as usize];
+        let mut frame = Frame::new(&mut fb, w, h).expect("frame");
+        let Ok(_) = leviculum_map::outline::draw_world_view(
+            &leviculum_map::outline::WORLD,
+            &blend,
+            Ink::Colour,
+            Style::SCREEN.theme,
+            &mut frame,
+        );
+        let mut rgb = Vec::with_capacity(fb.len() * 3);
+        let frame = Frame::new(&mut fb, w, h).expect("frame");
+        frame.rgb888_into(&mut rgb);
+        same_as(
+            &format!("world-blend-globe-480x320-{zname}.png"),
+            &rgb,
+            w,
+            h,
+        );
     }
 }
 
@@ -506,37 +499,20 @@ fn the_blended_world_views_draw_their_goldens() {
 /// world (`t = 0`), the Americas across the western limb seen from
 /// Africa, the Pacific with Antarctica and both Americas across the
 /// horizon, and the Arctic from near the pole; and the view of Lew's
-/// second screenshot, 40 S 75 E at z3 (phone portrait at half size), in
-/// both shapes — for the globe the pure sphere since 1799 item 0 moved
-/// the handover to where the limb is well off the screen.
+/// second screenshot, 40 S 75 E at z3 (phone portrait at half size), the
+/// pure sphere since 1799 item 0 moved the handover to where the limb is
+/// well off the screen.
 #[test]
 fn the_turned_globe_draws_its_goldens() {
-    use leviculum_map::blend::{Blend, Shape};
+    use leviculum_map::blend::Blend;
     let views = [
-        (
-            "globe-africa",
-            Shape::Globe,
-            10.0,
-            20.0,
-            1.5,
-            480u32,
-            320u32,
-        ),
-        ("globe-pacific", Shape::Globe, -30.0, -140.0, 1.5, 480, 320),
-        ("globe-arctic", Shape::Globe, 80.0, 30.0, 1.5, 480, 320),
-        ("globe-indian-z3", Shape::Globe, -40.0, 75.0, 3.0, 306, 525),
-        (
-            "ee-indian-z3",
-            Shape::EqualEarth,
-            -40.0,
-            75.0,
-            3.0,
-            306,
-            525,
-        ),
+        ("globe-africa", 10.0, 20.0, 1.5, 480u32, 320u32),
+        ("globe-pacific", -30.0, -140.0, 1.5, 480, 320),
+        ("globe-arctic", 80.0, 30.0, 1.5, 480, 320),
+        ("globe-indian-z3", -40.0, 75.0, 3.0, 306, 525),
     ];
-    for (name, shape, lat, lon, zoom, w, h) in views {
-        let blend = Blend::new(shape, project(LatLon::from_degrees(lat, lon)), zoom, w, h);
+    for (name, lat, lon, zoom, w, h) in views {
+        let blend = Blend::new(project(LatLon::from_degrees(lat, lon)), zoom, w, h);
         let mut fb = vec![0u16; (w * h) as usize];
         let mut frame = Frame::new(&mut fb, w, h).expect("frame");
         let Ok(_) = leviculum_map::outline::draw_world_view(

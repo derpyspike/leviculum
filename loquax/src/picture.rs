@@ -41,7 +41,7 @@ use std::vec::Vec;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::Point;
 use embedded_graphics::primitives::Rectangle;
-use leviculum_map::blend::{Blend, Shape};
+use leviculum_map::blend::Blend;
 use leviculum_map::choice::{drawn, view_zooms};
 use leviculum_map::draw::{
     attach_buildings, draw_in_relief, draw_in_warped, draw_tiles, draws_buildings, Ink,
@@ -100,13 +100,6 @@ pub const AUTO_PREFIX: &str = "auto-";
 /// How often a painter marks an autoloaded region it drew as viewed, by its
 /// file's modification time, which the eviction orders by.
 const VIEWED_EVERY: Duration = Duration::from_secs(60);
-
-/// The world projection the product ships (1710):
-/// [`crate::ui::map::world_shape`], where the terminal's core reaches it
-/// too.
-pub fn world_shape() -> Shape {
-    crate::ui::map::world_shape()
-}
 
 /// Whether `name` is a region the autoload wrote.
 pub fn is_auto(name: &str) -> bool {
@@ -321,12 +314,11 @@ pub struct Painter {
     /// their clocks at this instant, in seconds since the epoch, in place
     /// of the names.
     time_zones: Option<i64>,
-    /// Blend world views through this projection (1710), `None` for
+    /// Blend world views through the globe (1710, 1809), off for
     /// Mercator throughout: the default, which a tile cache's painters
     /// keep — a square tile of one step must stay Mercator-linear
-    /// whatever its zoom. The whole-view frontends set the shipped
-    /// [`world_shape`].
-    world_shape: Option<Shape>,
+    /// whatever its zoom. The whole-view frontends turn it on.
+    world_blend: bool,
     /// The relief side (1741): the `*.lmh` height packs beside the
     /// regions and their shade planes, laid under the ground where the
     /// style asks for it.
@@ -382,7 +374,7 @@ impl Painter {
             viewed: HashMap::new(),
             names_off: false,
             time_zones: None,
-            world_shape: None,
+            world_blend: false,
             relief,
         }
     }
@@ -438,32 +430,34 @@ impl Painter {
         self.time_zones = unix;
     }
 
-    /// Blend world views through `shape` (1710), or through none: the
-    /// whole-view frontends pass [`world_shape`]; a painter that draws
-    /// square tiles for a cache never sets one.
-    pub fn set_world_shape(&mut self, shape: Option<Shape>) {
-        self.world_shape = shape;
+    /// Blend world views through the globe (1710, 1809), or draw
+    /// Mercator throughout: the whole-view frontends turn it on; a
+    /// painter that draws square tiles for a cache never does.
+    pub fn set_world_blend(&mut self, on: bool) {
+        self.world_blend = on;
     }
 
     /// The blended world mapping of `view` at its own whole zoom, when
     /// this painter blends world views at all
-    /// ([`set_world_shape`](Self::set_world_shape)) and the blend is not
+    /// ([`set_world_blend`](Self::set_world_blend)) and the blend is not
     /// yet Mercator there. A region that reaches into the view draws
     /// through the blend, warped point by point (1799 item 0); no raster
     /// is ever reprojected.
     pub fn world_blend(&mut self, view: &Viewport) -> Option<Blend> {
-        let shape = self.world_shape?;
-        self.world_blend_as(shape, view, f64::from(view.zoom()))
+        if !self.world_blend {
+            return None;
+        }
+        self.world_blend_at(view, f64::from(view.zoom()))
     }
 
-    /// [`world_blend`](Self::world_blend) with the shape and the exact
-    /// zoom given: what a tile cache asks for a frame between the steps.
+    /// [`world_blend`](Self::world_blend) with the exact zoom given,
+    /// whether or not this painter blends: what a tile cache asks for a frame between the steps.
     /// Since 1799 the blend holds wherever `t` is below one; a region
     /// that reaches into the view draws through it, warped point by
     /// point ([`Painter::draw_with`]), instead of forcing the view flat.
-    pub fn world_blend_as(&mut self, shape: Shape, view: &Viewport, zoom: f64) -> Option<Blend> {
+    pub fn world_blend_at(&mut self, view: &Viewport, zoom: f64) -> Option<Blend> {
         let (w, h) = view.size();
-        let blend = Blend::new(shape, view.centre, zoom, w, h);
+        let blend = Blend::new(view.centre, zoom, w, h);
         if blend.t() >= 1.0 {
             return None;
         }
@@ -582,8 +576,7 @@ impl Painter {
     /// limb. What `rgba` held does not matter: the outline clears it
     /// first. Straight into the frontend's pixels (1797): a buffer of the
     /// frame's own beside them, copied over, was 10.7 MB a frame for the
-    /// turning globe on a 1224 x 2197 screen and 24 MB for Equal Earth
-    /// with its margins. The credit and the tiles owed; `None` for a
+    /// turning globe on a 1224 x 2197 screen. The credit and the tiles owed; `None` for a
     /// buffer too short, left as it is (the tile cache sizes it).
     pub fn draw_world_onto(
         &mut self,
@@ -1101,7 +1094,7 @@ mod tests {
     /// feature keep their colour at the blend's place for their ground.
     #[test]
     fn a_region_draws_through_the_blend_the_caller_holds() {
-        use leviculum_map::blend::{Blend, Shape};
+        use leviculum_map::blend::Blend;
         use leviculum_map::mercator::{project, LatLon};
         let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../leviculum-map/fixtures/firenze.lmr");
@@ -1112,7 +1105,7 @@ mod tests {
         let (w, h) = (480u32, 320u32);
         let view = Viewport::new(at, 11, w, h);
         let flat = painter.draw_with(&view, None, Ink::Colour, Style::SCREEN, 100);
-        let blend = Blend::with_t(Shape::Globe, at, 11.0, w, h, 0.5);
+        let blend = Blend::with_t(at, 11.0, w, h, 0.5);
         let curved = painter.draw_with(&view, Some(&blend), Ink::Colour, Style::SCREEN, 100);
         // A colour as the frame holds it: Rgb565, big-endian.
         use embedded_graphics::pixelcolor::raw::{RawData, RawU16};

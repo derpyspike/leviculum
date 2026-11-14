@@ -6,15 +6,16 @@
 //!
 //! ```sh
 //! cargo run --release -p loquax-android --example render_walk \
-//!     [--features loquax/globe-world] -- --out DIR --variant NAME \
+//!     -- --out DIR --variant NAME \
 //!     [--quick | --selftest] [--inject FAULT]
 //! ```
 //!
 //! Writes `DIR/rows-NAME.tsv` (one row a rule a frame or gesture),
 //! `DIR/thumb/*.png` (every frame, at most 480 pixels high) and
 //! `DIR/full/*.png` (a frame some rule failed on, whole).
-//! `scripts/render-walk.py` runs it for both world projections and makes
-//! the contact sheet; `just render-walk` runs that.
+//! `scripts/render-walk.py` runs it for the globe, the only world view
+//! since 1809 (`--variant globe`), and makes the contact sheet; `just
+//! render-walk` runs that.
 //!
 //! `--inject FAULT` puts one fault into every frame or gesture, the
 //! positive controls of the rules: `oversized-bitmap` (a Bitmap half again
@@ -55,7 +56,6 @@ use loquax_android::schema::{MapRequest, MapShown};
 /// `shown.zoom_milli` is its tile step's, not the view's.
 fn blend_of(x: u32, y: u32, zoom_milli: u32, w: u32, h: u32) -> Blend {
     Blend::new(
-        loquax::picture::world_shape(),
         World { x, y },
         f64::from(zoom_milli) / f64::from(MILLI),
         w,
@@ -632,10 +632,6 @@ impl Walk {
             ),
             false => (2 * MILLI, 16 * MILLI),
         };
-        let shape = match self.variant.as_str() {
-            "globe" => leviculum_map::blend::Shape::Globe,
-            _ => leviculum_map::blend::Shape::EqualEarth,
-        };
         let mut zooms = vec![floor];
         let mut z = floor.div_ceil(MILLI / 2) * (MILLI / 2);
         if z == floor {
@@ -676,7 +672,6 @@ impl Walk {
             );
             let verdicts = self.judge(&java, &drawn, true, &image);
             let t = leviculum_map::blend::Blend::new(
-                shape,
                 at,
                 f64::from(zoom) / f64::from(MILLI),
                 size.w,
@@ -782,8 +777,7 @@ impl Walk {
                 // it: the raw inverse answers thousandths of a pixel away,
                 // which the pinch magnifies into the judgement.
                 let (fx, fy) = (f64::from(intent.about_x), f64::from(intent.about_y));
-                ground = loquax::mapframe::ground_under_as(
-                    loquax::picture::world_shape(),
+                ground = loquax::mapframe::ground_under(
                     &ExactView::new(
                         World {
                             x: last.x,
@@ -1068,7 +1062,7 @@ impl Walk {
             }
         });
         // The world dragged toward the north pole, then around: 40 px a
-        // frame, 30 frames each way. The globe turns, Equal Earth pans.
+        // frame, 30 frames each way. The globe turns.
         self.gesture(
             "drag-pole-around",
             size,

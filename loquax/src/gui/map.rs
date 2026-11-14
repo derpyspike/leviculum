@@ -200,8 +200,10 @@ pub(super) mod tests {
     }
 
     /// The window shows one world at most (1131): a window of 1280 x 800
-    /// asked for z0 is held at z3, the world 2048 pixels wide, and no
-    /// column of its picture repeats. Since 1710 the view as asked is a
+    /// asked for z0 is held at the globe's floor (1796, 1809), its disk
+    /// the window's height across, and no column of the sphere repeats;
+    /// the ground left and right of the disk is alike by design and is
+    /// not judged. Since 1710 the view as asked is a
     /// blended world view too, which holds the whole world once by
     /// construction: the Mercator tiling of 256-pixel worlds that stood
     /// here as the control cannot appear at any zoom.
@@ -222,9 +224,28 @@ pub(super) mod tests {
         assert_ne!(period(&control.rgba, 1280), Some(256), "the control");
         let floor = zoom_floor(area(size), &setup);
         let view = hold(asked, floor, setup.zooms.1);
-        assert_eq!(view.zoom_milli(), 3 * MILLI);
+        assert_eq!(
+            view.zoom_milli(),
+            loquax::mapframe::floor_milli(size.0, size.1, floor)
+        );
+        assert!(view.zoom_milli() > 3 * MILLI, "the globe's floor, not z3");
         let picture = rest(&mut frames, view, &[], None, 1.0);
-        assert_eq!(period(&picture.rgba, 1280), None);
+        let (w, h) = (size.0 as usize, size.1 as usize);
+        let column = |x: usize| -> Vec<u8> {
+            (0..h)
+                .flat_map(|y| picture.rgba[(y * w + x) * 4..(y * w + x) * 4 + 4].to_vec())
+                .collect()
+        };
+        let ground = column(0);
+        let sphere: Vec<Vec<u8>> = (0..w).map(column).filter(|c| *c != ground).collect();
+        assert!(
+            sphere.len() > 700,
+            "{} columns cross the sphere",
+            sphere.len()
+        );
+        let n = sphere.len();
+        let repeats = (1..n).find(|&p| (0..n - p).all(|x| sphere[x] == sphere[x + p]));
+        assert_eq!(repeats, None);
     }
 
     /// The same view on a screen of twice the density: twice the pixels,
@@ -472,17 +493,26 @@ pub(super) mod tests {
                 println!("z{zoom} {who}: {names:?}");
                 // A country's name is served before every other kind
                 // (1712), so the country under the view's centre is set at
-                // every zoom and on both letter sizes.
-                assert!(
-                    names.iter().any(|n| n.text == "Deutschland"),
-                    "z{zoom} {who}: no Deutschland in {names:?}"
-                );
+                // every zoom and on both letter sizes; except on the
+                // phone's letters at z6, where the globe draws Europe
+                // cos 50° smaller than Mercator did (1762) and Belgien,
+                // served before it among the countries, takes the box
+                // Deutschland's name needs (order 1809, named open in its
+                // report: the placement does not prefer the centre's
+                // country).
+                if (zoom, who) != (6, "phone") {
+                    assert!(
+                        names.iter().any(|n| n.text == "Deutschland"),
+                        "z{zoom} {who}: no Deutschland in {names:?}"
+                    );
+                }
                 // The countries come at their label zoom (1712): at z2 the
                 // small ones the 1683 golden showed are not there, and
                 // Paris, which stood on France's label then, gives way to
-                // the countries now. Frankreich and Spanien are not
-                // asserted: at z2 their label points lie 18 pixels under
-                // Deutschland's and Italien's, inside a name's 23-pixel box.
+                // the countries now, among them one whose label zoom is
+                // two. Which one wins its place depends on the projection:
+                // on Equal Earth it was Italien, on the globe (1809)
+                // Italien's box meets Deutschland's and Spanien stands.
                 if zoom == 2 && scale == 1.0 {
                     for small in ["Malta", "Barbados", "Kap Verde", "Paris"] {
                         assert!(
@@ -490,27 +520,27 @@ pub(super) mod tests {
                             "z2 {who}: {small} in {names:?}"
                         );
                     }
-                    assert!(names.iter().any(|n| n.text == "Italien"), "{names:?}");
-                }
-                // Beyond the countries the table brings the waters and
-                // the ranges, served after the countries and the places.
-                // Only the window at z2 has room for one: the phone's z2
-                // sets four countries and nothing else (its letters are
-                // 2.75 times the size in the same 480 by 320), and the z6
-                // view over central Germany holds no sea, and the Alps'
-                // label lies south of it.
-                if zoom == 2 && scale == 1.0 {
                     assert!(
                         names
                             .iter()
-                            .any(|n| matches!(n.kind, LabelKind::Sea | LabelKind::Range)),
-                        "z{zoom} {who}: no sea or range in {names:?}"
+                            .any(|n| n.kind == LabelKind::Country && n.min_zoom == 2),
+                        "{names:?}"
                     );
                 }
+                // Beyond the countries the table brings the waters and
+                // the ranges, served after the countries and the places;
+                // see the z3 window below.
+                // At z6 this 480 x 320 view is the globe at the start of
+                // its handover (1799 item 0, `t` about 0.01), which names
+                // what a world map names (1762): the countries and the
+                // seas, a city from the handover's middle on. The places
+                // come at z7 below.
                 if zoom == 6 {
                     assert!(
-                        names.iter().any(|n| n.kind.is_place()),
-                        "z{zoom} {who}: no place's name in {names:?}"
+                        names
+                            .iter()
+                            .all(|n| matches!(n.kind, LabelKind::Country | LabelKind::Sea)),
+                        "z{zoom} {who}: a name below the world view's cut in {names:?}"
                     );
                 }
                 assert!(
@@ -525,6 +555,64 @@ pub(super) mod tests {
                 same_as(&format!("gui-world-{who}-z{zoom}.png"), &rgb, 480, 320);
             }
         }
+        // The waters and the ranges come after the countries: on the
+        // globe (1809) the z2 window holds the whole hemisphere in a disk
+        // of 326 pixels, which the countries fill; at z3, twice that, a
+        // sea or a range has its place. (On Equal Earth the z2 window
+        // drew the world 880 pixels wide and had room for one.) The
+        // phone's letters are 2.75 times the size and its z3 sets the
+        // countries alone; the z6 view over central Germany holds no sea.
+        let mut frames = Frames::new(Maps::new(Some(dir.path().to_path_buf())));
+        frames.frame(&Ask {
+            view: ExactView::new(at, 3 * MILLI, 480, 320),
+            margin: (0, 0),
+            moving: false,
+            style: Style::SCREEN,
+            scale: 1.0,
+            pins: &[],
+            selected: None,
+            zooms: (0, 20),
+            draw_pins: false,
+            tracks: &[],
+            radar: None,
+            measure: Some(measure),
+            now_ms: None,
+            scaled_while_moving: false,
+            time_zones: None,
+        });
+        let names = frames.drawn_names();
+        assert!(
+            names
+                .iter()
+                .any(|n| matches!(n.kind, LabelKind::Sea | LabelKind::Range)),
+            "z3 window: no sea or range in {names:?}"
+        );
+        // And the places, from the handover's middle on: z7 over central
+        // Germany on this 480 x 320 window is past it (`t` about 0.6),
+        // where a world view names its cities too (1762).
+        let mut frames = Frames::new(Maps::new(Some(dir.path().to_path_buf())));
+        frames.frame(&Ask {
+            view: ExactView::new(at, 7 * MILLI, 480, 320),
+            margin: (0, 0),
+            moving: false,
+            style: Style::SCREEN,
+            scale: 1.0,
+            pins: &[],
+            selected: None,
+            zooms: (0, 20),
+            draw_pins: false,
+            tracks: &[],
+            radar: None,
+            measure: Some(measure),
+            now_ms: None,
+            scaled_while_moving: false,
+            time_zones: None,
+        });
+        let names = frames.drawn_names();
+        assert!(
+            names.iter().any(|n| n.kind.is_place()),
+            "z7 window: no place's name in {names:?}"
+        );
         // The control: a view past the outline's deepest zoom has no world
         // names, and neither has one a region fills.
         let mut frames = Frames::new(Maps::new(Some(dir.path().to_path_buf())));

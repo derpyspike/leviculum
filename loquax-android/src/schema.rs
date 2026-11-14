@@ -3099,7 +3099,7 @@ pub struct MapShown {
     pub max_zoom: u8,
     /// The shallowest zoom the view may show, thousandths (1796): where the
     /// world at its smallest fills the screen, the globe's disk its
-    /// shorter side and Equal Earth its width. A pinch stops here.
+    /// shorter side. A pinch stops here.
     #[serde(default)]
     pub min_zoom_milli: u32,
     pub selected: Option<String>,
@@ -3186,8 +3186,9 @@ pub struct MapShown {
     /// The frame is drawn blended (`t < 1`): its picture is not
     /// Mercator, so the app's flat leftover arithmetic does not apply to
     /// it and the anchor above is the only sound reconstruction (order
-    /// 1833). Equal Earth blends without turning, so `turns` alone does
-    /// not say this.
+    /// 1833). Since the globe is the only world view (1809) a blended
+    /// frame is one the drag turns, so this says what `turns` says; the
+    /// app reads this one for the anchor.
     #[serde(default)]
     pub blended: bool,
     /// How many view pixels the view's centre may still move north, and

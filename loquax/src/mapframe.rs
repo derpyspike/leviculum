@@ -45,7 +45,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use leviculum_map::blend::{Blend, Shape};
+use leviculum_map::blend::Blend;
 use leviculum_map::labels::{LabelKind, Rect, ViewLabel, SUBPIXEL};
 use leviculum_map::ladder::{Ladder, Layers, Pass};
 use leviculum_map::viewport::{ExactView, Viewport, MILLI};
@@ -479,12 +479,12 @@ impl Frames {
     pub fn new(maps: Maps) -> Self {
         let mut painter = Painter::new(maps.clone());
         // The frames draw whole views: their world views blend into
-        // Equal Earth or the globe (1710), in the picture (the cache
+        // the globe (1710, 1809), in the picture (the cache
         // draws a blended frame whole) and in the names the painter
         // anchors; the cache's own tile painters stay Mercator-linear.
-        painter.set_world_shape(Some(crate::picture::world_shape()));
+        painter.set_world_blend(true);
         let mut tiles = TileCache::new(maps, BUDGET_MB << 20);
-        tiles.set_world_shape(Some(crate::picture::world_shape()));
+        tiles.set_world_blend(true);
         Self {
             painter,
             type_: Typesetter::new(),
@@ -820,7 +820,7 @@ impl Frames {
                 // pushes over the limb goes for the frame (1799): its
                 // anchor still faces, but part of the name would stand
                 // in space.
-                if let Some(b) = wblend.as_ref().filter(|b| b.is_globe() && b.t() <= 0.0) {
+                if let Some(b) = wblend.as_ref().filter(|b| b.t() <= 0.0) {
                     let (bw, bh) = b.size();
                     let (cx, cy) = (f64::from(bw) / 2.0, f64::from(bh) / 2.0);
                     let r = b.radius() - 1.0;
@@ -1475,74 +1475,48 @@ fn nanos(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
+/// The shallowest zoom in thousandths a `width` x `height` view may
+/// show: the larger of `floor` (a whole zoom: the regions' shallowest,
+/// the one-world floor) and the globe's
+/// [`world_floor_milli`](leviculum_map::blend::world_floor_milli), so at
+/// the floor the globe's disk is the view's shorter side across (1796).
+pub fn floor_milli(width: u32, height: u32, floor: u8) -> u32 {
+    leviculum_map::blend::world_floor_milli(width, height).max(u32::from(floor) * MILLI)
+}
+
 /// `view` as every frontend shows it: one world at most, the zoom between
 /// `floor` and `ceiling` (the regions' deepest, never above the floor's
-/// clamp) about the centre. Through the product's world projection
-/// ([`hold_as`]).
+/// clamp) about the centre. A view the globe turns ([`turns`]) keeps its
+/// centre's latitude (1762): `one_world` pins a world view on a screen
+/// taller than Mercator's world to its middle row, which on the phone in
+/// portrait kept the globe from ever turning north or south. The flat
+/// map keeps the rule. The zoom is never shallower than [`floor_milli`]:
+/// the world at its smallest fills the view (1796).
 pub fn hold(view: ExactView, floor: u8, ceiling: u8) -> ExactView {
-    hold_as(crate::picture::world_shape(), view, floor, ceiling)
-}
-
-/// The shallowest zoom in thousandths a `width` x `height` view of the
-/// product's world projection may show, `floor` (a whole zoom: the
-/// regions' shallowest, the one-world floor) or deeper where the world
-/// would draw smaller than the view (1796, [`floor_milli_as`]).
-pub fn floor_milli(width: u32, height: u32, floor: u8) -> u32 {
-    floor_milli_as(crate::picture::world_shape(), width, height, floor)
-}
-
-/// [`floor_milli`] for a world projection `shape`: the larger of `floor`
-/// and the shape's
-/// [`world_floor_milli`](leviculum_map::blend::world_floor_milli), so at the floor the globe's disk is the
-/// view's shorter side across and Equal Earth's equator its width.
-pub fn floor_milli_as(shape: Shape, width: u32, height: u32, floor: u8) -> u32 {
-    leviculum_map::blend::world_floor_milli(shape, width, height).max(u32::from(floor) * MILLI)
-}
-
-/// [`hold`] for a world projection `shape`. A view the globe turns
-/// ([`turns_as`]) keeps its centre's latitude (1762): `one_world` pins a
-/// world view on a screen taller than Mercator's world to its middle row,
-/// which on the phone in portrait kept the globe from ever turning north
-/// or south. Equal Earth and the flat map keep the rule. The zoom is never
-/// shallower than [`floor_milli_as`]: the world at its smallest fills the
-/// view (1796).
-pub fn hold_as(shape: Shape, view: ExactView, floor: u8, ceiling: u8) -> ExactView {
     let (w, h) = view.size();
-    let floor = floor_milli_as(shape, w, h, floor);
+    let floor = floor_milli(w, h, floor);
     let ceiling = u32::from(ceiling) * MILLI;
     let mut v = view.one_world();
     let z = v.zoom_milli().clamp(floor, ceiling.max(floor));
     let (cx, cy) = (f64::from(v.size().0) / 2.0, f64::from(v.size().1) / 2.0);
     v.zoom_about(z, cx, cy);
     let mut held = v.one_world();
-    if turns_as(shape, &held).is_some() {
+    if turns(&held).is_some() {
         held.centre.y = view.centre.y;
     }
     held
 }
 
-/// The blend a drag on `view` turns, through the product's world
-/// projection ([`turns_as`]); `None` where a drag pans.
+/// The blend a drag on `view` turns, while the view is not yet Mercator
+/// (1762); `None` where a drag pans.
 pub fn turns(view: &ExactView) -> Option<Blend> {
-    turns_as(crate::picture::world_shape(), view)
-}
-
-/// The blend a drag on `view` turns, when the world projection `shape`
-/// is the globe and the view is not yet Mercator (1762); `None` where a
-/// drag pans.
-pub fn turns_as(shape: Shape, view: &ExactView) -> Option<Blend> {
     let (w, h) = view.size();
-    let b = Blend::new(shape, view.centre, view.zoom(), w, h);
-    (b.is_globe() && b.t() < 1.0).then_some(b)
+    let b = Blend::new(view.centre, view.zoom(), w, h);
+    (b.t() < 1.0).then_some(b)
 }
 
 /// `view` dragged by `(dx, dy)` screen pixels in [`ExactView::pan`]'s
-/// sense, through the product's world projection ([`drag_as`]).
-pub fn drag(view: &mut ExactView, dx: i32, dy: i32) {
-    drag_as(crate::picture::world_shape(), view, dx, dy);
-}
-
-/// [`drag`] for a world projection `shape`: at globe zooms the drag turns
+/// sense: at globe zooms the drag turns
 /// the sphere about its centre, which stays in the middle of the screen
 /// ([`Blend::turned`], the grabbed middle following the finger, north up,
 /// no flip over a pole); elsewhere it pans in whole Mercator pixels, the
@@ -1553,60 +1527,36 @@ pub fn drag(view: &mut ExactView, dx: i32, dy: i32) {
 /// picture does not move rigidly under any recentring; the centre that
 /// holds the middle's ground and the one that holds a pointer 400 px
 /// away lie 13.5 px apart there (measured 2026-11-14) — so every drag
-/// that HAS a pointer goes through [`drag_about_as`] instead; this entry
+/// that HAS a pointer goes through [`drag_about`] instead; this entry
 /// is for the pointer-less rest: the fling's coast, programmatic pans.
-pub fn drag_as(shape: Shape, view: &mut ExactView, dx: i32, dy: i32) {
-    match turns_as(shape, view) {
+pub fn drag(view: &mut ExactView, dx: i32, dy: i32) {
+    match turns(view) {
         Some(b) => view.centre = b.turned(f64::from(dx), f64::from(dy)),
         None => view.pan(dx, dy),
     }
 }
 
-/// [`drag_as`] with the pointer: `(x, y)` is where the finger or the
+/// [`drag`] with the pointer: `(x, y)` is where the finger or the
 /// cursor IS, after it moved by `(-dx, -dy)`, and the ground drawn under
 /// it before the move — at `(x + dx, y + dy)` — follows it there, held
 /// through the blend's own [`Blend::to_world`]/[`Blend::to_screen`] by
 /// the same damped walk a pinch holds its focus with (audit of 1818,
 /// condition 2). A blended picture moves rigidly under no recentring
-/// (see [`drag_as`]), so only the entry that knows the pointer can keep
-/// the ground under it; a pointer off the world falls back to
-/// [`drag_as`]. At `t = 1` it pans in whole pixels, as [`drag_as`].
+/// (see [`drag`]), so only the entry that knows the pointer can keep
+/// the ground under it; a pointer off the world falls back to [`drag`].
+/// At `t = 1` it pans in whole pixels, as [`drag`]. The pan is
+/// fractional: a blended frame's leftover encodes sub-pixel pans, and
+/// re-picking the held ground on a whole-pixel grid walked it half a
+/// pixel a frame (order 1833); at `t = 1` the pan rounds to whole
+/// pixels, as a name drawn again must be the same pixels ([`moved`]).
 pub fn drag_about(view: &mut ExactView, dx: f64, dy: f64, x: f64, y: f64) {
-    drag_about_as(crate::picture::world_shape(), view, dx, dy, x, y);
-}
-
-/// The ground drawn under the screen point `(x, y)` of `view`, through
-/// the blend's own inverse and refined to the world grid's floor
-/// (`held_refined`): the point a gesture holds. A caller that anchors
-/// on this ground (order 1833) must pick the SAME point the gesture
-/// maths holds — the raw inverse answers a few thousandths of a pixel
-/// away, and a pinch magnifies that seed by its whole zoom span.
-/// `None` off the world.
-pub fn ground_under_as(
-    shape: Shape,
-    view: &ExactView,
-    x: f64,
-    y: f64,
-) -> Option<leviculum_map::mercator::World> {
-    let (w, h) = view.size();
-    let b = Blend::new(shape, view.centre, view.zoom(), w, h);
-    let held = b.to_world(x, y)?;
-    Some(held_refined(&b, x, y, held))
-}
-
-/// [`drag_about`] for a world projection `shape`. The pan is fractional:
-/// a blended frame's leftover encodes sub-pixel pans, and re-picking the
-/// held ground on a whole-pixel grid walked it half a pixel a frame
-/// (order 1833); at `t = 1` the pan rounds to whole pixels, as a name
-/// drawn again must be the same pixels ([`moved`]).
-pub fn drag_about_as(shape: Shape, view: &mut ExactView, dx: f64, dy: f64, x: f64, y: f64) {
     #[allow(clippy::cast_possible_truncation)]
     let whole = (
         dx.round().clamp(-1e9, 1e9) as i32,
         dy.round().clamp(-1e9, 1e9) as i32,
     );
     let (w, h) = view.size();
-    let b = Blend::new(shape, view.centre, view.zoom(), w, h);
+    let b = Blend::new(view.centre, view.zoom(), w, h);
     if b.t() >= 1.0 {
         view.pan(whole.0, whole.1);
         // The fraction goes into the centre in world units: dropping it
@@ -1626,28 +1576,36 @@ pub fn drag_about_as(shape: Shape, view: &mut ExactView, dx: f64, dy: f64, x: f6
     }
     let held = b.to_world(x + dx, y + dy);
     let Some(held) = held else {
-        drag_as(shape, view, whole.0, whole.1);
+        drag(view, whole.0, whole.1);
         return;
     };
     let held = held_refined(&b, x + dx, y + dy, held);
     // Start where the finger-less drag lands, a pixel or a few from the
     // hold; the walk removes the rest.
-    drag_as(shape, view, whole.0, whole.1);
-    walk_held(shape, view, held, x, y);
+    drag(view, whole.0, whole.1);
+    walk_held(view, held, x, y);
 }
 
-/// Whether `view` is drawn blended (`t < 1`) under the product's world
-/// projection: there gesture maths must go through the blend
-/// ([`zoom_about`], [`drag`]), since Mercator's inverse is not the
-/// drawn picture's.
-pub fn blends(view: &ExactView) -> bool {
-    blends_as(crate::picture::world_shape(), view)
-}
-
-/// [`blends`] for a world projection `shape`.
-pub fn blends_as(shape: Shape, view: &ExactView) -> bool {
+/// The ground drawn under the screen point `(x, y)` of `view`, through
+/// the blend's own inverse and refined to the world grid's floor
+/// (`held_refined`): the point a gesture holds. A caller that anchors
+/// on this ground (order 1833) must pick the SAME point the gesture
+/// maths holds — the raw inverse answers a few thousandths of a pixel
+/// away, and a pinch magnifies that seed by its whole zoom span.
+/// `None` off the world.
+pub fn ground_under(view: &ExactView, x: f64, y: f64) -> Option<leviculum_map::mercator::World> {
     let (w, h) = view.size();
-    Blend::new(shape, view.centre, view.zoom(), w, h).t() < 1.0
+    let b = Blend::new(view.centre, view.zoom(), w, h);
+    let held = b.to_world(x, y)?;
+    Some(held_refined(&b, x, y, held))
+}
+
+/// Whether `view` is drawn blended (`t < 1`): there gesture maths must
+/// go through the blend ([`zoom_about`], [`drag`]), since Mercator's
+/// inverse is not the drawn picture's.
+pub fn blends(view: &ExactView) -> bool {
+    let (w, h) = view.size();
+    Blend::new(view.centre, view.zoom(), w, h).t() < 1.0
 }
 
 /// A held point's zoom walk stops within this of the asked pixel, and
@@ -1697,15 +1655,9 @@ fn held_refined(
     place(ux, uy)
 }
 
-/// `view` zoomed to `zoom_milli` about the screen point `(x, y)` through
-/// the product's world projection ([`zoom_about_as`]): the GEOGRAPHIC
-/// point drawn under `(x, y)` stays under it, as a pinch's fingers
-/// expect, in flat and in blended views alike.
-pub fn zoom_about(view: &mut ExactView, zoom_milli: u32, x: f64, y: f64) {
-    zoom_about_as(crate::picture::world_shape(), view, zoom_milli, x, y);
-}
-
-/// [`zoom_about`] for a world projection `shape`. Where both the old and
+/// `view` zoomed to `zoom_milli` about the screen point `(x, y)`: the
+/// GEOGRAPHIC point drawn under `(x, y)` stays under it, as a pinch's
+/// fingers expect, in flat and in blended views alike. Where both the old and
 /// the new view are Mercator exactly (`t = 1`) this is
 /// [`ExactView::zoom_about`], unchanged. In a blended view that rule
 /// kept the MERCATOR point of the focus — which is not the point DRAWN
@@ -1719,11 +1671,11 @@ pub fn zoom_about(view: &mut ExactView, zoom_milli: u32, x: f64, y: f64) {
 /// point lands under the fingers again, within `HELD_EPS_PX`. A focus
 /// off the world (off the globe's disk) zooms about the centre, which
 /// both mappings pin to the middle pixel.
-pub fn zoom_about_as(shape: Shape, view: &mut ExactView, zoom_milli: u32, x: f64, y: f64) {
+pub fn zoom_about(view: &mut ExactView, zoom_milli: u32, x: f64, y: f64) {
     let (w, h) = view.size();
-    let before = Blend::new(shape, view.centre, view.zoom(), w, h);
+    let before = Blend::new(view.centre, view.zoom(), w, h);
     let zoom = f64::from(zoom_milli) / f64::from(MILLI);
-    if before.t() >= 1.0 && Blend::new(shape, view.centre, zoom, w, h).t() >= 1.0 {
+    if before.t() >= 1.0 && Blend::new(view.centre, zoom, w, h).t() >= 1.0 {
         view.zoom_about(zoom_milli, x, y);
         return;
     }
@@ -1751,10 +1703,10 @@ pub fn zoom_about_as(shape: Shape, view: &mut ExactView, zoom_milli: u32, x: f64
     // stay small.
     // The scale change is the blends' own — their pixel unit carries the
     // globe's `cos φ₀^(1-t)` besides the zoom's power of two.
-    let k = before.unit() / Blend::new(shape, view.centre, zoom, w, h).unit();
+    let k = before.unit() / Blend::new(view.centre, zoom, w, h).unit();
     let (hx, hy) = before.to_screen(held);
     let (tx, ty) = (x + (hx - x) * k, y + (hy - y) * k);
-    walk_held(shape, view, held, tx, ty);
+    walk_held(view, held, tx, ty);
 }
 
 /// Turn `view` until the world point `held` is drawn at `(tx, ty)`,
@@ -1781,24 +1733,18 @@ pub fn zoom_about_as(shape: Shape, view: &mut ExactView, zoom_milli: u32, x: f64
 /// an event at 480 x 320 with the focus at nine tenths of the disk's
 /// radius (2026-11-14); the hold is exact again as soon as the centre
 /// leaves the edge.
-fn walk_held(
-    shape: Shape,
-    view: &mut ExactView,
-    held: leviculum_map::mercator::World,
-    tx: f64,
-    ty: f64,
-) {
+fn walk_held(view: &mut ExactView, held: leviculum_map::mercator::World, tx: f64, ty: f64) {
     let (w, h) = view.size();
     for _ in 0..HELD_STEPS {
-        let b = Blend::new(shape, view.centre, view.zoom(), w, h);
+        let b = Blend::new(view.centre, view.zoom(), w, h);
         let (px, py) = b.to_screen(held);
         let (ex, ey) = (px - tx, py - ty);
         if ex.abs() < HELD_EPS_PX && ey.abs() < HELD_EPS_PX {
             break;
         }
         let step = 1.0;
-        let east = Blend::new(shape, b.turned(step, 0.0), view.zoom(), w, h);
-        let south = Blend::new(shape, b.turned(0.0, step), view.zoom(), w, h);
+        let east = Blend::new(b.turned(step, 0.0), view.zoom(), w, h);
+        let south = Blend::new(b.turned(0.0, step), view.zoom(), w, h);
         let (qx, qy) = east.to_screen(held);
         let (rx, ry) = south.to_screen(held);
         let (j11, j21) = ((qx - px) / step, (qy - py) / step);
@@ -1819,7 +1765,7 @@ fn walk_held(
         let mut stepped = false;
         for _ in 0..8 {
             let centre = b.turned(-dx, -dy);
-            let c = Blend::new(shape, centre, view.zoom(), w, h);
+            let c = Blend::new(centre, view.zoom(), w, h);
             let (nx, ny) = c.to_screen(held);
             if (nx - tx).hypot(ny - ty) < err {
                 view.centre = centre;
@@ -1860,23 +1806,17 @@ pub fn moved(rest: &ExactView, now: &ExactView, c: (f64, f64)) -> (f64, f64) {
 /// Where the frame `drawn` lands on the screen's view `screen`, which
 /// may have moved since it was asked for: its top left corner in the
 /// screen's pixels, and how many screen pixels one of its pixels is. A
-/// frontend shows the last frame there until the next one lands.
-/// Through the product's world projection ([`onto_as`]).
-pub fn onto(drawn: &ExactView, screen: &ExactView) -> (f64, f64, f64) {
-    onto_as(crate::picture::world_shape(), drawn, screen)
-}
-
-/// [`onto`] for a world projection `shape`. At the zooms a drag turns
-/// the globe ([`turns_as`]) the frame is never translated (1799, the
+/// frontend shows the last frame there until the next one lands. At the
+/// zooms a drag turns the globe ([`turns`]) the frame is never translated (1799, the
 /// wobble P0): a drag is a rotation about the disk's fixed centre, so
 /// the frame on screen stays placed centre on centre — scaled about it
 /// while a zoom glides — until the frame drawn for the turned view
 /// replaces it. Translating it by the centres' Mercator offset, the
 /// flat map's placement, moved the disk with the pointer and snapped it
 /// back on the next frame.
-pub fn onto_as(shape: Shape, drawn: &ExactView, screen: &ExactView) -> (f64, f64, f64) {
+pub fn onto(drawn: &ExactView, screen: &ExactView) -> (f64, f64, f64) {
     let k = screen.scale_at(0) / drawn.scale_at(0);
-    if turns_as(shape, drawn).is_some() || turns_as(shape, screen).is_some() {
+    if turns(drawn).is_some() || turns(screen).is_some() {
         let (w, h) = drawn.size();
         let (sw, sh) = screen.size();
         return (
@@ -1900,34 +1840,30 @@ mod tests {
     /// A globe view is held at the zoom bounds but not pinned to the
     /// equator (1762): `one_world` pins a world view on a screen taller
     /// than Mercator's world to its middle row, so on the phone in
-    /// portrait the globe could never turn north or south; Equal Earth
-    /// and the flat map keep that rule.
+    /// portrait the globe could never turn north or south.
     #[test]
-    fn the_hold_lets_a_globe_turn_north_and_keeps_the_flat_rule() {
-        use leviculum_map::blend::Shape;
+    fn the_hold_lets_a_globe_turn_north() {
         let at = project(LatLon::from_degrees(60.0, 10.0));
         let view = ExactView::new(at, 2300, 1224, 2100);
-        let globe = hold_as(Shape::Globe, view, 0, 18);
+        let globe = hold(view, 0, 18);
         assert_eq!(globe.centre, at, "the globe stays turned to 60 N");
-        let flat = hold_as(Shape::EqualEarth, view, 0, 18);
-        assert_eq!(flat.centre.y, 1 << 31, "Equal Earth keeps the middle row");
-        // From the Mercator end on the globe is held as the flat map.
+        // The control: `one_world` alone pins the same view to the
+        // middle row, which is what the hold must not do on the globe.
+        assert_eq!(view.one_world().centre.y, 1 << 31, "one_world pins");
+        // From the Mercator end on the view is held as the flat map.
         let deep = ExactView::new(at, 6000, 1224, 2100);
-        assert_eq!(
-            hold_as(Shape::Globe, deep, 0, 18),
-            hold_as(Shape::EqualEarth, deep, 0, 18)
-        );
+        assert_eq!(hold(deep, 0, 18), deep.one_world());
     }
 
     /// The world at its smallest fills the view (1796): held from any zoom
     /// out, the globe's disk is the shorter side across (the width in
-    /// portrait, to two pixels) and drawn as the globe itself, `t` zero;
-    /// Equal Earth's equator spans at least the view's width. Phones of
+    /// portrait, to two pixels) and drawn as the globe itself, `t` zero.
+    /// Phones of
     /// 360 x 800 dp at four densities, both orientations, and the window;
     /// one more step out holds to the same view.
     #[test]
     fn the_hold_keeps_the_smallest_world_as_wide_as_the_view() {
-        use leviculum_map::blend::{Blend, Shape};
+        use leviculum_map::blend::Blend;
         let at = project(LatLon::from_degrees(43.77, 11.26));
         let mut screens = vec![(1224, 2197), (2197, 1224), (1280, 800), (990, 2200)];
         for density in [1000u32, 2000, 2750, 3000] {
@@ -1936,34 +1872,21 @@ mod tests {
             screens.push((h, w));
         }
         for (w, h) in screens {
-            for shape in [Shape::Globe, Shape::EqualEarth] {
-                let held = hold_as(shape, ExactView::new(at, 0, w, h), 0, 18);
-                let blend = Blend::new(shape, held.centre, held.zoom(), w, h);
-                let pi = core::f64::consts::PI;
-                match shape {
-                    Shape::Globe => {
-                        let across = 2.0 * blend.radius();
-                        let side = f64::from(w.min(h));
-                        assert_eq!(blend.t(), 0.0, "{w}x{h}: the globe itself");
-                        assert!(across >= side - 0.5, "{w}x{h}: disk {across:.1}");
-                        if w < h {
-                            assert!(across <= side + 2.0, "{w}x{h}: disk {across:.1}");
-                        }
-                    }
-                    Shape::EqualEarth => {
-                        let west = blend.to_screen_angles(-pi, 0.0).0;
-                        let east = blend.to_screen_angles(pi, 0.0).0;
-                        let across = east - west;
-                        assert!(across >= f64::from(w) - 0.5, "{w}x{h}: world {across:.1}");
-                    }
-                }
-                let further = ExactView::new(held.centre, held.zoom_milli() - 1000, w, h);
-                assert_eq!(
-                    hold_as(shape, further, 0, 18),
-                    held,
-                    "{w}x{h} {shape:?}: a step further out changes nothing"
-                );
+            let held = hold(ExactView::new(at, 0, w, h), 0, 18);
+            let blend = Blend::new(held.centre, held.zoom(), w, h);
+            let across = 2.0 * blend.radius();
+            let side = f64::from(w.min(h));
+            assert_eq!(blend.t(), 0.0, "{w}x{h}: the globe itself");
+            assert!(across >= side - 0.5, "{w}x{h}: disk {across:.1}");
+            if w < h {
+                assert!(across <= side + 2.0, "{w}x{h}: disk {across:.1}");
             }
+            let further = ExactView::new(held.centre, held.zoom_milli() - 1000, w, h);
+            assert_eq!(
+                hold(further, 0, 18),
+                held,
+                "{w}x{h}: a step further out changes nothing"
+            );
         }
     }
 
@@ -1979,15 +1902,14 @@ mod tests {
     /// its exact pan placement.
     #[test]
     fn a_turning_globes_frame_stays_in_place() {
-        use leviculum_map::blend::Shape;
         let at = project(LatLon::from_degrees(50.0, 10.0));
         let (w, h) = (1860u32, 1024u32);
-        let zoom = floor_milli_as(Shape::Globe, w, h, 0);
+        let zoom = floor_milli(w, h, 0);
         let drawn = ExactView::new(at, zoom, w, h);
         let mut view = drawn;
         for step in 0..30 {
-            drag_as(Shape::Globe, &mut view, 7, -3);
-            let (x, y, k) = onto_as(Shape::Globe, &drawn, &view);
+            drag(&mut view, 7, -3);
+            let (x, y, k) = onto(&drawn, &view);
             assert!(
                 x.abs() < 1e-9 && y.abs() < 1e-9 && (k - 1.0).abs() < 1e-9,
                 "step {step}: the frame moved to ({x}, {y}, {k})"
@@ -1996,8 +1918,8 @@ mod tests {
         // The control: on the flat map the frame pans with the view.
         let flat = ExactView::new(at, 12_000, w, h);
         let mut moved = flat;
-        drag_as(Shape::Globe, &mut moved, 40, 0);
-        let (x, _, k) = onto_as(Shape::Globe, &flat, &moved);
+        drag(&mut moved, 40, 0);
+        let (x, _, k) = onto(&flat, &moved);
         assert!((x + 40.0).abs() < 1e-9 && (k - 1.0).abs() < 1e-9, "{x} {k}");
     }
 
@@ -2006,11 +1928,11 @@ mod tests {
     /// maybe 1000 km away. I wanted to zoom in on Morocco and was in
     /// Spain." `ExactView::zoom_about` keeps the MERCATOR point of the
     /// focus, which in a blended frame is not the point drawn there, and
-    /// a continuous pinch drifted a little every step. [`zoom_about_as`]
+    /// a continuous pinch drifted a little every step. [`zoom_about`]
     /// holds the GEOGRAPHIC point of the blend instead: a pinch ladder
     /// from the world floor to z12 and back, centred and off-centre, on
     /// the phone's frame, keeps the ground under the focus within 2 px
-    /// in every frame, for the globe and Equal Earth both; a centred
+    /// in every frame; a centred
     /// zoom leaves the centre's ground on the middle pixel; and zooming
     /// back out returns to the view it started from.
     #[test]
@@ -2024,58 +1946,56 @@ mod tests {
             (-60.0, 0.0),   // 60 S
             (10.0, 179.95), // near the antimeridian
         ];
-        for shape in [Shape::Globe, Shape::EqualEarth] {
-            for (lat, lon) in places {
-                for focus in [(f64::from(w) / 2.0, f64::from(h) / 2.0), (500.0, 980.0)] {
-                    let at = project(LatLon::from_degrees(lat, lon));
-                    let start = floor_milli_as(shape, w, h, 0).max(2_000);
-                    let mut view = ExactView::new(at, start, w, h);
-                    let b0 = Blend::new(shape, view.centre, view.zoom(), w, h);
-                    let held = b0.to_world(focus.0, focus.1).expect("on the world");
-                    // The anchor refined to the grid's floor, and
-                    // measured against the pixel it is DRAWN at (an
-                    // exact forward projection): the inverse's
-                    // thirty-second of a pixel, taken as a ground
-                    // anchor at the world floor, is itself magnified
-                    // by the ladder's whole scale into a false
-                    // two-pixel "drift" at z12.
-                    let held = held_refined(&b0, focus.0, focus.1, held);
-                    let p0 = b0.to_screen(held);
-                    let centred = focus.0 == f64::from(w) / 2.0;
-                    let mut zooms: Vec<u32> = (1..)
-                        .map(|i| start + i * 55)
-                        .take_while(|&z| z < 12_000)
-                        .chain([12_000])
-                        .collect();
-                    let back: Vec<u32> = zooms.iter().rev().skip(1).copied().collect();
-                    zooms.extend(back);
-                    zooms.push(start);
-                    for z in zooms {
-                        zoom_about_as(shape, &mut view, z, focus.0, focus.1);
-                        let b = Blend::new(shape, view.centre, view.zoom(), w, h);
-                        let (px, py) = b.to_screen(held);
-                        let off = libm::hypot(px - p0.0, py - p0.1);
-                        let cap = if centred { 0.1 } else { 2.0 };
-                        if std::env::var("DRIFT_PROBE").is_ok() {
-                            eprintln!("DRIFT {shape:?} {lat},{lon} {focus:?} z{z} off={off:.4}");
-                            continue;
-                        }
-                        assert!(
-                            off <= cap,
-                            "{shape:?} {lat},{lon} focus {focus:?} z{z}: \
-                             the ground under the focus moved {off:.2} px"
-                        );
+        for (lat, lon) in places {
+            for focus in [(f64::from(w) / 2.0, f64::from(h) / 2.0), (500.0, 980.0)] {
+                let at = project(LatLon::from_degrees(lat, lon));
+                let start = floor_milli(w, h, 0).max(2_000);
+                let mut view = ExactView::new(at, start, w, h);
+                let b0 = Blend::new(view.centre, view.zoom(), w, h);
+                let held = b0.to_world(focus.0, focus.1).expect("on the world");
+                // The anchor refined to the grid's floor, and
+                // measured against the pixel it is DRAWN at (an
+                // exact forward projection): the inverse's
+                // thirty-second of a pixel, taken as a ground
+                // anchor at the world floor, is itself magnified
+                // by the ladder's whole scale into a false
+                // two-pixel "drift" at z12.
+                let held = held_refined(&b0, focus.0, focus.1, held);
+                let p0 = b0.to_screen(held);
+                let centred = focus.0 == f64::from(w) / 2.0;
+                let mut zooms: Vec<u32> = (1..)
+                    .map(|i| start + i * 55)
+                    .take_while(|&z| z < 12_000)
+                    .chain([12_000])
+                    .collect();
+                let back: Vec<u32> = zooms.iter().rev().skip(1).copied().collect();
+                zooms.extend(back);
+                zooms.push(start);
+                for z in zooms {
+                    zoom_about(&mut view, z, focus.0, focus.1);
+                    let b = Blend::new(view.centre, view.zoom(), w, h);
+                    let (px, py) = b.to_screen(held);
+                    let off = libm::hypot(px - p0.0, py - p0.1);
+                    let cap = if centred { 0.1 } else { 2.0 };
+                    if std::env::var("DRIFT_PROBE").is_ok() {
+                        eprintln!("DRIFT {lat},{lon} {focus:?} z{z} off={off:.4}");
+                        continue;
                     }
-                    assert_eq!(view.zoom_milli(), start, "back where it began");
-                    let b = Blend::new(shape, view.centre, view.zoom(), w, h);
-                    let (cx, cy) = b.to_screen(at);
-                    let dist = libm::hypot(cx - f64::from(w) / 2.0, cy - f64::from(h) / 2.0);
                     assert!(
-                        dist <= 2.0,
-                        "{shape:?} {lat},{lon} focus {focus:?}: \
-                         out again, the start centre is {dist:.2} px off the middle"
+                        off <= cap,
+                        "{lat},{lon} focus {focus:?} z{z}: \
+                         the ground under the focus moved {off:.2} px"
                     );
                 }
+                assert_eq!(view.zoom_milli(), start, "back where it began");
+                let b = Blend::new(view.centre, view.zoom(), w, h);
+                let (cx, cy) = b.to_screen(at);
+                let dist = libm::hypot(cx - f64::from(w) / 2.0, cy - f64::from(h) / 2.0);
+                assert!(
+                    dist <= 2.0,
+                    "{lat},{lon} focus {focus:?}: \
+                     out again, the start centre is {dist:.2} px off the middle"
+                );
             }
         }
     }
@@ -2084,18 +2004,18 @@ mod tests {
     /// flat map pans, both in [`ExactView::pan`]'s sense (1762).
     #[test]
     fn a_drag_turns_a_globe_and_pans_the_flat_map() {
-        use leviculum_map::blend::{Blend, Shape};
+        use leviculum_map::blend::Blend;
         let at = project(LatLon::from_degrees(0.0, 0.0));
         let mut view = ExactView::new(at, 2000, 1224, 2100);
-        let r = Blend::new(Shape::Globe, at, 2.0, 1224, 2100).radius();
-        drag_as(Shape::Globe, &mut view, 0, -(r * 1.2) as i32);
+        let r = Blend::new(at, 2.0, 1224, 2100).radius();
+        drag(&mut view, 0, -(r * 1.2) as i32);
         let lat = f64::from(leviculum_map::mercator::unproject(view.centre).lat_e7) * 1e-7;
         // 1.2 rad of arc north: 68.75 degrees, where a Mercator pan of the
         // same pixels reaches 56.9.
         assert!((lat - 68.75).abs() < 0.2, "turned to {lat}");
-        let mut flat = ExactView::new(at, 2000, 1224, 2100);
+        let mut flat = ExactView::new(at, 12_000, 1224, 2100);
         let mut panned = flat;
-        drag_as(Shape::EqualEarth, &mut flat, 30, -40);
+        drag(&mut flat, 30, -40);
         panned.pan(30, -40);
         assert_eq!(flat, panned);
     }
@@ -2105,16 +2025,13 @@ mod tests {
     /// frame's positions — and only the lift placed them again. Every
     /// moving frame of a curved view re-projects each carried name's
     /// anchor through the frame's own blend: a drawn name sits within
-    /// two pixels of the current projection of its ground. The product
-    /// shape of the test build is Equal Earth; the path under test is
-    /// the one blend path both shapes share.
+    /// two pixels of the current projection of its ground.
     #[test]
     fn a_moving_curved_frames_names_sit_on_their_ground() {
         use leviculum_map::blend::Blend;
-        let shape = crate::picture::world_shape();
         let centre = project(LatLon::from_degrees(30.0, 10.0));
         let (w, h) = (1000u32, 700u32);
-        let zoom = floor_milli_as(shape, w, h, 0);
+        let zoom = floor_milli(w, h, 0);
         let view = ExactView::new(centre, zoom, w, h);
         let mut frames = florence();
         frames.frame(&ask(view, false, 1.0, MapTheme::Light));
@@ -2124,12 +2041,12 @@ mod tests {
         // screen's own t: names report in the frame's pixels.
         let (fw, fh) = (w + 2 * (w / 4), h + 2 * (h / 4));
         let framed = |v: &ExactView| {
-            let t = Blend::new(shape, v.centre, v.zoom(), w, h).t();
-            Blend::with_t(shape, v.centre, v.zoom(), fw, fh, t)
+            let t = Blend::new(v.centre, v.zoom(), w, h).t();
+            Blend::with_t(v.centre, v.zoom(), fw, fh, t)
         };
         let before = framed(&view);
         let mut moved_view = view;
-        drag_as(shape, &mut moved_view, 300, 100);
+        drag(&mut moved_view, 300, 100);
         frames.frame(&ask(moved_view, true, 1.0, MapTheme::Light));
         let shown = frames.drawn_names();
         let now = framed(&moved_view);
@@ -2161,7 +2078,7 @@ mod tests {
         );
     }
 
-    /// Order 1818 condition 1, on the globe build itself: a drag at the
+    /// Order 1818 condition 1, on the globe: a drag at the
     /// globe minimum on the phone's frame, 24 steps, and after every
     /// step each shown name sits within a pixel of its ground projected
     /// through that frame's blend, its ground faces the viewer, and
@@ -2169,15 +2086,12 @@ mod tests {
     /// enough that rest names' grounds go behind the limb, so the
     /// far-side and limb-box drops both run: the control asserts a
     /// non-facing ground occurs, and that no name is drawn for one.
-    #[cfg(feature = "globe-world")]
     #[test]
     fn a_globe_drag_keeps_every_name_on_its_ground_and_inside_the_disk() {
         use leviculum_map::blend::Blend;
-        let shape = crate::picture::world_shape();
-        assert_eq!(shape, Shape::Globe, "the globe build");
         let (w, h) = (1224u32, 2197u32);
         let centre = project(LatLon::from_degrees(32.0, -6.0));
-        let zoom = floor_milli_as(shape, w, h, 0);
+        let zoom = floor_milli(w, h, 0);
         let mut view = ExactView::new(centre, zoom, w, h);
         // A globe the fingers turn is asked with no margins, as the
         // phone asks it (map.rs, 1796).
@@ -2189,7 +2103,7 @@ mod tests {
         frames.frame(&bare(view, false));
         let rest = frames.drawn_names();
         assert!(rest.len() > 5, "{} names at rest", rest.len());
-        let rest_blend = Blend::new(shape, view.centre, view.zoom(), w, h);
+        let rest_blend = Blend::new(view.centre, view.zoom(), w, h);
         let grounds: HashMap<String, _> = rest
             .iter()
             .filter_map(|n| Some((n.text.clone(), rest_blend.to_world(n.at.0, n.at.1)?)))
@@ -2197,9 +2111,9 @@ mod tests {
         let mut judged = 0usize;
         let mut gone_behind = 0usize;
         for step in 0..24 {
-            drag_as(shape, &mut view, 37, -23);
+            drag(&mut view, 37, -23);
             frames.frame(&bare(view, true));
-            let b = Blend::new(shape, view.centre, view.zoom(), w, h);
+            let b = Blend::new(view.centre, view.zoom(), w, h);
             let (cx, cy) = (f64::from(w) / 2.0, f64::from(h) / 2.0);
             let r = b.radius();
             let shown = frames.drawn_names();
@@ -2323,6 +2237,40 @@ mod tests {
         });
         assert!(near(&later.rgba) > 2000);
         assert!(frames.names().iter().any(|n| n == "14:01"));
+    }
+
+    /// The time zone view on the globe (order 1809): it needs the whole
+    /// world at once, and the globe shows one hemisphere. Turned to
+    /// Europe at the globe's floor, the zones there carry their clocks
+    /// (Paris 14:00 and India 17:30 at noon UTC) and Hawaii's UTC-10
+    /// (02:00), behind the limb, carries none; turned to the Pacific,
+    /// Hawaii's clock is there and India's is gone. (14:00 is no witness
+    /// there: the ocean zones run from pole to pole, and UTC+2's polar
+    /// end faces the Pacific view.) Nothing turns the view by itself; a
+    /// drag shows the other side.
+    #[test]
+    fn the_time_zone_view_shows_the_hemisphere_the_globe_is_turned_to() {
+        let (w, h) = (1000u32, 700u32);
+        let zoom = floor_milli(w, h, 0);
+        // 2026-07-01T12:00:00Z.
+        let noon = 1_782_907_200;
+        let clocks_at = |lat: f64, lon: f64| {
+            let view = ExactView::new(project(LatLon::from_degrees(lat, lon)), zoom, w, h);
+            assert!(turns(&view).is_some(), "{lat},{lon}: the globe");
+            let mut frames = florence();
+            frames.frame(&Ask {
+                time_zones: Some(noon),
+                ..ask(view, false, 1.0, MapTheme::Light)
+            });
+            frames.names()
+        };
+        let europe = clocks_at(45.0, 10.0);
+        assert!(europe.iter().any(|n| n == "14:00"), "{europe:?}");
+        assert!(europe.iter().any(|n| n == "17:30"), "{europe:?}");
+        assert!(!europe.iter().any(|n| n == "02:00"), "{europe:?}");
+        let pacific = clocks_at(20.0, -160.0);
+        assert!(pacific.iter().any(|n| n == "02:00"), "{pacific:?}");
+        assert!(!pacific.iter().any(|n| n == "17:30"), "{pacific:?}");
     }
 
     fn is_clock(name: &str) -> bool {
@@ -2783,12 +2731,12 @@ mod tests {
     }
 
     /// A drag in a blended view keeps the DRAWN ground under the finger
-    /// (audit of 1818, condition 2): `drag_as` panned Equal Earth's blend
-    /// in Mercator pixels, which the blend bends, so the ground slid
-    /// against the finger (9.7 px at 32 N 6 W z3.5). The auditors' test,
-    /// with one change: it drives `drag_about_as`, the entry that knows
-    /// the finger, where the auditors' text drove the finger-less
-    /// `drag_as`. As written it cannot pass: a blended picture moves
+    /// (audit of 1818, condition 2): the finger-less `drag` panned a
+    /// blend in Mercator pixels, which the blend bends, so the ground slid
+    /// against the finger (9.7 px at 32 N 6 W z3.5, measured on Equal
+    /// Earth before 1809 dropped it). The auditors' test, with one change:
+    /// it drives `drag_about`, the entry that knows the finger, where the
+    /// auditors' text drove the finger-less `drag`. As written it cannot pass: a blended picture moves
     /// rigidly under NO recentring — the centre that holds the middle's
     /// ground and the centre that holds this test's finger exactly lie
     /// 13.5 px apart at 32 N z3.5 `t = 0.1` (measured 2026-11-14;
@@ -2800,40 +2748,37 @@ mod tests {
         use leviculum_map::blend::Blend;
         let (w, h) = (1224u32, 2197u32);
         let mut judged = 0usize;
-        for shape in [Shape::Globe, Shape::EqualEarth] {
-            for (lat, lon) in [(32.0, -6.0), (51.0, 10.0), (-60.0, 0.0)] {
-                let at = project(LatLon::from_degrees(lat, lon));
-                for zm in (2_000u32..=12_000).step_by(250) {
-                    let mut view = ExactView::new(at, zm, w, h);
-                    let b0 = Blend::new(shape, view.centre, view.zoom(), w, h);
-                    if !(b0.t() > 0.0 && b0.t() < 1.0) {
-                        continue;
-                    }
-                    // A finger off the centre moves (+20, +12); the content
-                    // follows it, which is a pan of (-20, -12) in pan's sense.
-                    let (fx, fy) = (400.0f64, 700.0f64);
-                    let (mx, my) = (20i32, 12i32);
-                    let Some(ground) = b0.to_world(fx, fy) else {
-                        continue;
-                    };
-                    drag_about_as(
-                        shape,
-                        &mut view,
-                        f64::from(-mx),
-                        f64::from(-my),
-                        fx + f64::from(mx),
-                        fy + f64::from(my),
-                    );
-                    let b1 = Blend::new(shape, view.centre, view.zoom(), w, h);
-                    let (px, py) = b1.to_screen(ground);
-                    let off = (px - (fx + f64::from(mx))).hypot(py - (fy + f64::from(my)));
-                    assert!(
-                        off <= 2.0,
-                        "{shape:?} {lat},{lon} z{zm} t={:.2}: the ground under the finger is {off:.1} px from it",
-                        b0.t()
-                    );
-                    judged += 1;
+        for (lat, lon) in [(32.0, -6.0), (51.0, 10.0), (-60.0, 0.0)] {
+            let at = project(LatLon::from_degrees(lat, lon));
+            for zm in (2_000u32..=12_000).step_by(250) {
+                let mut view = ExactView::new(at, zm, w, h);
+                let b0 = Blend::new(view.centre, view.zoom(), w, h);
+                if !(b0.t() > 0.0 && b0.t() < 1.0) {
+                    continue;
                 }
+                // A finger off the centre moves (+20, +12); the content
+                // follows it, which is a pan of (-20, -12) in pan's sense.
+                let (fx, fy) = (400.0f64, 700.0f64);
+                let (mx, my) = (20i32, 12i32);
+                let Some(ground) = b0.to_world(fx, fy) else {
+                    continue;
+                };
+                drag_about(
+                    &mut view,
+                    f64::from(-mx),
+                    f64::from(-my),
+                    fx + f64::from(mx),
+                    fy + f64::from(my),
+                );
+                let b1 = Blend::new(view.centre, view.zoom(), w, h);
+                let (px, py) = b1.to_screen(ground);
+                let off = (px - (fx + f64::from(mx))).hypot(py - (fy + f64::from(my)));
+                assert!(
+                    off <= 2.0,
+                    "{lat},{lon} z{zm} t={:.2}: the ground under the finger is {off:.1} px from it",
+                    b0.t()
+                );
+                judged += 1;
             }
         }
         assert!(judged > 10, "only {judged} blended views judged");

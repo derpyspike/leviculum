@@ -902,9 +902,9 @@ fn the_phone_never_shows_the_world_twice() {
         ..MapRequest::default()
     };
     let (shown, rgba) = frame(&loquax_android::map::render(&ask, Some(Vec::new()), now()));
-    // The floor is the shape's own (order 1833): Equal Earth's world
-    // fills this width at z3, the globe's disk its width a bit deeper;
-    // either way the view never sits below it and never tiles.
+    // The floor is the globe's own (order 1833): its disk fills this
+    // width a bit deeper than z3; the view never sits below it and never
+    // tiles.
     assert!(
         shown.zoom_milli >= shown.min_zoom_milli && shown.zoom_milli < shown.min_zoom_milli + 1000,
         "asked z0, got z{} with the floor at {}",
@@ -1836,11 +1836,11 @@ fn the_world_view_is_a_map_and_shows_no_chip() {
 /// is not drawn at all.
 #[test]
 fn marks_project_through_the_blend_of_the_frame() {
-    use leviculum_map::blend::{Blend, Shape};
+    use leviculum_map::blend::Blend;
     let view_at = project(LatLon::from_degrees(50.0, 0.0));
     let (w, h) = (480u32, 320u32);
     let shows = leviculum_map::viewport::ExactView::new(view_at, 2000, w, h);
-    let blend = Blend::with_t(Shape::Globe, view_at, 2.0, w, h, 0.0);
+    let blend = Blend::with_t(view_at, 2.0, w, h, 0.0);
     let london = pin(7, "lew", 51.5, -0.1);
     let far = pin(8, "far", -45.0, 179.0);
     let pins = vec![london.clone(), far];
@@ -3851,10 +3851,8 @@ fn the_phone_load_walk_holds_its_rules() {
 fn a_pinch_through_the_handover_keeps_the_place_under_the_focus() {
     use leviculum_map::blend::Blend;
     let home = home();
-    // Morocco, as on Lew's phone. Shape-agnostic (audit of 1818,
-    // condition 10): under the default build the world is Equal Earth,
-    // under `loquax/globe-world` the globe; the pinch must keep the
-    // place through either blend, so this runs in both builds' gates.
+    // Morocco, as on Lew's phone (audit of 1818, condition 10): the
+    // pinch must keep the place through the globe's blend.
     let at = project(LatLon::from_degrees(32.0, -6.0));
     let focus = (120.0, 80.0);
     let mut ask = MapRequest {
@@ -3866,11 +3864,9 @@ fn a_pinch_through_the_handover_keeps_the_place_under_the_focus() {
         about_y: focus.1 as i32,
         ..request(home.path(), false)
     };
-    let shape = loquax::picture::world_shape();
     let (first, _) = frame(&loquax_android::map::render(&ask, Some(Vec::new()), now()));
     let blend = |s: &MapShown| {
         Blend::new(
-            shape,
             World { x: s.x, y: s.y },
             f64::from(s.zoom_milli) / 1000.0,
             W,
@@ -3979,9 +3975,8 @@ fn a_pinch_out_over_open_sea_brings_the_world_back() {
 /// The globe pinch's place-hold near the limb (audit of 1818, condition
 /// 1): a pinch from the floor to z11+ with the focus off-centre keeps
 /// the ground under the focus within 1 px per event, at places that put
-/// the focus near the disk's edge. The auditors' test; it judges the
-/// product's world shape, so the globe build
-/// (`--features loquax/globe-world`) is the one this condition names.
+/// the focus near the disk's edge. The auditors' test, on the globe, the
+/// only world view since 1809.
 /// One stated exception, as the condition allows: at 51 N the ground
 /// under the focus lies at Mercator's edge latitude, the hold pulls the
 /// view's centre onto that edge, and `Blend::turned`'s never-flip clamp
@@ -3992,12 +3987,10 @@ fn a_pinch_out_over_open_sea_brings_the_world_back() {
 #[test]
 fn a_globe_pinch_through_the_whole_handover_keeps_the_place_every_step() {
     use leviculum_map::blend::Blend;
-    let shape = loquax::picture::world_shape();
     let home = home();
     let focus = (120.0f64, 80.0f64);
     let blend = |s: &MapShown| {
         Blend::new(
-            shape,
             World { x: s.x, y: s.y },
             f64::from(s.zoom_milli) / 1000.0,
             W,
@@ -4117,10 +4110,8 @@ fn a_phone_pinch_as_java_sends_it_keeps_the_place() {
         shown
     };
     use leviculum_map::blend::Blend;
-    let shape = loquax::picture::world_shape();
     let blend = |s: &MapShown| {
         Blend::new(
-            shape,
             World { x: s.x, y: s.y },
             f64::from(s.zoom_milli) / 1000.0,
             W,
@@ -4135,8 +4126,7 @@ fn a_phone_pinch_as_java_sends_it_keeps_the_place() {
     // else.)
     let fx = first.own_x.expect("the dot is drawn") as f64;
     let fy = first.own_y.expect("the dot is drawn") as f64;
-    let ground = loquax::mapframe::ground_under_as(
-        shape,
+    let ground = loquax::mapframe::ground_under(
         &ExactView::new(
             World {
                 x: first.x,
@@ -4161,10 +4151,7 @@ fn a_phone_pinch_as_java_sends_it_keeps_the_place() {
                 shown.zoom_milli
             );
         };
-    let asks_again = match shape == leviculum_map::blend::Shape::Globe {
-        true => 2,
-        false => 0,
-    };
+    let asks_again = 2;
     // Four slow pinches in, fingers 60 to 540 px over 3 s each: 180
     // detector events a gesture, a frame landing every fifth event.
     let per_event = (540f64 / 60.0).powf(1.0 / 180.0);
@@ -4177,8 +4164,8 @@ fn a_phone_pinch_as_java_sends_it_keeps_the_place() {
                 // A pending answer asks again at once, with no new event
                 // (MapView.drawFrames): the zoom's remainder of scale must
                 // not walk the ground (order 1840, the emulator's logcat).
-                // On the globe build: Equal Earth, removed by order 1809,
-                // ends 1.0x px off at rest at z14.68 with them.
+                // On the globe; Equal Earth, removed by order 1809,
+                // ended 1.0x px off at rest at z14.68 with them.
                 for _ in 0..asks_again {
                     let shown = render(&mut java, true, false);
                     judge(&java, &shown, 2.0, "slow in, asked again");
@@ -4238,15 +4225,8 @@ fn device_pinch(
     // The emulator's map view and density (lev-apk's `levapk-phone`).
     const DW: u32 = 1224;
     const DH: u32 = 2194;
-    let shape = loquax::picture::world_shape();
-    if shape != leviculum_map::blend::Shape::Globe {
-        // The emulator's APK is the globe build; Equal Earth is removed
-        // by order 1809.
-        return;
-    }
     let blend = |s: &MapShown| {
         Blend::new(
-            shape,
             World { x: s.x, y: s.y },
             f64::from(s.zoom_milli) / 1000.0,
             DW,
@@ -4297,16 +4277,14 @@ fn device_pinch(
         };
         let mut centre = own;
         for _ in 0..60 {
-            let (ox, oy) =
-                Blend::new(shape, centre, f64::from(floor) / 1000.0, DW, DH).to_screen(own);
+            let (ox, oy) = Blend::new(centre, f64::from(floor) / 1000.0, DW, DH).to_screen(own);
             let (ex, ey) = (dot.0 - ox, dot.1 - oy);
             if ex.hypot(ey) < 0.01 {
                 break;
             }
             // Half the error a step, less where that leaves the world.
             let Some(next) = [0.5, 0.25, 0.1].into_iter().find_map(|f| {
-                loquax::mapframe::ground_under_as(
-                    shape,
+                loquax::mapframe::ground_under(
                     &ExactView::new(centre, floor, DW, DH),
                     f64::from(DW) / 2.0 - f * ex,
                     f64::from(DH) / 2.0 - f * ey,
@@ -4333,8 +4311,7 @@ fn device_pinch(
             "{lat},{lon}: the dot at ({ox}, {oy}) is too near the centre to tell a pinch about it from one about the centre"
         );
         let (fx, fy) = (ox + frac.0, oy + frac.1);
-        let ground = loquax::mapframe::ground_under_as(
-            shape,
+        let ground = loquax::mapframe::ground_under(
             &ExactView::new(
                 World {
                     x: first.x,
@@ -4462,16 +4439,11 @@ fn a_pinch_whose_focus_lies_between_pixels_keeps_the_place() {
 
 /// The first auditor's test of order 1833's round 2 (finding 3): the own
 /// dot through the frame's own blend, view centred 150 px and more away.
-/// Equal Earth is removed by order 1809; this judges the globe build.
+/// On the globe, the only world view since order 1809.
 #[test]
 fn the_own_dot_sits_on_its_ground_in_every_blended_frame() {
     use leviculum_map::blend::Blend;
     let home = home();
-    let shape = loquax::picture::world_shape();
-    if shape != leviculum_map::blend::Shape::Globe {
-        // Equal Earth is removed by order 1809.
-        return;
-    }
     let at = project(LatLon::from_degrees(32.0, -6.0));
     let mut judged = 0usize;
     let mut blended = 0usize;
@@ -4482,8 +4454,7 @@ fn the_own_dot_sits_on_its_ground_in_every_blended_frame() {
         let centre = [(160.0, 0.0), (113.0, 113.0)]
             .into_iter()
             .find_map(|(dx, dy)| {
-                loquax::mapframe::ground_under_as(
-                    shape,
+                loquax::mapframe::ground_under(
                     &ExactView::new(at, zm, W, H),
                     f64::from(W) / 2.0 + dx,
                     f64::from(H) / 2.0 + dy,
@@ -4501,7 +4472,6 @@ fn the_own_dot_sits_on_its_ground_in_every_blended_frame() {
         };
         let (shown, _) = frame(&loquax_android::map::render(&ask, Some(Vec::new()), now()));
         let b = Blend::new(
-            shape,
             World {
                 x: shown.x,
                 y: shown.y,
@@ -4574,10 +4544,8 @@ fn a_pinch_with_the_detectors_scroll_keeps_the_place_under_the_focal_point() {
         java.place(&shown, moving);
         shown
     };
-    let shape = loquax::picture::world_shape();
     let blend = |s: &MapShown| {
         Blend::new(
-            shape,
             World { x: s.x, y: s.y },
             f64::from(s.zoom_milli) / 1000.0,
             W,
@@ -4586,8 +4554,7 @@ fn a_pinch_with_the_detectors_scroll_keeps_the_place_under_the_focal_point() {
     };
     let first = render(&mut java, false, true);
     let (f0x, fy) = (200.0f64, 160.0f64);
-    let ground = loquax::mapframe::ground_under_as(
-        shape,
+    let ground = loquax::mapframe::ground_under(
         &ExactView::new(
             World {
                 x: first.x,
@@ -4658,11 +4625,6 @@ fn the_emulators_rest_frames_hold_the_ground_under_the_fingers() {
     use leviculum_map::blend::Blend;
     const DW: u32 = 1224;
     const DH: u32 = 2194;
-    let shape = loquax::picture::world_shape();
-    if shape != leviculum_map::blend::Shape::Globe {
-        // The APK measured is the globe build.
-        return;
-    }
     // Per run: the fix, the fingers' focal point as asked, and per rest
     // (to_x, to_y, to_z) with the dot's distance from the fingers on the
     // emulator's screenshot after that pinch.
@@ -4697,7 +4659,6 @@ fn the_emulators_rest_frames_hold_the_ground_under_the_fingers() {
         let own = project(LatLon::from_degrees(lat, lon));
         // Both runs start on the floor's globe about 0 N 0 E.
         let floor = Blend::new(
-            shape,
             World {
                 x: 2_147_483_648,
                 y: 2_147_483_648,
@@ -4710,7 +4671,7 @@ fn the_emulators_rest_frames_hold_the_ground_under_the_fingers() {
             .to_world(fingers.0, fingers.1)
             .expect("the fingers are on the globe");
         for &(x, y, z, seen) in rests {
-            let b = Blend::new(shape, World { x, y }, f64::from(z) / 1000.0, DW, DH);
+            let b = Blend::new(World { x, y }, f64::from(z) / 1000.0, DW, DH);
             let (gx, gy) = b.to_screen(ground);
             let held = (gx - fingers.0).hypot(gy - fingers.1);
             assert!(

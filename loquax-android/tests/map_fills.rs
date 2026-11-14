@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use leviculum_map::blend::{Blend, Shape};
+use leviculum_map::blend::Blend;
 use leviculum_map::mercator::{project, LatLon};
 use loquax::when::WallTime;
 use loquax_android::map::Canvas;
@@ -224,39 +224,26 @@ fn a_size_change_between_two_frames_draws_into_the_new_bitmap() {
     }
 }
 
-/// How wide the world `shape` is drawn at `zoom` over a `w` x `h` view
-/// centred at `centre`, in pixels: the globe's disk, Equal Earth's
-/// equator from edge meridian to edge meridian, both at the blend the
-/// frame is drawn by.
-fn world_across(shape: Shape, shown: &MapShown, w: u32, h: u32) -> f64 {
+/// How wide the globe is drawn at `zoom` over a `w` x `h` view centred
+/// at `centre`, in pixels: its disk, at the blend the frame is drawn by.
+fn world_across(shown: &MapShown, w: u32, h: u32) -> f64 {
     let centre = leviculum_map::mercator::World {
         x: shown.x,
         y: shown.y,
     };
     let zoom = f64::from(shown.zoom_milli) / 1000.0;
-    let blend = Blend::new(shape, centre, zoom, w, h);
-    match shape {
-        Shape::Globe => {
-            assert_eq!(blend.t(), 0.0, "the smallest world is the globe itself");
-            2.0 * blend.radius()
-        }
-        Shape::EqualEarth => {
-            let pi = std::f64::consts::PI;
-            let (west, _) = blend.to_screen_angles(-pi, 0.0);
-            let (east, _) = blend.to_screen_angles(pi, 0.0);
-            east - west
-        }
-    }
+    let blend = Blend::new(centre, zoom, w, h);
+    assert_eq!(blend.t(), 0.0, "the smallest world is the globe itself");
+    2.0 * blend.radius()
 }
 
 /// The phone zoomed out as far as it goes (1796, Lew's second
-/// screenshot): at every density and in both orientations the world
-/// covers the view's width, the globe its shorter side, and one more
+/// screenshot): at every density and in both orientations the globe
+/// covers the view's shorter side, and one more
 /// step out changes nothing.
 #[test]
 fn the_world_at_its_smallest_covers_the_view() {
     let home = home();
-    let shape = loquax::picture::world_shape();
     let mut cases: Vec<(u32, (u32, u32))> = DENSITIES
         .iter()
         .flat_map(|&d| screens(d).into_iter().map(move |s| (d, s)))
@@ -284,16 +271,13 @@ fn the_world_at_its_smallest_covers_the_view() {
             })
         };
         let smallest = out(None);
-        let across = world_across(shape, &smallest, w, h);
-        let side = match shape {
-            Shape::Globe => w.min(h),
-            Shape::EqualEarth => w,
-        };
+        let across = world_across(&smallest, w, h);
+        let side = w.min(h);
         assert!(
             across >= f64::from(side) - 0.5,
             "{w}x{h} at {density}: the world {across:.1} px across, the view {side}"
         );
-        if shape == Shape::Globe && w < h {
+        if w < h {
             assert!(
                 across <= f64::from(side) + 2.0,
                 "{w}x{h}: the globe's diameter is the view's width, not {across:.1}"
