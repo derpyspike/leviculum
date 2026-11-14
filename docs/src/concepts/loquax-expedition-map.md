@@ -677,7 +677,7 @@ Additions (decided):
      pin moves for the relay or for the member — the member's own
      signed message is the only word about the member's position
      outside a vouched group copy. The rule is one function in LXMF,
-     `Lev::reading_writer` (`copy_writer`, `loquax/src/ui.rs:6861`, the
+     `Lev::reading_writer` (`copy_writer`, `loquax/src/ui.rs:6869`, the
      audits of 1757, 1787 and 1808), which the node helper's telemetry
      report and the liveness judgement go through too (rule 5: one
      definition of "this message names a copy's writer", so filing and
@@ -692,13 +692,14 @@ Additions (decided):
      three to five of the take-back design each failed in the same
      place: undoing what an unverified message had already put in mixed
      its effects with genuine ones). A message that is not verified
-     changes no derived state at all: no pin, no track point, no
-     liveness, no stored reading row, no group membership, epoch, name,
-     admin or inviter, no delivery rung, no share mark. Its text may
-     still show in the conversation, marked as unverified, as LXMF
-     shows it. The gate is one place, the single entry where a received
-     message is turned into state changes (`apply_message_claims`,
-     `loquax/src/ui.rs:6666`; the restore has the same gate at its own
+     changes no derived state of the map or the groups: no pin, no
+     track point, no liveness, no stored reading row, no group
+     membership, epoch, name, admin or inviter, no share mark (the
+     reviewer's enumerated list, order 1834). Its text may still show
+     in the conversation, marked as unverified, as LXMF shows it. The
+     gate is one place, the single entry where a received message's
+     position and group claims become state (`apply_message_claims`,
+     `loquax/src/ui.rs:6680`; the restore has the same gate at its own
      entry, `learn_groups`); nothing behind the gate knows about
      verification. The held message is kept as received with its
      verdict pending: when the verdict says valid, its claims are
@@ -711,15 +712,24 @@ Additions (decided):
      gone. A store written by those rounds is cleaned at open: a
      position row filed by an inbound message that is not verified is
      dropped (the schema step's companion rule; the 23 layout holds it,
-     so there is no schema 24). A receipt alone is deliberately never
-     kept as a message, so an unverified one has nothing to hold a
-     verdict for: it is refused outright and named in `tui.log`.
+     so there is no schema 24).
+     ONE subsystem stays outside this gate on purpose: the read-receipt
+     handshake (1230, 1233). The peer's receipt capability and the
+     receipts it sends of OUR messages are a protocol exchange, not a
+     claim about anyone's position or group, and they are learned for
+     every received message whether its signature has verified yet or
+     not (`take_lev`, the `Received` arm). Gating them would stop this
+     device sending read receipts to a peer whose message has not yet
+     verified — the normal case until a path to the sender resolves —
+     which would regress on-the-air interop with Python-RNS peers
+     (Priority 1); the loquax-android facade test proves it. Delivery
+     rungs a receipt moves are therefore not under order 1834's gate.
      A reading that fails the writer rule is NOBODY's (rule 2, back to
      what 1792 did): it moves no pin, no track and no liveness, for the
      named writer, for the source and for the group address — a group
      is not a place and gets no pin of its own. Nothing of it shows in
      the pin, the store, the bubble's position line or the Info
-     (`Writers`, `loquax/src/ui.rs:6884`); each refused reading is said
+     (`Writers`, `loquax/src/ui.rs:6897`); each refused reading is said
      in one structured `POSITION_REFUSED reason=…` event in `tui.log`,
      nothing on screen — exactly one, where the judging happens: at
      arrival for a verified message, at the valid verdict for a held

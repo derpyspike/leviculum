@@ -6466,20 +6466,14 @@ fn on_engine<B: InputBuffer>(model: &mut UiModel<B>, event: OutboxEvent) -> Vec<
                 ))]);
             }
             // A receipt alone is a state, not a message (1230): it changes
-            // the messages it names and nothing else. Unverified, it is
-            // believed nothing (order 1834) — and since a receipt is
-            // deliberately never kept as a message, there is nothing to
-            // hold for a verdict: it is refused outright and named.
+            // the messages it names and nothing else. It is a protocol
+            // receipt of OUR messages, not a claim about a position or a
+            // group, so it is not under order 1834's position/group gate
+            // (the handshake comment below says why).
             if lev
                 .as_ref()
                 .is_some_and(|lev| receipts::alone(&body, &fields, lev))
             {
-                if !verified {
-                    return Vec::from([UiEffect::Log(format!(
-                        "receipt from {} dropped: signature not verified",
-                        crate::address::to_hex(&source)
-                    ))]);
-                }
                 return model.take_lev(source, lev.as_ref());
             }
             let blocked = model.names.trust(&source) == Trust::Blocked;
@@ -6556,11 +6550,29 @@ fn on_engine<B: InputBuffer>(model: &mut UiModel<B>, event: OutboxEvent) -> Vec<
             // [`apply_verdict`] applies them through this same path when
             // the verdict says valid — never when it says INVALID.
             // Nothing behind this gate needs to know about verification.
+            // THE gate's position/group half: a verified message's
+            // readings and group claims apply here; an unverified one is
+            // held, and [`apply_verdict`] applies them on a valid
+            // verdict. The read-receipt handshake below is NOT gated —
+            // see the call to `take_lev`.
             let received = model.now.map(|now| now.unix_secs);
             let mut effects = match verified {
                 true => apply_message_claims(model, index, placed, message_id, received),
                 false => Vec::new(),
             };
+            // The read-receipt handshake (1230, 1233) is the peer's own
+            // protocol capability and the receipts it sends of OUR
+            // messages, not a claim about anyone's position or group. It
+            // is learned for every received message, verified or not, as
+            // LXMF has always done: gating it would stop this device
+            // sending read receipts to a peer whose message has not yet
+            // verified — the normal case until a path to the sender
+            // resolves — which regresses on-the-air interop with
+            // Python-RNS peers (Priority 1). It is outside the reviewer's
+            // enumerated derived state (order 1834: pin, track, liveness,
+            // stored row, group membership/epoch/name/admin/inviter,
+            // position-shared).
+            effects.extend(model.take_lev(source, lev.as_ref()));
             // A group's state (1307) is kept and stored, and asks for no
             // attention: no unread, no toast, no cursor. A group the
             // reader deleted leaves this device with it (pass four).
@@ -6651,11 +6663,13 @@ fn on_engine<B: InputBuffer>(model: &mut UiModel<B>, event: OutboxEvent) -> Vec<
     Vec::new()
 }
 
-/// What a received message's claims change, applied once its signature is
-/// VERIFIED: the one path derived state takes (order 1834, Lew's decision
-/// of 2026-11-14). A verified message takes it at arrival; a held one
-/// takes it from [`apply_verdict`] when the verdict says valid, with the
-/// message already placed. On both paths the copy's writer is judged by
+/// What a received message's position and group claims change, applied
+/// once its signature is VERIFIED: the one path that derived state takes
+/// (order 1834, Lew's decision of 2026-11-14). A verified message takes
+/// it at arrival; a held one takes it from [`apply_verdict`] when the
+/// verdict says valid, with the message already placed. The read-receipt
+/// handshake is deliberately not here — it is learned for every message
+/// at arrival (the `Received` arm's `take_lev`), as LXMF has always done. On both paths the copy's writer is judged by
 /// the group state from before this message's own word — the membership
 /// it carried applies after the judging, and the early-copy refiling
 /// skips the carrying message ([`groups`]) — so no message vouches for
@@ -6679,15 +6693,14 @@ fn apply_message_claims<B>(
     };
     let key = message.activity;
     let fields = message.fields.clone();
-    let body = message.body.clone();
-    let lev = leviculum_lxmf::relay::own_lev(body.as_bytes(), &fields, &source);
     // The copy's writer, judged before this message's own membership is
     // learned (the audit of 1787): no message vouches for its own claim.
     let writer = copy_writer(&model.groups, source, &fields, true);
     model.learn_group(source, false, &fields, Some(key));
-    let mut effects = take_telemetry(model, index, placed, message_id, writer, received);
-    effects.extend(model.take_lev(source, lev.as_ref()));
-    effects
+    // The readings; the read-receipt handshake is not here (it is learned
+    // for every message at arrival, verified or not — see the `Received`
+    // arm), so a valid verdict does not repeat it.
+    take_telemetry(model, index, placed, message_id, writer, received)
 }
 
 /// A held message's signature, checked once its sender's key arrived: the
@@ -16834,12 +16847,14 @@ pub(crate) mod tests {
         );
     }
 
-    /// Order 1834: an unverified receipt moves no delivery rung. A
-    /// receipt alone is never kept as a message, so there is nothing to
-    /// hold — it is refused outright; a receipt riding a text message is
-    /// held with it and applies on the valid verdict.
+    /// Order 1834 scope: the read-receipt handshake is NOT under the
+    /// position/group gate — gating it would stop this device sending
+    /// read receipts to a peer whose message has not verified (the
+    /// normal case until a path resolves), regressing Python-RNS interop
+    /// (the loquax-android facade proves it). An unverified message's
+    /// receipt of OUR message still moves the rung, as before 1834.
     #[test]
-    fn an_unverified_receipt_moves_no_delivery_rung() {
+    fn an_unverified_receipt_still_moves_the_delivery_rung() {
         let mut model = UiModel::<Field>::new(&[]);
         clock(&mut model, 26, 14, 0);
         model.restore(vec![restored(
@@ -16847,7 +16862,7 @@ pub(crate) mod tests {
             vec![stored(41, true, "hi", Some(DeliveryState::Sent))],
             0,
         )]);
-        let receipt = || leviculum_lxmf::lev::Lev {
+        let receipt = leviculum_lxmf::lev::Lev {
             receipt: Some(leviculum_lxmf::lev::Receipt {
                 read_at: u32::try_from(two_pm()).unwrap_or(0),
                 ids: vec![[41; 32]],
@@ -16862,20 +16877,10 @@ pub(crate) mod tests {
                 .and_then(|c| c.messages.iter().find(|m| m.outbound))
                 .and_then(|m| m.delivery)
         };
-        // A receipt alone, unverified: refused outright, nothing held.
-        arrive_unverified(&mut model, PEER, 7, "", lev_only(receipt()));
-        assert_eq!(delivery(&model), Some(DeliveryState::Sent));
-        // A receipt riding a text, unverified: held with the message.
-        arrive_unverified(&mut model, PEER, 8, "thanks", lev_only(receipt()));
-        assert_eq!(
-            delivery(&model),
-            Some(DeliveryState::Sent),
-            "held while the verdict is owed"
-        );
-        verdict(&mut model, PEER, 8, true);
+        arrive_unverified(&mut model, PEER, 8, "thanks", lev_only(receipt));
         assert!(
             matches!(delivery(&model), Some(DeliveryState::Read { .. })),
-            "the held receipt applies on the valid verdict: {:?}",
+            "the handshake is not gated: {:?}",
             delivery(&model)
         );
     }
