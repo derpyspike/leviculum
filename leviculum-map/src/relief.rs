@@ -482,7 +482,7 @@ pub fn sky_zf(dem: &Plane, res: f32) -> (f32, f32, f32, f32) {
 }
 
 /// The per-sample tone and sky-view of one relief tile, quantized:
-/// `t` as 1/127 steps of −1..1, `ao` as 255 steps of [`AO_LO`]..1.2.
+/// `t` as 1/127 steps of −1..1, `ao` as 255 steps of `AO_LO` (0.6)..1.2.
 /// The plane covers the tile plus [`RIM`] samples each side.
 pub struct ShadePlane {
     pub t: Vec<i8>,
