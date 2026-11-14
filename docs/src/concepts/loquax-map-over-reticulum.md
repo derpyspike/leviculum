@@ -39,7 +39,7 @@ region into the maps directory. One request's whole budget is 60 s
 backs off 30 s doubling to an hour (`BACKOFF_FIRST_MS`,
 `loquax/src/mapload.rs:81`); autoloaded regions are a cache under
 500 MB by default (`CACHE_DEFAULT_MB`, `loquax/src/mapload.rs:79`),
-evicted least recently viewed (`evict`, `loquax/src/mapload.rs:911`).
+evicted least recently viewed (`evict`, `loquax/src/mapload.rs:939`).
 None of the Reticulum side below is built.
 
 The sizes, measured 2026-11-01 from the Protomaps build of 2026-10-28
