@@ -902,8 +902,7 @@ fn the_phone_never_shows_the_world_twice() {
     // fills this width at z3, the globe's disk its width a bit deeper;
     // either way the view never sits below it and never tiles.
     assert!(
-        shown.zoom_milli >= shown.min_zoom_milli
-            && shown.zoom_milli < shown.min_zoom_milli + 1000,
+        shown.zoom_milli >= shown.min_zoom_milli && shown.zoom_milli < shown.min_zoom_milli + 1000,
         "asked z0, got z{} with the floor at {}",
         shown.zoom_milli,
         shown.min_zoom_milli
