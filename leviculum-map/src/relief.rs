@@ -17,8 +17,16 @@
 //! a soft tone curve, and a wide sky-view term. Every constant below is
 //! the study's R′ row, named as `README_R2.md` names it. None is keyed
 //! to a region: the only data-dependent numbers are the DEM's own noise
-//! class ([`noise floor`](compute)) and the sky-view exaggeration
+//! class (the noise floor of [`Ground`]) and the sky-view exaggeration
 //! ([`sky_exaggeration`]), each tied to a measurable property.
+//!
+//! Both are measured per height tile ([`measure`], on the tile alone)
+//! and laid over the plane as a field interpolated between the nine
+//! tile centres ([`compute_in`]), so the same ground sample gets the
+//! same floor and exaggeration from either side of a tile seam; a
+//! value measured once per plane made neighbouring planes disagree
+//! along their shared edge (6 of 254 on Erg Chebbi, the audit of order
+//! 1741).
 //!
 //! Two pieces of the reference are reconstructions, since only
 //! `mo_shade2.py` and the parameter table travelled with the order, not
@@ -32,9 +40,12 @@
 //! sigma of six samples and over run on a decimated grid (the field
 //! carries nothing near the fine grid's Nyquist there) and come back
 //! bilinearly — gradients are decimated before the upsample, so no
-//! block artefacts enter. With the `std` feature, [`par`] runs the same
-//! row-band workers on scoped threads; the single-thread and threaded
-//! forms are equality-tested (`tests/relief.rs`).
+//! block artefacts enter. The product runs one tile per worker thread
+//! (the frontends' tile workers), so [`compute`] itself is
+//! single-threaded. With the `std` feature, [`par`] holds a threaded
+//! blur for the kernel bench (`examples/relief_bench.rs`), equality-tested
+//! against the scalar one (`tests/relief.rs`); nothing on the draw path
+//! calls it.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -168,30 +179,53 @@ impl Plane {
 /// The heights plane of one tile with its apron, from the 3 x 3
 /// neighbourhood of heights tiles ([`TILE`] squared samples each),
 /// row-major with the centre at index 4. A missing neighbour clamps to
-/// the nearest sample that exists, so a pack's edge shades flat toward
-/// the void instead of inventing a cliff.
+/// the edge of the tile [`stand_in`] names, so a pack's edge shades
+/// flat toward the void instead of inventing a cliff — and two
+/// neighbouring tiles, each assembled with what the pack has, extend
+/// the same edge the same way.
 pub fn assemble(tiles: &[Option<&[i16]>; 9]) -> Plane {
     let mut out = Plane::new(SIDE);
     let t = TILE as isize;
     let a = APRON as isize;
+    let present = |n: usize| tiles[n].is_some();
     for y in 0..SIDE as isize {
         for x in 0..SIDE as isize {
-            let (mut gx, mut gy) = (x - a, y - a);
-            // The containing neighbour, or the centre clamped.
+            let (gx, gy) = (x - a, y - a);
             let (tx, ty) = (gx.div_euclid(t), gy.div_euclid(t));
-            let n = (ty + 1) * 3 + tx + 1;
-            let tile = tiles.get(n as usize).copied().flatten().or_else(|| {
-                gx = gx.clamp(0, t - 1);
-                gy = gy.clamp(0, t - 1);
-                tiles[4]
-            });
-            if let Some(h) = tile {
-                let (lx, ly) = (gx.rem_euclid(t) as usize, gy.rem_euclid(t) as usize);
-                out.v[(y * SIDE as isize + x) as usize] = f32::from(h[ly * TILE + lx]);
-            }
+            let n = ((ty + 1) * 3 + tx + 1) as usize;
+            let m = stand_in(n, present);
+            let Some(h) = tiles[m] else { continue };
+            // The sample's position in the stand-in's frame, clamped to
+            // its extent along each axis the stand-in moved.
+            let (mx, my) = ((m % 3) as isize - 1, (m / 3) as isize - 1);
+            let lx = (gx - mx * t).clamp(0, t - 1) as usize;
+            let ly = (gy - my * t).clamp(0, t - 1) as usize;
+            out.v[(y * SIDE as isize + x) as usize] = f32::from(h[ly * TILE + lx]);
         }
     }
     out
+}
+
+/// The neighbourhood slot (row-major, centre 4) whose data stands in
+/// for slot `n`: `n` itself where `present`, else the slot one step
+/// toward the centre row, else one step toward the centre column, else
+/// the centre. The rule depends only on which ground exists, never on
+/// which tile is the centre, so two neighbouring tiles fill a shared
+/// missing neighbour from the same ground.
+pub fn stand_in(n: usize, present: impl Fn(usize) -> bool) -> usize {
+    if present(n) {
+        return n;
+    }
+    let (col, row) = (n % 3, n / 3);
+    let toward_row = 3 + col;
+    if row != 1 && present(toward_row) {
+        return toward_row;
+    }
+    let toward_col = row * 3 + 1;
+    if col != 1 && present(toward_col) {
+        return toward_col;
+    }
+    4
 }
 
 /// `x` clamped to [0, 1], then the smooth step `3x^2 - 2x^3`.
@@ -460,12 +494,33 @@ pub fn sky_exaggeration(fine_rms_med: f32, form_rms_med: f32, noise_floor: f32) 
     1.0 + 1.5 * smoothstep((ff - 0.35) / 0.3) * clean
 }
 
-/// The sky exaggeration [`compute`] chooses for this plane, stated on
-/// its own: the diagnostic the order's sheets print per window, with
-/// the measured inputs it came from — (fine band rms, form band rms,
-/// noise floor, zf).
-pub fn sky_zf(dem: &Plane, res: f32) -> (f32, f32, f32, f32) {
-    let dem = gblur(dem, PRE_SIGMA);
+/// What [`compute_in`] measures of one height tile's ground, on the
+/// tile alone: the median local rms of the fine and of the form band,
+/// and the DEM's noise floor (the 10th percentile of the fine band's
+/// local rms, capped where it would be measuring mountains).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ground {
+    pub fine: f32,
+    pub form: f32,
+    pub floor: f32,
+}
+
+impl Ground {
+    /// The sky-view exaggeration this ground asks for
+    /// ([`sky_exaggeration`]).
+    pub fn zf(&self) -> f32 {
+        sky_exaggeration(self.fine, self.form, self.floor)
+    }
+}
+
+/// The [`Ground`] of one [`TILE`] by [`TILE`] heights tile, `res`
+/// ground metres per sample, measured on the tile alone (reflect
+/// boundary): the per-tile statistics every plane that sees the tile
+/// shares. The reference measures its floor in a 20 km window; a z12
+/// tile is about 8 km, and [`compute_in`] interpolates over the nine
+/// tiles around a plane, about 17 km.
+pub fn measure(tile: &[i16], res: f32) -> Ground {
+    let dem = gblur(&Plane::from_heights(tile, TILE), PRE_SIGMA);
     let scale = REF_METRES / res;
     let field = |s: f32| {
         let b = gblur(&dem, s * scale);
@@ -475,10 +530,67 @@ pub fn sky_zf(dem: &Plane, res: f32) -> (f32, f32, f32, f32) {
     let b0 = diff(&field(SIGMAS[0]), &field(SIGMAS[1]));
     let b3 = field(SIGMAS[3]);
     let rms0 = local_rms(&b0, RMS_SIGMA[0] * scale);
-    let fine = percentile(&rms0, 50.0);
-    let form = percentile(&local_rms(&b3, RMS_SIGMA[3] * scale), 50.0);
-    let floor = percentile(&rms0, ADAPT_Q).min(ADAPT_CAP);
-    (fine, form, floor, sky_exaggeration(fine, form, floor))
+    Ground {
+        fine: percentile(&rms0, 50.0),
+        form: percentile(&local_rms(&b3, RMS_SIGMA[3] * scale), 50.0),
+        floor: percentile(&rms0, ADAPT_Q).min(ADAPT_CAP),
+    }
+}
+
+/// The nine grounds of a plane's neighbourhood, each missing one taken
+/// from its [`stand_in`] as [`assemble`] takes its heights; `None`
+/// without the centre's.
+pub fn fill_ground(g: &[Option<Ground>; 9]) -> Option<[Ground; 9]> {
+    let centre = g[4]?;
+    Some(core::array::from_fn(|n| {
+        g[stand_in(n, |m| g[m].is_some())].unwrap_or(centre)
+    }))
+}
+
+/// The centre tile of an aproned [`SIDE`] plane, as heights.
+fn centre_tile(dem: &Plane) -> Vec<i16> {
+    let mut out = Vec::with_capacity(TILE * TILE);
+    for y in 0..TILE {
+        let row = &dem.v[(y + APRON) * SIDE + APRON..][..TILE];
+        out.extend(row.iter().map(|&v| v.clamp(-32768.0, 32767.0) as i16));
+    }
+    out
+}
+
+/// One axis's interpolation between the three tile centres: for each
+/// plane sample along the axis, the lower centre (0 or 1) and the
+/// weight of the upper one.
+fn centre_weights() -> Vec<(usize, f32)> {
+    let half = TILE as f32 / 2.0 - 0.5;
+    (0..SIDE)
+        .map(|i| {
+            let g = i as f32 - APRON as f32;
+            if g < half {
+                (
+                    0,
+                    ((g - (half - TILE as f32)) / TILE as f32).clamp(0.0, 1.0),
+                )
+            } else {
+                (1, ((g - half) / TILE as f32).clamp(0.0, 1.0))
+            }
+        })
+        .collect()
+}
+
+/// A per-tile value of the 3 x 3 neighbourhood laid over the plane,
+/// bilinear between the tile centres.
+fn field_of(values: &[f32; 9]) -> Plane {
+    let w = centre_weights();
+    let mut out = Plane::new(SIDE);
+    for (y, &(ry, fy)) in w.iter().enumerate() {
+        for (x, &(rx, fx)) in w.iter().enumerate() {
+            let at = |r: usize, c: usize| values[r * 3 + c];
+            let top = at(ry, rx) * (1.0 - fx) + at(ry, rx + 1) * fx;
+            let bottom = at(ry + 1, rx) * (1.0 - fx) + at(ry + 1, rx + 1) * fx;
+            out.v[y * SIDE + x] = top * (1.0 - fy) + bottom * fy;
+        }
+    }
+    out
 }
 
 /// The per-sample tone and sky-view of one relief tile, quantized:
@@ -503,26 +615,27 @@ pub fn ao_of(q: u8) -> f32 {
     AO_LO + f32::from(q) / 255.0 * AO_SPAN
 }
 
-/// The whole R′ relief term for one tile: `dem` is the [`SIDE`] by
-/// [`SIDE`] heights plane (tile plus apron), `res` its ground metres
-/// per sample, `sky_m` the sky-view radius in metres
-/// ([`sky_radius_m`]). Deterministic: the same plane gives the same
-/// bytes on every run and host.
+/// The whole R′ relief term for one tile on ground that is one
+/// [`Ground`] throughout: `dem` is the [`SIDE`] by [`SIDE`] heights
+/// plane (tile plus apron), `res` its ground metres per sample, `sky_m`
+/// the sky-view radius in metres ([`sky_radius_m`]), the ground
+/// measured on the plane's centre tile. For a tile among neighbours,
+/// [`compute_in`] with each neighbour's own [`measure`] keeps the seams
+/// quiet. Deterministic: the same plane gives the same bytes on every
+/// run and host.
 pub fn compute(dem: &Plane, res: f32, sky_m: f32) -> ShadePlane {
-    compute_on(dem, res, sky_m, &mut |_, _| {})
+    let g = measure(&centre_tile(dem), res);
+    compute_in(dem, res, sky_m, &[g; 9])
 }
 
-/// [`compute`] with a hand on each stage, for the bench: `stage` is
-/// called with a name and nothing else after each kernel family.
-pub fn compute_on(
-    dem: &Plane,
-    res: f32,
-    sky_m: f32,
-    stage: &mut dyn FnMut(&'static str, &Plane),
-) -> ShadePlane {
+/// [`compute`] with the [`Ground`] of each of the nine tiles of the
+/// plane's neighbourhood (row-major, centre 4; a missing neighbour
+/// takes the ground of its [`stand_in`]): the noise floor and the
+/// sky-view exaggeration are fields interpolated between the tile
+/// centres, so neighbouring planes agree on their shared ground.
+pub fn compute_in(dem: &Plane, res: f32, sky_m: f32, ground: &[Ground; 9]) -> ShadePlane {
     // `denoise_all`: 0.7 samples on every source DEM.
     let dem = gblur(dem, PRE_SIGMA);
-    stage("denoise", &dem);
     // `metres`: the band scales are landform sizes, not samples.
     let scale = REF_METRES / res;
     // The four Lambert fields, finest blur to form blur, then bands as
@@ -533,7 +646,6 @@ pub fn compute_on(
         let (gx, gy) = sobel(&b, res, ZF);
         fields.push(multilight(&gx, &gy));
     }
-    stage("bands", &fields[0]);
     let bands = [
         diff(&fields[0], &fields[1]),
         diff(&fields[1], &fields[2]),
@@ -541,24 +653,22 @@ pub fn compute_on(
         fields.pop().unwrap_or_else(|| Plane::new(dem.side)),
     ];
     // Each band's local rms, and the DEM's own noise floor: the 10th
-    // percentile of the fine band's rms. The reference measures it in a
-    // 20 km window; a tile with its apron spans about 15 km at z12, so
-    // one floor per tile is that window, and the cap keeps a floor that
-    // measured mountains, not noise, from fogging them.
+    // percentile of the fine band's rms per tile ([`measure`]), laid
+    // over the plane between the tile centres. The cap keeps a floor
+    // that measured mountains, not noise, from fogging them.
     let rms: Vec<Plane> = bands
         .iter()
         .zip(&RMS_SIGMA)
         .map(|(b, &s)| local_rms(b, s * scale))
         .collect();
-    stage("rms", &rms[0]);
-    let floor = percentile(&rms[0], ADAPT_Q).min(ADAPT_CAP);
+    let floor = field_of(&ground.map(|g| g.floor));
     // The normalised sum: amplify quiet bands, compress loud ones,
     // roll off under the noise threshold.
     let mut v = Plane::new(dem.side);
     for i in 0..4 {
-        let thr = NOISE[i].max(ADAPT_A[i] * floor);
         let cap = (GMAX * GCAP[i]).max(1.0);
-        for ((o, &b), &r) in v.v.iter_mut().zip(&bands[i].v).zip(&rms[i].v) {
+        for (((o, &b), &r), &f) in v.v.iter_mut().zip(&bands[i].v).zip(&rms[i].v).zip(&floor.v) {
+            let thr = NOISE[i].max(ADAPT_A[i] * f);
             let ratio = REF[i] / r.max(1e-6);
             let mut g = powf(ratio, if ratio >= 1.0 { K } else { K_HI });
             g = g.min(cap);
@@ -567,16 +677,15 @@ pub fn compute_on(
             *o += WEIGHT[i] * g * b / REF[i];
         }
     }
-    stage("normalise", &v);
     // Unsharp.
     let blur = gblur(&v, US_SIGMA * scale);
     for (o, &b) in v.v.iter_mut().zip(&blur.v) {
         *o += US * (*o - b);
     }
-    stage("unsharp", &v);
     // Sky-view: normalised openness over the zoom's radius, its
-    // exaggeration from the window's slope-energy split.
-    let zf_sky = sky_exaggeration(percentile(&rms[0], 50.0), percentile(&rms[3], 50.0), floor);
+    // exaggeration from each tile's slope-energy split, between the
+    // tile centres like the floor.
+    let zf_sky = field_of(&ground.map(|g| g.zf()));
     let sigma = (sky_m / res / 3.0).max(2.0);
     let wide = gblur(&dem, sigma);
     let mut delta = diff(&dem, &wide);
@@ -584,7 +693,6 @@ pub fn compute_on(
     for (d, &n) in delta.v.iter_mut().zip(&norm.v) {
         *d /= n.max(1e-3);
     }
-    stage("sky", &delta);
     // Quantize the plane's rim-and-tile window.
     let mut out = ShadePlane {
         t: vec![0; PLANE_SIDE * PLANE_SIDE],
@@ -599,7 +707,7 @@ pub fn compute_on(
             } else {
                 tanhf(C_POS * v.v[i])
             };
-            let raw = (1.0 + AO_GAIN * zf_sky * delta.v[i]).clamp(AO_LO, AO_HI);
+            let raw = (1.0 + AO_GAIN * zf_sky.v[i] * delta.v[i]).clamp(AO_LO, AO_HI);
             let ao = 1.0 + SVF * (raw - 1.0);
             let o = y * PLANE_SIDE + x;
             out.t[o] = (t * 127.0 + if t >= 0.0 { 0.5 } else { -0.5 }) as i8;
@@ -724,10 +832,11 @@ fn cubic_weights(f: f32) -> [f32; 4] {
     ]
 }
 
-/// The same kernels on scoped threads: each pass splits its output
-/// rows into one band per thread over the same shared input, so the
-/// threaded result is the single-thread result bit for bit
-/// (`tests/relief.rs` holds it there).
+/// The blur on scoped threads, for the kernel bench: each pass splits
+/// its output rows into one band per thread over the same shared input,
+/// so the threaded result is the single-thread result bit for bit
+/// (`tests/relief.rs` holds it there). The draw path does not use it:
+/// the frontends already run one tile per worker.
 #[cfg(feature = "std")]
 pub mod par {
     use super::*;
@@ -746,17 +855,6 @@ pub mod par {
             vpass_rows(&src, side, &k, rows, dst);
         });
         out
-    }
-
-    /// [`gblur`] with the full-resolution passes threaded; the
-    /// decimated path stays single-thread, it is already a sixteenth
-    /// of the work.
-    pub fn gblur_mt(p: &Plane, sigma: f32, threads: usize) -> Plane {
-        if decimation(sigma) == 1 {
-            gblur_exact_mt(p, sigma, threads)
-        } else {
-            gblur(p, sigma)
-        }
     }
 
     /// Split the `side * side` output `dst` into about `threads` row

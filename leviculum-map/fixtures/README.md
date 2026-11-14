@@ -130,6 +130,22 @@ are inside the file. The tiles are zstd frames written by the C library
 at level 19, so the test that reads them is also the interop check of the
 pure-Rust decoder.
 
+The relief goldens and the full-neighbourhood seam test (order 1741's
+audit, `../tests/relief.rs`) read five more packs of the same source, cut
+on 2026-11-14 with `leviculum-map-tool heights -o <file> --bbox=<box>
+--block-zoom <z>`, each one block:
+
+| file | box (W,S,E,N) | block zoom | tiles | bytes | sha256 |
+|---|---|---|---|---|---|
+| `erg-chebbi-z10.lmh` | -3.98,31.155,-3.975,31.16 | 10 | 16 | 232,157 | `700c8a0283c3743628668e0ec67cdce22df6fc90477e4b43006866e6bb7ac92e` |
+| `erg-chegaga-z10.lmh` | -6.30,29.845,-6.295,29.85 | 10 | 16 | 327,407 | `295a8290d3671e9ebd96820e34863d4ee38b25c69f3a3eba8095039832a4718c` |
+| `bani-z11.lmh` | -6.85,29.75,-6.845,29.755 | 11 | 4 | 67,312 | `e8bc4f800b0e477cf0ba0f2f7ca74fd73f5300fd584d517c9257fcb128abf1a2` |
+| `alps-z11.lmh` | 8.45,46.85,8.455,46.855 | 11 | 4 | 115,428 | `12ff4b49502253cbdb746a5d7e0cb1f246f2a078b830a34f50fe92c68b6e6eda` |
+| `uckermark-z11.lmh` | 13.62,53.10,13.625,53.105 | 11 | 4 | 76,033 | `256f0e060be0fe0e43955bf9d2319f3cec31f8bbf75d81c23ffc1afec2b84c51` |
+
+The same attribution as `erg-chebbi.lmh` applies to each, and the texts
+are inside each file.
+
 ## The world outline
 
 `../data/ne_50m_land.lwo` is not a test fixture but the table the crate

@@ -16,7 +16,10 @@ use std::fs;
 use std::time::Instant;
 
 use leviculum_map::elevation::{split, Block, TileDecoder, TILE_CELLS};
-use leviculum_map::relief::{self, assemble, sample, shade_rgb, sky_radius_m, Plane, ShadePlane};
+use leviculum_map::relief::{
+    self, assemble, fill_ground, measure, sample, shade_rgb, sky_radius_m, Ground, Plane,
+    ShadePlane,
+};
 
 /// The light table's paper (leviculum-mapfill's LIGHT.background).
 const PAPER: [u8; 3] = [245, 241, 233];
@@ -71,7 +74,7 @@ impl<'a> Pack<'a> {
 
     /// The aproned plane of relief tile (x, y) at `zoom`, each
     /// neighbour decoded once across tiles.
-    fn plane(&mut self, zoom: u8, x: u32, y: u32) -> Plane {
+    fn plane(&mut self, zoom: u8, x: u32, y: u32) -> (Plane, [Ground; 9]) {
         let grid = i64::from(1u32 << zoom);
         let at = |i: usize| {
             let (dx, dy) = ((i % 3) as i64 - 1, (i / 3) as i64 - 1);
@@ -89,8 +92,23 @@ impl<'a> Pack<'a> {
                 .get(&(zoom, nx as u32, ny as u32))
                 .and_then(|o| o.as_deref())
         });
-        assemble(&refs)
+        // Each tile's ground measured on the tile alone, as the
+        // product's store does, so the sheet shows the product's seams.
+        let res = ground_res(zoom, y);
+        let grounds: [Option<Ground>; 9] =
+            core::array::from_fn(|i| refs[i].map(|t| measure(t, res)));
+        let ground = fill_ground(&grounds).unwrap_or([measure(&[0; TILE_CELLS], res); 9]);
+        (assemble(&refs), ground)
     }
+}
+
+/// Ground metres per relief sample at the centre row of tile row `y`.
+fn ground_res(zoom: u8, y: u32) -> f32 {
+    let n = f64::from(1u32 << zoom);
+    let lat = (core::f64::consts::PI * (1.0 - 2.0 * (f64::from(y) + 0.5) / n))
+        .sinh()
+        .atan();
+    (156_543.03 * lat.cos() / n) as f32
 }
 
 /// The plain comparator: one NW light at a mountain gain, damped.
@@ -155,8 +173,8 @@ fn main() {
             let (tx, ty) = ((sx / 256.0) as u32, (sy / 256.0) as u32);
             let (sp, plain) = shades.entry((tx, ty)).or_insert_with(|| {
                 let t0 = Instant::now();
-                let dem = pack.plane(rz, tx, ty);
-                let sp = relief::compute(&dem, res, sky_radius_m(zoom));
+                let (dem, ground) = pack.plane(rz, tx, ty);
+                let sp = relief::compute_in(&dem, res, sky_radius_m(zoom), &ground);
                 let plain = plain_tone(&dem, res);
                 let ms = t0.elapsed().as_secs_f64() * 1e3;
                 println!("RELIEF tile={rz}/{tx}/{ty} ms={ms:.1}");
@@ -199,8 +217,11 @@ fn main() {
     // The sky exaggeration and its measured inputs on the window's
     // centre tile (the README's open ZF point, now data-driven).
     let (csx, csy) = (cx / step / 256.0, cy / step / 256.0);
-    let dem = pack.plane(rz, csx as u32, csy as u32);
-    let (fine, form, floor, zf) = relief::sky_zf(&dem, res);
+    let centre = pack
+        .tile(rz, csx as u32, csy as u32)
+        .map(|t| relief::measure(t, res));
+    let (fine, form, floor, zf) =
+        centre.map_or((0.0, 0.0, 0.0, 1.0), |g| (g.fine, g.form, g.floor, g.zf()));
     println!("ZF fine_rms={fine:.4} form_rms={form:.4} floor={floor:.4} zf={zf:.2}");
     tile_ms.sort_by(f64::total_cmp);
     if !tile_ms.is_empty() {

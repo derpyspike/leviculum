@@ -7,8 +7,8 @@
 
 use leviculum_map::elevation::{split, TileDecoder, TILE_CELLS};
 use leviculum_map::relief::{
-    self, ao_of, assemble, gblur, gblur_exact, sample, shade_rgb, sky_exaggeration, sky_radius_m,
-    Plane, ShadePlane, APRON, PLANE_SIDE, SIDE, TILE,
+    self, ao_of, assemble, fill_ground, gblur, gblur_exact, measure, sample, shade_rgb,
+    sky_exaggeration, sky_radius_m, Ground, Plane, ShadePlane, APRON, PLANE_SIDE, SIDE, TILE,
 };
 
 const CHEBBI: &[u8] = include_bytes!("../fixtures/erg-chebbi.lmh");
@@ -114,7 +114,7 @@ fn small_relief_reads_like_large() {
     let (_, p95_small) = stats(&small.t);
     let (_, p95_large) = stats(&large.t);
     assert!(
-        p95_small > 0.2 * p95_large && p95_small < 2.0 * p95_small.max(p95_large),
+        p95_small > 0.5 * p95_large && p95_large < 2.0 * p95_small,
         "spread p95 small {p95_small} vs large {p95_large}"
     );
     assert!(p95_small > 0.1, "8 m dunes still read, got {p95_small}");
@@ -319,3 +319,352 @@ fn tile_seams_are_quiet() {
 }
 
 const _: () = assert!(APRON >= 80, "the form band's blur needs its apron");
+
+/// The fixture's four z12 tiles, north-west, north-east, south-west,
+/// south-east.
+fn chebbi_tiles() -> Vec<Vec<i16>> {
+    let (_, ranges) = split(CHEBBI).expect("split the fixture");
+    let block = leviculum_map::elevation::Block::parse(&CHEBBI[ranges[1].clone()])
+        .expect("parse the block");
+    let mut dec = TileDecoder::new();
+    let mut scratch = vec![0i16; TILE_CELLS];
+    [(2002, 1674), (2003, 1674), (2002, 1675), (2003, 1675)]
+        .iter()
+        .map(|&(x, y)| {
+            let mut out = vec![0i16; TILE_CELLS];
+            block
+                .heights(&mut dec, 12, x, y, &mut out, &mut scratch)
+                .expect("decode the tile");
+            out
+        })
+        .collect()
+}
+
+/// The plane and the neighbourhood's grounds of the tile whose 3 x 3
+/// neighbourhood is `slots` (row-major, centre 4), as the product's
+/// store builds them: heights by [`assemble`], each present tile's
+/// ground measured on the tile alone, the missing ones filled.
+fn plane_in(slots: [Option<&[i16]>; 9], res: f32) -> (Plane, [Ground; 9]) {
+    let grounds: [Option<Ground>; 9] = core::array::from_fn(|i| slots[i].map(|t| measure(t, res)));
+    (
+        assemble(&slots),
+        fill_ground(&grounds).expect("the centre is present"),
+    )
+}
+
+/// The largest tone step across the shared columns of two horizontally
+/// adjacent planes, rows 40..TILE-40.
+fn seam_step(a: &ShadePlane, b: &ShadePlane) -> i32 {
+    let mut worst = 0i32;
+    for y in 40..TILE - 40 {
+        for k in 0..2usize {
+            let la = i32::from(a.t[(y + 2) * PLANE_SIDE + 2 + TILE + k]);
+            let rb = i32::from(b.t[(y + 2) * PLANE_SIDE + 2 + k]);
+            worst = worst.max((la - rb).abs());
+        }
+    }
+    worst
+}
+
+/// The seam between two neighbouring tiles is quiet on real ground,
+/// not only on a synthetic field (the audit of order 1741): the planes
+/// of (2002, 1674) and (2003, 1674) of the committed Erg Chebbi cut,
+/// each assembled with what the pack has of its neighbourhood, wear
+/// the same tone on the same samples within 3 of 254. Before the
+/// per-tile ground and the shared clamp it stepped by 6: each plane
+/// measured its own noise floor and sky exaggeration, and each clamped
+/// a missing corner to its own centre.
+#[test]
+fn audit_real_ground_seams_are_quiet() {
+    let t = chebbi_tiles();
+    let (nw, ne, sw, se) = (&t[0][..], &t[1][..], &t[2][..], &t[3][..]);
+    let (left, lg) = plane_in(
+        [
+            None,
+            None,
+            None,
+            None,
+            Some(nw),
+            Some(ne),
+            None,
+            Some(sw),
+            Some(se),
+        ],
+        32.7,
+    );
+    let (right, rg) = plane_in(
+        [
+            None,
+            None,
+            None,
+            Some(nw),
+            Some(ne),
+            None,
+            Some(sw),
+            Some(se),
+            None,
+        ],
+        32.7,
+    );
+    let a = relief::compute_in(&left, 32.7, sky_radius_m(14), &lg);
+    let b = relief::compute_in(&right, 32.7, sky_radius_m(14), &rg);
+    let worst = seam_step(&a, &b);
+    assert!(worst <= 3, "seam step on real ground: {worst} of 254");
+}
+
+// ---- real ground with full neighbourhoods, and the relief goldens ----
+
+const CHEBBI_Z10: &[u8] = include_bytes!("../fixtures/erg-chebbi-z10.lmh");
+const CHEGAGA_Z10: &[u8] = include_bytes!("../fixtures/erg-chegaga-z10.lmh");
+const ALPS: &[u8] = include_bytes!("../fixtures/alps-z11.lmh");
+const UCKERMARK: &[u8] = include_bytes!("../fixtures/uckermark-z11.lmh");
+const BANI: &[u8] = include_bytes!("../fixtures/bani-z11.lmh");
+
+/// A height pack read straight from its bytes: its one block's
+/// position at the block zoom, its zooms, and tiles decoded once.
+struct TestPack {
+    bytes: &'static [u8],
+    block: core::ops::Range<usize>,
+    tile_zoom: u8,
+    block_zoom: u8,
+    pos: (u32, u32),
+    tiles: std::collections::HashMap<(u8, u32, u32), Option<Vec<i16>>>,
+    grounds: std::collections::HashMap<(u8, u32, u32), Ground>,
+}
+
+impl TestPack {
+    fn open(bytes: &'static [u8]) -> Self {
+        let (dir, ranges) = split(bytes).expect("a height pack");
+        assert_eq!(dir.len(), 1, "the fixtures are one block each");
+        Self {
+            bytes,
+            block: ranges[1].clone(),
+            tile_zoom: dir.tile_zoom(),
+            block_zoom: dir.block_zoom(),
+            pos: dir.block(0).expect("the block"),
+            tiles: Default::default(),
+            grounds: Default::default(),
+        }
+    }
+
+    fn tile(&mut self, z: u8, x: u32, y: u32) -> Option<&[i16]> {
+        if !self.tiles.contains_key(&(z, x, y)) {
+            let got = (|| {
+                if z < self.block_zoom || z > self.tile_zoom {
+                    return None;
+                }
+                let shift = z - self.block_zoom;
+                if (x >> shift, y >> shift) != self.pos {
+                    return None;
+                }
+                let block = leviculum_map::elevation::Block::parse(&self.bytes[self.block.clone()])
+                    .expect("the block parses");
+                let mut out = vec![0i16; TILE_CELLS];
+                let mut scratch = vec![0i16; TILE_CELLS];
+                block
+                    .heights(&mut TileDecoder::new(), z, x, y, &mut out, &mut scratch)
+                    .expect("the tile decodes");
+                Some(out)
+            })();
+            self.tiles.insert((z, x, y), got);
+        }
+        self.tiles.get(&(z, x, y)).and_then(|t| t.as_deref())
+    }
+
+    /// The plane of tile (x, y) at `z` with what the pack has of its
+    /// neighbourhood and every present tile's ground, as the product's
+    /// store builds it; `None` where the pack lacks the tile itself.
+    fn plane(&mut self, z: u8, x: u32, y: u32, res: f32) -> Option<(Plane, [Ground; 9])> {
+        let at = |i: usize| (x as i64 + (i % 3) as i64 - 1, y as i64 + (i / 3) as i64 - 1);
+        let mut grounds: [Option<Ground>; 9] = [None; 9];
+        for (i, g) in grounds.iter_mut().enumerate() {
+            let (nx, ny) = at(i);
+            if nx < 0 || ny < 0 {
+                continue;
+            }
+            let key = (z, nx as u32, ny as u32);
+            if let Some(&known) = self.grounds.get(&key) {
+                *g = Some(known);
+            } else if let Some(t) = self.tile(z, nx as u32, ny as u32) {
+                let m = measure(t, res);
+                self.grounds.insert(key, m);
+                *g = Some(m);
+            }
+        }
+        let ground = fill_ground(&grounds)?;
+        let refs: [Option<&[i16]>; 9] = core::array::from_fn(|i| {
+            let (nx, ny) = at(i);
+            if nx < 0 || ny < 0 {
+                return None;
+            }
+            self.tiles
+                .get(&(z, nx as u32, ny as u32))
+                .and_then(|t| t.as_deref())
+        });
+        Some((assemble(&refs), ground))
+    }
+}
+
+/// Ground metres per sample at the centre row of tile row `y` at `z`.
+fn res_at(z: u8, y: u32) -> f32 {
+    let n = f64::from(1u32 << z);
+    let lat = (core::f64::consts::PI * (1.0 - 2.0 * (f64::from(y) + 0.5) / n))
+        .sinh()
+        .atan();
+    (156_543.03 * lat.cos() / n) as f32
+}
+
+/// Two horizontally adjacent tiles of a bigger real cut, each with its
+/// full 3 x 3 neighbourhood present: no clamping anywhere, so the seam
+/// measures the per-tile ground and the apron's truncation alone.
+#[test]
+fn real_ground_seams_are_quiet_with_full_neighbourhoods() {
+    for (name, bytes) in [("chegaga", CHEGAGA_Z10), ("chebbi", CHEBBI_Z10)] {
+        let mut pack = TestPack::open(bytes);
+        assert_eq!((pack.block_zoom, pack.tile_zoom), (10, 12));
+        // The block is 4 x 4 z12 tiles: (1, 1) and (2, 1) have every
+        // neighbour inside it.
+        let (x0, y0) = (pack.pos.0 * 4 + 1, pack.pos.1 * 4 + 1);
+        let res = res_at(12, y0);
+        let (left, lg) = pack.plane(12, x0, y0, res).expect("left tile");
+        let (right, rg) = pack.plane(12, x0 + 1, y0, res).expect("right tile");
+        let a = relief::compute_in(&left, res, sky_radius_m(14), &lg);
+        let b = relief::compute_in(&right, res, sky_radius_m(14), &rg);
+        let worst = seam_step(&a, &b);
+        assert!(worst <= 3, "{name}: seam step {worst} of 254");
+    }
+}
+
+/// The light table's paper (leviculum-mapfill's LIGHT background).
+const PAPER: [u8; 3] = [245, 241, 233];
+
+/// `w` x `h` pixels of a view at `zoom` centred on the pack's block,
+/// the relief over paper, as RGB: the frontends' sampling (the relief
+/// grid is the pack's own, clamped between its block and tile zooms,
+/// sampled bicubically into the view's pixels).
+fn relief_picture(bytes: &'static [u8], zoom: u8, w: usize, h: usize) -> Vec<u8> {
+    let mut pack = TestPack::open(bytes);
+    let rz = zoom.clamp(pack.block_zoom, pack.tile_zoom);
+    assert!(rz <= zoom, "the view stands below the pack's grid");
+    // The block's centre in world pixels at the view zoom.
+    let span = f64::from(1u32 << (zoom - pack.block_zoom)) * 256.0;
+    let cx = (f64::from(pack.pos.0) + 0.5) * span;
+    let cy = (f64::from(pack.pos.1) + 0.5) * span;
+    let step = f64::from(1u32 << (zoom - rz));
+    let mut planes: std::collections::HashMap<(u32, u32), Option<ShadePlane>> = Default::default();
+    let mut out = Vec::with_capacity(w * h * 3);
+    for py in 0..h {
+        for px in 0..w {
+            let wx = cx - w as f64 / 2.0 + px as f64 + 0.5;
+            let wy = cy - h as f64 / 2.0 + py as f64 + 0.5;
+            let (sx, sy) = (wx / step, wy / step);
+            let (tx, ty) = ((sx / 256.0) as u32, (sy / 256.0) as u32);
+            let plane = planes.entry((tx, ty)).or_insert_with(|| {
+                let res = res_at(rz, ty);
+                pack.plane(rz, tx, ty, res)
+                    .map(|(dem, g)| relief::compute_in(&dem, res, sky_radius_m(zoom), &g))
+            });
+            let c = match plane {
+                Some(p) => {
+                    let u = (sx - f64::from(tx) * 256.0) as f32;
+                    let v = (sy - f64::from(ty) * 256.0) as f32;
+                    let (t, ao) = sample(p, u, v);
+                    shade_rgb(PAPER, t, ao)
+                }
+                None => PAPER,
+            };
+            out.extend_from_slice(&c);
+        }
+    }
+    out
+}
+
+/// Compare `rgb` against `tests/golden/relief/<name>.png`: every channel
+/// within 1 of the golden (the kernels are deterministic `f32` without
+/// fused operations, so a host gives the same bytes; the step of one
+/// leaves room for a libm that rounds a last bit otherwise), else the
+/// picture is left in `$TMPDIR/leviculum-golden/relief-<name>.png` to
+/// look at and copy over. `LEVICULUM_GOLDEN_BLESS` writes the golden.
+fn golden(name: &str, rgb: &[u8], w: usize, h: usize) {
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/relief");
+    let path = dir.join(format!("{name}.png"));
+    let write = |p: &std::path::Path| {
+        let f = std::fs::File::create(p).expect("create the picture");
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(f), w as u32, h as u32);
+        enc.set_color(png::ColorType::Rgb);
+        enc.write_header()
+            .expect("png header")
+            .write_image_data(rgb)
+            .expect("png data");
+    };
+    if std::env::var_os("LEVICULUM_GOLDEN_BLESS").is_some() {
+        std::fs::create_dir_all(&dir).expect("golden dir");
+        write(&path);
+        return;
+    }
+    let decoder = png::Decoder::new(std::io::BufReader::new(
+        std::fs::File::open(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())),
+    ));
+    let mut reader = decoder.read_info().expect("png info");
+    let mut want = vec![0u8; reader.output_buffer_size().expect("png size")];
+    let info = reader.next_frame(&mut want).expect("png frame");
+    want.truncate(info.buffer_size());
+    let worst = want
+        .iter()
+        .zip(rgb)
+        .map(|(a, b)| a.abs_diff(*b))
+        .max()
+        .unwrap_or(255);
+    if want.len() != rgb.len() || worst > 1 {
+        let tmp = std::env::temp_dir().join("leviculum-golden");
+        std::fs::create_dir_all(&tmp).expect("tmp dir");
+        let moved = tmp.join(format!("relief-{name}.png"));
+        write(&moved);
+        panic!(
+            "relief golden {name} moved (worst channel step {worst}); this run's picture: {}",
+            moved.display()
+        );
+    }
+}
+
+/// Luminance percentiles (p5, median) of an RGB picture.
+fn lum_p5_median(rgb: &[u8]) -> (f32, f32) {
+    let mut l: Vec<f32> = rgb
+        .chunks_exact(3)
+        .map(|c| 0.2126 * f32::from(c[0]) + 0.7152 * f32::from(c[1]) + 0.0722 * f32::from(c[2]))
+        .collect();
+    l.sort_by(f32::total_cmp);
+    (l[(l.len() - 1) * 5 / 100], l[(l.len() - 1) / 2])
+}
+
+/// The relief pinned on real ground: Erg Chebbi and Erg Chegaga at z10,
+/// z12 and z14, Jbel Bani's stone desert (hamada, wadis, the escarpment)
+/// at z12 and z14, central Switzerland and the Uckermark lowland at z12
+/// — each 256 x 256 over paper. Every picture also keeps the study's
+/// floor: nothing below luminance 100.
+#[test]
+fn relief_goldens() {
+    let cases: [(&str, &'static [u8], u8); 10] = [
+        ("chebbi-z10", CHEBBI_Z10, 10),
+        ("chebbi-z12", CHEBBI_Z10, 12),
+        ("chebbi-z14", CHEBBI_Z10, 14),
+        ("chegaga-z10", CHEGAGA_Z10, 10),
+        ("chegaga-z12", CHEGAGA_Z10, 12),
+        ("chegaga-z14", CHEGAGA_Z10, 14),
+        ("bani-z12", BANI, 12),
+        ("bani-z14", BANI, 14),
+        ("alps-z12", ALPS, 12),
+        ("uckermark-z12", UCKERMARK, 12),
+    ];
+    for (name, bytes, zoom) in cases {
+        let rgb = relief_picture(bytes, zoom, 256, 256);
+        let (p5, median) = lum_p5_median(&rgb);
+        println!("RELIEF_GOLDEN {name} p5={p5:.0} median={median:.0}");
+        let darkest = rgb
+            .chunks_exact(3)
+            .map(|c| 0.2126 * f32::from(c[0]) + 0.7152 * f32::from(c[1]) + 0.0722 * f32::from(c[2]))
+            .fold(255.0f32, f32::min);
+        assert!(darkest >= 100.0, "{name}: darkest luminance {darkest}");
+        golden(name, &rgb, 256, 256);
+    }
+}
