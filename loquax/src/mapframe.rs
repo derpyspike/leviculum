@@ -1794,8 +1794,8 @@ mod tests {
             .expect("a flat zoom");
         let band = (2000..flat)
             .step_by(50)
-            .filter(|&z| (0.4..=0.7).contains(&t_of(z)))
-            .last()
+            .rev()
+            .find(|&z| (0.4..=0.7).contains(&t_of(z)))
             .expect("a blended zoom");
         // With a clock, as every frontend asks: without one a frame
         // runs every pass and places its names anew, and nothing rides.
