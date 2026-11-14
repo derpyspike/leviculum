@@ -27,6 +27,12 @@
 //! starts no Reticulum stack of its own, so the interfaces a board is reached
 //! over are configured once, in the daemon's config file.
 
+/// The one allocator of every Leviculum program (1805,
+/// docs/src/architecture.md "Memory allocator"); `leviculum_alloc::start()`
+/// runs first in `main`.
+#[global_allocator]
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
+
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::mpsc::{Receiver, Sender};
@@ -543,8 +549,16 @@ fn failure(message: impl std::fmt::Display) -> ExitCode {
     ExitCode::FAILURE
 }
 
+/// The allocator's housekeeping first (1805): a plain `main`, because
+/// `#[tokio::main]` builds the runtime and its worker threads ahead of the
+/// body's first line.
+fn main() -> ExitCode {
+    leviculum_alloc::start();
+    tokio_main()
+}
+
 #[tokio::main]
-async fn main() -> ExitCode {
+async fn tokio_main() -> ExitCode {
     let args = Args::parse();
     match run(args).await {
         Ok(code) => code,

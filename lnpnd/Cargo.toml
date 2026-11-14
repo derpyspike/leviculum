@@ -140,21 +140,16 @@ package; installing either one swaps the other out.
 # own defaults so that leviculum-std, which takes lnpnd as a dev-dependency,
 # can test its minimal set without this edge switching both back on.
 #
-# `alloc-mimalloc` is default for the reason it is lnsd's (#437, 766;
-# leviculum-cli/Cargo.toml): the lnpnd on miauhaus (902bc129, LV-1000) grew
-# its resident set by about 70 MB an hour in fresh mid-size anonymous
-# mappings while every table its census knows stayed flat, the retention
-# musl's mallocng showed under lnsd before lnsd moved to mimalloc (order
-# 1592). `--no-default-features --features ble,serial,i2p` builds lnpnd on
-# the libc allocator; scripts/build-deb.sh does so under
-# LEVICULUM_ALLOC=system. With `heap-accounting` as well, the counting shim
-# wraps mimalloc, so the census still reports live bytes.
-default = ["alloc-mimalloc", "ble", "serial", "i2p"]
+# lnpnd runs on leviculum-alloc's allocator, mimalloc v3, with no feature to
+# turn it off (1805, docs/src/architecture.md "Memory allocator"): one
+# allocator for every program. `alloc-mimalloc` (1592) and the libc build
+# under `--no-default-features` are gone; with `heap-accounting` the
+# counting shim wraps the same allocator, so the census reports live bytes.
+default = ["ble", "serial", "i2p"]
 ble = ["leviculum-std/ble"]
 serial = ["leviculum-std/serial"]
 i2p = ["leviculum-std/i2p"]
 heap-accounting = ["leviculum-std/heap-accounting"]
-alloc-mimalloc = ["dep:mimalloc"]
 
 [dependencies]
 # The propagation-node role, the store trait, and the wire codecs.
@@ -176,9 +171,8 @@ rand_core = { version = "0.6", features = ["std", "getrandom"] }
 # `block_on` for stamp validation inside the hook; see engine.rs for the
 # budget note.
 futures = "0.3"
-# `alloc-mimalloc` only, which is a default feature; see it. The same line
-# as lnsd's, so the workspace links one mimalloc.
-mimalloc = { version = "0.1", optional = true, default-features = false }
+# The one allocator of every program (1805); see `[features]`.
+leviculum-alloc = { path = "../leviculum-alloc" }
 
 [dev-dependencies]
 tempfile = "3"

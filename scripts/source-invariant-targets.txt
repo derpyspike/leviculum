@@ -340,3 +340,5 @@ skip  lnpnd           store_index_at_start       # spawns the daemon three times
 skip  lnpnd           store_index_census         # its subject is the code: a store built in a temp dir against a counting allocator, 2 s
 skip  nmea0183        parsing                    # sentence corpus in-process; subject is the parser
 skip  vectors-verify  corpus                     # reads the vector corpus, but the subject is the codecs under it
+skip  leviculum-alloc   start   # subject is the code: spawns the release thread and reads /proc; cargo test runs it
+skip  leviculum-std   flush_release_memory   # starts a child process and a node, about 4.5 s; cargo test --workspace runs it

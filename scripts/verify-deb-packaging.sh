@@ -359,23 +359,24 @@ else
     pass "ships no /etc/reticulum/config (lnsd writes its first-start file)"
 fi
 contains "$CONTENTS" "lnsd.service" "ships the lnsd systemd unit"
-# lnsd ships on mimalloc (#437, 766). Read off the packaged bytes rather than
-# run, so an arm64 package is checked from an amd64 host too; the startup
-# line is in the binary only when it was built on mimalloc. LEVICULUM_ALLOC=
-# system is build-deb.sh's knob and inverts the check.
+# Every binary runs on leviculum-alloc's allocator (1805). Read off the
+# packaged bytes rather than run, so an arm64 package is checked from an
+# amd64 host too, for the two witnesses scripts/check-allocator.py --binary
+# reads: mimalloc's own message string, and in a musl binary musl mallocng's
+# symbol, which a cargo zigbuild link (Zig's malloc) does not carry.
 # lnpnd likewise since 1592, checked in its own section below.
 check_allocator() {
-    local package="$1" bin="$2" deb tmp want="${LEVICULUM_ALLOC:-mimalloc}"
+    local package="$1" bin="$2" deb tmp
     deb="$(find_deb "$package")"
     [ -n "$deb" ] || return 0
     tmp="$(mktemp -d)"
     dpkg-deb -x "$deb" "$tmp"
-    if grep -qaF 'Allocator: mimalloc' "$tmp/usr/bin/$bin"; then
-        [ "$want" = mimalloc ] && pass "$bin is built on mimalloc" \
-            || fail "$bin is built on mimalloc under LEVICULUM_ALLOC=${want}"
+    if ! grep -qaF 'mimalloc: warning: ' "$tmp/usr/bin/$bin"; then
+        fail "$bin is not built on mimalloc (no 'mimalloc: warning: ' in /usr/bin/$bin)"
+    elif ! grep -qaF 'GLIBC_2.' "$tmp/usr/bin/$bin" && ! grep -qaF '__libc_malloc_impl' "$tmp/usr/bin/$bin"; then
+        fail "$bin is a musl binary without musl mallocng's __libc_malloc_impl (a zigbuild link?)"
     else
-        [ "$want" = system ] && pass "$bin is built on the libc allocator (LEVICULUM_ALLOC=system)" \
-            || fail "$bin is not built on mimalloc (no 'Allocator: mimalloc' in /usr/bin/$bin)"
+        pass "$bin is built on mimalloc and linked against mallocng or glibc"
     fi
     rm -rf "$tmp"
 }

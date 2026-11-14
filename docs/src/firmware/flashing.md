@@ -68,7 +68,7 @@ Nothing is written before all of that has been shown and confirmed.
 device, and `lnflash` mounts it itself rather than assuming a desktop
 automounter that a headless host does not have. Without root it will
 identify the attached boards and then stop.
-(`lnflash/src/main.rs:44-45`)
+(`lnflash/src/main.rs:50-51`)
 
 **One key press is sometimes unavoidable.** Getting into the bootloader
 by software has to be implemented by whatever firmware is currently
@@ -98,13 +98,13 @@ waits when a board needs the manual double-tap. Radio settings can be
 given at flash time with `--radio-preset` (`eu868`, `us915`, `au915`) or
 the individual `--radio-freq`, `--radio-bw`, `--radio-sf`, `--radio-cr`
 and `--radio-txpower` flags; `--no-radio` leaves the board's stored
-configuration alone. (`lnflash/src/main.rs:54-508`. The board keeps what
+configuration alone. (`lnflash/src/main.rs:60-514`. The board keeps what
 it is given across resets and across the next flash, so this is part of
 the flash rather than a later configuration step.)
 
 The bundle is looked for in this order: `--bundle PATH`, then
 `$LNFLASH_BUNDLE`, then the directory holding the binary, then
-`/usr/share/lnflash`. (`lnflash/src/main.rs:54-57`)
+`/usr/share/lnflash`. (`lnflash/src/main.rs:60-63`)
 
 The full user-facing text ships inside the bundle as its `README`
 (`lnflash/payload/README-bundle.md`), including what the alarming but

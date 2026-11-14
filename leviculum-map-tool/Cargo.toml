@@ -22,10 +22,11 @@ leviculum-mapcut = { path = "../leviculum-mapcut", features = ["http"] }
 embedded-graphics = "0.8"
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }
-# The allocator lnsd runs on (leviculum-cli/Cargo.toml). The cut allocates
-# per feature and per ring on every worker; on musl's allocator a Hessen cut
-# spent twice as long in the kernel as in user space.
-mimalloc = { version = "0.1", default-features = false }
+# The one allocator of every program (1805, docs/src/architecture.md
+# "Memory allocator"). The cut allocates per feature and per ring on every
+# worker; on musl's allocator a Hessen cut spent twice as long in the kernel
+# as in user space.
+leviculum-alloc = { path = "../leviculum-alloc" }
 # The height cut (1740): GLO-30 cells fetched over HTTP into memory
 # (rustls on ring, as leviculum-mapcut's http), their DEFLATE tiles
 # inflated, and the height tiles compressed as zstd frames at level 19,

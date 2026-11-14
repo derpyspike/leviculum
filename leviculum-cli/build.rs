@@ -36,13 +36,11 @@ fn main() {
     } else {
         base
     };
-    // Same rule for the allocator (508): a mimalloc daemon on the soak node
-    // has to be told apart from a mallocng one by `--version` alone.
-    let base = if std::env::var_os("CARGO_FEATURE_ALLOC_MIMALLOC").is_some() {
-        format!("{base}+mimalloc")
-    } else {
-        base
-    };
+    // The allocator, as since 508: every build is on mimalloc since 1805
+    // (leviculum-alloc, no feature turns it off), and the suffix stays so a
+    // field node still tells it from an older libc-allocator build by
+    // `--version` alone.
+    let base = format!("{base}+mimalloc");
     let git_hash = git_head_hash();
     let full = format!("{base} ({git_hash})");
     println!("cargo:rustc-env=LEVICULUM_VERSION={full}");

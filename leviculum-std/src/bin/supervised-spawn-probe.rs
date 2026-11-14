@@ -25,6 +25,12 @@
 //! That is the same fact as trap 1 in [`leviculum_std::process`], observed from
 //! the other side: per-task means per-task in both directions.
 
+/// The one allocator of every Leviculum program (1805,
+/// docs/src/architecture.md "Memory allocator"); `leviculum_alloc::start()`
+/// runs first in `main`.
+#[global_allocator]
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
+
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -37,6 +43,7 @@ use leviculum_std::process::spawn_supervised;
 const MAX_LIFETIME: Duration = Duration::from_secs(60);
 
 fn main() {
+    leviculum_alloc::start();
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("child") => child(Path::new(args.get(2).unwrap_or_else(|| usage()))),

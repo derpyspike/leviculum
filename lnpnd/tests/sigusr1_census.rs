@@ -357,12 +357,7 @@ async fn sigusr1_prints_measured_live_bytes_and_the_sampler() {
         .lines()
         .find(|l| l.starts_with("=== Measured live: "))
         .unwrap_or_default();
-    let allocator = if cfg!(feature = "alloc-mimalloc") {
-        "allocator mimalloc"
-    } else {
-        "allocator system"
-    };
-    assert!(measured.contains(allocator), "{measured}");
+    assert!(measured.contains("allocator mimalloc"), "{measured}");
     let measured_bytes = measured["=== Measured live: ".len()..]
         .split_whitespace()
         .next()
@@ -378,14 +373,10 @@ async fn sigusr1_prints_measured_live_bytes_and_the_sampler() {
     assert_allocator_line(&text);
 }
 
-/// The startup line names the allocator the build installed (1592), the
-/// line build-deb.sh reads off the binary's bytes.
+/// The startup line names the allocator the build installed (1592): since
+/// 1805 every build installs leviculum-alloc's.
 fn assert_allocator_line(text: &str) {
-    let want = if cfg!(feature = "alloc-mimalloc") {
-        "Allocator: mimalloc"
-    } else {
-        "Allocator: system (libc)"
-    };
+    let want = "Allocator: mimalloc";
     assert!(
         text.contains(want),
         "the startup line names the allocator ({want}); it said:\n{text}"
@@ -408,7 +399,8 @@ fn version_names_the_heap_accounting_feature() {
     );
 }
 
-/// `--version` tells a mimalloc build from a libc one (1592), as lnsd's does.
+/// `--version` names the allocator (1592), as lnsd's does: mimalloc in
+/// every build since 1805.
 #[test]
 fn version_names_the_allocator() {
     let out = Command::new(env!("CARGO_BIN_EXE_lnpnd"))
@@ -417,9 +409,5 @@ fn version_names_the_allocator() {
         .expect("lnpnd --version runs");
     assert!(out.status.success());
     let version = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(
-        version.contains("+mimalloc"),
-        cfg!(feature = "alloc-mimalloc"),
-        "{version}"
-    );
+    assert!(version.contains("+mimalloc"), "{version}");
 }

@@ -198,6 +198,12 @@ impl Storage {
             }
         }
 
+        // The load decoded the whole file a slice at a time and sorted a
+        // copy of its index; on a node with 180 000 known destinations that
+        // is tens of MB freed just now. Hand it back at once instead of in
+        // ten seconds (1805, docs/src/architecture.md "Memory allocator").
+        leviculum_alloc::release();
+
         Ok(Self {
             base_path,
             inner,

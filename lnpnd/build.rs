@@ -1,7 +1,7 @@
 // Compose the full version string for the lnpnd binary, the way
 // leviculum-cli/build.rs does for lnsd: the crate version, the nightly
 // build id from LEVICULUM_BUILD_ID when CI sets it, `+heapacct` in an
-// instrumented build, `+mimalloc` on the default allocator, and the git HEAD hash in parentheses, e.g.
+// instrumented build, `+mimalloc` (every build since 1805), and the git HEAD hash in parentheses, e.g.
 // "0.1.0-nightly.20261025-a3d7958+heapacct (a3d7958f…)". The hash is what
 // lets a deploy prove from the binary which commit it runs (1000); before
 // it, `lnpnd --version` printed the bare crate version on every nightly.
@@ -25,14 +25,11 @@ fn main() {
     } else {
         base
     };
-    // Same rule for the allocator (1592, as lnsd's 508): a mimalloc lnpnd on
-    // the soak node has to be told apart from a mallocng one by `--version`
-    // alone.
-    let base = if std::env::var_os("CARGO_FEATURE_ALLOC_MIMALLOC").is_some() {
-        format!("{base}+mimalloc")
-    } else {
-        base
-    };
+    // The allocator, as since 508: every build is on mimalloc since 1805
+    // (leviculum-alloc, no feature turns it off), and the suffix stays so a
+    // field node still tells it from an older libc-allocator build by
+    // `--version` alone.
+    let base = format!("{base}+mimalloc");
     let git_hash = git_head_hash();
     let full = format!("{base} ({git_hash})");
     println!("cargo:rustc-env=LEVICULUM_VERSION={full}");

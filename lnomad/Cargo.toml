@@ -73,6 +73,7 @@ default = ["std", "ble", "serial", "i2p", "tui"]
 # lnomad-core-no-std` builds for the firmware triples.
 std = [
     "dep:leviculum-std",
+    "dep:leviculum-alloc",
     "dep:rmpv",
     "dep:tokio",
     "dep:toml",
@@ -109,6 +110,9 @@ tui = [
 gui = ["std", "dep:iced", "dep:leviculum-ui-iced"]
 
 [dependencies]
+# The one allocator of every program (1805, docs/src/architecture.md
+# "Memory allocator"): the binary installs it and starts it first in `main`.
+leviculum-alloc = { path = "../leviculum-alloc", optional = true }
 leviculum-micron = { path = "../leviculum-micron" }
 # Default features off: its `std` half (the terminal editor's table) is
 # lnomad's `std`.

@@ -41,6 +41,12 @@
 //! `[fill]` defaults to `1`. Pass `0` to skip the pipe filling entirely and
 //! measure the ordinary case against a plain file.
 
+/// The one allocator of every Leviculum program (1805,
+/// docs/src/architecture.md "Memory allocator"); `leviculum_alloc::start()`
+/// runs first in `main`.
+#[global_allocator]
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
+
 use std::io::Write;
 use std::os::fd::{FromRawFd, IntoRawFd};
 use std::time::Instant;
@@ -163,6 +169,7 @@ fn fill_to_eagain(filler: &mut std::fs::File) -> usize {
 }
 
 fn main() {
+    leviculum_alloc::start();
     let mut args = std::env::args().skip(1);
     let rounds: usize = args
         .next()

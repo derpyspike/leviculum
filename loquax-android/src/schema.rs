@@ -166,6 +166,10 @@
 //! Explore (1578) came within version 1 too: [`Request::Explore`] and
 //! [`Query::Explore`] with its [`ExploreScreen`]. An older app sends
 //! neither and keeps its Browse and Rooms buttons.
+//! The loader's next retry (1821) came within version 1 too:
+//! [`MapShown::retry_in_ms`]. An older app never sees a box wait — it
+//! stops asking for frames and a failed box retries only on the next
+//! touch, which is what 1821 fixed.
 
 use serde::{Deserialize, Serialize};
 
@@ -3168,6 +3172,12 @@ pub struct MapShown {
     /// in [`FILLING_MS`], when more of it may be there.
     #[serde(default)]
     pub filling: bool,
+    /// A box failed and waits to retry (1821): milliseconds until the
+    /// loader's next own move, absent when none waits. The app posts a
+    /// frame for that instant, so a box that failed at rest is retried
+    /// with no touch and the view fills once the source answers.
+    #[serde(default)]
+    pub retry_in_ms: Option<u64>,
     /// The tracks' time window the frame drew (1385): `now` for the
     /// current movement, else the window's word.
     #[serde(default)]

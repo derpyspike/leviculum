@@ -116,8 +116,11 @@ pub struct GroupMember {
     /// 2026-11-13, rule 4) — the first epoch the reader SAW it listed
     /// under, which is all the reader can vouch for. A member relisted
     /// after it left starts over at the relisting epoch (the audits of
-    /// 1816): the gap in which it was out stays vouched for by nobody.
-    /// `None` when the store cannot say (a row written before this
+    /// 1816, the second audit of 1823): the gap in which it was out
+    /// stays vouched for by nobody. The store keeps one interval per
+    /// member, so its copies from before it left are refused from then
+    /// on rather than vouched for across the gap, the safe side of rule
+    /// 4. `None` when the store cannot say (a row written before this
     /// rule): then no copy is vouched for until the next membership
     /// comes.
     pub since: Option<u64>,
@@ -389,8 +392,9 @@ fn member_of(m: &Member) -> GroupMember {
 /// listed under — kept from `old` where it was known, this `epoch` for a
 /// member new to the reader or one whose epoch the store could not say —
 /// and the epoch its leaving was first listed under. A member relisted
-/// after it left starts over at the relisting `epoch` (the audits of
-/// 1816): nobody vouches for the gap in which it was out.
+/// after it left starts over at the relisting `epoch`
+/// ([`GroupMember::since`]; the audits of 1816 and 1823): nobody vouches
+/// for the gap in which it was out.
 fn merged_members(old: &[GroupMember], members: &Members) -> Vec<GroupMember> {
     members
         .members
@@ -4049,5 +4053,107 @@ mod tests {
         };
         assert_eq!(name, "Familie");
         assert_eq!(members.iter().map(|m| m.0).collect::<Vec<_>>(), [LEW, ANNA]);
+    }
+
+    /// A member listed at epoch 1, marked left at epoch 3 and listed
+    /// again at epoch 5 (the second audit of 1823): no copy from the gap,
+    /// epochs 3 and 4, is its word; copies from epoch 5 on are. Copies
+    /// from before it left, epochs 1 and 2, are refused too: the store
+    /// keeps one interval per member, so `since` restarts at the rejoin
+    /// epoch, the safe side of Lew 2026-11-13 rule 4 ("if the store cannot
+    /// say, the copy is refused"). The store reads the restarted epochs
+    /// back as written.
+    #[test]
+    fn audit_second_1823_a_member_who_left_and_came_back_vouches_for_no_copy_from_the_gap() {
+        let listed = |epoch, flags| Members {
+            epoch,
+            members: vec![Member {
+                address: ANNA,
+                name: "Anna".into(),
+                flags,
+            }],
+            ended: false,
+        };
+        let first = merged_members(&[], &listed(1, MEMBER_JOINED));
+        let left = merged_members(&first, &listed(3, MEMBER_LEFT));
+        let back = merged_members(&left, &listed(5, MEMBER_JOINED));
+        let [anna] = back.as_slice() else {
+            panic!("one member: {back:?}");
+        };
+        assert!(!anna.vouches_at(3, &ANNA), "its leaving epoch");
+        assert!(!anna.vouches_at(4, &ANNA), "inside the gap");
+        assert!(anna.vouches_at(5, &ANNA), "the epoch that lists it again");
+        assert!(anna.vouches_at(6, &ANNA), "after it came back");
+        // Rule 4: one interval per member, so the time before the gap is
+        // given up rather than vouched for across it.
+        assert!(
+            !anna.vouches_at(1, &ANNA),
+            "before the gap: refused, rule 4"
+        );
+        assert!(
+            !anna.vouches_at(2, &ANNA),
+            "before the gap: refused, rule 4"
+        );
+        // Control: before the rejoin it vouched for epochs 1 and 2.
+        assert!(left[0].vouches_at(2, &ANNA) && !left[0].vouches_at(3, &ANNA));
+        // The store keeps what the merge said.
+        let info = GroupInfo {
+            members: back.clone(),
+            ..GroupInfo::new(GROUP)
+        };
+        let mut read = vec![GroupMember {
+            since: None,
+            left_from: None,
+            ..anna.clone()
+        }];
+        GroupInfo::epochs_from(&mut read, Some(&info.epochs_bytes()));
+        assert_eq!(read, back);
+    }
+
+    /// The same gap through the reader's model and the writer rule: a
+    /// verified copy from Anna at an epoch while she was out is nobody's
+    /// reading, one from after she came back is hers.
+    #[test]
+    fn audit_second_1823_a_copy_from_a_rejoined_members_gap_is_nobodys_reading() {
+        use leviculum_lxmf::lev::ReadingOwner;
+        let mut model = in_familie(false);
+        let list = |anna: u64| {
+            [
+                (LEW, "Lew", MEMBER_ADMIN | MEMBER_JOINED),
+                (ME, "Me", MEMBER_JOINED),
+                (ANNA, "Anna", anna),
+                (BOB, "Bob", MEMBER_JOINED),
+            ]
+        };
+        arrive(&mut model, GROUP, 3, "", members(3, &list(MEMBER_LEFT)));
+        arrive(&mut model, GROUP, 4, "", members(5, &list(MEMBER_JOINED)));
+        assert_eq!(model.group(&GROUP).map(|g| g.epoch), Some(5));
+        let owner = |epoch| {
+            let fields = lev_fields(Lev {
+                group_copy: Some(GroupCopy {
+                    sender: ANNA,
+                    sent_ms: 1,
+                    epoch,
+                }),
+                ..Lev::default()
+            });
+            super::super::copy_writer(&model.groups, GROUP, &fields, true)
+        };
+        // The gap first, then (rule 4, one interval) the epochs before it.
+        for epoch in [3, 4, 1, 2] {
+            assert!(
+                matches!(owner(epoch), ReadingOwner::Refused(_)),
+                "epoch {epoch}: {:?}",
+                owner(epoch)
+            );
+        }
+        assert!(
+            matches!(owner(5), ReadingOwner::Writer(c) if c.sender == ANNA),
+            "{:?}",
+            owner(5)
+        );
+        // Control: Bob, never out, vouches for every epoch.
+        let bob = model.group(&GROUP).and_then(|g| g.member(&BOB)).cloned();
+        assert!(bob.is_some_and(|b| (1..=5).all(|e| b.vouches_at(e, &BOB))));
     }
 }

@@ -70,6 +70,12 @@ macro_rules! mark_close {
 /// the v3 build of one commit agree. It sits in the read-only data of
 /// every build. The needle the scan looks for is a slice of this same
 /// static, so the binary holds the frame's opening exactly once, here.
+///
+/// `#[used]`: in the v3 build `start` returns before it reads its own id,
+/// nothing else referenced the static, and the linker dropped it, so the
+/// baseline found no id in its sibling and refused the handover
+/// (`sibling=unknown`, scripts/verify-deb-packaging.sh, 2026-11-14).
+#[used]
 static BUILD_MARK: &str = concat!(mark_open!(), env!("LEVICULUM_VERSION"), mark_close!());
 
 /// The opening of the frame, as a slice of [`BUILD_MARK`].

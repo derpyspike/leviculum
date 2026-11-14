@@ -20,6 +20,12 @@
 //! answer within the budget, 4 any other failure (no shared instance, the
 //! link closed, an unreadable reply), 2 a usage error.
 
+/// The one allocator of every Leviculum program (1805,
+/// docs/src/architecture.md "Memory allocator"); `leviculum_alloc::start()`
+/// runs first in `main`.
+#[global_allocator]
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -153,8 +159,16 @@ fn outcome_words(outcome: &DfuOutcome, timeout: Duration) -> (String, u8) {
     }
 }
 
+/// The allocator's housekeeping first (1805): a plain `main`, because
+/// `#[tokio::main]` builds the runtime and its worker threads ahead of the
+/// body's first line.
+fn main() -> ExitCode {
+    leviculum_alloc::start();
+    tokio_main()
+}
+
 #[tokio::main]
-async fn main() -> ExitCode {
+async fn tokio_main() -> ExitCode {
     let args = Args::parse();
     match &args.verb {
         Verb::Dfu(dfu) => ExitCode::from(run_dfu(&args, dfu).await),

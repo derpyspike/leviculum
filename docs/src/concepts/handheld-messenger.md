@@ -42,7 +42,7 @@ map as decided on 2026-10-25, and what is open.
   model that lives in the `no_std` core. Its frontend already
   talks to the backend only through `Outbox` (`loquax/src/outbox.rs:553`),
   but the crate is `std`. It depends on `leviculum-std` and tokio
-  (`loquax/Cargo.toml:294`, `loquax/Cargo.toml:298`), since 2026-10-25 behind its `std` feature,
+  (`loquax/Cargo.toml:302`, `loquax/Cargo.toml:298`), since 2026-10-25 behind its `std` feature,
   and `just loquax-core-no-std` holds the core to `no_std` (green since
   993; the pass order is in [Loquax: architecture](loquax-architecture.md),
   "Plan: the Loquax core without std").
@@ -1028,7 +1028,7 @@ grows by 17,248 B to 944,768 B (`just build-m9`).
 board needs: `Create` (`/group`), `Add` (`/groupadd`), `Delete`
 (`/groupdelete`, its `Ok` the group it deleted), and `State`, the
 member's Join, Leave or the admin's Remove, which the model makes a state
-message to the group (`group_state`, `loquax/src/ui/groups.rs:1854`) and
+message to the group (`group_state`, `loquax/src/ui/groups.rs:1858`) and
 the home sends as any message (`/send`). `ask_of`
 (`loquax-m9/src/group.rs:363`) turns the model's effect into that verb,
 with the board's fresh client id; a plain message is no group's ask.

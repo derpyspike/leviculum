@@ -21,9 +21,10 @@ use leviculum_mapfill::frame::Frame;
 use leviculum_mapfill::render::{NoClock, Work};
 use leviculum_mapfill::style::{Profile, BACKGROUND};
 
-/// See the manifest: musl's allocator made the cut kernel-bound.
+/// The one allocator of every Leviculum program (1805); see the manifest:
+/// musl's allocator made the cut kernel-bound.
 #[global_allocator]
-static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
 
 #[derive(Parser)]
 #[command(about = "Cut and inspect leviculum map region files")]
@@ -584,6 +585,7 @@ fn cmd_render(path: &Path, out: &Path, at: LatLon, zoom: u8, w: u32, h: u32) -> 
 }
 
 fn main() -> Res<()> {
+    leviculum_alloc::start();
     match Cli::parse().cmd {
         Cmd::Cut {
             inputs,

@@ -6,6 +6,12 @@
 //! design and `docs/src/concepts/lnode-flashing.md` for the evidence behind
 //! every constant.
 
+/// The one allocator of every Leviculum program (1805,
+/// docs/src/architecture.md "Memory allocator"); `leviculum_alloc::start()`
+/// runs first in `main`.
+#[global_allocator]
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -622,6 +628,7 @@ fn parse_storm(text: &str) -> Result<leviculum_core::envelope::StoreStormWire, S
 }
 
 fn main() -> ExitCode {
+    leviculum_alloc::start();
     let cli = Cli::parse();
     match run(&cli) {
         Ok(code) => code,

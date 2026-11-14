@@ -25,10 +25,10 @@
 //! `heap-gap-bench --alloc-overhead` measures what that costs.
 //!
 //! Changing the allocator was a separate, deliberate experiment (508), and
-//! its answer is now lnsd's default (766): the `alloc-mimalloc` lnsd puts
-//! [`crate::heap_accounting::CountingOver`] in front of mimalloc, the same
-//! counting over a different allocator, so its census compares with that of
-//! an lnsd built without the feature, which counts over the libc allocator.
+//! its answer is now every program's (766, 1805): a daemon under the feature
+//! puts [`crate::heap_accounting::CountingOver`] in front of leviculum-alloc's
+//! mimalloc, the same counting over the allocator the plain build runs, so
+//! its census compares with the field's; this shim alone counts over libc.
 //!
 //! # Users
 //!
@@ -55,8 +55,8 @@ static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 pub struct CountingAllocator;
 
 /// The same shim in front of another allocator, for a build that replaces
-/// the system allocator and still wants the measured balance (508: the
-/// `alloc-mimalloc` lnsd). A separate type rather than a type parameter on
+/// the system allocator and still wants the measured balance (508; since
+/// 1805 every program, over `leviculum_alloc::Global`). A separate type rather than a type parameter on
 /// [`CountingAllocator`], so the symbol names the massif recipe in
 /// `heap-gap-bench` passes as `--alloc-fn` stay what they are.
 pub struct CountingOver<A>(pub A);

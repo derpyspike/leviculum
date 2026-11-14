@@ -7,6 +7,12 @@
 //!
 //! See `docs/src/jl-jldiff.md` for the full reference + worked examples.
 
+/// The one allocator of every Leviculum program (1805,
+/// docs/src/architecture.md "Memory allocator"); `leviculum_alloc::start()`
+/// runs first in `main`.
+#[global_allocator]
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
+
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -274,6 +280,7 @@ fn run(args: Args) -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
+    leviculum_alloc::start();
     let args = Args::parse();
     match run(args) {
         Ok(()) => ExitCode::SUCCESS,

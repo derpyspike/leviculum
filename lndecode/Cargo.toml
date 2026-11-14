@@ -16,6 +16,9 @@ publish = false
 # list, rather than promised in a comment: only sha2 and ed25519-dalek (third-
 # party primitives, not our field layout) are linked in.
 [dependencies]
+# The one allocator of every program (1805, docs/src/architecture.md
+# "Memory allocator"): the binary installs it and starts it first in `main`.
+leviculum-alloc = { path = "../leviculum-alloc" }
 serde_json = "1"
 sha2.workspace = true
 ed25519-dalek.workspace = true

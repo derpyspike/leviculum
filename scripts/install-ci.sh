@@ -384,16 +384,16 @@ echo "[install-ci] book renderer: mdbook 0.4.48 (scripts/build-docs-tarball.sh)"
 #     and publishes the nightly on the tier-2 nightly host, so the forge's
 #     build steps' tools live here now: both musl targets, cargo-deb for
 #     the packages, and cargo-zigbuild with a pip-installed ziglang as the
-#     arm64 and armhf cross linker (scripts/build-deb.sh), and the linker of
-#     loquax's glibc build on amd64 and arm64 (1342), whose two gnu targets
-#     are added here too. musl-gcc, which links the amd64 build, is the apt
-#     package musl-tools.
+#     arm64 and armhf cross C compiler (scripts/zig-cc.sh; rust-lld links,
+#     1805), and the linker of loquax's glibc build on amd64 and arm64
+#     (1342), whose two gnu targets are added here too. Both pinned to what
+#     scripts/build-deb.sh requires. musl-gcc is the apt package musl-tools.
 rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
     armv7-unknown-linux-musleabihf x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
 cargo install --locked cargo-deb
-cargo install --locked cargo-zigbuild
-python3 -c 'import ziglang' 2>/dev/null ||
-    python3 -m pip install --user --break-system-packages ziglang
+cargo install --locked cargo-zigbuild --version 0.23.4
+[ "$(python3 -m ziglang version 2>/dev/null)" = 0.16.0 ] ||
+    python3 -m pip install --user --break-system-packages ziglang==0.16.0
 command -v musl-gcc >/dev/null 2>&1 ||
     echo "[install-ci] Hint: sudo apt install musl-tools (needed for the musl .deb builds)"
 echo "[install-ci] nightly packaging: musl targets + cargo-deb + cargo-zigbuild + ziglang (just nightly-publish)"

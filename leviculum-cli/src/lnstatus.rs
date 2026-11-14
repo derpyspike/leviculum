@@ -14,6 +14,12 @@
 //! `lnstatus | diff rnstatus` against the same daemon passes. See
 //! `lnstatus_render` for the format port and the golden-output tests.
 
+/// The one allocator of every Leviculum program (1805,
+/// docs/src/architecture.md "Memory allocator"); `leviculum_alloc::start()`
+/// runs first in `main`.
+#[global_allocator]
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -296,8 +302,16 @@ async fn fetch_transport_tables(
     }
 }
 
+/// The allocator's housekeeping first (1805): a plain `main`, because
+/// `#[tokio::main]` builds the runtime and its worker threads ahead of the
+/// body's first line.
+fn main() {
+    leviculum_alloc::start();
+    tokio_main()
+}
+
 #[tokio::main]
-async fn main() {
+async fn tokio_main() {
     let args = Args::parse();
 
     // --- Resolve config dir / instance name. ---

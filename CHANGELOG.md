@@ -520,6 +520,17 @@ Toolchain: Rust 1.97.1
 
 ### Changed
 
+- One allocator for every program (1805): every binary, the one-shot tools
+  and lnflash included, runs on mimalloc v3 through the new crate
+  `leviculum-alloc`, with transparent huge pages off at compile time, a
+  thread that hands freed memory back once a second, and an immediate
+  release after the `known_destinations` load and flush, whose spike now
+  returns in 0.1 s instead of 10 to 20 s. The `alloc-mimalloc` features of
+  lnsd and lnpnd and the `LEVICULUM_ALLOC=system` package builds are gone.
+  The arm64 and armhf musl binaries link with rust-lld and Rust's own musl,
+  so the C code in them (SQLite, libdbus) no longer calls Zig's malloc;
+  `scripts/check-allocator.py` holds every binary to the rule.
+
 - `lnflash` asks nothing (#476, 1573): starting it flashes every board it
   recognises. The overwrite question is gone; the radio is estimated
   (stored settings other than the shipped eu868 are kept, otherwise the

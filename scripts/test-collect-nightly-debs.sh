@@ -151,11 +151,12 @@ EOF
         for triple in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
             mkdir -p "$EXT_TARGET/$triple/release"
             for b in "${BINS_AMD[@]}"; do
-                echo "real ${b} ${triple}" > "$EXT_TARGET/$triple/release/$b"
+                # The two byte witnesses the step reads (1805): mimalloc's
+                # message and musl mallocng's symbol. The zigbuild-lnsd case
+                # below takes them out again.
+                printf 'real %s %s\nmimalloc: warning: \n__libc_malloc_impl\n' "$b" "$triple" \
+                    > "$EXT_TARGET/$triple/release/$b"
             done
-            # The startup line a mimalloc lnsd carries (766); the
-            # lnsd-on-libc case below takes it out again.
-            echo "Allocator: mimalloc" >> "$EXT_TARGET/$triple/release/lnsd"
         done
     fi
 
@@ -193,8 +194,8 @@ EOF
         || { echo "could not build the fixture git repo"; exit 1; }
 }
 
-run_collect() {  # [VAR=value ...] passed to the script's environment
-    ( cd "$TREE" && env PATH="$BIN" LEVICULUM_BUILD_ID="fixture-build" "$@" \
+run_collect() {
+    ( cd "$TREE" && env PATH="$BIN" LEVICULUM_BUILD_ID="fixture-build" \
         bash "$TREE/scripts/collect-nightly-debs.sh" ) > "$TREE/../out" 2>&1
     echo $? > "$TREE/../rc"
 }
@@ -305,7 +306,7 @@ rm -rf "$stage"; mkdir -p "$stage"
 tar -C "$stage" -xzf "$TREE/dist/loquax-nightly-arm64.tar.gz" 2>/dev/null \
     || fail "loquax-nightly-arm64.tar.gz is not a readable gzip tarball"
 lms="$stage/loquax-nightly-arm64"
-got="$(cat "$lms/bin/loquax" 2>/dev/null)"
+got="$(head -n1 "$lms/bin/loquax" 2>/dev/null)"
 [ "$got" = "real loquax aarch64-unknown-linux-musl" ] || fail "loquax tarball carries '${got}' as bin/loquax"
 grep -q "^version: ${VER_LNMSG}\$" "$lms/VERSION" 2>/dev/null \
     || fail "loquax VERSION does not name its own version ${VER_LNMSG}"
@@ -359,24 +360,30 @@ out | grep -q 'build-docs-tarball' \
     || fail "the failure does not name scripts/build-docs-tarball.sh"
 [ "$failures" -eq "$before" ] || dumpout
 
-# --- Case: an lnsd on the libc allocator ----------------------------------
+# --- Case: an lnsd linked by cargo zigbuild ------------------------------
 #
-# 766: lnsd ships on mimalloc, and the tarball packs whatever lnsd the release
-# directory holds. One built without the default feature, on one arch only,
-# must stop the step; under LEVICULUM_ALLOC=system the same tree is collected.
-echo "[case] lnsd-on-libc"
+# 1805: every tarball binary runs on leviculum-alloc's allocator and is linked
+# by rust-lld, and the tarball packs whatever the release directory holds. An
+# arm64 lnsd with mimalloc but without musl mallocng's symbol is what a cargo
+# zigbuild link leaves (Zig's malloc for the C code), and must stop the step
+# before anything is packed; so must one without mimalloc at all.
+echo "[case] lnsd-zigbuild"
 before=$failures
-setup lnsd-on-libc
-echo "real lnsd aarch64-unknown-linux-musl" \
+setup lnsd-zigbuild
+printf 'real lnsd aarch64-unknown-linux-musl\nmimalloc: warning: \n' \
+    > "$EXT_TARGET/aarch64-unknown-linux-musl/release/lnsd"
+run_collect
+[ "$(rc)" != "0" ] || fail "exit 0 with a zigbuild-linked arm64 lnsd"
+out | grep -q 'aarch64-unknown-linux-musl/release/lnsd: a musl binary without musl mallocng' \
+    || fail "the failure does not name the binary and the link"
+[ -e "$TREE/dist/leviculum-nightly-arm64.tar.gz" ] \
+    && fail "the zigbuild lnsd was packed into a tarball before the step stopped"
+printf 'real lnsd aarch64-unknown-linux-musl\n__libc_malloc_impl\n' \
     > "$EXT_TARGET/aarch64-unknown-linux-musl/release/lnsd"
 run_collect
 [ "$(rc)" != "0" ] || fail "exit 0 with an arm64 lnsd not built on mimalloc"
-out | grep -q 'aarch64-unknown-linux-musl/release/lnsd is not built on mimalloc' \
+out | grep -q 'aarch64-unknown-linux-musl/release/lnsd: not built on mimalloc' \
     || fail "the failure does not name the binary and the allocator"
-[ -e "$TREE/dist/leviculum-nightly-arm64.tar.gz" ] \
-    && fail "the libc lnsd was packed into a tarball before the step stopped"
-run_collect LEVICULUM_ALLOC=system
-[ "$(rc)" = "0" ] || fail "exit $(rc) under LEVICULUM_ALLOC=system, expected 0"
 [ "$failures" -eq "$before" ] || dumpout
 
 # --- Case: nobody stamped the target directory ----------------------------

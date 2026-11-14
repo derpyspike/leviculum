@@ -23,12 +23,19 @@
 //! `event_log::install_global_subscriber`; events go to the
 //! per-process file `LEVICULUM_EVENT_LOG` points at.
 
+/// The one allocator of every Leviculum program (1805,
+/// docs/src/architecture.md "Memory allocator"); `leviculum_alloc::start()`
+/// runs first in `main`.
+#[global_allocator]
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
+
 use std::thread;
 use std::time::Duration;
 
 use leviculum_std::event_log::install_global_subscriber;
 
 fn main() {
+    leviculum_alloc::start();
     let mut args = std::env::args().skip(1);
     let pre_sleep_ms: u64 = args
         .next()

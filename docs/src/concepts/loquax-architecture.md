@@ -162,9 +162,9 @@ raw ANSI page text and nothing else: no link markers, no legend, and with
 (`lnomad/src/render.rs:149-152`). There is no JSON output anywhere in the
 crate: `serde_json` is not a dependency. Non-interactive detection is
 automatic: `interactive = args.gui || (!args.print && stdin().is_terminal() &&
-stdout().is_terminal())` (`lnomad/src/main.rs:185-186`), so piping never
+stdout().is_terminal())` (`lnomad/src/main.rs:199-200`), so piping never
 blocks on the UI. Exit codes: 0 success, 1 operational failure, 2 argument
-or URL error (`lnomad/src/main.rs:196`, `:188`, `:222`, `:238`).
+or URL error (`lnomad/src/main.rs:210`, `:188`, `:222`, `:238`).
 
 `lnomad` has no settings file at all. `--config` points at the *Reticulum*
 config directory; the `lnomad/` directory holds only data. The theme is
@@ -529,7 +529,7 @@ queue on either side, which is exactly the shape that tests well.
 **A. One process. TUI plus an in-driver `CoreProcessor`.** The binary
 builds a `ReticulumNode` as a shared-instance client with
 `core_processor(...)` installed, exactly as `leviculum-lxmf-node` does
-(`leviculum-lxmf-node/src/main.rs:389-398`). The processor owns the
+(`leviculum-lxmf-node/src/main.rs:403-412`). The processor owns the
 `LxmfRouter`; the TUI owns the model. They talk over two unbounded
 channels.
 
@@ -844,7 +844,7 @@ opportunity: "send me a message when the backup finishes" is a real use and
 needs no UI at all.
 
 Non-interactive subcommands from the start, following `lnomad`'s automatic
-non-tty detection (`lnomad/src/main.rs:185-186`) and its exit-code
+non-tty detection (`lnomad/src/main.rs:199-200`) and its exit-code
 convention (0, 1, 2):
 
 ```
@@ -989,7 +989,7 @@ not a list of open work.
 10. **Codeberg #203** (`StampExecutor::generate` returns a `!Send` future)
     applies to us as it applied to `leviculum-lxmf-node`, which worked
     around it with a dedicated thread running a current-thread runtime
-    (`leviculum-lxmf-node/src/main.rs:441-492`). We will make the same
+    (`leviculum-lxmf-node/src/main.rs:455-506`). We will make the same
     workaround.
 11. **Codeberg #204** (a hook owns the events its own core calls return) is
     a documentation gap we will hit on day one. The bounded re-feed loop is

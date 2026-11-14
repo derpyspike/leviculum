@@ -1225,6 +1225,18 @@ final class MapView extends View {
                         ask();
                     }
                 }, 1500);
+            } else if (shown.get("retry_in_ms") instanceof Number) {
+                // A box failed and waits to retry (1821): ask for the
+                // next frame at the loader's next own move, so a view
+                // that failed at rest fills by itself, no touch needed,
+                // once the source answers again.
+                long wait = Math.max(50L, ((Number) shown.get("retry_in_ms")).longValue());
+                postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        ask();
+                    }
+                }, wait);
             }
         }
     }

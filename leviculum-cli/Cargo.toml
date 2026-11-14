@@ -63,14 +63,12 @@ path = "src/bin/auto_crossmachine_test.rs"
 #
 #   cargo build --release -p leviculum-cli --bin lnsd --features heap-accounting
 [features]
-# mimalloc is the default allocator of `lnsd` (#437, 766): on the soak node
-# musl's mallocng let the gap between live heap and resident set grow by about
-# 400 MB a day under load, where the same daemon on mimalloc held it flat at
-# 103 to 108 MB between 3.5 h and 11 h of uptime. Default rather than
-# package-only, so the integration tests and mvrs run the allocator the field
-# runs. `--no-default-features` builds lnsd on the libc allocator;
-# scripts/build-deb.sh does so under LEVICULUM_ALLOC=system.
-default = ["alloc-mimalloc", "compression", "ble", "serial", "i2p"]
+# Every binary here runs on leviculum-alloc's allocator, mimalloc v3, with
+# no feature to turn it off (1805, docs/src/architecture.md "Memory
+# allocator"): one allocator for every program, measured by the allocator
+# study of 2026-11-13. `alloc-mimalloc` (766, 1592) and its libc-allocator
+# build under `--no-default-features` are gone.
+default = ["compression", "ble", "serial", "i2p"]
 # leviculum-std's optional parts, forwarded (#463). `compression` is the bz2
 # codec a Python peer's compressed resources need. `ble` is the Columba
 # `BLEInterface`, `serial` the byte-stream family (`SerialInterface`,
@@ -84,13 +82,6 @@ i2p = ["leviculum-std/i2p"]
 # Forwarded so the census gap line in leviculum-std subtracts the measured
 # live bytes; the global allocator itself is installed in src/lnsd.rs.
 heap-accounting = ["leviculum-std/heap-accounting"]
-# On by default since 766; added default-off in 508 as the experiment that
-# measured it. `lnsd` runs on mimalloc instead of the libc allocator: the soak
-# node's resident set was 517 MB over 104 MB live after 3.5 h, the rest kept
-# by musl's mallocng under ~26 000 allocations a second. With
-# `heap-accounting` as well, the counting shim wraps mimalloc
-# (`heap_accounting::CountingOver`), so the census still reports live bytes.
-alloc-mimalloc = ["dep:mimalloc"]
 
 [dependencies]
 leviculum-core = { path = "../leviculum-core", default-features = true }
@@ -107,8 +98,8 @@ rand_core.workspace = true
 rmpv.workspace = true
 sha2.workspace = true
 serde_json = "1"
-# `alloc-mimalloc` only, which is a default feature; see it.
-mimalloc = { version = "0.1", optional = true, default-features = false }
+# The one allocator of every program (1805); see `[features]`.
+leviculum-alloc = { path = "../leviculum-alloc" }
 # `lnstest diag` re-serialises the (secret-redacted) Config to TOML for the bundle.
 toml.workspace = true
 tempfile = "3"

@@ -5,6 +5,12 @@
 //!
 //! Usage: auto-crossmachine-test --group-id autotest --timeout 60
 
+/// The one allocator of every Leviculum program (1805,
+/// docs/src/architecture.md "Memory allocator"); `leviculum_alloc::start()`
+/// runs first in `main`.
+#[global_allocator]
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
+
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -66,8 +72,16 @@ fn report_ok(phase: &str, elapsed_us: u128, extra: &[(&str, &str)]) {
     report(phase, "ok", elapsed_us, extra);
 }
 
+/// The allocator's housekeeping first (1805): a plain `main`, because
+/// `#[tokio::main]` builds the runtime and its worker threads ahead of the
+/// body's first line.
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    leviculum_alloc::start();
+    tokio_main()
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn tokio_main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // Logging: RUST_LOG env takes precedence, default to info

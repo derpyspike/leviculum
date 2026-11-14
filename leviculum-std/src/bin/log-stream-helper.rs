@@ -20,6 +20,12 @@
 //! for at least one tick (the driver's timer branch is at most ~1 s
 //! apart), exit 0.
 
+/// The one allocator of every Leviculum program (1805,
+/// docs/src/architecture.md "Memory allocator"); `leviculum_alloc::start()`
+/// runs first in `main`.
+#[global_allocator]
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
+
 use std::time::Duration;
 
 use leviculum_core::node::NodeEvent;
@@ -45,8 +51,16 @@ impl CoreProcessor for OverBudget {
     }
 }
 
+/// The allocator's housekeeping first (1805): a plain `main`, because
+/// `#[tokio::main]` builds the runtime and its worker threads ahead of the
+/// body's first line.
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    leviculum_alloc::start();
+    tokio_main()
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn tokio_main() -> Result<(), Box<dyn std::error::Error>> {
     let run_ms: u64 = std::env::args()
         .nth(1)
         .and_then(|s| s.parse().ok())

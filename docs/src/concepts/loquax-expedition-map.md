@@ -667,9 +667,10 @@ Additions (decided):
      (`GroupMember::since` and `left_from`, kept in the store from
      schema 23; where the store cannot date a member, the copy is
      refused — rule 4; a member relisted after it left starts over at
-     the relisting epoch, so nobody vouches for the gap in which it was
-     out — the audits of 1816); and the `lev` map is the group's own
-     word (`Lev::said_by`, 1482). A message whose `lev` map names
+     the relisting epoch, so neither its gap nor its time before the
+     gap vouches for a copy — the audits of 1816, the second audit of
+     1823); and the `lev` map is the group's own word
+     (`Lev::said_by`, 1482). A message whose `lev` map names
      ANOTHER writer is nobody's reading even without a group copy: a
      relay's pass-through of a member's plain telemetry field names the
      member in `lev.writer`, that word is foreign

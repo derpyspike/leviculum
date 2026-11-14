@@ -1,3 +1,9 @@
+/// The one allocator of every Leviculum program (1805,
+/// docs/src/architecture.md "Memory allocator"); `leviculum_alloc::start()`
+/// runs first in `main`.
+#[global_allocator]
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
+
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
@@ -197,8 +203,16 @@ async fn run_virtual(
     forward_kiss_frames(pty_a, "pty_a", pty_b, "pty_b", engine).await
 }
 
+/// The allocator's housekeeping first (1805): a plain `main`, because
+/// `#[tokio::main]` builds the runtime and its worker threads ahead of the
+/// body's first line.
+fn main() {
+    leviculum_alloc::start();
+    tokio_main()
+}
+
 #[tokio::main]
-async fn main() {
+async fn tokio_main() {
     // Diagnostics on stderr, stdout reserved for the data a caller pipes —
     // the same split as `event_log::install_global_subscriber`. The sink is
     // deliberately not `std::io::stderr`: at debug level this process logs

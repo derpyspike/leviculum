@@ -47,6 +47,12 @@
 //! interfaces to fall back to, so `build`/`start` fails and the process exits
 //! non-zero, which is what `RNS_REQUIRE_SHARED=1` buys on the Python side.
 
+/// The one allocator of every Leviculum program (1805,
+/// docs/src/architecture.md "Memory allocator"); `leviculum_alloc::start()`
+/// runs first in `main`.
+#[global_allocator]
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
+
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -98,7 +104,7 @@ struct Args {
     config_dir: PathBuf,
     defer_resource_builds: bool,
     /// `-v` / `--verbose` occurrences, `lnsd`'s and `lnpnd`'s spelling
-    /// (`leviculum-cli/src/lnsd.rs:114-119`, `lnpnd/src/main.rs:110-113`).
+    /// (`leviculum-cli/src/lnsd.rs:103-108`, `lnpnd/src/main.rs:104-107`).
     verbose: u8,
     /// `-q` / `--quiet` occurrences.
     quiet: u8,
@@ -146,7 +152,7 @@ const DEFAULT_LOGLEVEL: u8 = 4;
 ///
 /// tracing has no notice/verbose/extreme, so notice folds into info, verbose
 /// into debug and extreme into trace. The third copy of this ladder
-/// (`leviculum-cli/src/lnsd.rs:477`, `lnpnd/src/config.rs:534`); kept local
+/// (`leviculum-cli/src/lnsd.rs:471`, `lnpnd/src/config.rs:534`); kept local
 /// because this batch is scoped to this crate, and cited from here so a later
 /// consolidation into `leviculum-std` finds all three.
 fn loglevel_filter(level: u8) -> &'static str {
@@ -160,7 +166,7 @@ fn loglevel_filter(level: u8) -> &'static str {
 }
 
 /// The config level shifted by the CLI's net verbosity, clamped to the RNS
-/// range — `lnpnd`'s arithmetic (`lnpnd/src/main.rs:289`). `RUST_LOG` is not
+/// range — `lnpnd`'s arithmetic (`lnpnd/src/main.rs:291`). `RUST_LOG` is not
 /// consulted here: `install_global_subscriber` gives it precedence over
 /// whatever default we hand it.
 fn effective_level(config_loglevel: Option<u8>, verbose: u8, quiet: u8) -> u8 {
@@ -254,8 +260,16 @@ fn daemon_config_keys(config_dir: &std::path::Path) -> DaemonConfigKeys {
     }
 }
 
+/// The allocator's housekeeping first (1805): a plain `main`, because
+/// `#[tokio::main]` builds the runtime and its worker threads ahead of the
+/// body's first line.
+fn main() -> ExitCode {
+    leviculum_alloc::start();
+    tokio_main()
+}
+
 #[tokio::main]
-async fn main() -> ExitCode {
+async fn tokio_main() -> ExitCode {
     let args = match parse_args() {
         Ok(args) => args,
         Err(e) => {
@@ -283,7 +297,7 @@ async fn main() -> ExitCode {
 async fn run(args: Args) -> Result<(), String> {
     let daemon_keys = daemon_config_keys(&args.config_dir);
     // The stack's own voice, on stderr: exactly the subscriber `lnsd` installs
-    // (`leviculum-cli/src/lnsd.rs:176`), so `RUST_LOG` wins, `-v`/`-q` shift
+    // (`leviculum-cli/src/lnsd.rs:173`), so `RUST_LOG` wins, `-v`/`-q` shift
     // the config's level, and `LEVICULUM_EVENT_LOG` picks up the structured
     // event layer if it is set. Installed before anything else in `run` so no
     // startup line is lost; `parse_args` failures above it stay plain

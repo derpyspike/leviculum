@@ -33,6 +33,7 @@ default = []
 # `--store real` writes into the board's store.
 sim = [
     "loquax/history",
+    "dep:leviculum-alloc",
     "dep:leviculum-core",
     "dep:leviculum-log-line",
     "dep:png",
@@ -49,6 +50,9 @@ path = "src/bin/loquax-m9-sim/main.rs"
 required-features = ["sim"]
 
 [dependencies]
+# The one allocator of every program (1805, docs/src/architecture.md
+# "Memory allocator"): the binary installs it and starts it first in `main`.
+leviculum-alloc = { path = "../leviculum-alloc", optional = true }
 # The messenger core: the scene, its catalogue, the key table and the
 # intents. Without `std` it is `no_std` plus `alloc` (`just
 # loquax-core-no-std`).

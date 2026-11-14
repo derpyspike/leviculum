@@ -1,0 +1,35 @@
+[package]
+name = "leviculum-alloc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The one global allocator of every Leviculum program: mimalloc v3, huge pages off, freed memory handed back"
+
+# The only crate of the workspace that depends on mimalloc (1805,
+# docs/src/architecture.md "Memory allocator"; scripts/check-allocator.py
+# refuses a second). Every binary installs `leviculum_alloc::GLOBAL` and
+# calls `leviculum_alloc::start()` first in `main`.
+#
+# `extended` is what declares `mi_collect` in libmimalloc-sys; mimalloc itself
+# needs no feature. Both pins are the versions the allocator study measured
+# (2026-11-13): mimalloc 0.1.52 / libmimalloc-sys 0.1.49, which build
+# mimalloc 3.3.2. Huge pages are switched off in mimalloc's C build by
+# `-DMI_DEFAULT_ALLOW_THP=0` (.cargo/config.toml [env] CFLAGS), not by a
+# feature: the crate's `no_thp` only drops an madvise and does nothing under
+# THP "always".
+#
+# Android is the exception: the library lives in the JVM's process, whose
+# allocator is bionic's scudo, so there the crate is `System` and links no
+# mimalloc at all (the dependency is not declared for that target).
+[target.'cfg(not(target_os = "android"))'.dependencies]
+mimalloc = { version = "=0.1.52", default-features = false }
+libmimalloc-sys = { version = "=0.1.49", default-features = false, features = ["extended"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+libc = { workspace = true }

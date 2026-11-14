@@ -4,7 +4,7 @@ name = "lblogd"
 # release cadence and its own compatibility surface (config file, post
 # format, page layout), none of which move when the protocol core does.
 # The workspace version stays the stack's; this one is the product's.
-version = "0.1.3"
+version = "0.1.4"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -105,6 +105,9 @@ start = true
 restart-after-upgrade = true
 
 [dependencies]
+# The one allocator of every program (1805, docs/src/architecture.md
+# "Memory allocator"): the binary installs it and starts it first in `main`.
+leviculum-alloc = { path = "../leviculum-alloc" }
 leviculum-core = { path = "../leviculum-core" }
 leviculum-std = { path = "../leviculum-std" }
 axum.workspace = true

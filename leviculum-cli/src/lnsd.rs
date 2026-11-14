@@ -27,39 +27,28 @@ use leviculum_std::Reticulum;
 /// bytes handed out minus bytes taken back.
 ///
 /// The allocator is only counted, never replaced: every call is forwarded to
-/// `System` with the layout it arrived with, so a node built with this runs
-/// the same mallocng, takes the same paths and fragments the same way as one
-/// built without it.
-#[cfg(all(feature = "heap-accounting", not(feature = "alloc-mimalloc")))]
+/// the allocator the plain lnsd runs, leviculum-alloc's, with the layout it
+/// arrived with, so a node built with this takes the same paths and
+/// fragments the same way as one built without it.
+#[cfg(feature = "heap-accounting")]
 #[global_allocator]
-static ALLOC: leviculum_std::heap_accounting::CountingAllocator =
-    leviculum_std::heap_accounting::CountingAllocator;
+static ALLOC: leviculum_std::heap_accounting::CountingOver<leviculum_alloc::Global> =
+    leviculum_std::heap_accounting::CountingOver(leviculum_alloc::GLOBAL);
 
-/// mimalloc instead of the libc allocator, under the `alloc-mimalloc`
-/// feature, default since 766. Retention, not an uncounted owner, is what the
-/// soak node's census found between live heap and resident set (#437): musl's
-/// mallocng let it grow by about 400 MB a day, mimalloc held it flat (508
-/// built the variant that measured it). Counted, in the same shim, when
-/// `heap-accounting` is on too, so the two variants' censuses compare.
-#[cfg(all(feature = "heap-accounting", feature = "alloc-mimalloc"))]
+/// The one allocator of every Leviculum program (1805): leviculum-alloc's,
+/// mimalloc v3 with huge pages off. Retention, not an uncounted owner, is
+/// what the soak node's census found between live heap and resident set
+/// (#437): musl's mallocng let it grow by about 400 MB a day, mimalloc held
+/// it flat. `leviculum_alloc::start()` runs first in `main`.
+#[cfg(not(feature = "heap-accounting"))]
 #[global_allocator]
-static ALLOC: leviculum_std::heap_accounting::CountingOver<mimalloc::MiMalloc> =
-    leviculum_std::heap_accounting::CountingOver(mimalloc::MiMalloc);
-
-#[cfg(all(not(feature = "heap-accounting"), feature = "alloc-mimalloc"))]
-#[global_allocator]
-static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
 
 /// The line `heap_accounting::measured_live_line` prints, with this
-/// binary's allocator named: only the binary knows which one it installed.
+/// binary's allocator named.
 #[cfg(feature = "heap-accounting")]
 fn measured_live_line() -> String {
-    let allocator = if cfg!(feature = "alloc-mimalloc") {
-        "mimalloc"
-    } else {
-        "system"
-    };
-    leviculum_std::heap_accounting::measured_live_line(allocator)
+    leviculum_std::heap_accounting::measured_live_line(leviculum_alloc::NAME)
 }
 
 #[derive(Parser, Debug)]
@@ -119,8 +108,16 @@ struct Args {
     quiet: u8,
 }
 
+/// The allocator's housekeeping first (1805): a plain `main`, because
+/// `#[tokio::main]` builds the runtime and its worker threads ahead of the
+/// body's first line.
+fn main() -> std::process::ExitCode {
+    leviculum_alloc::start();
+    tokio_main()
+}
+
 #[tokio::main]
-async fn main() -> std::process::ExitCode {
+async fn tokio_main() -> std::process::ExitCode {
     match run().await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
@@ -183,12 +180,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         info!("Heap accounting: on, SIGUSR1 reports measured live bytes beside the estimate");
         leviculum_std::heap_accounting::configure_sampler_from_env();
     }
-    // Both ways, so a field node's journal names its allocator whichever
-    // build it runs; build-deb.sh reads the mimalloc line off the binary.
-    #[cfg(feature = "alloc-mimalloc")]
-    info!("Allocator: mimalloc");
-    #[cfg(not(feature = "alloc-mimalloc"))]
-    info!("Allocator: system (libc)");
+    // So a field node's journal names its allocator; scripts/check-allocator.py
+    // reads the allocator itself off the binary's bytes.
+    info!("Allocator: {}", leviculum_alloc::NAME);
     if args.service {
         info!("Service mode (-s): logging to stdout for systemd/journald capture");
     }

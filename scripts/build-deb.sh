@@ -23,7 +23,6 @@
 #   scripts/build-deb.sh amd64
 #   scripts/build-deb.sh arm64
 #   scripts/build-deb.sh armhf
-#   LEVICULUM_ALLOC=system scripts/build-deb.sh amd64
 #   scripts/build-deb.sh --check [amd64|arm64|armhf]   (default: the host's)
 #   scripts/build-deb.sh --floor [amd64|arm64]          (default: the host's)
 #
@@ -47,22 +46,26 @@
 # `gui` alone and `just loquax-tui` `tui` alone. The sets are read by both
 # modes from the *_ARGS arrays below, so the check cannot drift from the build.
 #
-# lnsd runs on mimalloc, leviculum-cli's default feature (#437, 766), and
-# lnpnd too, lnpnd's default feature (1592). LEVICULUM_ALLOC=system builds
-# both daemons, in their plain and heapacct packages, on the libc allocator
-# instead (`--no-default-features`, lnpnd keeping its interface families),
-# for a node that has to be compared against the old build; anything else is
-# refused.
+# Every binary runs on leviculum-alloc's allocator, mimalloc v3, in every
+# build (1805, docs/src/architecture.md "Memory allocator"); there is no
+# libc-allocator variant any more. The musl binaries of every architecture
+# link with rust-lld and Rust's self-contained musl, so the libc malloc that
+# their C code calls (bundled SQLite, libdbus) is musl's mallocng; for arm64
+# and armhf Zig is the cross C compiler only (scripts/zig-cc.sh), never the
+# linker: a cargo zigbuild link brought Zig's libc, whose malloc is
+# SmpAllocator. Only the glibc desktop loquax still links through cargo
+# zigbuild, for its glibc floor. scripts/check-allocator.py --binary reads
+# every packaged binary's bytes before it is packed.
 #
 # Expects scripts/deb-stamp.sh to have run. The versions are read from
 # its stamp files rather than derived here, so an amd64 + arm64 pair
 # from one build carries identical version strings even when the two
 # builds straddle midnight UTC.
 #
-# Requires cargo-deb, cargo-zigbuild and a ziglang (`just _deb-prereqs`
-# installs both; cargo-zigbuild finds a pip ziglang by itself), on amd64 as
-# well since loquax's desktop build (1342), and python3 for the manual
-# pages. Produces target/debian/*_<arch>.deb, which cargo-deb
+# Requires cargo-deb, cargo-zigbuild ZIGBUILD_VERSION and the pip ziglang
+# ZIG_VERSION below (`just _deb-prereqs` installs exactly those; zigbuild
+# finds a pip ziglang by itself), on amd64 as well since loquax's desktop
+# build (1342), and python3 for the manual pages. Produces target/debian/*_<arch>.deb, which cargo-deb
 # also hardlinks under target/<triple>/debian/: one per crate, plus
 # leviculum-heapacct, the instrumented variant of the leviculum package, and
 # lnpnd-heapacct, lnpnd's.
@@ -157,21 +160,28 @@ pkg_name() {
     esac
 }
 
-LEVICULUM_ALLOC="${LEVICULUM_ALLOC:-mimalloc}"
-case "$LEVICULUM_ALLOC" in
-mimalloc)
-    alloc_args=()
-    lnpnd_alloc_args=()
-    ;;
-system)
-    alloc_args=(--no-default-features)
-    lnpnd_alloc_args=(--no-default-features --features "ble serial i2p")
-    ;;
-*)
-    echo "error: LEVICULUM_ALLOC=${LEVICULUM_ALLOC}; want mimalloc or system" >&2
+if [ -n "${LEVICULUM_ALLOC:-}" ]; then
+    echo "error: LEVICULUM_ALLOC is gone (1805): every build runs leviculum-alloc's allocator" >&2
     exit 2
-    ;;
-esac
+fi
+
+# The cross toolchain, pinned (1805). Zig 0.17-dev with cargo-zigbuild
+# 0.22.3 failed every aarch64 zigbuild link on `--fix-cortex-a53-843419`
+# (allocator study 2026-11-13, section 2); these are the versions the nightly
+# host runs and the study built every package with. A host with others fails
+# here instead of in a link half an hour later; `just _deb-prereqs` installs
+# exactly these.
+ZIG_VERSION=0.16.0
+ZIGBUILD_VERSION=0.23.4
+require_toolchain() {
+    local zig zigbuild
+    zig="$(python3 -m ziglang version 2>/dev/null || true)"
+    zigbuild="$(sed -n 's/^"cargo-zigbuild \([0-9.]*\) .*/\1/p' "${CARGO_HOME:-$HOME/.cargo}/.crates.toml" 2>/dev/null || true)"
+    if [ "$zig" != "$ZIG_VERSION" ] || [ "$zigbuild" != "$ZIGBUILD_VERSION" ]; then
+        echo "error: want ziglang ${ZIG_VERSION} and cargo-zigbuild ${ZIGBUILD_VERSION}, have '${zig}' and '${zigbuild}'; run just _deb-prereqs" >&2
+        exit 1
+    fi
+}
 
 # Every cargo compile this script runs, as the arguments after `--target`:
 # the one source both modes read (1593). The heap-accounting pair is the
@@ -183,20 +193,22 @@ for bin in "${BINS[@]}"; do
 done
 MAIN_ARGS=("${bin_args[@]}" "${FEATURES[@]}")
 DESKTOP_ARGS=(-p loquax --bin loquax "${DESKTOP_FEATURES[@]}")
-LNSD_HEAPACCT_ARGS=(-p leviculum-cli --bin lnsd "${alloc_args[@]}" --features heap-accounting)
-LNPND_HEAPACCT_ARGS=(-p lnpnd --bin lnpnd "${lnpnd_alloc_args[@]}" --features heap-accounting)
-LNSD_SYSTEM_ARGS=(-p leviculum-cli --bin lnsd --no-default-features)
-LNPND_SYSTEM_ARGS=(-p lnpnd --bin lnpnd "${lnpnd_alloc_args[@]}")
+LNSD_HEAPACCT_ARGS=(-p leviculum-cli --bin lnsd --features heap-accounting)
+LNPND_HEAPACCT_ARGS=(-p lnpnd --bin lnpnd --features heap-accounting)
 
-# cargo-zigbuild uses Zig as the C compiler/linker — the only way to
-# reach aarch64-musl from an amd64 host without docker-in-docker or a
-# dedicated arm64 runner. The check is plain cargo on every architecture:
-# cargo-zigbuild 0.x has no `check` subcommand (`cargo zigbuild check` is
-# refused, measured 2026-11-09), and the recipe checks the host's own
-# architecture, whose C build scripts (mimalloc) the host compiler serves.
+# Every musl build is plain cargo: rust-lld links it against Rust's
+# self-contained musl (.cargo/config.toml, the triple's linker and
+# rustflags). A cross build to arm64 or armhf needs a C compiler for the
+# target, the one thing an amd64 host lacks, and Zig is it: CC_<triple> and
+# AR_<triple> point at scripts/zig-cc.sh and scripts/zig-ar.sh, which also
+# serve cc-rs's own probes. amd64's musl build uses the host's cc, as ever.
 build_cmd=(cargo build)
-[ "$ARCH" != amd64 ] && build_cmd=(cargo zigbuild)
 check_cmd=(cargo check)
+if [ "$ARCH" != amd64 ] && [ -z "$CHECK_ONLY" ]; then
+    triple_var="$(echo "$TRIPLE" | tr '-' '_')"
+    export "CC_${triple_var}=$ROOT/scripts/zig-cc.sh"
+    export "AR_${triple_var}=$ROOT/scripts/zig-ar.sh"
+fi
 
 if [ -n "$FLOOR_ONLY" ]; then
     if [ -z "$DESKTOP_TRIPLE" ]; then
@@ -211,15 +223,11 @@ if [ -n "$FLOOR_ONLY" ]; then
 fi
 
 if [ -n "$CHECK_ONLY" ]; then
-    echo "[build-deb] --check ${ARCH} (${TRIPLE}${DESKTOP_TRIPLE:+, ${DESKTOP_TRIPLE}}) allocator=${LEVICULUM_ALLOC}"
+    echo "[build-deb] --check ${ARCH} (${TRIPLE}${DESKTOP_TRIPLE:+, ${DESKTOP_TRIPLE}})"
     "${check_cmd[@]}" --release --target "$TRIPLE" "${MAIN_ARGS[@]}"
     if [ -n "$DESKTOP_TRIPLE" ]; then
         # The glibc floor is a link-time suffix; a check has nothing to link.
         "${check_cmd[@]}" --release --target "$DESKTOP_TRIPLE" "${DESKTOP_ARGS[@]}"
-    fi
-    if [ "$LEVICULUM_ALLOC" = system ]; then
-        "${check_cmd[@]}" --release --target "$TRIPLE" "${LNSD_SYSTEM_ARGS[@]}"
-        "${check_cmd[@]}" --release --target "$TRIPLE" "${LNPND_SYSTEM_ARGS[@]}"
     fi
     "${check_cmd[@]}" --release --target "$TRIPLE" "${LNSD_HEAPACCT_ARGS[@]}"
     "${check_cmd[@]}" --release --target "$TRIPLE" "${LNPND_HEAPACCT_ARGS[@]}"
@@ -242,7 +250,8 @@ done
 }
 LEVICULUM_BUILD_ID="$(cat .build-id)"
 export LEVICULUM_BUILD_ID
-echo "[build-deb] ${ARCH} (${TRIPLE}) build-id=${LEVICULUM_BUILD_ID} lnsd and lnpnd allocator=${LEVICULUM_ALLOC}"
+require_toolchain
+echo "[build-deb] ${ARCH} (${TRIPLE}) build-id=${LEVICULUM_BUILD_ID}"
 
 # Render docs/src/man/*.1.md to roff under target/man/, which the three
 # .deb manifests install from. The Markdown is the single source: the
@@ -310,31 +319,28 @@ if [ "$ARCH" = amd64 ]; then
     fi
 fi
 
-# The allocator is read off the bytes, like the heap-accounting marker below:
-# an arm64 binary cannot be run here. lnsd and lnpnd log `Allocator: mimalloc`
-# at startup only when they were built on mimalloc, so a package that would
-# ship either daemon on the wrong allocator fails here instead of on a field
-# node a day later, as resident memory nobody can account for.
-mimalloc_marker='Allocator: mimalloc'
+# The allocator is read off the bytes (1805): an arm64 binary cannot be run
+# here without qemu, and the source alone does not say how a binary was
+# linked. check-allocator.py --binary wants mimalloc in every packaged
+# binary, musl mallocng's symbol (not Zig's malloc) in every musl one, and
+# `allow_thp: 0` from every one it can run (natively, or under qemu-user
+# when installed). A package that would ship a binary on the wrong
+# allocator fails here instead of on a field node a day later.
 release_dir="$TARGET/$TRIPLE/release"
-if [ "$LEVICULUM_ALLOC" = system ]; then
-    "${build_cmd[@]}" --release --target "$TRIPLE" "${LNSD_SYSTEM_ARGS[@]}"
-    "${build_cmd[@]}" --release --target "$TRIPLE" "${LNPND_SYSTEM_ARGS[@]}"
-fi
 require_allocator() {
-    local bin="$release_dir/$1"
-    if [ "$LEVICULUM_ALLOC" = mimalloc ]; then
-        grep -qaF "$mimalloc_marker" "$bin" || {
-            echo "error: $bin is not built on mimalloc (no '$mimalloc_marker')" >&2
-            exit 1
-        }
-    elif grep -qaF "$mimalloc_marker" "$bin"; then
-        echo "error: $bin carries '$mimalloc_marker' under LEVICULUM_ALLOC=system" >&2
-        exit 1
-    fi
+    python3 -I scripts/check-allocator.py --binary "$@"
 }
-require_allocator lnsd
-require_allocator lnpnd
+packaged=()
+for bin in "${BINS[@]}"; do
+    packaged+=("$release_dir/$bin")
+done
+if [ -n "$DESKTOP_TRIPLE" ]; then
+    packaged+=("$TARGET/$DESKTOP_TRIPLE/release/loquax")
+fi
+if [ "$ARCH" = amd64 ]; then
+    packaged+=("$V3_TARGET/$DESKTOP_TRIPLE/release/loquax")
+fi
+require_allocator "${packaged[@]}"
 
 # One --deb-version per package: the three are versioned independently,
 # so a single shared version string would be wrong for at least two of
@@ -366,7 +372,7 @@ done
 # same six binaries, with lnsd rebuilt under `--features heap-accounting` so
 # its SIGUSR1 census subtracts MEASURED live bytes instead of the model. The
 # feature puts leviculum_std's counting shim in front of the allocator the
-# plain lnsd runs (LEVICULUM_ALLOC), which only counts and forwards every
+# plain lnsd runs (leviculum-alloc's), which only counts and forwards every
 # call, so the CPU cost is bounded and fixed: three relaxed atomic adds per
 # allocation and one per free, independent of heap size or uptime
 # (heap_accounting.rs module docs; `heap-gap-bench --alloc-overhead` measures
@@ -399,17 +405,9 @@ trap restore_plain_bins EXIT
 # The instrumented lnsd has to keep its symbol table: the census's call-site
 # sampler (LEVICULUM_HEAP_SAMPLE, 508) names frames from it at run time, and
 # without it every stack prints as bare addresses. rust-lld keeps .symtab
-# under the profile's `strip = "debuginfo"`, but zig, which links arm64 (and
-# armhf), strips everything for it, so there the instrumented builds link
-# unstripped: 23.5 MB with the standard library's DWARF instead of 9.7 MB
-# (measured 2026-10-07). Stripping only the DWARF afterwards needs an objcopy
-# this build does not otherwise require: the pinned toolchain's rust-objcopy
-# cannot load its libLLVM, and zig's objcopy has no ELF strip. The DWARF is
-# in no loaded segment, so it costs disk and not resident memory.
-instrumented_env=()
-if [ "$ARCH" != amd64 ]; then
-    instrumented_env=(CARGO_PROFILE_RELEASE_STRIP=none)
-fi
+# under the profile's `strip = "debuginfo"` on every triple since the musl
+# links left cargo zigbuild (1805); before, zig stripped everything and the
+# arm builds had to link with CARGO_PROFILE_RELEASE_STRIP=none.
 require_symtab() {
     local bin="${1:-lnsd}"
     grep -qaF '.symtab' "$release_dir/$bin" || {
@@ -421,13 +419,13 @@ require_symtab() {
 # Read off the bytes, not the exit code: an arm64 binary cannot be run here,
 # and the startup line exists only in a heap-accounting build.
 heapacct_marker='Heap accounting: on'
-env "${instrumented_env[@]}" "${build_cmd[@]}" --release --target "$TRIPLE" "${LNSD_HEAPACCT_ARGS[@]}"
+"${build_cmd[@]}" --release --target "$TRIPLE" "${LNSD_HEAPACCT_ARGS[@]}"
 require_symtab
 grep -qaF "$heapacct_marker" "$release_dir/lnsd" || {
     echo "error: lnsd built with --features heap-accounting does not carry the feature" >&2
     exit 1
 }
-require_allocator lnsd
+require_allocator "$release_dir/lnsd"
 heapacct_version="$(cat .deb-version-leviculum-cli)+heapacct"
 cargo deb -p leviculum-cli --variant heapacct --target "$TRIPLE" --no-build --no-strip \
     --deb-version "$heapacct_version"
@@ -437,13 +435,13 @@ debs+=("$TARGET/debian/leviculum-heapacct_${heapacct_version}_${ARCH}.deb")
 # propagation daemon reports measured live bytes the way its lnsd does. Its
 # own package, a variant of lnpnd's, because the daemon ships with its own
 # unit and service user; lnpnd's build carries the same startup line.
-env "${instrumented_env[@]}" "${build_cmd[@]}" --release --target "$TRIPLE" "${LNPND_HEAPACCT_ARGS[@]}"
+"${build_cmd[@]}" --release --target "$TRIPLE" "${LNPND_HEAPACCT_ARGS[@]}"
 require_symtab lnpnd
 grep -qaF "$heapacct_marker" "$release_dir/lnpnd" || {
     echo "error: lnpnd built with --features heap-accounting does not carry the feature" >&2
     exit 1
 }
-require_allocator lnpnd
+require_allocator "$release_dir/lnpnd"
 lnpnd_heapacct_version="$(cat .deb-version-lnpnd)+heapacct"
 cargo deb -p lnpnd --variant heapacct --target "$TRIPLE" --no-build --no-strip \
     --deb-version "$lnpnd_heapacct_version"
@@ -455,12 +453,12 @@ if grep -qaF "$heapacct_marker" "$release_dir/lnsd"; then
     echo "error: the plain lnsd was not restored after the heap-accounting builds" >&2
     exit 1
 fi
-require_allocator lnsd
+require_allocator "$release_dir/lnsd"
 if grep -qaF "$heapacct_marker" "$release_dir/lnpnd"; then
     echo "error: the plain lnpnd was not restored after the heap-accounting build" >&2
     exit 1
 fi
-require_allocator lnpnd
+require_allocator "$release_dir/lnpnd"
 
 # The things cargo-deb gets wrong or cannot produce: native changelog
 # name, md5sums, empty Depends. Idempotent, in place.

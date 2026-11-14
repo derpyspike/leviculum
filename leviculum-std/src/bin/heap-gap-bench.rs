@@ -62,8 +62,8 @@
 //!
 //! The workspace builds for `x86_64-unknown-linux-musl` by default
 //! (`.cargo/config.toml`), so a plain `cargo build` gives musl's mallocng,
-//! which a field node's lnsd ran until mimalloc became its default (766) and
-//! still runs when built without `alloc-mimalloc`. The target triple is
+//! which a field node's lnsd ran until mimalloc became its default (766); this
+//! bench keeps it on purpose (exempt in check-allocator.py). The target triple is
 //! printed on the header line; a run on a glibc target measures a different
 //! allocator and is not comparable to a musl one.
 //!

@@ -3,6 +3,12 @@
 //! This provides various utility commands for interacting with Reticulum.
 //! Equivalent to rnstatus, rnpath, etc. in the Python implementation.
 
+/// The one allocator of every Leviculum program (1805,
+/// docs/src/architecture.md "Memory allocator"); `leviculum_alloc::start()`
+/// runs first in `main`.
+#[global_allocator]
+static ALLOC: leviculum_alloc::Global = leviculum_alloc::GLOBAL;
+
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::net::SocketAddr;
@@ -1028,8 +1034,16 @@ async fn event_loop(mut event_rx: EventReceiver, state: Arc<Mutex<SessionState>>
     }
 }
 
+/// The allocator's housekeeping first (1805): a plain `main`, because
+/// `#[tokio::main]` builds the runtime and its worker threads ahead of the
+/// body's first line.
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    leviculum_alloc::start();
+    tokio_main()
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn tokio_main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // Initialize logging: RUST_LOG env takes precedence, then -v flag.
