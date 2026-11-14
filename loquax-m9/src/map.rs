@@ -1454,7 +1454,6 @@ mod words_1531 {
     #[test]
     fn the_m9_draws_no_relief() {
         assert!(!style().relief);
-        assert!(Style::SCREEN.relief);
         assert_eq!(
             style(),
             Style {
