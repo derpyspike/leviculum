@@ -999,7 +999,15 @@ impl Walk {
             };
             let rest = java.settle(ask, None);
             let verdict = match rest.shown.ok {
-                true => bare_paper(&mask, &PaperMask::of(&java.screen, paper())),
+                true => bare_paper(
+                    &mask,
+                    &PaperMask::of_rest(
+                        &java.screen,
+                        paper(),
+                        &rest.names,
+                        (rest.shown.margin_x, rest.shown.margin_y),
+                    ),
+                ),
                 false => Verdict {
                     rule: BARE_PAPER,
                     value: 100.0,

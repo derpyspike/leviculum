@@ -282,12 +282,41 @@ pub struct PaperMask {
 impl PaperMask {
     /// The mask of `screen` against the colour `paper`.
     pub fn of(screen: &Screen, paper: [u8; 3]) -> Self {
+        Self::of_beneath(screen, paper, &[])
+    }
+
+    /// The mask of a rest frame's `screen` with its shown `names` (in
+    /// frame pixels, the frame's margins `margins`) read as paper: names
+    /// fade by design while a finger moves, so a gesture frame without
+    /// them misses no map (the first full walk of order 1853 failed z5
+    /// world frames on their names alone).
+    pub fn of_rest(
+        screen: &Screen,
+        paper: [u8; 3],
+        names: &[DrawnName],
+        margins: (u32, u32),
+    ) -> Self {
+        let boxes: Vec<Rect> = names
+            .iter()
+            .filter(|n| n.shown && n.alpha > 0)
+            .filter_map(|n| name_box(n, margins))
+            .collect();
+        Self::of_beneath(screen, paper, &boxes)
+    }
+
+    fn of_beneath(screen: &Screen, paper: [u8; 3], names: &[Rect]) -> Self {
         let (w, h) = (screen.w as usize, screen.h as usize);
         let mut bits = Vec::new();
         let (mut len, mut count) = (0usize, 0usize);
+        let under_name = |x: usize, y: usize| {
+            let (x, y) = (x as i32, y as i32);
+            names
+                .iter()
+                .any(|r| r.x0 <= x && x < r.x1 && r.y0 <= y && y < r.y1)
+        };
         let at = |x: usize, y: usize| {
             let i = (y * w + x) * 4;
-            x < w && y < h && screen.rgba.get(i..i + 3) == Some(&paper[..])
+            x < w && y < h && (screen.rgba.get(i..i + 3) == Some(&paper[..]) || under_name(x, y))
         };
         for by in (0..h).step_by(MASK_BLOCK) {
             for bx in (0..w).step_by(MASK_BLOCK) {
@@ -1132,6 +1161,19 @@ mod tests {
             }
         }
         assert!(bare_paper(&blank, &PaperMask::of(&named, paper)).pass);
+        // Dense names at rest (a whole block of text) are content to
+        // the plain mask but paper beneath their boxes.
+        let mut dense = screen(h);
+        for y in 0..32 {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                dense.rgba[i..i + 4].copy_from_slice(&[40, 40, 40, 255]);
+            }
+        }
+        assert!(!bare_paper(&blank, &PaperMask::of(&dense, paper)).pass);
+        let label = name("Berlin", 5, (0, 0, w as i32, 32));
+        let rest = PaperMask::of_rest(&dense, paper, &[label], (0, 0));
+        assert!(bare_paper(&blank, &rest).pass);
         // Masks of different screens fail outright.
         let other = PaperMask::of(&filled(32, 32, [0, 0, 0, 255]), paper);
         assert!(!bare_paper(&blank, &other).pass);
