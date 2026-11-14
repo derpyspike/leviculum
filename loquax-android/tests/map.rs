@@ -4617,7 +4617,8 @@ fn the_emulators_rest_frames_hold_the_ground_under_the_fingers() {
     // (to_x, to_y, to_z) with the dot's distance from the fingers on the
     // emulator's screenshot after that pinch.
     type Rest = (u32, u32, u32, f64);
-    let runs: [((f64, f64), (f64, f64), &[Rest]); 2] = [
+    type Run<'a> = ((f64, f64), (f64, f64), &'a [Rest]);
+    let runs: [Run<'_>; 2] = [
         (
             (32.0, -6.0),
             (558.0 - 0.087, 773.0 - 0.151),
