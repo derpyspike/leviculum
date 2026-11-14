@@ -34,7 +34,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
+use leviculum_map::blend::Blend;
 use leviculum_map::labels::Rect;
+use leviculum_map::mercator::World;
 use leviculum_map::mercator::{project, LatLon};
 use leviculum_map::viewport::MILLI;
 use leviculum_mapfill::style::MapTheme;
@@ -42,10 +44,25 @@ use loquax::mapframe::DrawnName;
 use loquax::when::WallTime;
 use loquax_android::map;
 use loquax_android::render_walk::{
-    frame_rules, java_margin, sequence_rules, FrameFacts, JavaBitmap, Played, Screen, Verdict,
-    SENTINEL,
+    disk_fit, frame_rules, globe_disk_fixed, java_margin, sequence_rules, zoom_keeps_the_place,
+    FrameFacts, JavaBitmap, Played, Screen, Verdict, SENTINEL,
 };
 use loquax_android::schema::{MapRequest, MapShown};
+
+/// The blend the facade drew `shown`'s view through: what the walk's
+/// gesture rules project grounds with (order 1818).
+fn blend_of(shown: &MapShown, w: u32, h: u32) -> Blend {
+    Blend::new(
+        loquax::picture::world_shape(),
+        World {
+            x: shown.x,
+            y: shown.y,
+        },
+        f64::from(shown.zoom_milli) / f64::from(MILLI),
+        w,
+        h,
+    )
+}
 
 /// The heap as the process holds it: live bytes and the most since the
 /// last reset, the "native heap" of a gesture.
@@ -214,6 +231,12 @@ enum Fault {
     SlowFrame,
     HeapKept,
     ViewLost,
+    /// The screen's picture of a moving frame shifted three pixels: the
+    /// wobble the `globe_disk_fixed` rule must catch (order 1818).
+    DiskShift,
+    /// The view's centre pushed five pixels while a zoom crosses the
+    /// handover: the jump `zoom_keeps_the_place` must catch (order 1818).
+    ZoomDrift,
 }
 
 impl Fault {
@@ -226,6 +249,8 @@ impl Fault {
             "slow-frame" => Self::SlowFrame,
             "heap-kept" => Self::HeapKept,
             "view-lost" => Self::ViewLost,
+            "disk-shift" => Self::DiskShift,
+            "zoom-drift" => Self::ZoomDrift,
             _ => return None,
         })
     }
@@ -330,6 +355,25 @@ impl Java {
             }
             Some(Fault::ErrorText) => shown.notice = Some("injected notice".to_string()),
             Some(Fault::StrayLabel) => names.extend(stray(&shown, ask)),
+            // The wobble: every moving frame's picture three pixels to
+            // the right of where the frame drew it; the rest frame, the
+            // disk rule's reference, stays put.
+            Some(Fault::DiskShift) if ask.moving => {
+                let w = self.screen.w as usize * 4;
+                for row in self.screen.rgba.chunks_exact_mut(w) {
+                    row.rotate_right(3 * 4);
+                }
+            }
+            // The jump: once a zoom stands in the handover, the view's
+            // centre is pushed five pixels; Java feeds the drifted view
+            // back, as a real drift would ride along.
+            Some(Fault::ZoomDrift) if (ask.zoom_by_milli != 0 || ask.zoom_by != 0) && shown.ok => {
+                let t = blend_of(&shown, ask.w, ask.h).t();
+                if t > 0.0 && t < 1.0 {
+                    let unit = (24.0 - f64::from(shown.zoom_milli) / f64::from(MILLI)).exp2();
+                    shown.x = shown.x.wrapping_add((5.0 * unit) as u32);
+                }
+            }
             _ => {}
         }
         Drawn { shown, ms, names }
@@ -660,6 +704,23 @@ impl Walk {
             heap_start,
             ..Played::default()
         };
+        // The gesture's frames run on a held clock, 16 ms a frame, so
+        // two runs give identical frames (order 1818); the frame TIMES
+        // stay the wall clock's, measured around the draw itself.
+        let dir = PathBuf::from(&java.dir);
+        let mut clock = 50_000u64;
+        // The space colour the disk is fitted against, and the disk the
+        // gesture's frames are held to: the reference frame at the same
+        // zoom (order 1818, the wobble item).
+        let space =
+            leviculum_mapfill::frame::rgb888(leviculum_map::outline::space(MapTheme::Light));
+        let mut disk_ref: Option<(u32, (f64, f64, f64))> = None;
+        if last.ok && last.turns {
+            disk_ref = disk_fit(&java.screen, space).map(|fit| (last.zoom_milli, fit));
+        }
+        // The ground under the pinch focus at the gesture's start, once
+        // a step zooms (order 1818, the Morocco-to-Spain jump).
+        let mut ground: Option<(World, f64, f64)> = None;
         for i in 0..steps {
             let base = MapRequest {
                 x: Some(last.x),
@@ -670,10 +731,36 @@ impl Walk {
             let Some(ask) = step(i, &last, base) else {
                 break;
             };
+            if (ask.zoom_by_milli != 0 || ask.zoom_by != 0) && ground.is_none() {
+                let (fx, fy) = (f64::from(ask.about_x), f64::from(ask.about_y));
+                ground = blend_of(&last, size.w, size.h)
+                    .to_world(fx, fy)
+                    .map(|g| (g, fx, fy));
+            }
+            clock += 16;
+            map::tune_clock(&dir, Some(clock));
             let drawn = java.draw(&ask, self.fault);
             played.frame_ms.push(drawn.ms);
             let image = format!("{}-{name}-{}-f{i:03}", self.variant, size.name);
-            let verdicts = self.judge(&java, &drawn, false, &image);
+            let mut verdicts = self.judge(&java, &drawn, false, &image);
+            if drawn.shown.ok && drawn.shown.turns {
+                if let Some(fit) = disk_fit(&java.screen, space) {
+                    match disk_ref {
+                        Some((z, reference)) if z == drawn.shown.zoom_milli => {
+                            verdicts.push(globe_disk_fixed(fit, reference));
+                        }
+                        _ => disk_ref = Some((drawn.shown.zoom_milli, fit)),
+                    }
+                }
+            }
+            if let (Some((g, fx, fy)), true) = (ground, drawn.shown.ok) {
+                let (px, py) = blend_of(&drawn.shown, size.w, size.h).to_screen(g);
+                let off = (px - fx).hypot(py - fy);
+                verdicts.push(zoom_keeps_the_place(
+                    off,
+                    format!("focus ({fx:.0}, {fy:.0}), the ground now at ({px:.1}, {py:.1})"),
+                ));
+            }
             let zoom = format!(
                 "{:.3}",
                 f64::from(drawn.shown.zoom_milli) / f64::from(MILLI)
@@ -686,6 +773,7 @@ impl Walk {
                 last = drawn.shown;
             }
         }
+        map::tune_clock(&dir, None);
         let rest = MapRequest {
             x: Some(last.x),
             y: Some(last.y),
@@ -694,7 +782,23 @@ impl Walk {
         };
         let drawn = java.settle(rest, self.fault);
         let image = format!("{}-{name}-{}-rest", self.variant, size.name);
-        let verdicts = self.judge(&java, &drawn, true, &image);
+        let mut verdicts = self.judge(&java, &drawn, true, &image);
+        // A zoom gesture that comes back to its starting zoom comes back
+        // to its starting view: the place it left is in the middle again
+        // (order 1818, "zooming in and out again returns to the same
+        // view").
+        if let (Some(_), true) = (ground, drawn.shown.ok) {
+            if drawn.shown.zoom_milli == zoom_milli {
+                let b = blend_of(&drawn.shown, size.w, size.h);
+                let (px, py) = b.to_screen(at);
+                let (cx, cy) = (f64::from(size.w) / 2.0, f64::from(size.h) / 2.0);
+                let off = (px - cx).hypot(py - cy);
+                verdicts.push(zoom_keeps_the_place(
+                    off,
+                    format!("out and in again: the start centre is {off:.1} px off the middle"),
+                ));
+            }
+        }
         let zoom = format!(
             "{:.3}",
             f64::from(drawn.shown.zoom_milli) / f64::from(MILLI)
@@ -808,6 +912,28 @@ impl Walk {
                 let by = if out.get() { -250 } else { 250 };
                 Some(MapRequest {
                     zoom_by_milli: by,
+                    ..ask
+                })
+            }
+        });
+        // The same pinch about a thumb's off-centre focus (order 1818):
+        // the ground under the focus must stay under it through the
+        // whole handover, where the Mercator rule lost Morocco to Spain.
+        let (tx, ty) = ((size.w / 3) as i32, (size.h / 3) as i32);
+        self.gesture("pinch-at-thumb", size, germany, 12 * MILLI, 120, &{
+            let out = std::cell::Cell::new(true);
+            move |_, last: &MapShown, ask| {
+                if out.get() && last.zoom_milli <= last.min_zoom_milli {
+                    out.set(false);
+                }
+                if !out.get() && last.zoom_milli >= 12 * MILLI {
+                    return None;
+                }
+                let by = if out.get() { -250 } else { 250 };
+                Some(MapRequest {
+                    zoom_by_milli: by,
+                    about_x: tx,
+                    about_y: ty,
                     ..ask
                 })
             }
