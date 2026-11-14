@@ -2467,7 +2467,7 @@ impl App {
                 if landed {
                     self.regions_changed();
                 }
-                if !self.fitted {
+                if !self.fitted && self.unmoved() {
                     self.fit();
                 }
             }
@@ -2475,7 +2475,7 @@ impl App {
                 self.settle();
                 self.size = Some(size);
                 self.hold();
-                if !self.fitted {
+                if !self.fitted && self.unmoved() {
                     self.fit();
                 }
             }
@@ -2778,6 +2778,17 @@ impl App {
             None => {}
         }
         Task::batch(tasks)
+    }
+
+    /// Whether the view still sits where the last fit left it, or none
+    /// ran yet: only then may a background change — the first pins, a
+    /// resize — fit anew. A `Seen` landing seconds after the wheel
+    /// stomped the view back to the start otherwise (D1, order 1818).
+    fn unmoved(&self) -> bool {
+        match self.fitted_at {
+            None => true,
+            Some(at) => at == (self.view.centre, self.view.zoom_milli()),
+        }
     }
 
     /// Every pin in view, as `0` does; before the first pins and the
@@ -4499,6 +4510,54 @@ mod tests {
         assert!(
             (x - under.0).abs() < 1.0 && (y - under.1).abs() < 1.0,
             "{x} {y}"
+        );
+    }
+
+    /// D1 (order 1799, P0; 1818): at the smallest zoom one more wheel
+    /// step out made the map jump back to the start view (z12) about 3 s
+    /// later without any input (`map.trace`: `47344 ask 3101 rest`, then
+    /// `49729 ask 12000 rest`). With no pins the first fit never counts
+    /// as done (`fitted` stays false), so the NEXT background `Seen` — a
+    /// region landing, any state change — ran `fit()` again and stomped
+    /// the view the wheel had left. A background change may fit only
+    /// while the view still sits where the last fit left it.
+    #[test]
+    fn a_background_seen_does_not_stomp_a_view_the_wheel_moved() {
+        let mut app = window_over_florence(Vec::new(), 12 * MILLI);
+        let maps = {
+            let frames = app.frames.lock().unwrap_or_else(PoisonError::into_inner);
+            frames.painter().maps().epoch()
+        };
+        // The wheel steps out; the glide lands; no input after.
+        app.apply(Message::Pointer(Pointer::Wheel(
+            Point::new(100.0, 80.0),
+            -9_000,
+        )));
+        app.settle();
+        let moved = app.view;
+        assert_ne!(
+            app.fitted_at,
+            Some((moved.centre, moved.zoom_milli())),
+            "the wheel moved the view off the fit"
+        );
+        // Seconds later a Seen lands, the same state again: nothing the
+        // user did may move the view.
+        app.apply(Message::Seen(Box::new(florence_seen(Vec::new(), maps))));
+        assert_eq!(app.view, moved, "no input, the view stays");
+        // The control: while the view still sits where the last fit left
+        // it, the first pins do fit — the map zooms to the peers.
+        let mut fresh = window_over_florence(Vec::new(), 12 * MILLI);
+        let (centre, zoom) = fresh.fitted_at.expect("the empty fit");
+        fresh.view = ExactView::new(centre, zoom, 480, 320);
+        fresh.apply(Message::Seen(Box::new(florence_seen(
+            vec![pin(1, "alice", 43.7752, 11.2640)],
+            maps,
+        ))));
+        assert!(fresh.fitted, "the first pins fit");
+        assert_ne!(
+            (fresh.view.centre, fresh.view.zoom_milli()),
+            (centre, zoom),
+            "the fit went to the pins"
         );
     }
 
