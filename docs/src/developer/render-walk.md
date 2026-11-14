@@ -66,8 +66,13 @@ renderer.
     still.
   - `--quick` keeps the phone and the window, Germany, the north pole and
     Berlin, and the zooms 4 to 16 in steps of two plus the floor.
-- **Five gestures** run on each frame size. `--quick` runs them on the
+- **The gestures** run on each frame size. `--quick` runs them on the
   phone only.
+  - `erg-pan-seam`: 40 px a frame for 24 frames east across the relief
+    tiles' seams at z12 over Erg Chebbi, from a fresh home, so the relief
+    store starts cold (order 1853).
+  - `erg-pinch-12-14`: over Erg Chebbi from z12 in to z14 and back out, a
+    quarter step a frame about the screen's middle, cold as above.
   - `pan-seam`: 40 px a frame across three tile seams at z13.
   - `pinch-out-in`: a quarter step a frame from z12 out to the world and
     back.
@@ -117,11 +122,12 @@ live in `loquax-android/src/render_walk.rs`.
 | `label_overlap` | every map frame | two shown names overlap |
 | `label_current_zoom` | a settled frame | a name is from a deeper zoom than the frame's, or is still fading out |
 | `label_on_world` | a turning globe | a name floats in space: three of its box's corners and middle are space |
-| `frame_p95` | a gesture | the 95th percentile frame time is over one frame at 60 Hz (16.7 ms, the host gate of 1799); the half-frame line (8.3 ms) stays in the note as information |
+| `frame_p95` | a gesture | the 95th percentile frame time is over half a frame at 60 Hz (8.3 ms; order 1853 moved it from the whole frame of 1799 to the line the note always named) |
 | `heap_returns` | a gesture | the live heap ends more than 160 MB above its start |
 | `heap_peak` | a gesture | the live heap grows more than 320 MB during the gesture |
 | `view_kept` | the rotation | the centre or the zoom moved |
 | `globe_disk_fixed` | a turning globe's gesture frame | the disk fitted from the frame's own pixels differs from the gesture's reference frame at the same zoom by more than 1 px in centre or radius (order 1818, the wobble proof) |
+| `bare_paper` | a gesture frame | more than 10 % of the screen is bare paper where the same view, settled at rest after the gesture, shows map content (order 1853: a pan frame over Berlin was nearly empty and no rule saw it). Paper is counted in 16 px blocks, a block bare where 12 of its 16 samples are paper, so names over paper (which fade while a finger moves) are no content. Only frames with more than 10 % bare blocks are settled again; the others carry their share as the bound |
 | `zoom_keeps_the_place` | a zoom gesture's frame | the geographic point that started under the pinch focus is more than 2 px from it; the rest frame of an out-and-in pinch adds one row for "the start view is back" (order 1818, the Morocco-to-Spain jump) |
 | `screen_drawn` | a window or terminal screen | it drew nothing. For the window, that is at most two of four quarters with more than one colour. For the terminal, it is text on less than a tenth of its rows |
 | `screen_repeats` | a window or terminal screen | the same screen drawn twice differs |
@@ -157,6 +163,7 @@ turn its rules red on a frame or gesture where the clean walk is green.
 | `view-lost` | `view_kept` |
 | `disk-shift` (every moving frame's picture 3 px right) | `globe_disk_fixed` (runs on the globe variant) |
 | `zoom-drift` (the view pushed 5 px once a zoom stands in the handover) | `zoom_keeps_the_place` |
+| `bare-frame` (every moving frame's lower half painted paper) | `bare_paper` |
 
 On the host the clean walk fails `frame_p95` on nearly every gesture. The
 rotation sometimes passes, but its frames are at rest and the fault does

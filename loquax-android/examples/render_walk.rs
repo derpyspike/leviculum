@@ -44,8 +44,9 @@ use loquax::mapframe::DrawnName;
 use loquax::when::WallTime;
 use loquax_android::map;
 use loquax_android::render_walk::{
-    disk_fit, frame_rules, globe_disk_centred, globe_disk_fixed, java_margin, sequence_rules,
-    zoom_keeps_the_place, FrameFacts, JavaBitmap, Played, Screen, Verdict, SENTINEL,
+    bare_paper, disk_fit, frame_rules, globe_disk_centred, globe_disk_fixed, java_margin,
+    sequence_rules, zoom_keeps_the_place, FrameFacts, JavaBitmap, PaperMask, Played, Screen,
+    Verdict, BARE_MAX_PCT, BARE_PAPER, SENTINEL,
 };
 use loquax_android::schema::{MapRequest, MapShown};
 
@@ -234,6 +235,12 @@ const REGIONS: [&str; 6] = [
 const PACKS: [&str; 2] = ["erg-chebbi-z10.lmh", "erg-chegaga-z10.lmh"];
 
 const HZ: f64 = 60.0;
+
+/// The light table's paper as the screen shows it (RGB 565 widened):
+/// what [`PaperMask`] calls bare.
+fn paper() -> [u8; 3] {
+    leviculum_mapfill::frame::rgb888(leviculum_mapfill::style::LIGHT.background)
+}
 const NOW: WallTime = WallTime {
     unix_secs: 1_790_000_000,
     offset_secs: 0,
@@ -254,6 +261,9 @@ enum Fault {
     /// The view's centre pushed five pixels while a zoom crosses the
     /// handover: the jump `zoom_keeps_the_place` must catch (order 1818).
     ZoomDrift,
+    /// Every moving frame's lower half painted bare paper: the emptied
+    /// frame `bare_paper` must catch (order 1853).
+    BareFrame,
 }
 
 impl Fault {
@@ -268,6 +278,7 @@ impl Fault {
             "view-lost" => Self::ViewLost,
             "disk-shift" => Self::DiskShift,
             "zoom-drift" => Self::ZoomDrift,
+            "bare-frame" => Self::BareFrame,
             _ => return None,
         })
     }
@@ -371,6 +382,13 @@ impl Java {
                 }
             }
             Some(Fault::ErrorText) => shown.notice = Some("injected notice".to_string()),
+            Some(Fault::BareFrame) if ask.moving => {
+                let paper = paper();
+                let half = self.screen.rgba.len() / 8 * 4;
+                for px in self.screen.rgba[half..].chunks_exact_mut(4) {
+                    px.copy_from_slice(&[paper[0], paper[1], paper[2], 255]);
+                }
+            }
             Some(Fault::StrayLabel) => names.extend(stray(&shown, ask)),
             // The wobble: every moving frame's picture three pixels to
             // the right of where the frame drew it; the rest frame, the
@@ -766,6 +784,10 @@ impl Walk {
         // (1155), and feeding that back snapped the pinch to whole
         // steps and judged the step view instead of the screen's.
         let mut exact_zoom = last.zoom_milli;
+        // The frames with enough bare paper to fail `bare_paper`: their
+        // view and mask, judged against the same view at rest once the
+        // gesture's times and heap are taken.
+        let mut suspects: Vec<(String, MapShown, PaperMask)> = Vec::new();
         for i in 0..steps {
             let base = MapRequest {
                 x: Some(last.x),
@@ -833,6 +855,28 @@ impl Walk {
             played.frame_ms.push(drawn.ms);
             let image = format!("{}-{name}-{}-f{i:03}", self.variant, size.name);
             let mut verdicts = self.judge(&java, &drawn, false, &image);
+            if drawn.shown.ok && !drawn.shown.dark {
+                let mask = PaperMask::of(&java.screen, paper());
+                match mask.share_pct() > BARE_MAX_PCT {
+                    true => {
+                        write_png(
+                            &self.out.join("full").join(format!("{image}.png")),
+                            &java.screen,
+                            u32::MAX,
+                        );
+                        suspects.push((image.clone(), drawn.shown.clone(), mask));
+                    }
+                    // Less paper than the limit: no rest frame can make
+                    // more of it bare.
+                    false => verdicts.push(Verdict {
+                        rule: BARE_PAPER,
+                        value: mask.share_pct(),
+                        limit: BARE_MAX_PCT,
+                        pass: true,
+                        note: "paper share, the bound".to_string(),
+                    }),
+                }
+            }
             if drawn.shown.ok && drawn.shown.turns {
                 if let Some(fit) = disk_fit(&java.screen, space) {
                     let centred = by != 0
@@ -943,6 +987,38 @@ impl Walk {
             ["sequence", name, size.name, centre.name, "", &image],
             &verdicts,
         );
+        // Each suspect frame's view settled at rest, its paper against
+        // the frame's: after the times and the heap, so the settles warm
+        // nothing the gesture measured.
+        for (image, shown, mask) in suspects {
+            let ask = MapRequest {
+                x: Some(shown.x),
+                y: Some(shown.y),
+                zoom_milli: Some(shown.zoom_milli),
+                ..java.ask(false)
+            };
+            let rest = java.settle(ask, None);
+            let verdict = match rest.shown.ok {
+                true => bare_paper(&mask, &PaperMask::of(&java.screen, paper())),
+                false => Verdict {
+                    rule: BARE_PAPER,
+                    value: 100.0,
+                    limit: BARE_MAX_PCT,
+                    pass: false,
+                    note: "the rest frame of this view failed".to_string(),
+                },
+            };
+            write_png(
+                &self.out.join("thumb").join(format!("{image}-at-rest.png")),
+                &java.screen,
+                480,
+            );
+            let zoom = format!("{:.3}", f64::from(shown.zoom_milli) / f64::from(MILLI));
+            self.rows(
+                ["frame", name, size.name, centre.name, &zoom, &image],
+                &[verdict],
+            );
+        }
         map::tune_tiles(&home, None, true);
     }
 
@@ -1019,7 +1095,32 @@ impl Walk {
 
     /// The five gestures on `size`.
     fn gestures(&mut self, size: Size) {
-        let [germany, _, _, _, _, berlin, _, _, _] = CENTRES;
+        let [germany, _, _, _, _, berlin, _, erg, _] = CENTRES;
+        // Over the relief (order 1853): Erg Chebbi's packs and region,
+        // each gesture in a fresh home, so the relief store starts cold.
+        // Across the relief tiles' seams at z12, 40 px a frame east, 24
+        // frames; then pinched from z12 to z14 and back, a quarter step
+        // a frame, about the screen's middle.
+        self.gesture("erg-pan-seam", size, erg, 12 * MILLI, 24, &|_, _, ask| {
+            Some(MapRequest { pan_x: 40, ..ask })
+        });
+        self.gesture("erg-pinch-12-14", size, erg, 12 * MILLI, 16, &{
+            let inward = std::cell::Cell::new(true);
+            move |_, _: &MapShown, ask| {
+                let zoom = ask.zoom_milli.unwrap_or(12 * MILLI);
+                if inward.get() && zoom >= 14 * MILLI {
+                    inward.set(false);
+                }
+                if !inward.get() && zoom <= 12 * MILLI {
+                    return None;
+                }
+                let by = if inward.get() { 250 } else { -250 };
+                Some(MapRequest {
+                    zoom_by_milli: by,
+                    ..ask
+                })
+            }
+        });
         // Across tile seams at z13 over Berlin's region: 40 px a frame
         // east, 24 frames, three seams.
         self.gesture("pan-seam", size, berlin, 13 * MILLI, 24, &|_, _, ask| {

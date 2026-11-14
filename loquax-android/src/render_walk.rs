@@ -49,13 +49,17 @@
 //! - [`ZOOM_KEEPS_THE_PLACE`]: through a zoom gesture, the geographic
 //!   point under the pinch focus stays under it within
 //!   [`PLACE_MAX_PX`], in every frame, blended or not.
+//! - [`BARE_PAPER`]: no more than [`BARE_MAX_PCT`] per cent of a gesture
+//!   frame's screen is bare paper where the same view at rest shows map
+//!   content ([`PaperMask`], [`bare_paper`]; the audit of order 1851: a
+//!   pan over Berlin drew a nearly empty frame and no rule saw it).
 //!
 //! The gesture rules ([`sequence_rules`]):
 //!
 //! - [`FRAME_P95`]: the 95th percentile of the gesture's frame times is at
-//!   most one frame of the display (the host gate of 1799: 16.7 ms at
-//!   60 Hz); the half-frame GPU line (8.3 ms) stays in the note as
-//!   information.
+//!   most half a frame of the display (8.3 ms at 60 Hz, order 1853: the
+//!   rule's own note named that line while it judged against the whole
+//!   frame of 1799).
 //! - [`HEAP_RETURNS`]: the live heap at the gesture's end is at most
 //!   [`HEAP_KEPT_MAX_MB`] above its start.
 //! - [`HEAP_PEAK`]: the live heap never grows more than [`HEAP_PEAK_MAX_MB`]
@@ -248,6 +252,108 @@ pub const HEAP_PEAK: &str = "heap_peak";
 pub const VIEW_KEPT: &str = "view_kept";
 pub const GLOBE_DISK_FIXED: &str = "globe_disk_fixed";
 pub const ZOOM_KEEPS_THE_PLACE: &str = "zoom_keeps_the_place";
+pub const BARE_PAPER: &str = "bare_paper";
+
+/// Per cent of a gesture frame's screen that may be bare paper where the
+/// same view at rest shows map content: a strip a pan uncovers before
+/// its tiles land, not an emptied screen.
+pub const BARE_MAX_PCT: f64 = 10.0;
+/// The side in pixels of a [`PaperMask`]'s block.
+pub const MASK_BLOCK: usize = 16;
+/// Every how many pixels, each way, a block is sampled: 4 x 4 samples.
+pub const MASK_STEP: usize = 4;
+/// Samples of 16 that make a block bare paper: names over paper (thin
+/// text, a quarter of a block at most) leave a block paper, so a rest
+/// frame's names, which fade while a finger moves, count as no content
+/// (the first full walk of order 1853 failed five world frames at z5 on
+/// their names alone, 10.1 to 11.4 %).
+pub const MASK_PAPER_SAMPLES: usize = 12;
+
+/// Where a screen shows bare paper (the table's background, the land
+/// where nothing is drawn), one bit per [`MASK_BLOCK`] block: small
+/// enough to keep one per suspect frame of a gesture.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PaperMask {
+    bits: Vec<u64>,
+    len: usize,
+    paper: usize,
+}
+
+impl PaperMask {
+    /// The mask of `screen` against the colour `paper`.
+    pub fn of(screen: &Screen, paper: [u8; 3]) -> Self {
+        let (w, h) = (screen.w as usize, screen.h as usize);
+        let mut bits = Vec::new();
+        let (mut len, mut count) = (0usize, 0usize);
+        let at = |x: usize, y: usize| {
+            let i = (y * w + x) * 4;
+            x < w && y < h && screen.rgba.get(i..i + 3) == Some(&paper[..])
+        };
+        for by in (0..h).step_by(MASK_BLOCK) {
+            for bx in (0..w).step_by(MASK_BLOCK) {
+                let samples = (0..MASK_BLOCK)
+                    .step_by(MASK_STEP)
+                    .flat_map(|dy| (0..MASK_BLOCK).step_by(MASK_STEP).map(move |dx| (dx, dy)))
+                    .filter(|&(dx, dy)| at(bx + dx, by + dy))
+                    .count();
+                let is = samples >= MASK_PAPER_SAMPLES;
+                if len % 64 == 0 {
+                    bits.push(0);
+                }
+                if is {
+                    if let Some(word) = bits.last_mut() {
+                        *word |= 1 << (len % 64);
+                    }
+                    count += 1;
+                }
+                len += 1;
+            }
+        }
+        Self {
+            bits,
+            len,
+            paper: count,
+        }
+    }
+
+    /// Per cent of the blocks that are paper: an upper bound of
+    /// [`bare_paper`]'s value against any rest frame.
+    pub fn share_pct(&self) -> f64 {
+        self.paper as f64 * 100.0 / self.len.max(1) as f64
+    }
+}
+
+/// [`BARE_PAPER`] for a gesture frame's mask against the mask of the same
+/// view drawn at rest: the per cent of the screen that is paper in the
+/// gesture frame and map content at rest. Masks of different screens
+/// fail outright.
+pub fn bare_paper(moving: &PaperMask, rest: &PaperMask) -> Verdict {
+    if moving.len != rest.len {
+        return Verdict::at_most(
+            BARE_PAPER,
+            100.0,
+            BARE_MAX_PCT,
+            format!("masks of {} and {} samples", moving.len, rest.len),
+        );
+    }
+    let bare: u32 = moving
+        .bits
+        .iter()
+        .zip(&rest.bits)
+        .map(|(m, r)| (m & !r).count_ones())
+        .sum();
+    let pct = f64::from(bare) * 100.0 / moving.len.max(1) as f64;
+    Verdict::at_most(
+        BARE_PAPER,
+        pct,
+        BARE_MAX_PCT,
+        format!(
+            "paper {:.1} % moving, {:.1} % at rest",
+            moving.share_pct(),
+            rest.share_pct()
+        ),
+    )
+}
 
 /// Pixels the fitted disk's centre or radius may move between a
 /// gesture's frames at one zoom: the rim's smoothing, nothing a person
@@ -675,16 +781,15 @@ pub fn quantile(ms: &[f64], q: f64) -> f64 {
 /// The gesture rules of the module's list.
 pub fn sequence_rules(p: &Played) -> Vec<Verdict> {
     let mb = |b: usize| b as f64 / (1u64 << 20) as f64;
-    // The gate is a whole frame of the display on the host (16.7 ms at
-    // 60 Hz; the 1799 decision); the half-frame GPU line stays in the
-    // note as information.
+    // The gate is half a frame of the display (8.3 ms at 60 Hz, order
+    // 1853), the line the note always named.
     let whole = 1000.0 / p.hz.max(1.0);
     let p95 = quantile(&p.frame_ms, 0.95);
     let mut out = vec![
         Verdict::at_most(
             FRAME_P95,
             p95,
-            whole,
+            whole / 2.0,
             format!(
                 "p50 {:.1} ms, p95 {:.1} ms, max {:.1} ms, {} frames, target {:.0} Hz, half frame {:.1} ms",
                 quantile(&p.frame_ms, 0.5),
@@ -986,6 +1091,52 @@ mod tests {
         assert!(v.iter().all(|v| v.rule != LABEL_CURRENT_ZOOM));
     }
 
+    /// A gesture frame emptied to paper where the rest frame shows the
+    /// map fails [`BARE_PAPER`]; paper the rest frame shows too (a sea
+    /// of nothing at that zoom) does not count, and a thin uncovered
+    /// strip passes (the audit of order 1851: a pan frame nearly blank).
+    #[test]
+    fn a_gesture_frame_of_bare_paper_fails_where_the_rest_has_map() {
+        let paper = [245, 241, 233];
+        let (w, h) = (64u32, 256u32);
+        let screen = |paper_rows: u32| {
+            let mut s = filled(w, h, [200, 180, 160, 255]);
+            for y in 0..paper_rows {
+                for x in 0..w {
+                    let i = ((y * w + x) * 4) as usize;
+                    s.rgba[i..i + 4].copy_from_slice(&[245, 241, 233, 255]);
+                }
+            }
+            s
+        };
+        let rest = PaperMask::of(&screen(0), paper);
+        let blank = PaperMask::of(&screen(h), paper);
+        assert!((blank.share_pct() - 100.0).abs() < 1e-9);
+        let v = bare_paper(&blank, &rest);
+        assert!(!v.pass && (v.value - 100.0).abs() < 1e-9, "{v:?}");
+        // The rest frame is paper there too: nothing is missing.
+        assert!(bare_paper(&blank, &blank).pass);
+        // A strip of one block row of 16 (6 %) uncovered by a pan passes.
+        let strip = PaperMask::of(&screen(16), paper);
+        let v = bare_paper(&strip, &rest);
+        assert!(v.pass && v.value > 0.0, "{v:?}");
+        // Half the screen does not.
+        assert!(!bare_paper(&PaperMask::of(&screen(128), paper), &rest).pass);
+        // Names over paper at rest (a text row through every block,
+        // a quarter of its samples) still leave the rest frame paper.
+        let mut named = screen(h);
+        for y in (0..h).step_by(16) {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                named.rgba[i..i + 4].copy_from_slice(&[40, 40, 40, 255]);
+            }
+        }
+        assert!(bare_paper(&blank, &PaperMask::of(&named, paper)).pass);
+        // Masks of different screens fail outright.
+        let other = PaperMask::of(&filled(32, 32, [0, 0, 0, 255]), paper);
+        assert!(!bare_paper(&blank, &other).pass);
+    }
+
     #[test]
     fn the_gesture_rules_hold_time_heap_and_view() {
         let mb = 1usize << 20;
@@ -1004,14 +1155,16 @@ mod tests {
         let mut slow = good.clone();
         slow.frame_ms = vec![18.0; 40];
         assert!(!verdict(&sequence_rules(&slow), FRAME_P95).pass);
-        // The 1799 decision: on the host the gate is a whole frame
-        // (16.7 ms at 60 Hz); the half-frame line stays in the note as
-        // information.
+        // Order 1853: the gate is half a frame (8.3 ms at 60 Hz), the
+        // line the note names; 9 ms fails, 8 ms passes.
         let mut half = good.clone();
         half.frame_ms = vec![9.0; 40];
         let v = verdict(&sequence_rules(&half), FRAME_P95);
-        assert!(v.pass, "{v:?}");
+        assert!(!v.pass, "{v:?}");
+        assert!((v.limit - 1000.0 / 120.0).abs() < 1e-9, "{v:?}");
         assert!(v.note.contains("half frame 8.3 ms"), "{v:?}");
+        half.frame_ms = vec![8.0; 40];
+        assert!(verdict(&sequence_rules(&half), FRAME_P95).pass);
         let mut kept = good.clone();
         kept.heap_end = 300 * mb;
         assert!(!verdict(&sequence_rules(&kept), HEAP_RETURNS).pass);

@@ -67,6 +67,7 @@ CONTROLS = {
     "view-lost": ["view_kept"],
     "disk-shift": ["globe_disk_fixed"],
     "zoom-drift": ["zoom_keeps_the_place"],
+    "bare-frame": ["bare_paper"],
 }
 STEP = {"frame_p95": 15.0}
 # A fault that only shows on one variant's walk runs on that binary; the
