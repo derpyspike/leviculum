@@ -15,8 +15,10 @@
 //!   serves ([`loquax::ui::viewload::MIN_ZOOM`] up) and the source is
 //!   reachable, no part of the view lacks its zoom's data
 //!   ([`loquax::ui::viewload::uncovered`] is 0 and the frame owes no
-//!   tile) within the session's bound: [`FILL_FAST_MS`] at full speed,
-//!   [`FILL_SLOW_MS`] at [`SLOW_RATE`].
+//!   tile) within the rest's derived bound (1821): [`FILL_FAST_MS`] at
+//!   full speed, where the link is not the cost; at a limited rate
+//!   [`FILL_BASE_MS`] plus twice the time the bytes the view itself
+//!   needs ([`view_bytes`]) take at that rate.
 //! - `screen_first`: while a share of the view above
 //!   [`loquax::ui::viewload::GAP_SHARE`] lacks its data, no load starts
 //!   for anything else; a load already running when the lack began is the
@@ -36,9 +38,12 @@
 //! - `fault_recovers`: after an injected fault ends, the view fills with
 //!   no user input within [`RECOVER_MS`]; a backoff must not block what
 //!   is on screen once the source answers again.
-//! - `frame_never_blank`: no rendered frame of a session is blank (one
+//! - `frame_never_blank`: no drawn frame of a session — every frame of
+//!   [`Walk::step`], not only the pause records (1821) — is blank (one
 //!   colour over more than [`BLANK_SHARE`] of the screen) where the
-//!   frame before it had a picture.
+//!   frame before it, at the same view, had a picture; a view that
+//!   moved onto ground not loaded yet is legitimately empty and is not
+//!   judged.
 //!
 //! With `LOQUAX_LOAD_WALK=DIR` the pictures go to `DIR/full/`, the
 //! verdicts to `DIR/rows-load.tsv` and the per-frame traces to
@@ -59,7 +64,7 @@ use leviculum_map::mercator::{project, LatLon, World};
 use leviculum_map::region::Bounds;
 use leviculum_map::viewport::{ExactView, MILLI};
 use leviculum_mapcut::serve::Serve;
-use loquax::mapload::{Loader, Rank, Source, Step, MAX_AWAY};
+use loquax::mapload::{LoadState, Loader, Rank, Source, Step, MAX_AWAY, SCREEN_RETRY_MAX_MS};
 use loquax::picture::Maps;
 use loquax::ui::map::MapWant;
 use loquax::ui::viewload::{uncovered, GAP_SHARE, MIN_ZOOM};
@@ -89,8 +94,9 @@ pub const AREA_B: (f64, f64) = (52.4715, 13.4600);
 pub const SLOW_RATE: u64 = 200_000;
 /// A rest must fill within this at full speed.
 pub const FILL_FAST_MS: u64 = 15_000;
-/// A rest must fill within this at [`SLOW_RATE`].
-pub const FILL_SLOW_MS: u64 = 45_000;
+/// The link-free part of a limited rate's fill bound (1821): the cut,
+/// the write, the verify and the draw.
+pub const FILL_BASE_MS: u64 = 10_000;
 /// After a fault ends the view must fill, untouched, within this.
 pub const RECOVER_MS: u64 = 25_000;
 /// While boxes wait, one must start, end or leave within this.
@@ -114,6 +120,12 @@ pub struct FrameRec {
     /// Tiles the last drawn frame owed.
     pub missing: usize,
     pub drew: bool,
+    /// Whether the frame drawn in this interval was blank
+    /// ([`BLANK_SHARE`]); `None` when none was drawn (1821).
+    pub blank: Option<bool>,
+    /// The view lay inside the archive's box: past it the world is
+    /// empty by design, and no picture rule judges the frame.
+    pub inside: bool,
 }
 
 /// A loader event on the walk's clock.
@@ -174,7 +186,9 @@ pub enum Inject {
     DeleteRegion,
     /// The fault never ends inside the session's recover bound.
     NeverRecovers,
-    /// Every picture after the first is blanked before it is checked.
+    /// One drawn frame between two pauses, at a steady view whose last
+    /// frame had a picture, is counted blank (1821): the per-frame
+    /// rule's positive control.
     BlankFrame,
     /// The picture of a repeated view is perturbed before it is checked:
     /// the comparator's positive control.
@@ -212,6 +226,8 @@ pub struct Walk {
     last_wheel: Option<Instant>,
     /// [`Inject::DeleteRegion`] has deleted the landed regions.
     deleted: bool,
+    /// [`Inject::BlankFrame`] has blanked its one drawn frame.
+    blanked: bool,
     last_ask: Option<Instant>,
     done_wants: Vec<MapWant>,
     /// The last drawn frame said a name still fades.
@@ -282,6 +298,7 @@ impl Walk {
             inject,
             last_wheel: None,
             deleted: false,
+            blanked: false,
             last_ask: None,
             done_wants: Vec::new(),
             last_fading: false,
@@ -315,6 +332,7 @@ impl Walk {
             self.app.apply(Message::WheelRest);
         }
         let mut drew = false;
+        let mut blank = None;
         let mut missing = self.frames.last().map_or(0, |f| f.missing);
         match self.app.next_job() {
             Some(Job::Draw(order)) => {
@@ -322,6 +340,22 @@ impl Walk {
                 drew = true;
                 missing = shown.missing;
                 self.last_fading = shown.fading;
+                let mut is_blank = frame_blank(&shown);
+                // The selftest's injection (1821): one drawn frame
+                // between two pauses, at a view whose last drawn frame
+                // had a picture, counts as blank; the rule must fire.
+                if self.inject == Inject::BlankFrame && !self.blanked && !self.checks.is_empty() {
+                    let steady = self.frames.iter().rev().find(|f| f.drew).is_some_and(|f| {
+                        f.centre == self.app.view.centre
+                            && f.zoom_milli == self.app.view.zoom_milli()
+                            && f.blank == Some(false)
+                    });
+                    if steady {
+                        is_blank = true;
+                        self.blanked = true;
+                    }
+                }
+                blank = Some(is_blank);
                 self.app.apply(Message::Painted(shown));
             }
             Some(Job::Prefetch(now)) => {
@@ -395,6 +429,8 @@ impl Walk {
             sent: self.serve.sent(),
             missing,
             drew,
+            blank,
+            inside: inside_archive(&self.view_now().bounds()),
         });
         let next = t + 16;
         let now = self.now_ms();
@@ -477,9 +513,17 @@ impl Walk {
     }
 
     /// At rest until the view is filled at its zoom and the frame owes
-    /// nothing, at most `bound_ms`; then the pause's picture. `expects`
-    /// says the rule holds the rest to its bound (a reachable source).
-    pub fn rest(&mut self, label: &str, bound_ms: u64, expects: bool) {
+    /// nothing, within the bound derived from what the view needs
+    /// ([`Walk::fill_bound_for`], 1821); then the pause's picture.
+    pub fn rest(&mut self, label: &str, expects: bool) {
+        let bound = self.fill_bound_for();
+        self.rest_bounded(label, bound, expects);
+    }
+
+    /// As [`Walk::rest`], with an explicit bound: a fault session's
+    /// pause, which expects no fill. `expects` says the rule holds the
+    /// rest to its bound (a reachable source).
+    pub fn rest_bounded(&mut self, label: &str, bound_ms: u64, expects: bool) {
         // Below the autoload's floor nothing is asked and nothing fills:
         // a short pause and its picture, no bound waited out.
         if self.app.view.tile_zoom() < MIN_ZOOM {
@@ -537,11 +581,6 @@ impl Walk {
         let crop = crop_screen(&shown, &self.app);
         let mut crop = crop;
         match self.inject {
-            Inject::BlankFrame if !self.checks.is_empty() => {
-                for px in crop.chunks_exact_mut(4) {
-                    px.copy_from_slice(&[0x80, 0x80, 0x80, 0xff]);
-                }
-            }
             Inject::PerturbPicture => {
                 let seen_before = self.checks.iter().any(|c| {
                     c.centre == self.app.view.centre && c.zoom_milli == self.app.view.zoom_milli()
@@ -583,11 +622,27 @@ impl Walk {
         }
     }
 
-    /// The fill bound for this walk's link.
+    /// The fill bound of a rest over the view now (1821, the audit of
+    /// 1811): at full speed the flat [`FILL_FAST_MS`] — the link is not
+    /// the cost — and at a limited rate [`FILL_BASE_MS`] plus twice the
+    /// time the view's own bytes ([`view_bytes`]) take at that rate,
+    /// twice for the requests and the directories. The bound is what
+    /// the view NEEDS, not what today's cells fetch: a rest waiting
+    /// behind a giant unpausable cell load fails it, which is the
+    /// measured finding sharpenings 1 and 2 of 1811 are for.
+    pub fn fill_bound_for(&self) -> u64 {
+        match self.rate {
+            0 => FILL_FAST_MS,
+            rate => FILL_BASE_MS + 2 * view_bytes(&self.view_now()) * 1000 / rate,
+        }
+    }
+
+    /// The drain budget for this walk's link: wide enough for the loads
+    /// the session left running.
     pub fn fill_bound(&self) -> u64 {
         match self.rate {
             0 => FILL_FAST_MS,
-            _ => FILL_SLOW_MS,
+            _ => 45_000,
         }
     }
 
@@ -615,20 +670,47 @@ impl Walk {
         };
         while self.now_ms() < cleared + RECOVER_MS {
             self.step();
+            self.sticky_backoff();
             let last = self.frames.last().expect("a frame");
-            if let Some((_, Ev::Skipped(b, "backoff"))) = self.events.last() {
-                if overlaps(&self.view_now().bounds(), b) {
-                    self.fault.backoff_after_clear = true;
-                }
-            }
             if last.uncovered == 0.0 && last.missing == 0 && !self.loader.loading_here() {
                 self.fault.filled_at = Some(self.now_ms());
                 break;
             }
         }
         let filled = self.fault.filled_at.is_some();
+        if !filled {
+            // The recovery bound passed with the view still lacking: an
+            // on-screen box sitting in a retry wait is what kept it so.
+            let view = self.view_now().bounds();
+            self.fault.backoff_after_clear |=
+                self.loader
+                    .report(self.now_ms())
+                    .iter()
+                    .any(|(b, rank, state)| {
+                        *rank <= Rank::Here
+                            && overlaps(&view, b)
+                            && matches!(state, LoadState::Retrying { .. })
+                    });
+        }
         self.checkpoint("after-fault", self.fault.filled_at, RECOVER_MS, false);
-        let _ = filled;
+    }
+
+    /// A retry that keeps an on-screen box waiting after the fault ended
+    /// (1821, the audit of 1811; the old `Skipped "backoff"` detection
+    /// died with the loader's retry queue): a box of the view booked
+    /// past the screen ladder's last rung ([`SCREEN_RETRY_MAX_MS`])
+    /// cannot heal the view in time, whatever else happens.
+    fn sticky_backoff(&mut self) {
+        let view = self.view_now().bounds();
+        for (b, rank, state) in self.loader.report(self.now_ms()) {
+            if rank <= Rank::Here && overlaps(&view, &b) {
+                if let LoadState::Retrying { in_ms } = state {
+                    if in_ms > SCREEN_RETRY_MAX_MS {
+                        self.fault.backoff_after_clear = true;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -724,6 +806,19 @@ fn crop_screen(shown: &super::Shown, app: &App) -> Vec<u8> {
     crop
 }
 
+/// The bytes the view itself needs from the source (1821): the screen's
+/// own box at the view's zoom and the step above it (its cut, profile 2,
+/// carries z-1..z), over the padded archive's uniform tiles
+/// ([`first_tile::first_tile_blob`] each), a tile of slack on each axis.
+pub fn view_bytes(view: &leviculum_map::viewport::Viewport) -> u64 {
+    let (w, h) = view.size();
+    let tiles = |shift: u32| {
+        let span = |px: u32| u64::from((px >> shift) / 256 + 2);
+        span(w) * span(h)
+    };
+    (tiles(0) + tiles(1)) * first_tile::first_tile_blob()
+}
+
 /// Whether `view` lies inside [`WIDE_BOX`] with a margin of 0.03
 /// degrees (the screen box's growth): past the archive the world is
 /// empty, which is no loader's fault, so no fill or picture rule judges
@@ -743,6 +838,24 @@ pub fn inside_archive(view: &Bounds) -> bool {
 /// here: the fixture's box does not cross it).
 fn overlaps(a: &Bounds, b: &Bounds) -> bool {
     a.west <= b.east && b.west <= a.east && a.south <= b.north && b.south <= a.north
+}
+
+/// Whether the drawn frame `shown` is blank: its most common sampled
+/// pixel covers more than [`BLANK_SHARE`] of it (1821). Every 16th
+/// pixel is read, so a session of thousands of frames is not spent
+/// counting.
+fn frame_blank(shown: &super::Shown) -> bool {
+    let super::Handle::Rgba { pixels, .. } = &shown.handle else {
+        return false;
+    };
+    let mut counts: HashMap<[u8; 4], u32> = HashMap::new();
+    let mut total = 0u32;
+    for px in pixels.chunks_exact(4).step_by(16) {
+        *counts.entry([px[0], px[1], px[2], px[3]]).or_default() += 1;
+        total += 1;
+    }
+    let top = counts.values().copied().max().unwrap_or(0);
+    f64::from(top) / f64::from(total.max(1)) > BLANK_SHARE
 }
 
 /// The share of `rgba` its most common pixel covers.
@@ -1081,25 +1194,48 @@ pub fn rules(walk: &Walk) -> Vec<Verdict> {
         ));
     }
 
-    // frame_never_blank: a picture after a picture.
-    let mut blanked = Vec::new();
+    // frame_never_blank: every drawn frame of the session (1821), the
+    // pause records included. A blank frame at the very view whose last
+    // drawn frame had a picture is a lost picture; a view that moved
+    // onto ground not loaded yet is legitimately empty and not judged.
+    let mut blank_checks = Vec::new();
     for (i, pair) in walk.checks.windows(2).enumerate() {
         if pair[1].inside && !pair[0].blank && pair[1].blank {
-            blanked.push(i + 1);
+            blank_checks.push(i + 1);
         }
+    }
+    let mut blank_frames = Vec::new();
+    let mut last_drawn: Option<&FrameRec> = None;
+    for f in walk.frames.iter().filter(|f| f.drew) {
+        if let (Some(prev), Some(blank)) = (last_drawn, f.blank) {
+            if f.inside
+                && blank
+                && prev.blank == Some(false)
+                && prev.centre == f.centre
+                && prev.zoom_milli == f.zoom_milli
+            {
+                blank_frames.push(f.t);
+            }
+        }
+        last_drawn = Some(f);
     }
     out.push(v(
         "frame_never_blank",
-        blanked.is_empty(),
-        format!("{} blank frames after a picture", blanked.len()),
+        blank_checks.is_empty() && blank_frames.is_empty(),
+        format!(
+            "{} blank pauses, {} blank drawn frames after a picture",
+            blank_checks.len(),
+            blank_frames.len()
+        ),
         "0".to_string(),
-        blanked
+        blank_checks
             .iter()
-            .take(3)
             .map(|i| walk.checks[*i].label.clone())
+            .chain(blank_frames.iter().take(3).map(|t| format!("frame t={t}")))
+            .take(3)
             .collect::<Vec<_>>()
             .join("; "),
-        blanked
+        blank_checks
             .first()
             .map(|i| image_name(walk, *i))
             .unwrap_or_default(),
@@ -1212,7 +1348,7 @@ pub fn wheel_in_rested(rate: u64, latency: u64, from: u8, to: u8, inject: Inject
     let bound = walk.fill_bound();
     for z in from + 1..=to {
         walk.wheel(1000, 14);
-        walk.rest(&format!("z{z}"), bound, true);
+        walk.rest(&format!("z{z}"), true);
     }
     walk.drain(bound);
     walk
@@ -1232,7 +1368,7 @@ pub fn wheel_in_rushed(rate: u64, latency: u64) -> Walk {
     for _ in 5..=16 {
         walk.wheel(1000, 4);
     }
-    walk.rest("final", bound, true);
+    walk.rest("final", true);
     walk.drain(bound);
     walk
 }
@@ -1242,20 +1378,20 @@ pub fn in_out_in(rate: u64, latency: u64, rounds: u32, inject: Inject) -> Walk {
     let tag = if rate == 0 { "" } else { "-slow" };
     let mut walk = Walk::new(&format!("in-out-in{tag}"), rate, latency, 13, inject);
     let bound = walk.fill_bound();
-    walk.rest("start-z13", bound, true);
+    walk.rest("start-z13", true);
     for round in 0..rounds {
         for _ in 0..3 {
             walk.wheel(1000, 14);
         }
-        walk.rest(&format!("r{round}-in3-z16"), bound, true);
+        walk.rest(&format!("r{round}-in3-z16"), true);
         for _ in 0..2 {
             walk.wheel(-1000, 14);
         }
-        walk.rest(&format!("r{round}-out2-z14"), bound, true);
+        walk.rest(&format!("r{round}-out2-z14"), true);
         walk.wheel(1000, 14);
-        walk.rest(&format!("r{round}-in1-z15"), bound, true);
+        walk.rest(&format!("r{round}-in1-z15"), true);
         walk.wheel(-2000, 14);
-        walk.rest(&format!("r{round}-back-z13"), bound, true);
+        walk.rest(&format!("r{round}-back-z13"), true);
     }
     walk.drain(bound);
     walk
@@ -1266,12 +1402,12 @@ pub fn pan_slow_fast(rate: u64, latency: u64) -> Walk {
     let tag = if rate == 0 { "" } else { "-slow" };
     let mut walk = Walk::new(&format!("pan{tag}"), rate, latency, 15, Inject::None);
     let bound = walk.fill_bound();
-    walk.rest("start-z15", bound, true);
+    walk.rest("start-z15", true);
     // The view goes east: the pointer west, a quarter screen a second.
     walk.drag(-8.0, 0.0, 150);
-    walk.rest("slow-east", bound, true);
+    walk.rest("slow-east", true);
     walk.drag(-60.0, 0.0, 40);
-    walk.rest("fast-east", bound, true);
+    walk.rest("fast-east", true);
     walk.drain(bound);
     walk
 }
@@ -1288,7 +1424,7 @@ pub fn pan_while_zooming(rate: u64, latency: u64) -> Walk {
         walk.wheel(if round == 2 { 700 } else { -700 }, 8);
         let _ = round;
     }
-    walk.rest("after", bound, true);
+    walk.rest("after", true);
     walk.drain(bound);
     walk
 }
@@ -1298,14 +1434,14 @@ pub fn jump_away_and_back(rate: u64, latency: u64) -> Walk {
     let tag = if rate == 0 { "" } else { "-slow" };
     let mut walk = Walk::new(&format!("jump{tag}"), rate, latency, 15, Inject::None);
     let bound = walk.fill_bound();
-    walk.rest("start-z15", bound, true);
+    walk.rest("start-z15", true);
     // Move on so loads run, and jump while they do.
     walk.drag(-40.0, 0.0, 20);
     walk.run(8);
     walk.jump(AREA_B, 15);
-    walk.rest("away-z15", bound, true);
+    walk.rest("away-z15", true);
     walk.jump(AREA_A, 15);
-    walk.rest("back-z15", bound, true);
+    walk.rest("back-z15", true);
     walk.drain(bound);
     walk
 }
@@ -1331,7 +1467,7 @@ pub fn recovers_503(rate: u64, latency: u64, heals: bool) -> Walk {
     walk.serve.fail(true);
     walk.wheel(1000, 14);
     walk.wheel(1000, 14);
-    walk.rest("faulty", 6_000, false);
+    walk.rest_bounded("faulty", 6_000, false);
     if heals {
         walk.serve.fail(false);
     }
@@ -1347,7 +1483,7 @@ pub fn recovers_drop(rate: u64, latency: u64) -> Walk {
     walk.run(20);
     walk.serve.drop_at(Some(walk.serve.sent() + 150_000));
     walk.wheel(1000, 14);
-    walk.rest("faulty", 8_000, false);
+    walk.rest_bounded("faulty", 8_000, false);
     walk.serve.drop_at(None);
     walk.fault_cleared();
     walk.await_recovery();
@@ -1360,7 +1496,7 @@ pub fn recovers_stall(rate: u64, latency: u64) -> Walk {
     let mut walk = Walk::new("fault-stall", rate, latency, 15, Inject::None);
     walk.serve.hold_at(walk.serve.sent() + 120_000);
     walk.drag(-60.0, 0.0, 30);
-    walk.rest("faulty", 8_000, false);
+    walk.rest_bounded("faulty", 8_000, false);
     walk.serve.release();
     walk.fault_cleared();
     walk.await_recovery();
@@ -1373,9 +1509,9 @@ pub fn recovers_stall(rate: u64, latency: u64) -> Walk {
 pub fn cache_at_cap(rate: u64, latency: u64) -> Walk {
     let mut walk = Walk::with_cache("cache-cap", rate, latency, 15, Inject::None, 3 << 20, 24);
     let bound = walk.fill_bound();
-    walk.rest("start-z15", bound, true);
+    walk.rest("start-z15", true);
     walk.drag(-40.0, 0.0, 40);
-    walk.rest("east", bound, true);
+    walk.rest("east", true);
     walk.drain(bound);
     walk
 }
@@ -1483,7 +1619,7 @@ pub fn selftest_walk(inject: Inject) -> Walk {
             let mut walk = Walk::new("selftest-stuck", 0, 0, 13, Inject::None);
             walk.serve.hold_at(walk.serve.sent() + 60_000);
             walk.wheel(1000, 14);
-            walk.rest("held", 4_000, false);
+            walk.rest_bounded("held", 4_000, false);
             let frames = (2 * STALL_MS / 16) as u32;
             walk.run(frames);
             walk
@@ -1501,11 +1637,11 @@ pub fn selftest_walk(inject: Inject) -> Walk {
                 inject,
             );
             let bound = walk.fill_bound();
-            walk.rest("first-z13", bound, true);
+            walk.rest("first-z13", true);
             walk.wheel(1000, 14);
-            walk.rest("z14", bound, true);
+            walk.rest_bounded("z14", bound, true);
             walk.wheel(-1000, 14);
-            walk.rest("second-z13", bound, true);
+            walk.rest("second-z13", true);
             walk
         }
         inject => {
@@ -1515,9 +1651,9 @@ pub fn selftest_walk(inject: Inject) -> Walk {
                 _ => walk.fill_bound(),
             };
             walk.wheel(1000, 14);
-            walk.rest("z13", bound, true);
+            walk.rest_bounded("z13", bound, true);
             walk.wheel(1000, 14);
-            walk.rest("z14", bound, true);
+            walk.rest_bounded("z14", bound, true);
             walk.drain(6_000);
             walk
         }
