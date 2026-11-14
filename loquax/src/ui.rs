@@ -6497,7 +6497,7 @@ fn on_engine<B: InputBuffer>(model: &mut UiModel<B>, event: OutboxEvent) -> Vec<
             // its signature's verdict, is judged again when those come
             // ([`groups`], [`apply_verdict`]).
             let writer = copy_writer(&model.groups, source, &fields, verified);
-            model.learn_group(source, false, &fields);
+            model.learn_group(source, false, &fields, verified);
             let state = groups::is_state(&String::from_utf8_lossy(&body), &fields);
             // When this device took it, for its ledger and the Info sheet's
             // "Received"; the bubble shows when its writer wrote it (1445).
@@ -6645,7 +6645,10 @@ fn on_engine<B: InputBuffer>(model: &mut UiModel<B>, event: OutboxEvent) -> Vec<
 /// rest. Unverified is not the end (Lew 2026-11-13, rule 3): a reading
 /// held back for want of a signature is filed when the verdict says
 /// valid, and a reading filed before an INVALID verdict is taken back —
-/// the pin, the track and the store row.
+/// the pin, the track and the store row, each only where this message
+/// filed it (the audits of 1816). A membership the message carried is
+/// held the same way ([`groups`]): a valid verdict applies it, an
+/// INVALID one discards it.
 fn apply_verdict<B>(
     model: &mut UiModel<B>,
     message_id: [u8; 32],
@@ -6677,7 +6680,6 @@ fn apply_verdict<B>(
             "signature INVALID against the sender's key",
         ),
     };
-    let mut effects = Vec::new();
     for &at in &flipped {
         let key = {
             let conversation = &mut model.conversations[index];
@@ -6691,48 +6693,38 @@ fn apply_verdict<B>(
         model.changed.insert((source, key));
         match valid {
             // The held reading, judged again with the verdict in hand: a
-            // vouched copy's is filed under its writer now. The source's
-            // own readings and any stream rows were filed at arrival and
-            // are not filed twice.
+            // vouched copy's is filed under its writer now, with the
+            // message's time, not the verdict's (the audits of 1816).
+            // The source's own readings and any stream rows were filed
+            // at arrival and are not filed twice. A reading still
+            // refused was said in its one `POSITION_REFUSED` event at
+            // arrival (Lew 2026-11-13, decision 2: one event per
+            // refused reading); the verdict repeats nothing.
             true => {
                 let fields = model.conversations[index].messages[at].fields.clone();
                 let owner = copy_writer(&model.groups, source, &fields, true);
-                match owner {
-                    leviculum_lxmf::lev::ReadingOwner::Writer(copy) => {
-                        let received = model.now.map(|n| n.unix_secs);
-                        let read = telemetry::read_judged(
-                            telemetry::Own::Under(copy.sender),
-                            source,
-                            &fields,
-                            received,
-                            telemetry::Rows::Dropped,
-                        );
-                        for mut fix in read.fixes {
-                            fix.message = Some(key);
-                            model.take_fix(fix);
-                        }
+                if let leviculum_lxmf::lev::ReadingOwner::Writer(copy) = owner {
+                    let received = model.conversations[index].messages[at]
+                        .at
+                        .map(|a| a.unix_secs);
+                    let read = telemetry::read_judged(
+                        telemetry::Own::Under(copy.sender),
+                        source,
+                        &fields,
+                        received,
+                        telemetry::Rows::Dropped,
+                    );
+                    for mut fix in read.fixes {
+                        fix.message = Some(key);
+                        model.take_fix(fix);
                     }
-                    leviculum_lxmf::lev::ReadingOwner::Refused(refusal) => {
-                        let received = model.now.map(|n| n.unix_secs);
-                        let read = telemetry::read_judged(
-                            telemetry::Own::Refused,
-                            source,
-                            &fields,
-                            received,
-                            telemetry::Rows::Dropped,
-                        );
-                        let t_ms = received.unwrap_or(0) * 1000;
-                        for _ in 0..read.refused {
-                            effects.push(UiEffect::Log(telemetry::refused_line(
-                                &source,
-                                &message_id,
-                                &refusal,
-                                t_ms,
-                            )));
-                        }
-                    }
-                    leviculum_lxmf::lev::ReadingOwner::Source => {}
                 }
+                // Nothing a message says is believed before its
+                // signature is verified (the audits of 1816): the
+                // membership this message carried waited for this
+                // verdict and applies now — after the judging above, so
+                // the message does not vouch for its own copy.
+                model.learn_group(source, false, &fields, true);
             }
             // INVALID: whatever this message filed is taken back — the
             // pin, the track point and the store row of every fix it
@@ -6747,7 +6739,7 @@ fn apply_verdict<B>(
             format!("invalid signature on a message from {from}"),
         );
     }
-    effects
+    Vec::new()
 }
 
 /// The telemetry in the newest message of conversation `index`, just
@@ -7125,10 +7117,13 @@ impl<B> UiModel<B> {
     }
 
     /// Everything message `at` of conversation `index` filed, taken back
-    /// (Lew 2026-11-13, rule 3: a reading filed before an INVALID verdict):
-    /// the pin where it is this message's, the track points of the fixes
-    /// the message carried, the rows still queued for the store, and a
-    /// delete for the rows the store already has.
+    /// (Lew 2026-11-13, rule 3: a reading filed before an INVALID verdict)
+    /// — and ONLY what this message filed (the audits of 1816): the pin
+    /// where it is this message's, the track points of the fixes the
+    /// message carried that no other live message also stands behind, the
+    /// rows still queued for the store, and a delete for the store's rows,
+    /// keyed by this message so a row another message filed with the same
+    /// peer and fix time stays.
     fn take_back_fixes(&mut self, index: usize, at: usize, key: u64) {
         let Some(conversation) = self.conversations.get(index) else {
             return;
@@ -7155,15 +7150,43 @@ impl<B> UiModel<B> {
             {
                 self.positions.remove(&fix.peer);
             }
-            if let Some(track) = self.tracks.get_mut(&fix.peer) {
-                alloc::sync::Arc::make_mut(track).retain(|f| f.t != fix.order_time());
+            // The screen's track point at this time goes only when no
+            // other live message also files a reading there: the first
+            // filer's point is kept by [`tracks::insert`], whichever
+            // message that was.
+            if !self.another_files(key, fix.peer, fix.order_time()) {
+                if let Some(track) = self.tracks.get_mut(&fix.peer) {
+                    alloc::sync::Arc::make_mut(track).retain(|f| f.t != fix.order_time());
+                }
             }
             self.forgotten.push(history::StoreWrite::ForgetPosition {
                 peer: fix.peer,
                 fix_time: fix.location.last_update,
+                message: key,
             });
         }
         self.fixes_received.retain(|f| f.message != Some(key));
+    }
+
+    /// Whether any live message other than `key` files a reading for
+    /// `peer` at order time `t` — judged by the one writer rule as the
+    /// messages stand now, INVALID ones aside. What such a message filed
+    /// is not the taken-back message's to remove (the audits of 1816).
+    fn another_files(&self, key: u64, peer: [u8; 16], t: i64) -> bool {
+        let writers = self.writers();
+        self.conversations.iter().any(|c| {
+            c.messages.iter().any(|m| {
+                !m.outbound
+                    && m.activity != key
+                    && m.signature != Signature::Invalid
+                    && crate::telemetry::has_telemetry(&m.fields)
+                    && writers
+                        .read(c.peer, m)
+                        .fixes
+                        .iter()
+                        .any(|f| f.peer == peer && f.order_time() == t)
+            })
+        })
     }
 
     /// One position received: the peer's latest when it is newer than what
@@ -7595,7 +7618,7 @@ fn home_sent<B: InputBuffer>(
         unix_secs: sent_at,
         ..now
     });
-    model.learn_group(destination, true, &fields);
+    model.learn_group(destination, true, &fields, true);
     let mut message = Message::ours(String::from_utf8_lossy(&body).into_owned(), at);
     message.id = Some(message_id);
     message.delivery = Some(DeliveryState::Sent);
@@ -15865,9 +15888,23 @@ pub(crate) mod tests {
             model.positions[&PEER].location.latitude_e6, 52_000_000,
             "held while the verdict is owed"
         );
+        let c = model
+            .conversations
+            .iter()
+            .position(|c| c.peer == GROUP)
+            .expect("row");
+        let held_at = model.conversations[c].messages.last().expect("message").at;
+        // The verdict comes five minutes later: the reading is filed with
+        // the message's time, not the verdict's (the audits of 1816).
+        clock(&mut model, 26, 14, 5);
         verdict(&mut model, GROUP, 2, true);
         assert_eq!(model.positions[&PEER].location.latitude_e6, 10_000_000);
         assert_eq!(model.positions[&PEER].via, GROUP);
+        assert_eq!(
+            model.positions[&PEER].received_at,
+            held_at.map(|at| at.unix_secs),
+            "the message's time, not the verdict's"
+        );
         assert_eq!(stored_under(&mut model), [PEER]);
     }
 
@@ -15896,14 +15933,15 @@ pub(crate) mod tests {
             !a_message_fix_names(&model, PEER, PEER),
             "an INVALID message shows no fix"
         );
-        // The store's row goes too.
+        // The store's row goes too, keyed by the INVALID message so only
+        // its own row can match (the audits of 1816).
         let forgets = model
             .take_writes()
             .iter()
             .filter(|w| {
                 matches!(
                     w,
-                    StoreWrite::ForgetPosition { peer, fix_time }
+                    StoreWrite::ForgetPosition { peer, fix_time, .. }
                         if *peer == PEER && *fix_time == two_pm() - 600
                 )
             })
@@ -15912,28 +15950,36 @@ pub(crate) mod tests {
     }
 
     /// A valid verdict does not end the judging: a copy nobody vouches
-    /// for stays nobody's, and the refusal is said again with its new
-    /// reason.
+    /// for stays nobody's. Its refusal was said in ONE `POSITION_REFUSED`
+    /// event, at arrival (one structured event per refused reading, Lew
+    /// 2026-11-13 decision 2; the audits of 1816): the verdict repeats
+    /// nothing.
     #[test]
     fn a_valid_verdict_on_an_unvouched_copy_still_refuses_and_says_so() {
         let mut model = reader_with_peers_pin(&[PEER]);
-        arrive_unverified(
+        let refused = |effects: &[UiEffect]| {
+            effects
+                .iter()
+                .filter(|e| {
+                    matches!(e, UiEffect::Log(line) if line.starts_with("POSITION_REFUSED source=5e5e"))
+                })
+                .count()
+        };
+        let effects = arrive_unverified(
             &mut model,
             STRANGER,
             2,
             "",
             copied_report(PEER, 1, 10_000_000, 60),
         );
+        assert_eq!(refused(&effects), 1, "said once at arrival: {effects:?}");
         let effects = verdict(&mut model, STRANGER, 2, true);
         assert_eq!(model.positions[&PEER].location.latitude_e6, 52_000_000);
         assert!(!model.positions.contains_key(&STRANGER));
-        assert!(
-            effects.iter().any(|e| matches!(
-                e,
-                UiEffect::Log(line) if line.starts_with("POSITION_REFUSED source=5e5e")
-                    && line.contains("reason=unvouched")
-            )),
-            "{effects:?}"
+        assert_eq!(
+            refused(&effects),
+            0,
+            "one event per refused reading, said at arrival: {effects:?}"
         );
     }
 
@@ -16055,6 +16101,317 @@ pub(crate) mod tests {
         };
         arrive(&mut model, GROUP, 4, "", lev_with_fix(newer, 11_000_000));
         assert_eq!(model.positions[&OTHER].location.latitude_e6, 11_000_000);
+    }
+
+    /// Third audit of 1757: a membership list from the group's address whose
+    /// signature nobody could check, later found INVALID, must not change
+    /// who the reader's group lists. Secure outcome: PEER, listed by the
+    /// genuine membership, still vouches for its verified copy afterwards.
+    #[test]
+    fn audit3_an_unverified_membership_found_invalid_unlists_no_member() {
+        let mut model = reader_with_peers_pin(&[PEER, OTHER]);
+        in_group(
+            &mut model,
+            groups::Standing::Joined,
+            &[(READER, false), (PEER, false)],
+        );
+        // The forged list: epoch 5, PEER left out.
+        arrive_unverified(&mut model, GROUP, 2, "", lev_only(membership(5, &[OTHER])));
+        verdict(&mut model, GROUP, 2, false);
+        // A genuine, verified copy naming PEER at the genuine epoch.
+        arrive(
+            &mut model,
+            GROUP,
+            3,
+            "",
+            copied_report(PEER, 1, 10_000_000, 60),
+        );
+        assert_eq!(
+            model.positions[&PEER].location.latitude_e6, 10_000_000,
+            "an unverified, invalid membership unlisted PEER"
+        );
+        assert_eq!(model.groups[&GROUP].standing, groups::Standing::Joined);
+    }
+
+    /// Second auditor, audit of 1816: the group state the reading rule
+    /// trusts must not be writable by an unverified message. A stranger
+    /// who knows the group's address sends an unverifiable message with
+    /// source = the group and a membership that drops PEER and marks the
+    /// reader left. Neither may take effect: the reader stays Joined and
+    /// the group's genuine, verified copy naming PEER still files.
+    #[test]
+    fn audit2_an_unverified_membership_neither_unlists_a_member_nor_marks_the_reader_left() {
+        let mut model = reader_with_peers_pin(&[PEER, OTHER]);
+        in_group(
+            &mut model,
+            groups::Standing::Joined,
+            &[(READER, false), (PEER, false)],
+        );
+        let mut forged = membership(2, &[]);
+        if let Some(members) = &mut forged.members {
+            members.members.push(leviculum_lxmf::lev::Member {
+                address: READER,
+                name: String::new(),
+                flags: leviculum_lxmf::lev::MEMBER_LEFT,
+            });
+        }
+        arrive_unverified(&mut model, GROUP, 2, "", lev_only(forged));
+        assert!(
+            matches!(
+                model.groups.get(&GROUP).expect("group").standing,
+                groups::Standing::Joined
+            ),
+            "an unverified list took the reader out of its group"
+        );
+        arrive(
+            &mut model,
+            GROUP,
+            3,
+            "",
+            copied_report(PEER, 1, 10_000_000, 60),
+        );
+        assert_eq!(
+            model.positions[&PEER].location.latitude_e6, 10_000_000,
+            "an unverified list unlisted a member and refused their genuine copy"
+        );
+    }
+
+    /// The twin (the audits of 1816): the same held, unverified list whose
+    /// verdict comes back VALID then applies — PEER is unlisted at epoch
+    /// 5, and its copy at the new epoch is refused.
+    #[test]
+    fn an_unverified_memberships_list_applies_once_the_verdict_says_valid() {
+        let mut model = reader_with_peers_pin(&[PEER, OTHER]);
+        in_group(
+            &mut model,
+            groups::Standing::Joined,
+            &[(READER, false), (PEER, false)],
+        );
+        arrive_unverified(&mut model, GROUP, 2, "", lev_only(membership(5, &[OTHER])));
+        assert_eq!(
+            model.groups.get(&GROUP).expect("group").epoch,
+            1,
+            "held while the verdict is owed"
+        );
+        verdict(&mut model, GROUP, 2, true);
+        assert_eq!(
+            model.groups.get(&GROUP).expect("group").epoch,
+            5,
+            "a valid list applies"
+        );
+        arrive(
+            &mut model,
+            GROUP,
+            3,
+            "",
+            copied_report(PEER, 5, 10_000_000, 60),
+        );
+        assert_eq!(
+            model.positions[&PEER].location.latitude_e6, 52_000_000,
+            "the applied list no longer vouches for PEER"
+        );
+    }
+
+    /// Second auditor, audit of 1816, decision 4 ("membership at the
+    /// copy's epoch"): PEER left at epoch 2 and was relisted at epoch 5.
+    /// A verified copy from the group stamped epoch 3 — the gap in which
+    /// PEER was out — must be nobody's reading.
+    #[test]
+    fn audit2_a_rejoined_members_gap_copy_is_still_nobodys() {
+        let mut model = reader_with_peers_pin(&[PEER, OTHER]);
+        in_group(
+            &mut model,
+            groups::Standing::Joined,
+            &[(READER, false), (PEER, false)],
+        );
+        let mut left = membership(2, &[]);
+        if let Some(members) = &mut left.members {
+            members.members.push(leviculum_lxmf::lev::Member {
+                address: PEER,
+                name: String::new(),
+                flags: leviculum_lxmf::lev::MEMBER_LEFT,
+            });
+        }
+        arrive(&mut model, GROUP, 2, "", lev_only(left));
+        arrive(
+            &mut model,
+            GROUP,
+            3,
+            "",
+            lev_only(membership(5, &[PEER, OTHER])),
+        );
+        let gap = leviculum_lxmf::lev::Lev {
+            group_copy: Some(copy_claim(PEER, 3)),
+            ..leviculum_lxmf::lev::Lev::default()
+        };
+        arrive(&mut model, GROUP, 4, "", lev_with_fix(gap, 10_000_000));
+        assert_eq!(
+            model.positions[&PEER].location.latitude_e6, 52_000_000,
+            "PEER was out at epoch 3: the gap copy must move no pin"
+        );
+    }
+
+    /// Third audit of 1757: an INVALID verdict takes back what THAT message
+    /// filed, nothing else. A genuine verified group copy keeps PEER's row
+    /// at fix time T; a forged, unverifiable message claiming PEER's address
+    /// repeats T and is then found INVALID. Secure outcome: no delete that
+    /// could reach PEER's genuine row at T is queued for the store — the
+    /// audit ran this with an unkeyed `ForgetPosition`; since the fix the
+    /// variant carries the INVALID message's own key, which the store
+    /// matches against the row's filer, so the assert checks that every
+    /// queued delete for (PEER, T) is scoped to the forged message. The
+    /// store-level half lives in `store::tests`
+    /// (`a_forgotten_position_leaves_anothers_row_with_the_same_peer_and_time`).
+    #[test]
+    fn audit3_an_invalid_message_takes_back_no_row_another_message_kept() {
+        let mut model = reader_with_peers_pin(&[PEER, OTHER]);
+        in_group(
+            &mut model,
+            groups::Standing::Joined,
+            &[(READER, false), (PEER, false)],
+        );
+        arrive(
+            &mut model,
+            GROUP,
+            2,
+            "",
+            copied_report(PEER, 1, 10_000_000, 60),
+        );
+        assert_eq!(model.positions[&PEER].location.latitude_e6, 10_000_000);
+        let _ = model.take_writes();
+        let t = two_pm() - 60;
+        arrive_unverified(
+            &mut model,
+            PEER,
+            3,
+            "",
+            report_of(&fix_at(11_000_000, 13_000_000, t)),
+        );
+        let _ = model.take_writes();
+        let c = model
+            .conversations
+            .iter()
+            .position(|c| c.peer == PEER)
+            .expect("row");
+        let forged = model.conversations[c]
+            .messages
+            .last()
+            .expect("message")
+            .activity;
+        verdict(&mut model, PEER, 3, false);
+        let writes = model.take_writes();
+        assert!(
+            !writes.iter().any(|w| matches!(
+                w,
+                StoreWrite::ForgetPosition { peer, fix_time, message }
+                    if *peer == PEER && *fix_time == t && *message != forged
+            )),
+            "the INVALID message deletes the genuine copy's row: {writes:?}"
+        );
+        assert_eq!(
+            model.positions[&PEER].location.latitude_e6, 10_000_000,
+            "the genuine pin stays"
+        );
+        assert!(
+            model
+                .tracks
+                .get(&PEER)
+                .is_some_and(|track| track.iter().any(|f| f.t == t)),
+            "the genuine track point stays: another message stands behind it"
+        );
+    }
+
+    /// The audits of 1816, the relay pass-through: a message whose `lev`
+    /// map names another writer is nobody's reading even without a group
+    /// copy. A relay passes a member's plain `FIELD_TELEMETRY` through
+    /// with `lev.writer` naming the member: no pin for the relay, none
+    /// for the member, and the refusal says `reason=foreign-word`.
+    #[test]
+    fn a_relays_passed_through_telemetry_naming_a_member_is_nobodys_reading() {
+        let mut model = reader_with_peers_pin(&[PEER, OTHER]);
+        in_group(
+            &mut model,
+            groups::Standing::Joined,
+            &[(READER, false), (PEER, false)],
+        );
+        let relayed = leviculum_lxmf::lev::Lev {
+            writer: Some(PEER),
+            ..leviculum_lxmf::lev::Lev::default()
+        };
+        let effects = arrive(&mut model, OTHER, 2, "", lev_with_fix(relayed, 10_000_000));
+        assert_eq!(
+            model.positions[&PEER].location.latitude_e6, 52_000_000,
+            "the member's pin stays"
+        );
+        assert!(
+            !model.positions.contains_key(&OTHER),
+            "the relay gets no pin from a foreign word"
+        );
+        assert!(stored_under(&mut model).is_empty());
+        assert!(
+            effects.iter().any(|e| matches!(
+                e,
+                UiEffect::Log(line) if line.starts_with("POSITION_REFUSED")
+                    && line.contains("reason=foreign-word")
+            )),
+            "refused, said with its reason: {effects:?}"
+        );
+    }
+
+    /// The audits of 1816: every malformed-byte stop in
+    /// [`groups::GroupInfo::epochs_from`] leaves the members unchanged —
+    /// an inner element that is no array, a short array, an address cut
+    /// off, missing epochs, and a longer array whose extra element cannot
+    /// be read.
+    #[test]
+    fn member_epochs_malformed_bytes_change_nothing() {
+        use leviculum_lxmf::msgpack;
+        let member = groups::GroupMember {
+            address: PEER,
+            name: String::new(),
+            admin: false,
+            joined: true,
+            left: false,
+            since: Some(3),
+            left_from: Some(7),
+        };
+        let unchanged = |bytes: &[u8]| {
+            let mut m = member.clone();
+            groups::GroupInfo::epochs_from(core::slice::from_mut(&mut m), Some(bytes));
+            assert_eq!(m, member, "changed by {bytes:?}");
+        };
+        // An inner element that is no array.
+        let mut inner_no_array = Vec::new();
+        msgpack::array(&mut inner_no_array, 1);
+        msgpack::uint(&mut inner_no_array, 9);
+        unchanged(&inner_no_array);
+        // An inner array too short for address and epochs.
+        let mut short = Vec::new();
+        msgpack::array(&mut short, 1);
+        msgpack::array(&mut short, 2);
+        msgpack::bin(&mut short, &PEER);
+        msgpack::uint(&mut short, 4);
+        unchanged(&short);
+        // An address cut off.
+        let mut no_address = Vec::new();
+        msgpack::array(&mut no_address, 1);
+        msgpack::array(&mut no_address, 3);
+        unchanged(&no_address);
+        // Epochs missing after the address.
+        let mut no_epochs = Vec::new();
+        msgpack::array(&mut no_epochs, 1);
+        msgpack::array(&mut no_epochs, 3);
+        msgpack::bin(&mut no_epochs, &PEER);
+        unchanged(&no_epochs);
+        // A longer array whose extra element is cut off: the row is not
+        // taken, half-read bytes say nothing.
+        let mut cut_extra = Vec::new();
+        msgpack::array(&mut cut_extra, 1);
+        msgpack::array(&mut cut_extra, 4);
+        msgpack::bin(&mut cut_extra, &PEER);
+        msgpack::uint(&mut cut_extra, 4 + 1);
+        msgpack::uint(&mut cut_extra, 0);
+        unchanged(&cut_extra);
     }
 
     /// A restored stored message with its signature still unverified,

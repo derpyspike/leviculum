@@ -114,9 +114,12 @@ pub struct GroupMember {
     pub left: bool,
     /// The epoch from which the reader's memberships list it (Lew
     /// 2026-11-13, rule 4) — the first epoch the reader SAW it listed
-    /// under, which is all the reader can vouch for. `None` when the
-    /// store cannot say (a row written before this rule): then no copy
-    /// is vouched for until the next membership comes.
+    /// under, which is all the reader can vouch for. A member relisted
+    /// after it left starts over at the relisting epoch (the audits of
+    /// 1816): the gap in which it was out stays vouched for by nobody.
+    /// `None` when the store cannot say (a row written before this
+    /// rule): then no copy is vouched for until the next membership
+    /// comes.
     pub since: Option<u64>,
     /// The epoch from which the memberships mark it left; `None` while
     /// it is in, or when the store cannot say since when it is not.
@@ -385,7 +388,9 @@ fn member_of(m: &Member) -> GroupMember {
 /// rule 4): each listed member carries the first epoch the reader saw it
 /// listed under — kept from `old` where it was known, this `epoch` for a
 /// member new to the reader or one whose epoch the store could not say —
-/// and the epoch its leaving was first listed under.
+/// and the epoch its leaving was first listed under. A member relisted
+/// after it left starts over at the relisting `epoch` (the audits of
+/// 1816): nobody vouches for the gap in which it was out.
 fn merged_members(old: &[GroupMember], members: &Members) -> Vec<GroupMember> {
     members
         .members
@@ -393,7 +398,11 @@ fn merged_members(old: &[GroupMember], members: &Members) -> Vec<GroupMember> {
         .map(|m| {
             let mut member = member_of(m);
             let before = old.iter().find(|o| o.address == m.address);
-            member.since = before.and_then(|o| o.since).or(Some(members.epoch));
+            let rejoined = !member.left && before.is_some_and(|o| o.left);
+            member.since = match rejoined {
+                true => Some(members.epoch),
+                false => before.and_then(|o| o.since).or(Some(members.epoch)),
+            };
             member.left_from = match member.left {
                 true => before
                     .filter(|o| o.left)
@@ -708,8 +717,19 @@ impl<B> UiModel<B> {
     /// Learn what a message in `peer`'s conversation says of a group:
     /// `outbound` when the reader (or another of its devices) sent it. A
     /// group that changed is written to the store with the next writes
-    /// (1307 G2), so a restart lists it as it stood.
-    pub(super) fn learn_group(&mut self, peer: [u8; 16], outbound: bool, fields: &[Field]) {
+    /// (1307 G2), so a restart lists it as it stood. `verified` is the
+    /// message's signature verdict: an inbound membership is believed
+    /// only from a verified message (the audits of 1816) — an unverified
+    /// one is held with its message and learned again from
+    /// [`super::apply_verdict`] when the verdict says valid, never when
+    /// it says INVALID.
+    pub(super) fn learn_group(
+        &mut self,
+        peer: [u8; 16],
+        outbound: bool,
+        fields: &[Field],
+        verified: bool,
+    ) {
         let Some(lev) = Lev::from_fields(fields) else {
             return;
         };
@@ -725,7 +745,7 @@ impl<B> UiModel<B> {
             .map(|a| self.groups.get(a).cloned())
             .collect();
         let epoch_before = self.groups.get(&peer).map(|g| g.epoch);
-        self.learn_lev(peer, outbound, &lev);
+        self.learn_lev(peer, outbound, &lev, verified);
         for (address, was) in touched.into_iter().zip(before) {
             if self.groups.get(&address) != was.as_ref() {
                 self.groups_changed.insert(address);
@@ -789,7 +809,7 @@ impl<B> UiModel<B> {
         }
     }
 
-    fn learn_lev(&mut self, peer: [u8; 16], outbound: bool, lev: &Lev) {
+    fn learn_lev(&mut self, peer: [u8; 16], outbound: bool, lev: &Lev, verified: bool) {
         let own = self.address;
         if let (Some(status), false) = (&lev.status, outbound) {
             self.learn_status(peer, status);
@@ -834,6 +854,15 @@ impl<B> UiModel<B> {
                         group.standing = Standing::Left;
                     }
                 }
+                return;
+            }
+            // Nothing a message says is believed before its signature is
+            // verified (the audits of 1816): an unverified membership
+            // changes no member list, no epoch and no standing. The
+            // message keeps its list; the verdict applies it
+            // ([`super::apply_verdict`]) or, INVALID, discards it with
+            // the message.
+            if !verified {
                 return;
             }
             // Only a group the reader knows from an invitation, or made,
@@ -1025,18 +1054,25 @@ impl<B> UiModel<B> {
 
     /// Learn every group the restored conversations speak of.
     pub(super) fn learn_groups(&mut self) {
-        let seen: Vec<([u8; 16], bool, Vec<Field>)> = self
+        let seen: Vec<([u8; 16], bool, Vec<Field>, bool)> = self
             .conversations
             .iter()
             .flat_map(|c| {
                 c.messages
                     .iter()
                     .filter(|m| Lev::from_fields(&m.fields).is_some())
-                    .map(|m| (c.peer, m.outbound, m.fields.clone()))
+                    .map(|m| {
+                        (
+                            c.peer,
+                            m.outbound,
+                            m.fields.clone(),
+                            m.signature == super::Signature::Verified,
+                        )
+                    })
             })
             .collect();
-        for (peer, outbound, fields) in seen {
-            self.learn_group(peer, outbound, &fields);
+        for (peer, outbound, fields, verified) in seen {
+            self.learn_group(peer, outbound, &fields, verified);
         }
         self.forget_deleted_groups();
     }
