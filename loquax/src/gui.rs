@@ -2478,9 +2478,15 @@ impl App {
             }
             Message::MapSize(size) => {
                 self.settle();
+                // Whether the view sits where the last fit left it BEFORE
+                // the canvas's hold: a resize that moves it (a larger
+                // canvas raises the globe's floor) is no input, so the
+                // first pins must still fit (audit of 1818, condition
+                // 19), and the fit is taken again at the new size.
+                let unmoved = self.unmoved();
                 self.size = Some(size);
                 self.hold();
-                if !self.fitted && self.unmoved() {
+                if !self.fitted && unmoved {
                     self.fit();
                 }
             }
@@ -4694,6 +4700,47 @@ mod tests {
             }
         }
         assert!(judged >= 6, "only {judged} blended glides judged");
+    }
+
+    /// Audit of 1818 condition 19: a resize between the empty fit and
+    /// the first pins moves the view through `hold()` (a larger canvas
+    /// has a deeper globe floor), and no input came. The first pins must
+    /// still fit: the D1 rule (`unmoved`) compares the exact centre and
+    /// zoom, so a hold that moved the view read as the user's move.
+    #[test]
+    fn the_first_pins_fit_after_a_resize_moved_the_empty_view() {
+        // No region: the empty fit is the world at the globe's floor,
+        // which a larger canvas raises.
+        let frames = Frames::new(loquax::picture::Maps::new(None));
+        let maps = frames.painter().epoch();
+        let mut app = App::new(frames, None);
+        app.screen = Screen::Map;
+        app.apply(Message::MapSize(Size::new(480.0, 320.0)));
+        app.apply(Message::Seen(Box::new(florence_seen(Vec::new(), maps))));
+        let empty = app.fitted_at.expect("the empty fit");
+        let before = app.view;
+        app.apply(Message::MapSize(Size::new(2400.0, 2400.0)));
+        assert_ne!(
+            (app.view.centre, app.view.zoom_milli()),
+            empty,
+            "the control: the resize's hold moved the view"
+        );
+        assert_ne!(app.view, before);
+        app.apply(Message::Seen(Box::new(florence_seen(
+            vec![pin(1, "alice", 43.7752, 11.2640)],
+            maps,
+        ))));
+        assert!(app.fitted, "the first pins fit after the resize");
+        let fitted = app.fitted_at.expect("the pins' fit");
+        assert_eq!((app.view.centre, app.view.zoom_milli()), fitted);
+        let (x, y) = app
+            .view
+            .to_screen(project(LatLon::from_degrees(43.7752, 11.2640)));
+        let (w, h) = app.view.size();
+        assert!(
+            (x - f64::from(w) / 2.0).abs() < 2.0 && (y - f64::from(h) / 2.0).abs() < 2.0,
+            "the fit went to the pin: ({x:.1}, {y:.1}) of {w}x{h}"
+        );
     }
 
     use leviculum_ui_iced::select::Pick;
