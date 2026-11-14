@@ -24,77 +24,6 @@
         "a11y": {
           "enabled": true,
           "label": {
-            "raw": "Lew, Lew invited you to Verein"
-          },
-          "resource": "row_41414141414141414141414141414141",
-          "role": "row",
-          "selected": false
-        },
-        "activate": {
-          "enabled": true,
-          "intent": "OpenChat { peer: [65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65] }",
-          "label_key": "scene_open"
-        },
-        "at": 1800000240,
-        "avatar": {
-          "bg": "3d6fb6",
-          "fg": "ffffff",
-          "initials": "L",
-          "ring": null
-        },
-        "draft": null,
-        "id": "row_41414141414141414141414141414141",
-        "kind": "text",
-        "last": "Lew invited you to Verein",
-        "live": null,
-        "liveness": {
-          "cadence_s": null,
-          "last_fix_at": null,
-          "state": "stale"
-        },
-        "mark": null,
-        "menu": [
-          {
-            "enabled": true,
-            "intent": "MarkUnread { peer: Peer([65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65]), on: Off }",
-            "label_key": "mark_read"
-          },
-          {
-            "enabled": true,
-            "intent": "Pin { peer: Peer([65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65]), on: On }",
-            "label_key": "pin"
-          },
-          {
-            "enabled": true,
-            "intent": "Mute { peer: Peer([65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65]), secs: -1 }",
-            "label_key": "mute"
-          },
-          {
-            "enabled": true,
-            "intent": "Archive { peer: Peer([65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65]), on: On }",
-            "label_key": "archive"
-          },
-          {
-            "enabled": true,
-            "intent": "Forget { peer: Peer([65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65]), everywhere: false, confirmed: false }",
-            "label_key": "scene_forget"
-          }
-        ],
-        "muted": false,
-        "name": "Lew",
-        "ours": false,
-        "pinned": false,
-        "position": null,
-        "reaction": null,
-        "selected": false,
-        "sharing": false,
-        "unread": 2,
-        "updates": 0
-      },
-      {
-        "a11y": {
-          "enabled": true,
-          "label": {
             "raw": "Verein"
           },
           "resource": "row_52525252525252525252525252525252",
@@ -168,6 +97,77 @@
         "selected": false,
         "sharing": false,
         "unread": 0,
+        "updates": 0
+      },
+      {
+        "a11y": {
+          "enabled": true,
+          "label": {
+            "raw": "Lew, Lew invited you to Verein"
+          },
+          "resource": "row_41414141414141414141414141414141",
+          "role": "row",
+          "selected": false
+        },
+        "activate": {
+          "enabled": true,
+          "intent": "OpenChat { peer: [65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65] }",
+          "label_key": "scene_open"
+        },
+        "at": 1800000240,
+        "avatar": {
+          "bg": "3d6fb6",
+          "fg": "ffffff",
+          "initials": "L",
+          "ring": null
+        },
+        "draft": null,
+        "id": "row_41414141414141414141414141414141",
+        "kind": "text",
+        "last": "Lew invited you to Verein",
+        "live": null,
+        "liveness": {
+          "cadence_s": null,
+          "last_fix_at": null,
+          "state": "stale"
+        },
+        "mark": null,
+        "menu": [
+          {
+            "enabled": true,
+            "intent": "MarkUnread { peer: Peer([65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65]), on: Off }",
+            "label_key": "mark_read"
+          },
+          {
+            "enabled": true,
+            "intent": "Pin { peer: Peer([65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65]), on: On }",
+            "label_key": "pin"
+          },
+          {
+            "enabled": true,
+            "intent": "Mute { peer: Peer([65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65]), secs: -1 }",
+            "label_key": "mute"
+          },
+          {
+            "enabled": true,
+            "intent": "Archive { peer: Peer([65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65]), on: On }",
+            "label_key": "archive"
+          },
+          {
+            "enabled": true,
+            "intent": "Forget { peer: Peer([65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65]), everywhere: false, confirmed: false }",
+            "label_key": "scene_forget"
+          }
+        ],
+        "muted": false,
+        "name": "Lew",
+        "ours": false,
+        "pinned": false,
+        "position": null,
+        "reaction": null,
+        "selected": false,
+        "sharing": false,
+        "unread": 2,
         "updates": 0
       },
       {

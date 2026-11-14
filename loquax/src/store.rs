@@ -903,8 +903,23 @@ impl Store {
             }
         }
         if version < SCHEMA_VERSION {
-            return self.migrate(version);
+            self.migrate(version)?;
         }
+        // The schema step's cleanup (order 1834): nothing an inbound
+        // message that is not VERIFIED says is derived state. A store
+        // written by the take-back rounds already carries user_version
+        // 23, so a migration guard would never reach it — and the 23
+        // layout holds this, so no schema 24 — hence the cleanup runs at
+        // every open: idempotent, and no such row is written any more.
+        // Rows with no message (announced fixes) and rows of our own
+        // outbound shares stay.
+        self.conn
+            .execute(
+                "DELETE FROM positions WHERE message IN \
+                 (SELECT seq FROM messages WHERE direction = 0 AND verification <> 1)",
+                [],
+            )
+            .map_err(|e| corrupt(e.to_string()))?;
         Ok(())
     }
 
@@ -4082,21 +4097,6 @@ fn apply(
                 ],
             )?;
         }
-        StoreWrite::ForgetPosition {
-            peer,
-            fix_time,
-            message,
-        } => {
-            // Only the row the INVALID message itself filed (the audits
-            // of 1816): a row another message filed with the same peer
-            // and fix time — or one with no message, an announced one —
-            // stays.
-            tx.execute(
-                "DELETE FROM positions WHERE identity = ?1 AND peer = ?2 AND fix_time = ?3 \
-                 AND message = ?4",
-                params![&identity[..], &peer[..], fix_time, seq_of(*message)],
-            )?;
-        }
         StoreWrite::Position(fix) => {
             let l = &fix.location;
             tx.execute(
@@ -6008,80 +6008,74 @@ mod tests {
         }
     }
 
-    /// Lew 2026-11-13, rule 3: `ForgetPosition` deletes exactly the one
-    /// kept row of a reading an INVALID verdict took back — the row its
-    /// own message filed (the audits of 1816), no other.
+    /// Order 1834, the schema step's cleanup: a store written by the
+    /// take-back rounds (user_version 23 already) may hold position rows
+    /// filed by inbound messages whose verdict is still owed or INVALID.
+    /// Open drops them; a verified message's row, an announced row with
+    /// no message, and our own outbound share's row stay.
     #[test]
-    fn a_forgotten_position_leaves_the_store() {
+    fn a_position_row_filed_by_an_unverified_message_is_dropped_at_open() {
         let home = tempfile::tempdir().expect("home");
-        let mut store = Store::open_in(home.path(), US).expect("create");
-        put(&mut store, BOB, message(1, false, "one"));
-        put(&mut store, BOB, message(2, false, "two"));
-        store
-            .write(&[
-                StoreWrite::Position(bobs_fix(Some(key_of(1)), 1_000)),
-                StoreWrite::Position(bobs_fix(Some(key_of(2)), 2_000)),
-            ])
-            .expect("write");
-        store
-            .write(&[StoreWrite::ForgetPosition {
-                peer: BOB,
-                fix_time: 2_000,
-                message: key_of(2),
-            }])
-            .expect("forget");
+        {
+            let mut store = Store::open_in(home.path(), US).expect("create");
+            put(&mut store, BOB, message(1, false, "verified"));
+            let mut held = message(2, false, "held");
+            held.signature = Signature::Unverified;
+            put(&mut store, BOB, held);
+            let mut invalid = message(3, false, "invalid");
+            invalid.signature = Signature::Invalid;
+            put(&mut store, BOB, invalid);
+            let mut ours = message(5, true, "ours");
+            ours.signature = Signature::Unverified;
+            put(&mut store, BOB, ours);
+            store
+                .write(&[
+                    StoreWrite::Position(bobs_fix(Some(key_of(1)), 1_000)),
+                    StoreWrite::Position(bobs_fix(Some(key_of(2)), 2_000)),
+                    StoreWrite::Position(bobs_fix(Some(key_of(3)), 3_000)),
+                    StoreWrite::Position(bobs_fix(None, 4_000)),
+                    StoreWrite::Position(bobs_fix(Some(key_of(5)), 5_000)),
+                ])
+                .expect("write");
+        }
+        let store = Store::open_in(home.path(), US).expect("reopen");
         let left: Vec<i64> = store
-            .positions()
-            .expect("positions")
+            .track(BOB, 10)
+            .expect("track")
             .iter()
             .map(|f| f.location.last_update)
             .collect();
-        assert_eq!(left, [1_000], "the taken-back row alone is gone");
+        assert_eq!(
+            left,
+            [5_000, 4_000, 1_000],
+            "exactly the held and the INVALID messages' rows go"
+        );
     }
 
-    /// The audits of 1816: two messages repeat one (peer, fix time) — the
-    /// first filer's row stands. Forgetting it with the OTHER message's
-    /// key leaves it: an INVALID message takes back only the row it filed
-    /// itself. The control: the owner's key deletes it.
+    /// Order 1834: one row a peer and fix time, the first filer's. A
+    /// second message repeating the same (peer, fix time) does not
+    /// displace it — and since only verified messages file at all, the
+    /// first filer is the first verified one. Replaces the
+    /// `ForgetPosition` tests of rounds three to five: the delete went
+    /// with the design, nothing an unverified message says is filed.
     #[test]
-    fn a_forgotten_position_leaves_anothers_row_with_the_same_peer_and_time() {
+    fn audit4_a_forged_first_row_taken_back_leaves_the_genuine_reading_stored() {
         let home = tempfile::tempdir().expect("home");
         let mut store = Store::open_in(home.path(), US).expect("create");
         put(&mut store, BOB, message(1, false, "genuine"));
-        put(&mut store, BOB, message(2, false, "forged"));
+        put(&mut store, BOB, message(2, false, "late repeat"));
         store
             .write(&[
-                // The genuine message files first and owns the row; the
-                // forged repeat of the same (peer, fix time) changes
-                // nothing, as the insert keeps the first filer.
                 StoreWrite::Position(bobs_fix(Some(key_of(1)), 1_000)),
                 StoreWrite::Position(bobs_fix(Some(key_of(2)), 1_000)),
             ])
             .expect("write");
-        store
-            .write(&[StoreWrite::ForgetPosition {
-                peer: BOB,
-                fix_time: 1_000,
-                message: key_of(2),
-            }])
-            .expect("forget by the non-owner");
         let rows = store.positions().expect("positions");
+        assert_eq!(rows.len(), 1, "the genuine reading at 1000 is gone");
         assert_eq!(
-            rows.len(),
-            1,
-            "the non-owner's delete leaves the genuine row"
-        );
-        assert_eq!(rows[0].message, Some(key_of(1)), "still the first filer's");
-        store
-            .write(&[StoreWrite::ForgetPosition {
-                peer: BOB,
-                fix_time: 1_000,
-                message: key_of(1),
-            }])
-            .expect("forget by the owner");
-        assert!(
-            store.positions().expect("positions").is_empty(),
-            "the owner's delete takes its own row back"
+            rows[0].message,
+            Some(key_of(1)),
+            "the row is the genuine message's"
         );
     }
 

@@ -126,7 +126,7 @@
           "label": {
             "raw": "Lew"
           },
-          "resource": "group_2",
+          "resource": "group_1",
           "role": "group",
           "selected": false
         },
@@ -137,7 +137,7 @@
               "label": {
                 "raw": "Lew invited you to Familie: lxma://…"
               },
-              "resource": "bubble_2",
+              "resource": "bubble_1",
               "role": "bubble",
               "selected": false
             },
@@ -159,7 +159,7 @@
               },
               {
                 "enabled": true,
-                "intent": "Delete { messages: Keys { peer: [65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65], keys: [2] }, confirmed: false }",
+                "intent": "Delete { messages: Keys { peer: [65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65], keys: [1] }, confirmed: false }",
                 "label_key": "action_delete"
               }
             ],
@@ -168,7 +168,7 @@
             "chips": [],
             "files": [],
             "fix": null,
-            "id": "bubble_2",
+            "id": "bubble_1",
             "invite": {
               "a11y": {
                 "enabled": true,
@@ -234,7 +234,7 @@
             "key": "today"
           }
         },
-        "id": "group_2",
+        "id": "group_1",
         "ours": false,
         "sender": {
           "raw": "Lew"
@@ -246,7 +246,7 @@
           "label": {
             "raw": "Lew"
           },
-          "resource": "group_7",
+          "resource": "group_6",
           "role": "group",
           "selected": false
         },
@@ -257,7 +257,7 @@
               "label": {
                 "raw": "Lew invited you to Verein: lxma://…"
               },
-              "resource": "bubble_7",
+              "resource": "bubble_6",
               "role": "bubble",
               "selected": false
             },
@@ -279,7 +279,7 @@
               },
               {
                 "enabled": true,
-                "intent": "Delete { messages: Keys { peer: [65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65], keys: [7] }, confirmed: false }",
+                "intent": "Delete { messages: Keys { peer: [65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65, 65], keys: [6] }, confirmed: false }",
                 "label_key": "action_delete"
               }
             ],
@@ -288,7 +288,7 @@
             "chips": [],
             "files": [],
             "fix": null,
-            "id": "bubble_7",
+            "id": "bubble_6",
             "invite": {
               "a11y": {
                 "enabled": true,
@@ -347,7 +347,7 @@
           }
         ],
         "day": null,
-        "id": "group_7",
+        "id": "group_6",
         "ours": false,
         "sender": {
           "raw": "Lew"

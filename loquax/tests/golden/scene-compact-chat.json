@@ -1540,20 +1540,7 @@
             "a11y": {
               "enabled": true,
               "label": {
-                "args": [
-                  {
-                    "args": [
-                      {
-                        "args": [
-                          27
-                        ],
-                        "key": "hours_ago"
-                      }
-                    ],
-                    "key": "live_ago"
-                  }
-                ],
-                "key": "last_position"
+                "raw": ""
               },
               "resource": "bubble_9223372036854775827",
               "role": "bubble",
@@ -1590,27 +1577,8 @@
               11256000
             ],
             "id": "bubble_9223372036854775827",
-            "live": {
-              "args": [
-                {
-                  "args": [
-                    {
-                      "args": [
-                        27
-                      ],
-                      "key": "hours_ago"
-                    }
-                  ],
-                  "key": "live_ago"
-                }
-              ],
-              "key": "last_position"
-            },
-            "liveness": {
-              "cadence_s": null,
-              "last_fix_at": 1780010814,
-              "state": "stale"
-            },
+            "live": null,
+            "liveness": null,
             "mark": null,
             "mark_node": null,
             "msg_id": "75f60ec9f02cb5a6731f79d8a62e68f8680a970b1c001adebabd0519de62eade",

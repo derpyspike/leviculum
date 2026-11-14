@@ -1540,20 +1540,7 @@
             "a11y": {
               "enabled": true,
               "label": {
-                "args": [
-                  {
-                    "args": [
-                      {
-                        "args": [
-                          27
-                        ],
-                        "key": "hours_ago"
-                      }
-                    ],
-                    "key": "live_ago"
-                  }
-                ],
-                "key": "last_position"
+                "raw": ""
               },
               "resource": "bubble_9223372036854775827",
               "role": "bubble",
@@ -1590,27 +1577,8 @@
               11256000
             ],
             "id": "bubble_9223372036854775827",
-            "live": {
-              "args": [
-                {
-                  "args": [
-                    {
-                      "args": [
-                        27
-                      ],
-                      "key": "hours_ago"
-                    }
-                  ],
-                  "key": "live_ago"
-                }
-              ],
-              "key": "last_position"
-            },
-            "liveness": {
-              "cadence_s": null,
-              "last_fix_at": 1780010814,
-              "state": "stale"
-            },
+            "live": null,
+            "liveness": null,
             "mark": null,
             "mark_node": null,
             "msg_id": "75f60ec9f02cb5a6731f79d8a62e68f8680a970b1c001adebabd0519de62eade",
@@ -3351,7 +3319,7 @@
         "live": null,
         "liveness": {
           "cadence_s": null,
-          "last_fix_at": 1780010814,
+          "last_fix_at": null,
           "state": "stale"
         },
         "mark": "sending",
@@ -3422,7 +3390,7 @@
         "live": null,
         "liveness": {
           "cadence_s": null,
-          "last_fix_at": 1780010919,
+          "last_fix_at": null,
           "state": "stale"
         },
         "mark": "sending",
@@ -3503,7 +3471,7 @@
         "live": null,
         "liveness": {
           "cadence_s": null,
-          "last_fix_at": 1780010912,
+          "last_fix_at": null,
           "state": "stale"
         },
         "mark": "sending",
@@ -3580,7 +3548,7 @@
         "live": null,
         "liveness": {
           "cadence_s": null,
-          "last_fix_at": 1780010905,
+          "last_fix_at": null,
           "state": "stale"
         },
         "mark": "sending",
@@ -3661,7 +3629,7 @@
         "live": null,
         "liveness": {
           "cadence_s": null,
-          "last_fix_at": 1780010898,
+          "last_fix_at": null,
           "state": "stale"
         },
         "mark": "sending",
@@ -3738,7 +3706,7 @@
         "live": null,
         "liveness": {
           "cadence_s": null,
-          "last_fix_at": 1780010891,
+          "last_fix_at": null,
           "state": "stale"
         },
         "mark": "sending",
@@ -3819,7 +3787,7 @@
         "live": null,
         "liveness": {
           "cadence_s": null,
-          "last_fix_at": 1780010884,
+          "last_fix_at": null,
           "state": "stale"
         },
         "mark": "sending",
@@ -3896,7 +3864,7 @@
         "live": null,
         "liveness": {
           "cadence_s": null,
-          "last_fix_at": 1780010877,
+          "last_fix_at": null,
           "state": "stale"
         },
         "mark": "sending",
@@ -3977,7 +3945,7 @@
         "live": null,
         "liveness": {
           "cadence_s": null,
-          "last_fix_at": 1780010870,
+          "last_fix_at": null,
           "state": "stale"
         },
         "mark": "sending",
@@ -4054,7 +4022,7 @@
         "live": null,
         "liveness": {
           "cadence_s": null,
-          "last_fix_at": 1780010863,
+          "last_fix_at": null,
           "state": "stale"
         },
         "mark": "sending",
@@ -4135,7 +4103,7 @@
         "live": null,
         "liveness": {
           "cadence_s": null,
-          "last_fix_at": 1780010856,
+          "last_fix_at": null,
           "state": "stale"
         },
         "mark": "sending",
@@ -4212,7 +4180,7 @@
         "live": null,
         "liveness": {
           "cadence_s": null,
-          "last_fix_at": 1780010849,
+          "last_fix_at": null,
           "state": "stale"
         },
         "mark": "sending",
@@ -4293,7 +4261,7 @@
         "live": null,
         "liveness": {
           "cadence_s": null,
-          "last_fix_at": 1780010842,
+          "last_fix_at": null,
           "state": "stale"
         },
         "mark": "sending",
@@ -4370,7 +4338,7 @@
         "live": null,
         "liveness": {
           "cadence_s": null,
-          "last_fix_at": 1780010835,
+          "last_fix_at": null,
           "state": "stale"
         },
         "mark": "sending",
@@ -4441,7 +4409,7 @@
         "live": null,
         "liveness": {
           "cadence_s": null,
-          "last_fix_at": 1780010828,
+          "last_fix_at": null,
           "state": "stale"
         },
         "mark": "sending",
@@ -4512,7 +4480,7 @@
         "live": null,
         "liveness": {
           "cadence_s": null,
-          "last_fix_at": 1780010821,
+          "last_fix_at": null,
           "state": "stale"
         },
         "mark": "sending",
@@ -4583,7 +4551,7 @@
         "live": null,
         "liveness": {
           "cadence_s": null,
-          "last_fix_at": 1748474807,
+          "last_fix_at": null,
           "state": "stale"
         },
         "mark": "sending",
@@ -4654,7 +4622,7 @@
         "live": null,
         "liveness": {
           "cadence_s": null,
-          "last_fix_at": 1748474800,
+          "last_fix_at": null,
           "state": "stale"
         },
         "mark": "sending",
