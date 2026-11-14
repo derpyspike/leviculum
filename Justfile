@@ -2953,7 +2953,7 @@ nrf-reproducible:
 
 # 1801, #232: every visual change rendered, measured and looked at. The
 # phone's map drawn headless through the facade's own call into a Bitmap
-# sized as MapView.java sizes it, for Equal Earth and the globe build: a
+# sized as MapView.java sizes it, on the globe (the only world view, 1809): a
 # zoom ladder at fixed centres (Germany, Morocco, the poles, the
 # antimeridian, Berlin and Florence over their fixture regions) and frame
 # sizes (1224x2197, 1080x2400, 1600x2560, 900x560, 2197x1224), five
@@ -2993,16 +2993,6 @@ render-walk *ARGS:
 [doc('Load the map as a user does; check every session by rules (1811)')]
 load-walk *ARGS:
     python3 -I scripts/load-walk.py {{ARGS}}
-
-# Order 1818: the map tests on the globe build. The test build's default
-# world is Equal Earth, so the globe's carried-name drops (far side, limb
-# box), its zoom hold and its frame placement only run with
-# `loquax/globe-world` on — the product shape of the phone. The full
-# render walk calls this, so a map change cannot go green without it.
-[doc('Run the loquax map tests with the globe world (order 1818)')]
-loquax-globe:
-    cargo test -p loquax --features "picture screenmap globe-world" mapframe::
-    cargo test -p loquax-android --test map --features loquax/globe-world
 
 # 1422, #474: the map's frame budget measured (the eye candy study of
 # 2026-11-04, section 4). `REGION` is the Frankfurt region the study cut

@@ -54,10 +54,9 @@ NDKBIN=$(NDK)/toolchains/llvm/prebuilt/linux-x86_64/bin
 ABIS?=arm64-v8a armeabi-v7a
 REPO=$(realpath $(PROJ)/../..)
 CARGO_TARGET_DIR?=$(REPO)/target
-# Cargo features for the native library, empty for the product: the globe
-# build (1710, 1762) is `make debug FEATURES=loquax/globe-world
-# APK_SUFFIX=-debug-globe`, the world view as the orthographic globe
-# instead of Equal Earth.
+# Cargo features for the native library, empty for the product. The
+# world view is the orthographic globe in every build (1809); the
+# `loquax/globe-world` switch that chose it over Equal Earth is gone.
 FEATURES?=
 CARGO_HOME?=$(HOME)/.cargo
 LIBNAME=libloquax_android.so

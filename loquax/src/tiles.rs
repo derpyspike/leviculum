@@ -53,7 +53,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use std::vec::Vec;
 
-use leviculum_map::blend::{Blend, Shape};
+use leviculum_map::blend::Blend;
 use leviculum_map::draw::Ink;
 use leviculum_map::mercator::World;
 use leviculum_map::outline;
@@ -270,12 +270,12 @@ pub struct TileCache {
     /// audit): one set of height tiles and shade planes for all workers.
     relief: crate::relief::ReliefStore,
     workers: usize,
-    /// Blend world views through this projection (1710), `None` for
+    /// Blend world views through the globe (1710, 1809), off for
     /// Mercator throughout: a frame the blend holds is drawn whole by a
     /// painter instead of composed from tiles — no square tile of one
     /// step can show a curved picture. The painters themselves keep
     /// drawing tiles Mercator-linear.
-    world_shape: Option<Shape>,
+    world_blend: bool,
     /// The screen the frames are drawn for ([`set_screen`](Self::set_screen)):
     /// a frame with margins blends at the screen's `t` (1796).
     screen: Option<(u32, u32)>,
@@ -307,7 +307,7 @@ impl TileCache {
             painters: Vec::new(),
             relief: crate::relief::ReliefStore::default(),
             workers,
-            world_shape: None,
+            world_blend: false,
             screen: None,
             stats: Stats::default(),
             spare: Vec::new(),
@@ -327,9 +327,10 @@ impl TileCache {
         self.workers = n.max(1);
     }
 
-    /// Blend world views through `shape` (1710), or through none.
-    pub fn set_world_shape(&mut self, shape: Option<Shape>) {
-        self.world_shape = shape;
+    /// Blend world views through the globe (1710, 1809), or draw
+    /// Mercator throughout.
+    pub fn set_world_blend(&mut self, on: bool) {
+        self.world_blend = on;
     }
 
     /// The screen the next frames are drawn for, `None` for frames that
@@ -343,18 +344,20 @@ impl TileCache {
     }
 
     /// The blended mapping of `view` when the blend holds there: the
-    /// shape is set and `t` is below one at the view's exact zoom. A
+    /// cache blends and `t` is below one at the view's exact zoom. A
     /// region that reaches into the view draws through the blend inside
     /// the whole-frame painter (1799 item 0). The blend carries the
     /// view's own size and the screen's `t`
     /// ([`set_screen`](Self::set_screen)).
     pub fn world_blend(&mut self, view: &ExactView) -> Option<Blend> {
-        let shape = self.world_shape?;
+        if !self.world_blend {
+            return None;
+        }
         let zoom = view.zoom();
         let (w, h) = view.size();
         let (sw, sh) = self.screen.unwrap_or((w, h));
-        let t = Blend::new(shape, view.centre, zoom, sw, sh).t();
-        let blend = Blend::with_t(shape, view.centre, zoom, w, h, t);
+        let t = Blend::new(view.centre, zoom, sw, sh).t();
+        let blend = Blend::with_t(view.centre, zoom, w, h, t);
         if blend.t() >= 1.0 {
             return None;
         }
@@ -470,8 +473,8 @@ impl TileCache {
         if rgba.len() != w as usize * h as usize * 4 {
             return None;
         }
-        // A world view the blend holds (1710) is drawn whole, Equal
-        // Earth or the globe flowing into Mercator: no square tile of
+        // A world view the blend holds (1710) is drawn whole, the globe
+        // flowing into Mercator: no square tile of
         // one step can compose the curved picture, and the outline is
         // cheap enough to draw each frame.
         if let Some(blend) = self.world_blend(&frame.view) {

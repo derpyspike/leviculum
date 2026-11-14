@@ -1,35 +1,26 @@
-//! The world view's projection: Equal Earth (or the orthographic globe)
-//! at world zooms, flowing into Mercator as the view zooms in (1710).
+//! The world view's projection: the orthographic globe at world zooms,
+//! flowing into Mercator as the view zooms in (1710). The globe is the
+//! only world view (Lew, 2026-11-13, order 1809); Equal Earth, the first
+//! world projection, was dropped with it.
 //!
 //! One mapping for the view, a blend of two screen positions:
 //!
 //! ```text
-//! P(point) = (1 - t) * W_c(point) + t * M_c(point)
+//! P(point) = (1 - t) * G_c(point) + t * M_c(point)
 //! ```
 //!
 //! `M_c` is the view's Mercator as every deeper zoom draws it, the centre
-//! at the middle of the screen. `W_c` is the world projection — [`Shape`]:
-//! Equal Earth (Šavrič, Patterson, Jenny 2018, the polynomial below) or
-//! the orthographic globe — with its central meridian at the view centre's
-//! longitude, so north is up at the centre in both and nothing tilts while
-//! blending, and scaled and shifted so that the view centre maps to the
-//! same pixel and the local scale at the centre agrees with Mercator's.
-//!
-//! Equal Earth is not conformal: at the centre its east–west and
-//! north–south scales differ ([`Blend::anisotropy`]), their geometric mean
-//! exactly one (it is equal-area). The match takes that mean, so at
-//! `t = 0` the picture is true Equal Earth and areas keep their ratios;
-//! as `t` grows each axis' scale slides towards Mercator's
-//! (`e^(±t·ln k)`), so near the handover the world term agrees with
-//! Mercator locally and the middle of the screen morphs as little as the
-//! shapes themselves allow. The globe's centre scale is one in every
-//! direction; nothing slides.
+//! at the middle of the screen. `G_c` is the orthographic globe with its
+//! central meridian at the view centre's longitude, so north is up at the
+//! centre in both and nothing tilts while blending, and scaled so that
+//! the view centre maps to the same pixel and the local scale at the
+//! centre agrees with Mercator's. The globe is conformal at its centre,
+//! one scale in every direction, so nothing has to slide between axes.
 //!
 //! `t` is a smooth step of the view zoom ([`t_of_zoom`]): 0 below the
 //! window, 1 past it, `6u⁵-15u⁴+10u³` between — C² at both ends, no
-//! kink. The globe's window follows the limb and the visible ground
-//! ([`globe_window`], 1799 item 0); Equal Earth's is [`WORLD_ZOOM`] to
-//! [`MERCATOR_ZOOM`]. From `t = 1` the view is Mercator exactly and
+//! kink. The window follows the limb and the visible ground
+//! ([`globe_window`], 1799 item 0). From `t = 1` the view is Mercator exactly and
 //! every tile, golden and drawer below stays as it is. A region whose
 //! zooms reach into a blended view draws through the blend, each placed
 //! point warped (1799, `leviculum_mapfill::render::Warp`); no raster is
@@ -44,35 +35,17 @@
 //! The screen-to-world direction has no closed form under the blend:
 //! [`Blend::to_world`] runs Newton on the forward mapping, started at the
 //! Mercator inverse, and answers only when it lands within a thirty-second
-//! of a pixel ([`INVERSE_EPS_PX`]); a point off the world (outside Equal
-//! Earth's boundary, off the globe's limb) gets `None`.
+//! of a pixel ([`INVERSE_EPS_PX`]); a point off the globe's limb gets
+//! `None`.
 
 use crate::mercator::World;
 use crate::viewport::{Viewport, MILLI};
 use alloc::vec::Vec;
 
-/// Equal Earth's polynomial coefficients (Šavrič, Patterson, Jenny 2018,
-/// "The Equal Earth map projection", IJGIS 33(3), equations 2 and 3).
-const A1: f64 = 1.340264;
-const A2: f64 = -0.081106;
-const A3: f64 = 0.000893;
-const A4: f64 = 0.003796;
-
-/// `sin θ = M sin φ`: the square root of three over two.
-const M: f64 = 0.866_025_403_784_438_6;
-
 const PI: f64 = core::f64::consts::PI;
 const TAU: f64 = core::f64::consts::TAU;
 /// The world's width in world units.
 const WORLD_F: f64 = 4_294_967_296.0;
-
-/// Up to this view zoom Equal Earth stands alone (`t = 0`). The globe's
-/// window follows the limb and the ground instead ([`globe_window`]).
-pub const WORLD_ZOOM: f64 = 2.0;
-/// From this view zoom on an Equal Earth view is Mercator exactly
-/// (`t = 1`). The Equal Earth far view is dropped (1799); its window
-/// stays as it was until its code goes.
-pub const MERCATOR_ZOOM: f64 = 5.0;
 
 /// Earth's mean radius in kilometres: what the visible ground extent of
 /// a view of the sphere is measured against.
@@ -137,28 +110,6 @@ const MERCATOR_LAT: f64 = 1.484_422_229_745_332_4;
 /// Newton gives up after this many steps.
 const INVERSE_STEPS: u32 = 24;
 
-/// The projection a world view blends out of.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum Shape {
-    /// Equal Earth: areas true to size, the whole world on screen.
-    #[default]
-    EqualEarth,
-    /// The orthographic globe: the near hemisphere, the limb a circle.
-    Globe,
-}
-
-/// Equal Earth's projection of `(λ, φ)` (longitude relative to the
-/// central meridian, latitude; radians): x east and y north, in units
-/// whose local scale has geometric mean one everywhere (equal-area).
-fn equal_earth(lam: f64, phi: f64) -> (f64, f64) {
-    let theta = libm::asin((M * libm::sin(phi)).clamp(-1.0, 1.0));
-    let t2 = theta * theta;
-    let t6 = t2 * t2 * t2;
-    let x = lam * libm::cos(theta) / (M * (A1 + 3.0 * A2 * t2 + t6 * (7.0 * A3 + 9.0 * A4 * t2)));
-    let y = theta * (A1 + A2 * t2 + t6 * (A3 + A4 * t2));
-    (x, y)
-}
-
 /// The blend's smooth step: 0 at `lo` and below, 1 at `hi` and above,
 /// `6u⁵-15u⁴+10u³` between — its first and second derivatives vanish at
 /// both ends, so a zoom ramp has no kink entering or leaving the blend.
@@ -170,36 +121,25 @@ pub fn t_of_zoom(zoom: f64, lo: f64, hi: f64) -> f64 {
     u * u * u * (u * (u * 6.0 - 15.0) + 10.0)
 }
 
-/// Equal Earth's world at zoom 0, pixels from edge meridian to edge
-/// meridian along the equator, the blend's world term at `t = 0`: 256
-/// pixels around the world over `2π`, times the projection's width `2π / (M
-/// A1)`.
-const EQUAL_EARTH_WORLD_PX: f64 = 256.0 / (M * A1);
-
-/// The shallowest zoom, fractional, at which the world `shape` draws
-/// fills a `width` x `height` view (1796): the globe's disk is the shorter
-/// side across, Equal Earth's equator the width, and never shallower than
-/// Mercator's one-world floor ([`Viewport::min_zoom`]). Before it a view
-/// zoomed out until the world was a small picture in the middle of an
-/// empty screen; every frontend holds its zoom here, and the blend starts
-/// here, so the smallest world is the shape itself.
+/// The shallowest zoom, fractional, at which the globe fills a `width` x
+/// `height` view (1796): its disk is the shorter side across, and never
+/// shallower than Mercator's one-world floor ([`Viewport::min_zoom`]).
+/// Before it a view zoomed out until the world was a small picture in
+/// the middle of an empty screen; every frontend holds its zoom here, and
+/// the blend starts here, so the smallest world is the globe itself.
 ///
 /// The globe's radius is `256 · 2^zoom / 2π` wherever it is turned to
-/// ([`Blend::radius`] at `t = 0`); Equal Earth is widest at the equator,
-/// and a view off it only draws it wider.
-pub fn world_floor(shape: Shape, width: u32, height: u32) -> f64 {
-    f64::from(world_floor_milli(shape, width, height)) / f64::from(MILLI)
+/// ([`Blend::radius`] at `t = 0`).
+pub fn world_floor(width: u32, height: u32) -> f64 {
+    f64::from(world_floor_milli(width, height)) / f64::from(MILLI)
 }
 
 /// [`world_floor`] in thousandths of a zoom, rounded up: the zoom an
 /// [`ExactView`](crate::viewport::ExactView) holds to, whose
 /// [`zoom`](crate::viewport::ExactView::zoom) is then exactly the blend's
 /// lower bound, `t` exactly zero.
-pub fn world_floor_milli(shape: Shape, width: u32, height: u32) -> u32 {
-    let own = match shape {
-        Shape::Globe => libm::log2(PI * f64::from(width.min(height).max(1)) / 256.0),
-        Shape::EqualEarth => libm::log2(f64::from(width.max(1)) / EQUAL_EARTH_WORLD_PX),
-    };
+pub fn world_floor_milli(width: u32, height: u32) -> u32 {
+    let own = libm::log2(PI * f64::from(width.min(height).max(1)) / 256.0);
     let own = libm::ceil(own * f64::from(MILLI)).max(0.0) as u32;
     own.max(u32::from(Viewport::min_zoom(width)) * MILLI)
 }
@@ -208,7 +148,6 @@ pub fn world_floor_milli(shape: Shape, width: u32, height: u32) -> u32 {
 /// pixels and back, at one centre, zoom and size.
 #[derive(Clone, Copy, Debug)]
 pub struct Blend {
-    shape: Shape,
     centre: World,
     width: u32,
     height: u32,
@@ -222,44 +161,27 @@ pub struct Blend {
     cos0: f64,
     /// Mercator world units a pixel spans.
     unit: f64,
-    /// The world term's axis scales, pixels per projection unit.
-    sx: f64,
-    sy: f64,
-    /// The world projection of the centre, subtracted so it lands on the
-    /// middle pixel.
-    ex0: f64,
-    ey0: f64,
-    /// East–west over north–south local scale at the centre, 1 for the
-    /// globe.
-    anisotropy: f64,
+    /// The globe term's scale, pixels per unit of the sphere's radius.
+    r: f64,
 }
 
 impl Blend {
     /// The blend for a view: `t` from the zoom by [`t_of_zoom`]. The
-    /// globe's window follows the limb and the visible ground extent
+    /// window follows the limb and the visible ground extent
     /// ([`globe_window`], 1799 item 0), never shallower than the view's
     /// [`world_floor`], so the smallest world a frontend shows is the
-    /// shape itself (1796). Equal Earth keeps its old fixed window,
-    /// [`WORLD_ZOOM`] to [`MERCATOR_ZOOM`], until its code goes (1799).
-    pub fn new(shape: Shape, centre: World, zoom: f64, width: u32, height: u32) -> Self {
-        let (lo, hi) = match shape {
-            Shape::Globe => {
-                let (lo, hi) = globe_window(width, height);
-                let lo = lo.max(world_floor(shape, width, height));
-                (lo, hi.max(lo + 0.5))
-            }
-            Shape::EqualEarth => {
-                let lo = WORLD_ZOOM.max(world_floor(shape, width, height));
-                (lo, MERCATOR_ZOOM.max(lo + 1.0))
-            }
-        };
+    /// globe itself (1796).
+    pub fn new(centre: World, zoom: f64, width: u32, height: u32) -> Self {
+        let (lo, hi) = globe_window(width, height);
+        let lo = lo.max(world_floor(width, height));
+        let hi = hi.max(lo + 0.5);
         let t = t_of_zoom(zoom, lo, hi);
-        Self::with_t(shape, centre, zoom, width, height, t)
+        Self::with_t(centre, zoom, width, height, t)
     }
 
     /// The blend with `t` given: a supersampled draw of the same view at
     /// another zoom keeps its `t`, so both pictures are the same mapping.
-    pub fn with_t(shape: Shape, centre: World, zoom: f64, width: u32, height: u32, t: f64) -> Self {
+    pub fn with_t(centre: World, zoom: f64, width: u32, height: u32, t: f64) -> Self {
         let lon0 = f64::from(centre.x) / WORLD_F * TAU - PI;
         let phi0 = gudermann(f64::from(centre.y));
         let (sin0, cos0) = (libm::sin(phi0), libm::cos(phi0));
@@ -269,34 +191,12 @@ impl Blend {
         // drawn that much smaller, so they still agree at the centre and
         // morph no more than before; the factor slides to one with `t`,
         // where the view is Mercator exactly.
-        let globe = match shape {
-            Shape::Globe => libm::pow(cos0.max(1e-9), 1.0 - t.clamp(0.0, 1.0)),
-            Shape::EqualEarth => 1.0,
-        };
+        let globe = libm::pow(cos0.max(1e-9), 1.0 - t.clamp(0.0, 1.0));
         let unit = libm::exp2(24.0 - zoom) / globe;
         // Pixels per radian of arc at the centre: 256·2^zoom pixels around
         // the world, over 2π, over the parallel's cos φ.
         let m = 256.0 * libm::exp2(zoom) / (TAU * cos0.max(1e-9));
-        let (ex0, ey0, anisotropy, sx, sy) = match shape {
-            Shape::EqualEarth => {
-                let theta = libm::asin((M * sin0).clamp(-1.0, 1.0));
-                let t2 = theta * theta;
-                let t6 = t2 * t2 * t2;
-                let d = A1 + 3.0 * A2 * t2 + t6 * (7.0 * A3 + 9.0 * A4 * t2);
-                let ey0 = theta * (A1 + A2 * t2 + t6 * (A3 + A4 * t2));
-                // East–west scale per unit of arc; north–south is its
-                // reciprocal (equal-area), so the geometric mean is one
-                // and `m` alone matches Mercator's scale at the centre.
-                let k = libm::cos(theta) / (M * d * cos0.max(1e-9));
-                // Each axis slides from the true shape at t = 0 to
-                // Mercator's local scale at t = 1.
-                let slide = libm::pow(k, t);
-                (0.0, ey0, k * k, m / slide, m * slide)
-            }
-            Shape::Globe => (0.0, 0.0, 1.0, m * globe, m * globe),
-        };
         Self {
-            shape,
             centre,
             width: width.max(1),
             height: height.max(1),
@@ -307,11 +207,7 @@ impl Blend {
             sin0,
             cos0,
             unit,
-            sx,
-            sy,
-            ex0,
-            ey0,
-            anisotropy,
+            r: m * globe,
         }
     }
 
@@ -330,11 +226,6 @@ impl Blend {
         self.centre
     }
 
-    /// Which world projection blends here.
-    pub fn shape(&self) -> Shape {
-        self.shape
-    }
-
     /// Width and height in pixels.
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
@@ -347,17 +238,9 @@ impl Blend {
         self.unit
     }
 
-    /// The central meridian and the centre's latitude, radians: what the
-    /// anisotropy is reported against.
+    /// The central meridian and the centre's latitude, radians.
     pub fn centre_angles(&self) -> (f64, f64) {
         (self.lon0, self.phi0)
-    }
-
-    /// East–west over north–south local scale at the centre before the
-    /// axes slide: Equal Earth's k² (0.74 at the equator, above 2 past
-    /// 65°), exactly 1 for the globe.
-    pub fn anisotropy(&self) -> f64 {
-        self.anisotropy
     }
 
     /// The same mapping at another zoom and size, `t` and centre kept:
@@ -365,7 +248,7 @@ impl Blend {
     /// deeper at twice the grain) uses so its picture is this view's,
     /// only finer.
     pub fn resized(&self, zoom: f64, width: u32, height: u32) -> Self {
-        Self::with_t(self.shape, self.centre, zoom, width, height, self.t)
+        Self::with_t(self.centre, zoom, width, height, self.t)
     }
 
     /// `(λ, φ)` of a world point, λ relative to the central meridian in
@@ -375,8 +258,7 @@ impl Blend {
     }
 
     /// The longitude of a world x relative to the central meridian,
-    /// wrapped to (-π, π]: the cut of the world projection is the far
-    /// side of the view. A ring that crosses it is unwrapped by the
+    /// wrapped to (-π, π]: the cut is the far side of the globe. A ring that crosses it is unwrapped by the
     /// drawer and placed through
     /// [`to_screen_angles`](Self::to_screen_angles).
     pub fn lam_rel(&self, x: u32) -> f64 {
@@ -390,48 +272,38 @@ impl Blend {
         lam
     }
 
-    /// The world projection of `(λ, φ)` with the centre's frame applied:
-    /// x east, y north, local geometric-mean scale one at the centre.
-    fn shape_forward(&self, lam: f64, phi: f64) -> (f64, f64) {
-        match self.shape {
-            Shape::EqualEarth => equal_earth(lam, phi),
-            Shape::Globe => {
-                let (sp, cp) = (libm::sin(phi), libm::cos(phi));
-                let (sl, cl) = (libm::sin(lam), libm::cos(lam));
-                let x = cp * sl;
-                let y = self.cos0 * sp - self.sin0 * cp * cl;
-                let cosc = self.sin0 * sp + self.cos0 * cp * cl;
-                if cosc >= 0.0 {
-                    (x, y)
-                } else {
-                    // The far half, pushed out to the limb so a ring that
-                    // crosses it stays closed; culled where it matters by
-                    // the caller through `facing`.
-                    let r = libm::hypot(x, y);
-                    if r < 1e-12 {
-                        (0.0, 1.0)
-                    } else {
-                        (x / r, y / r)
-                    }
-                }
+    /// The globe's orthographic projection of `(λ, φ)` with the centre's
+    /// frame applied: x east, y north, in units of the sphere's radius.
+    fn globe_forward(&self, lam: f64, phi: f64) -> (f64, f64) {
+        let (sp, cp) = (libm::sin(phi), libm::cos(phi));
+        let (sl, cl) = (libm::sin(lam), libm::cos(lam));
+        let x = cp * sl;
+        let y = self.cos0 * sp - self.sin0 * cp * cl;
+        let cosc = self.sin0 * sp + self.cos0 * cp * cl;
+        if cosc >= 0.0 {
+            (x, y)
+        } else {
+            // The far half, pushed out to the limb so a ring that
+            // crosses it stays closed; culled where it matters by
+            // the caller through `facing`.
+            let r = libm::hypot(x, y);
+            if r < 1e-12 {
+                (0.0, 1.0)
+            } else {
+                (x / r, y / r)
             }
         }
     }
 
-    /// Whether `w` is on the near side of the globe; always under Equal
-    /// Earth. A name or a pin on the far side is not shown at world zoom.
+    /// Whether `w` is on the near side of the globe. A name or a pin on
+    /// the far side is not shown at world zoom.
     pub fn facing(&self, w: World) -> bool {
-        match self.shape {
-            Shape::EqualEarth => true,
-            Shape::Globe => {
-                let (lam, phi) = self.angles(w);
-                self.sin0 * libm::sin(phi) + self.cos0 * libm::cos(phi) * libm::cos(lam) >= 0.0
-            }
-        }
+        let (lam, phi) = self.angles(w);
+        self.sin0 * libm::sin(phi) + self.cos0 * libm::cos(phi) * libm::cos(lam) >= 0.0
     }
 
     /// Where `w` lands in pixels from the view's top-left corner: the
-    /// blend of the world projection's place and Mercator's, both with
+    /// blend of the globe's place and Mercator's, both with
     /// the centre on the middle pixel.
     pub fn to_screen(&self, w: World) -> (f64, f64) {
         let (cx, cy) = (f64::from(self.width) / 2.0, f64::from(self.height) / 2.0);
@@ -444,17 +316,11 @@ impl Blend {
             return (mx, my);
         }
         let (lam, phi) = self.angles(w);
-        let (ex, ey) = self.shape_forward(lam, phi);
-        let bx = cx + self.sx * (ex - self.ex0);
-        let by = cy - self.sy * (ey - self.ey0);
+        let (ex, ey) = self.globe_forward(lam, phi);
+        let bx = cx + self.r * ex;
+        let by = cy - self.r * ey;
         let t = self.t;
         ((1.0 - t) * bx + t * mx, (1.0 - t) * by + t * my)
-    }
-
-    /// Whether this is the orthographic globe, whose far half is hidden
-    /// behind the horizon and cut there (1762).
-    pub fn is_globe(&self) -> bool {
-        self.shape == Shape::Globe
     }
 
     /// The unit vector of `(λ, φ)` in the view's frame: x east and y north
@@ -482,9 +348,8 @@ impl Blend {
     /// [`to_screen`](Self::to_screen) of a point given by its relative
     /// longitude, which may run past ±π along a ring, and its latitude,
     /// radians. The Mercator term flattens the overshoot onto the edge
-    /// meridian and holds the latitude to Mercator's ±85.05°; the world
-    /// term is the shape's own (Equal Earth's clamped to its edge
-    /// meridian, the globe periodic).
+    /// meridian and holds the latitude to Mercator's ±85.05°; the globe
+    /// term is periodic and takes the overshoot as it is.
     pub fn to_screen_angles(&self, lam: f64, phi: f64) -> (f64, f64) {
         let (cx, cy) = (f64::from(self.width) / 2.0, f64::from(self.height) / 2.0);
         let lm = lam.clamp(-PI, PI);
@@ -495,13 +360,9 @@ impl Blend {
         if self.t >= 1.0 {
             return (mx, my);
         }
-        let shaped = match self.shape {
-            Shape::EqualEarth => lm,
-            Shape::Globe => lam,
-        };
-        let (ex, ey) = self.shape_forward(shaped, phi);
-        let bx = cx + self.sx * (ex - self.ex0);
-        let by = cy - self.sy * (ey - self.ey0);
+        let (ex, ey) = self.globe_forward(lam, phi);
+        let bx = cx + self.r * ex;
+        let by = cy - self.r * ey;
         let t = self.t;
         ((1.0 - t) * bx + t * mx, (1.0 - t) * by + t * my)
     }
@@ -544,17 +405,13 @@ impl Blend {
     }
 
     /// The globe's outline, the horizon all round, in sub-pixels: what
-    /// the sea is filled in and the ground is left around (1762). Empty
-    /// for Equal Earth, whose world has no horizon. The first `n` points
+    /// the sea is filled in and the ground is left around (1762). The first `n` points
     /// (the count returned) are the horizon itself; in the handover a
     /// view off the equator closes over its visible pole after them
     /// (the seam, where the horizon crosses the far meridian). At
     /// `t = 0` there is no detour.
     pub fn limb_sub(&self, out: &mut Vec<(i64, i64)>) -> usize {
         out.clear();
-        if !self.is_globe() {
-            return 0;
-        }
         let seam = self.seam();
         let start = seam.map_or(0.0, |(a, _)| a);
         // Start just past the seam and end just before it: the horizon's
@@ -573,9 +430,9 @@ impl Blend {
     }
 
     /// The globe's radius in pixels: its scale at the centre, pixels per
-    /// radian of arc (1762). The world term's for Equal Earth.
+    /// radian of arc (1762).
     pub fn radius(&self) -> f64 {
-        libm::sqrt(self.sx * self.sy)
+        self.r
     }
 
     /// The view's centre after a drag of `(dx, dy)` screen pixels that
@@ -625,12 +482,8 @@ impl Blend {
     /// Whether everything between the relative longitudes `lam0` and
     /// `lam0 + width` and the latitudes `phi0..=phi1` (radians) lies
     /// behind the globe's horizon: a bound, never wrong the other way, so
-    /// a ring culled by its box needs no projecting at all (1762). Never
-    /// under Equal Earth.
+    /// a ring culled by its box needs no projecting at all (1762).
     pub fn behind(&self, lam0: f64, width: f64, phi0: f64, phi1: f64) -> bool {
-        if !self.is_globe() {
-            return false;
-        }
         // The largest cos λ over the span.
         let next = libm::ceil(lam0 / TAU) * TAU;
         let cmax = match next <= lam0 + width {
@@ -681,7 +534,7 @@ impl Blend {
         let (x, y) = match self.t >= 1.0 {
             true => (mx, my),
             false => {
-                let (bx, by) = (cx + self.sx * v[0], cy - self.sy * v[1]);
+                let (bx, by) = (cx + self.r * v[0], cy - self.r * v[1]);
                 let t = self.t;
                 ((1.0 - t) * bx + t * mx, (1.0 - t) * by + t * my)
             }
@@ -893,9 +746,6 @@ impl Blend {
     /// sub-pixels, when one end is in front of it and the other behind: a
     /// stroked line is cut there, not at its last near point (1762).
     pub fn horizon_sub(&self, a: World, b: World) -> Option<(i64, i64)> {
-        if !self.is_globe() {
-            return None;
-        }
         let (la, pa) = self.angles(a);
         let (lb, pb) = self.angles(b);
         let (va, vb) = (self.frame(la, pa), self.frame(lb, pb));
@@ -916,7 +766,7 @@ impl Blend {
 
     /// The world point that lands on `(x, y)` pixels: Newton on the
     /// forward mapping from the Mercator inverse, `None` where no point
-    /// does (off Equal Earth's boundary, off the globe) or Newton does
+    /// does (off the globe's limb) or Newton does
     /// not close within [`INVERSE_EPS_PX`].
     pub fn to_world(&self, x: f64, y: f64) -> Option<World> {
         let (cx, cy) = (f64::from(self.width) / 2.0, f64::from(self.height) / 2.0);

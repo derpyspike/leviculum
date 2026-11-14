@@ -7,11 +7,11 @@
 //! front, so none of this showed. These tests hold the mechanism, not a
 //! picture: a ring wholly behind the horizon adds no pixel, a ring across
 //! it is cut there, what lies off the sphere is ground and not sea, and
-//! the view of the second screenshot keeps its sea blue in both shapes.
+//! the view of the second screenshot keeps its sea blue.
 
 use embedded_graphics::pixelcolor::raw::{RawData, RawU16};
 use embedded_graphics::pixelcolor::Rgb565;
-use leviculum_map::blend::{Blend, Shape};
+use leviculum_map::blend::Blend;
 use leviculum_map::mercator::{project, LatLon, World as Point};
 use leviculum_map::outline::{self, World};
 use leviculum_mapfill::frame::Frame;
@@ -178,7 +178,7 @@ fn a_ring_behind_the_horizon_draws_nothing() {
     ];
     for (i, table) in tables.iter().enumerate() {
         for zoom in [1.0, 2.0, 3.0, 3.5, 4.5] {
-            let blend = Blend::new(Shape::Globe, at(0.0, -20.0), zoom, 480, 320);
+            let blend = Blend::new(at(0.0, -20.0), zoom, 480, 320);
             let fb = picture(&land_only(table), &blend);
             let n = fb.iter().filter(|&&p| p == land()).count();
             assert_eq!(
@@ -199,7 +199,7 @@ fn a_ring_across_the_horizon_is_cut_at_the_limb() {
         16,
     );
     for zoom in [1.0, 2.0, 3.0, 3.5] {
-        let blend = Blend::new(Shape::Globe, at(0.0, 0.0), zoom, 480, 320);
+        let blend = Blend::new(at(0.0, 0.0), zoom, 480, 320);
         let fb = picture(&land_only(&table), &blend);
         for (lat, lon, want) in [(0.0, 80.0, true), (10.0, 85.0, true), (0.0, 60.0, false)] {
             if let Some(p) = pixel(&fb, &blend, at(lat, lon)) {
@@ -233,7 +233,7 @@ fn a_ring_across_the_horizon_is_cut_at_the_limb() {
 #[test]
 fn the_globe_stands_on_ground_not_on_sea() {
     for (lat, lon) in [(50.0, 10.0), (-40.0, 75.0), (0.0, -150.0)] {
-        let blend = Blend::new(Shape::Globe, at(lat, lon), 1.0, 480, 320);
+        let blend = Blend::new(at(lat, lon), 1.0, 480, 320);
         let fb = picture(&outline::WORLD, &blend);
         for (x, y) in [
             (0u32, 0u32),
@@ -248,7 +248,7 @@ fn the_globe_stands_on_ground_not_on_sea() {
         }
     }
     // Mid-Atlantic, facing.
-    let blend = Blend::new(Shape::Globe, at(20.0, -30.0), 1.0, 480, 320);
+    let blend = Blend::new(at(20.0, -30.0), 1.0, 480, 320);
     let fb = picture(&outline::WORLD, &blend);
     assert_eq!(pixel(&fb, &blend, at(25.0, -40.0)), Some(sea()));
 }
@@ -258,7 +258,7 @@ fn the_globe_stands_on_ground_not_on_sea() {
 /// sea between Africa and Australia was filled in the land's colour with
 /// lens-shaped slivers, and a wedge spanned from Kerguelen to Antarctica.
 /// Sea points stay sea, land points land, at every zoom of the handover,
-/// in both shapes and at the phone's portrait size.
+/// at the phone's portrait size and at 480 x 320.
 #[test]
 fn the_southern_indian_ocean_stays_sea_through_the_handover() {
     let sea_points = [
@@ -275,29 +275,27 @@ fn the_southern_indian_ocean_stays_sea_through_the_handover() {
     ];
     let land_points = [(-25.0, 25.0), (-25.0, 135.0), (-20.0, 46.5)];
     let mut bad = Vec::new();
-    for shape in [Shape::Globe, Shape::EqualEarth] {
-        for (w, h) in [(1224u32, 2100u32), (480, 320)] {
-            for zoom in [1.0, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5] {
-                let blend = Blend::new(shape, at(-40.0, 75.0), zoom, w, h);
-                let fb = picture(&outline::WORLD, &blend);
-                for &(lat, lon) in &sea_points {
-                    if !blend.facing(at(lat, lon)) {
-                        continue;
-                    }
-                    if let Some(p) = pixel(&fb, &blend, at(lat, lon)) {
-                        if p != sea() {
-                            bad.push(format!("{shape:?} {w}x{h} z{zoom} sea {lat}/{lon}"));
-                        }
+    for (w, h) in [(1224u32, 2100u32), (480, 320)] {
+        for zoom in [1.0, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5] {
+            let blend = Blend::new(at(-40.0, 75.0), zoom, w, h);
+            let fb = picture(&outline::WORLD, &blend);
+            for &(lat, lon) in &sea_points {
+                if !blend.facing(at(lat, lon)) {
+                    continue;
+                }
+                if let Some(p) = pixel(&fb, &blend, at(lat, lon)) {
+                    if p != sea() {
+                        bad.push(format!("{w}x{h} z{zoom} sea {lat}/{lon}"));
                     }
                 }
-                for &(lat, lon) in &land_points {
-                    if !blend.facing(at(lat, lon)) {
-                        continue;
-                    }
-                    if let Some(p) = pixel(&fb, &blend, at(lat, lon)) {
-                        if p != land() {
-                            bad.push(format!("{shape:?} {w}x{h} z{zoom} land {lat}/{lon}"));
-                        }
+            }
+            for &(lat, lon) in &land_points {
+                if !blend.facing(at(lat, lon)) {
+                    continue;
+                }
+                if let Some(p) = pixel(&fb, &blend, at(lat, lon)) {
+                    if p != land() {
+                        bad.push(format!("{w}x{h} z{zoom} land {lat}/{lon}"));
                     }
                 }
             }
@@ -313,30 +311,28 @@ fn the_southern_indian_ocean_stays_sea_through_the_handover() {
 #[test]
 fn near_the_pole_antarctica_is_whole() {
     let mut bad = Vec::new();
-    for shape in [Shape::Globe, Shape::EqualEarth] {
-        for zoom in [1.0, 2.0, 2.5, 3.0] {
-            let blend = Blend::new(shape, at(-70.0, 0.0), zoom, 480, 320);
-            let fb = picture(&outline::WORLD, &blend);
-            for (lat, lon) in [
-                (-80.0, 180.0),
-                (-80.0, 170.0),
-                (-80.0, -170.0),
-                (-82.0, 90.0),
-                (-75.0, 0.0),
-                (-88.0, 0.0),
-                (-87.0, 120.0),
-            ] {
-                if let Some(p) = pixel(&fb, &blend, at(lat, lon)) {
-                    if p == sea() {
-                        bad.push(format!("{shape:?} z{zoom} {lat}/{lon} is sea"));
-                    }
+    for zoom in [1.0, 2.0, 2.5, 3.0] {
+        let blend = Blend::new(at(-70.0, 0.0), zoom, 480, 320);
+        let fb = picture(&outline::WORLD, &blend);
+        for (lat, lon) in [
+            (-80.0, 180.0),
+            (-80.0, 170.0),
+            (-80.0, -170.0),
+            (-82.0, 90.0),
+            (-75.0, 0.0),
+            (-88.0, 0.0),
+            (-87.0, 120.0),
+        ] {
+            if let Some(p) = pixel(&fb, &blend, at(lat, lon)) {
+                if p == sea() {
+                    bad.push(format!("z{zoom} {lat}/{lon} is sea"));
                 }
             }
-            for (lat, lon) in [(-60.0, 0.0), (-55.0, -30.0)] {
-                if let Some(p) = pixel(&fb, &blend, at(lat, lon)) {
-                    if p != sea() {
-                        bad.push(format!("{shape:?} z{zoom} {lat}/{lon} is not sea"));
-                    }
+        }
+        for (lat, lon) in [(-60.0, 0.0), (-55.0, -30.0)] {
+            if let Some(p) = pixel(&fb, &blend, at(lat, lon)) {
+                if p != sea() {
+                    bad.push(format!("z{zoom} {lat}/{lon} is not sea"));
                 }
             }
         }
@@ -361,7 +357,7 @@ fn a_ring_across_the_far_meridian_is_filled_once() {
         16,
     );
     for zoom in [1.0, 2.0, 3.0] {
-        let blend = Blend::new(Shape::Globe, at(-70.0, 10.0), zoom, 480, 320);
+        let blend = Blend::new(at(-70.0, 10.0), zoom, 480, 320);
         let fb = picture(&land_only(&table), &blend);
         for (lat, lon) in [(-77.0, -175.0), (-77.0, -170.0), (-77.0, -165.0)] {
             if let Some(p) = pixel(&fb, &blend, at(lat, lon)) {
@@ -376,35 +372,32 @@ fn a_ring_across_the_far_meridian_is_filled_once() {
 /// and in the handover over the southern Indian Ocean Mirny, Casey,
 /// Dumont-d'Urville, McMurdo and Esperanza. While the blend holds, only
 /// countries and seas are named, and from the middle of the handover on
-/// the largest cities as well; never a town, a village or a station, in
-/// either shape.
+/// the largest cities as well; never a town, a village or a station.
 #[test]
 fn a_world_view_names_countries_and_seas_not_stations() {
     use leviculum_map::labels::LabelKind;
     let mut bad = Vec::new();
-    for shape in [Shape::Globe, Shape::EqualEarth] {
-        for (lat, lon) in [(10.0, 20.0), (-40.0, 75.0), (-70.0, 100.0), (50.0, 10.0)] {
-            for zoom in [1.0, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5] {
-                let blend = Blend::new(shape, at(lat, lon), zoom, 1224, 2100);
-                if blend.t() >= 1.0 {
-                    continue;
-                }
-                let mut out = Vec::new();
-                outline::names_view(outline::NAMES_50M, &blend, &mut out);
-                for l in &out {
-                    let ok = match l.kind {
-                        LabelKind::Country | LabelKind::Sea => true,
-                        LabelKind::City => blend.t() >= 0.5,
-                        _ => false,
-                    };
-                    if !ok {
-                        bad.push(format!(
-                            "{shape:?} {lat}/{lon} z{zoom} t{:.2}: {:?} {}",
-                            blend.t(),
-                            l.kind,
-                            l.text
-                        ));
-                    }
+    for (lat, lon) in [(10.0, 20.0), (-40.0, 75.0), (-70.0, 100.0), (50.0, 10.0)] {
+        for zoom in [1.0, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5] {
+            let blend = Blend::new(at(lat, lon), zoom, 1224, 2100);
+            if blend.t() >= 1.0 {
+                continue;
+            }
+            let mut out = Vec::new();
+            outline::names_view(outline::NAMES_50M, &blend, &mut out);
+            for l in &out {
+                let ok = match l.kind {
+                    LabelKind::Country | LabelKind::Sea => true,
+                    LabelKind::City => blend.t() >= 0.5,
+                    _ => false,
+                };
+                if !ok {
+                    bad.push(format!(
+                        "{lat}/{lon} z{zoom} t{:.2}: {:?} {}",
+                        blend.t(),
+                        l.kind,
+                        l.text
+                    ));
                 }
             }
         }
@@ -433,7 +426,7 @@ fn a_drag_turns_the_globe_by_the_arcball_amount() {
         (f64::from(l.lat_e7) * 1e-7, f64::from(l.lon_e7) * 1e-7)
     };
     for (lat, lon) in [(0.0, 0.0), (40.0, 10.0), (-30.0, 150.0)] {
-        let blend = Blend::new(Shape::Globe, at(lat, lon), 2.0, 1224, 2100);
+        let blend = Blend::new(at(lat, lon), 2.0, 1224, 2100);
         assert_eq!(blend.t(), 0.0);
         let r = blend.radius();
         // Straight up the screen by 0.8 of the radius: north by 0.8 rad.
@@ -457,12 +450,12 @@ fn a_drag_turns_the_globe_by_the_arcball_amount() {
             .acos();
         assert!((arc - 0.5).abs() < 1e-6, "{lat}/{lon}: arc {arc}");
         // The turned view's centre is the screen's middle.
-        let next = Blend::new(Shape::Globe, p, 2.0, 1224, 2100);
+        let next = Blend::new(p, 2.0, 1224, 2100);
         let (x, y) = next.to_screen(p);
         assert!((x - 612.0).abs() < 1e-6 && (y - 1050.0).abs() < 1e-6);
     }
     // Over the pole it stops at Mercator's edge, north still up.
-    let blend = Blend::new(Shape::Globe, at(70.0, 10.0), 2.0, 1224, 2100);
+    let blend = Blend::new(at(70.0, 10.0), 2.0, 1224, 2100);
     let (la, lo) = deg(blend.turned(0.0, -blend.radius()));
     assert!(
         (la - 85.05).abs() < 0.01 && (lo - 10.0).abs() < 1e-6,
@@ -488,7 +481,7 @@ fn the_sphere_holds_while_the_limb_is_near_the_view() {
         let mut blending = false;
         let mut z = 0.0;
         while z < 14.0 {
-            let b = Blend::new(Shape::Globe, centre, z, w, h);
+            let b = Blend::new(centre, z, w, h);
             // The pure sphere's limb radius at this zoom, pixels.
             let r0 = 256.0 * z.exp2() / core::f64::consts::TAU;
             // Ground across the short side on the pure sphere, km.
@@ -522,7 +515,7 @@ fn nothing_sticks_out_of_the_disk_while_the_limb_is_in_view() {
         // The phone's map pane; the disk wider than the screen, its top
         // and bottom inside the view as in the picture.
         let (w, h) = (1224u32, 2197u32);
-        let blend = Blend::new(Shape::Globe, at(lat, 20.0), 4.28, w, h);
+        let blend = Blend::new(at(lat, 20.0), 4.28, w, h);
         let fb = picture(&outline::WORLD, &blend);
         let space = raw(outline::space(THEME));
         let r = blend.radius();

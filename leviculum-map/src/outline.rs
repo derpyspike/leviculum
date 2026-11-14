@@ -531,7 +531,7 @@ impl Place<'_> {
     /// a stroked line asks of every point.
     fn seen(&self, bits: u32, x: u32, y: u32, k: i64) -> (bool, (i64, i64)) {
         match self {
-            Place::Curved(blend) if blend.is_globe() => {
+            Place::Curved(blend) => {
                 let shift = 32 - bits;
                 let (facing, at) = blend.globe_seen(Mercator {
                     x: x << shift,
@@ -539,13 +539,13 @@ impl Place<'_> {
                 });
                 (!facing, at)
             }
-            _ => (self.hidden(bits, x, y), self.map(bits, x, y, k)),
+            Place::Flat(_) => (false, self.map(bits, x, y, k)),
         }
     }
 
     /// Whether a name of `kind` belongs on the view (1762). A flat view
-    /// takes every kind its zoom shows. A blended world view, globe or
-    /// Equal Earth, names what a world map names: the countries and the
+    /// takes every kind its zoom shows. A blended world view (the globe
+    /// on its way into Mercator) names what a world map names: the countries and the
     /// seas, and from the middle of the handover on ([`Blend::t`] at
     /// least a half) the largest cities too, the kind the bake gives a
     /// scale rank of two or less; never a town, a village, a research
@@ -581,8 +581,8 @@ impl Place<'_> {
     }
 
     /// Where the segment from `a` to `b` (table units) crosses the
-    /// globe's horizon, in view sub-pixels; `None` on a flat view, under
-    /// Equal Earth, or when it does not cross.
+    /// globe's horizon, in view sub-pixels; `None` on a flat view or when
+    /// it does not cross.
     fn horizon(&self, bits: u32, a: (u32, u32), b: (u32, u32)) -> Option<(i64, i64)> {
         match self {
             Place::Flat(_) => None,
@@ -747,7 +747,7 @@ where
 
 /// [`draw_world`] through the blended world projection (1710): the same
 /// layers, every point through [`Blend::to_screen_sub`], so the world
-/// view is Equal Earth or the globe on its way into Mercator. A region
+/// view is the globe on its way into Mercator. A region
 /// that reaches into the view draws over this picture through the same
 /// blend, each placed point warped (1799 item 0).
 pub fn draw_world_view<D>(
@@ -777,7 +777,7 @@ where
     let palette = theme.palette();
     let land = palette.background;
     let globe = match place {
-        Place::Curved(blend) if blend.is_globe() => Some(blend),
+        Place::Curved(blend) => Some(blend),
         _ => None,
     };
     target.clear(match (ink, globe) {
@@ -1061,7 +1061,6 @@ where
     };
     let mut ring = Vec::new();
     let mut copies: Vec<Vec<(i64, i64)>> = Vec::new();
-    let mut raw: Vec<(f64, u32)> = Vec::new();
     let mut worlds: Vec<Mercator> = Vec::new();
     let mut clipped = Vec::new();
     let mut points: Vec<Point> = Vec::new();
@@ -1079,9 +1078,7 @@ where
             // The ring's screen points: one copy on a flat view. On a
             // curved one its longitudes are unwrapped so it stays
             // continuous across the projection's cut (the far side of
-            // the view), and where it overshoots one edge a second copy
-            // shifted a turn gives the other edge its part; Equal Earth
-            // flattens the overshoot onto its edge meridian.
+            // the globe).
             copies.clear();
             match place {
                 Place::Flat(_) => {
@@ -1089,7 +1086,7 @@ where
                     ring.extend(r.points().map(|(x, y)| place.map(bits, x, y, k)));
                     copies.push(core::mem::take(&mut ring));
                 }
-                Place::Curved(blend) if blend.is_globe() => {
+                Place::Curved(blend) => {
                     // The globe (1762): on the sphere, cut at the
                     // horizon, the limb closing what the far side took.
                     // No second copy a turn over: the globe is periodic,
@@ -1102,49 +1099,6 @@ where
                         y: y << shift,
                     }));
                     blend.globe_ring(&worlds, &mut copies);
-                }
-                Place::Curved(blend) => {
-                    let shift = 32 - bits;
-                    raw.clear();
-                    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-                    let mut prev = f64::NAN;
-                    for (x, y) in r.points() {
-                        let mut lam = blend.lam_rel(x << shift);
-                        if prev.is_finite() {
-                            while lam - prev > PI {
-                                lam -= TAU;
-                            }
-                            while prev - lam > PI {
-                                lam += TAU;
-                            }
-                        }
-                        prev = lam;
-                        lo = lo.min(lam);
-                        hi = hi.max(lam);
-                        raw.push((lam, y << shift));
-                    }
-                    let mut turns = [Some(0.0), None, None];
-                    if lo < -PI {
-                        turns[1] = Some(TAU);
-                    }
-                    if hi > PI {
-                        turns[2] = Some(-TAU);
-                    }
-                    for turn in turns.into_iter().flatten() {
-                        copies.push(
-                            raw.iter()
-                                .map(|&(lam, wy)| {
-                                    // Mercator's edge rows are the pole,
-                                    // Equal Earth's flat pole line (1762).
-                                    let (x, y) = blend.to_screen_angles(
-                                        lam + turn,
-                                        crate::blend::ring_latitude(wy),
-                                    );
-                                    (sub_px(x), sub_px(y))
-                                })
-                                .collect(),
-                        );
-                    }
                 }
             }
             for ring in &copies {
@@ -1177,11 +1131,6 @@ where
         }
     }
     Ok(st)
-}
-
-/// Pixels to sub-pixels, clamped as [`Blend`]'s own.
-fn sub_px(v: f64) -> i64 {
-    libm::round((v * f64::from(SUBPIXEL)).clamp(-1e9, 1e9)) as i64
 }
 
 /// Stroke every line of `table` in `colour`, dashed when `dash` gives the
