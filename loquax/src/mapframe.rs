@@ -1554,12 +1554,95 @@ pub fn drag(view: &mut ExactView, dx: i32, dy: i32) {
 /// [`drag`] for a world projection `shape`: at globe zooms the drag turns
 /// the sphere about its centre, which stays in the middle of the screen
 /// ([`Blend::turned`], the grabbed middle following the finger, north up,
-/// no flip over a pole); elsewhere it pans as it always did.
+/// no flip over a pole); elsewhere it pans in whole Mercator pixels, the
+/// contract the fling's room accounting rests on, so a name drawn again
+/// is the same pixels ([`moved`]). In a blended view a pixel pan slides
+/// the drawn ground against the finger (audit of 1818 condition 2:
+/// 9.7 px at 32 N 6 W z3.5), and NO finger-less rule can fix that — the
+/// picture does not move rigidly under any recentring; the centre that
+/// holds the middle's ground and the one that holds a pointer 400 px
+/// away lie 13.5 px apart there (measured 2026-11-14) — so every drag
+/// that HAS a pointer goes through [`drag_about_as`] instead; this entry
+/// is for the pointer-less rest: the fling's coast, programmatic pans.
 pub fn drag_as(shape: Shape, view: &mut ExactView, dx: i32, dy: i32) {
     match turns_as(shape, view) {
         Some(b) => view.centre = b.turned(f64::from(dx), f64::from(dy)),
         None => view.pan(dx, dy),
     }
+}
+
+/// [`drag_as`] with the pointer: `(x, y)` is where the finger or the
+/// cursor IS, after it moved by `(-dx, -dy)`, and the ground drawn under
+/// it before the move — at `(x + dx, y + dy)` — follows it there, held
+/// through the blend's own [`Blend::to_world`]/[`Blend::to_screen`] by
+/// the same damped walk a pinch holds its focus with (audit of 1818,
+/// condition 2). A blended picture moves rigidly under no recentring
+/// (see [`drag_as`]), so only the entry that knows the pointer can keep
+/// the ground under it; a pointer off the world falls back to
+/// [`drag_as`]. At `t = 1` it pans in whole pixels, as [`drag_as`].
+pub fn drag_about(view: &mut ExactView, dx: f64, dy: f64, x: f64, y: f64) {
+    drag_about_as(crate::picture::world_shape(), view, dx, dy, x, y);
+}
+
+/// The ground drawn under the screen point `(x, y)` of `view`, through
+/// the blend's own inverse and refined to the world grid's floor
+/// (`held_refined`): the point a gesture holds. A caller that anchors
+/// on this ground (order 1833) must pick the SAME point the gesture
+/// maths holds — the raw inverse answers a few thousandths of a pixel
+/// away, and a pinch magnifies that seed by its whole zoom span.
+/// `None` off the world.
+pub fn ground_under_as(
+    shape: Shape,
+    view: &ExactView,
+    x: f64,
+    y: f64,
+) -> Option<leviculum_map::mercator::World> {
+    let (w, h) = view.size();
+    let b = Blend::new(shape, view.centre, view.zoom(), w, h);
+    let held = b.to_world(x, y)?;
+    Some(held_refined(&b, x, y, held))
+}
+
+/// [`drag_about`] for a world projection `shape`. The pan is fractional:
+/// a blended frame's leftover encodes sub-pixel pans, and re-picking the
+/// held ground on a whole-pixel grid walked it half a pixel a frame
+/// (order 1833); at `t = 1` the pan rounds to whole pixels, as a name
+/// drawn again must be the same pixels ([`moved`]).
+pub fn drag_about_as(shape: Shape, view: &mut ExactView, dx: f64, dy: f64, x: f64, y: f64) {
+    #[allow(clippy::cast_possible_truncation)]
+    let whole = (
+        dx.round().clamp(-1e9, 1e9) as i32,
+        dy.round().clamp(-1e9, 1e9) as i32,
+    );
+    let (w, h) = view.size();
+    let b = Blend::new(shape, view.centre, view.zoom(), w, h);
+    if b.t() >= 1.0 {
+        view.pan(whole.0, whole.1);
+        // The fraction goes into the centre in world units: dropping it
+        // froze a third of a pixel into the view at every frame at rest,
+        // which the zoom then magnified (order 1833). A whole-pixel pan
+        // has none and stays whole pixels.
+        let frac = (dx - f64::from(whole.0), dy - f64::from(whole.1));
+        if frac != (0.0, 0.0) {
+            const WORLD_F: f64 = 4_294_967_296.0;
+            let unit = 2f64.powf(24.0 - f64::from(view.zoom_milli()) / 1000.0);
+            view.centre = leviculum_map::mercator::World {
+                x: (f64::from(view.centre.x) + frac.0 * unit).rem_euclid(WORLD_F) as u32,
+                y: (f64::from(view.centre.y) + frac.1 * unit).clamp(0.0, WORLD_F - 1.0) as u32,
+            };
+        }
+        return;
+    }
+    let held = b.to_world(x + dx, y + dy);
+    let Some(held) = held else {
+        drag_as(shape, view, whole.0, whole.1);
+        return;
+    };
+    let held = held_refined(&b, x + dx, y + dy, held);
+    // Start where the finger-less drag lands, a pixel or a few from the
+    // hold; the walk removes the rest.
+    drag_as(shape, view, whole.0, whole.1);
+    walk_held(shape, view, held, x, y);
 }
 
 /// Whether `view` is drawn blended (`t < 1`) under the product's world
@@ -1680,12 +1763,41 @@ pub fn zoom_about_as(shape: Shape, view: &mut ExactView, zoom_milli: u32, x: f64
     let k = before.unit() / Blend::new(shape, view.centre, zoom, w, h).unit();
     let (hx, hy) = before.to_screen(held);
     let (tx, ty) = (x + (hx - x) * k, y + (hy - y) * k);
-    // Newton on the turn: the raw `turned(e)` step answers with only a
-    // part of the error where the held point sits far from the centre
-    // (a third at 51° N near the globe floor), and a pinch compounds
-    // what a capped walk leaves. The Jacobian of the held point's place
-    // against a turn, by finite differences of a pixel, converges in a
-    // handful of steps at any latitude.
+    walk_held(shape, view, held, tx, ty);
+}
+
+/// Turn `view` until the world point `held` is drawn at `(tx, ty)`,
+/// within [`HELD_EPS_PX`]: Newton on the turn. The raw `turned(e)` step
+/// answers with only a part of the error where the held point sits far
+/// from the centre (a third at 51° N near the globe floor), and a pinch
+/// compounds what a capped walk leaves. The Jacobian of the held point's
+/// place against a turn, by finite differences of a pixel, converges in
+/// a handful of steps at any latitude — DAMPED. Near the limb the
+/// Jacobian is ill-conditioned (the held point moves almost along one
+/// line under any turn), and the raw solve asked for a turn of
+/// thousands of pixels: from a 4.7 px error at 51° N with the focus at
+/// nine tenths of the disk's radius, one undamped step threw the centre
+/// three quarters of the way to the pole, the clamp pinned it there,
+/// and the walk ended 93 px off (audit of 1818, condition 1, 4.49 px a
+/// pinch event). A step is capped at the view's half perimeter and
+/// halved until the error shrinks; a step that cannot shrink it keeps
+/// the best centre seen.
+///
+/// An exact hold is not always possible: a held ground at or past
+/// Mercator's edge latitude pulls the centre onto the edge, where
+/// [`Blend::turned`]'s never-flip clamp stops it (north stays up,
+/// 1762). The walk then ends at the constrained best, measured 5.7 px
+/// an event at 480 x 320 with the focus at nine tenths of the disk's
+/// radius (2026-11-14); the hold is exact again as soon as the centre
+/// leaves the edge.
+fn walk_held(
+    shape: Shape,
+    view: &mut ExactView,
+    held: leviculum_map::mercator::World,
+    tx: f64,
+    ty: f64,
+) {
+    let (w, h) = view.size();
     for _ in 0..HELD_STEPS {
         let b = Blend::new(shape, view.centre, view.zoom(), w, h);
         let (px, py) = b.to_screen(held);
@@ -1704,9 +1816,31 @@ pub fn zoom_about_as(shape: Shape, view: &mut ExactView, zoom_milli: u32, x: f64
         if libm::fabs(det) < 1e-12 {
             break;
         }
-        let dx = (ex * j22 - ey * j12) / det;
-        let dy = (ey * j11 - ex * j21) / det;
-        view.centre = b.turned(-dx, -dy);
+        let mut dx = (ex * j22 - ey * j12) / det;
+        let mut dy = (ey * j11 - ex * j21) / det;
+        let cap = f64::from(w) + f64::from(h);
+        let asked = dx.hypot(dy);
+        if asked > cap {
+            dx *= cap / asked;
+            dy *= cap / asked;
+        }
+        let err = ex.hypot(ey);
+        let mut stepped = false;
+        for _ in 0..8 {
+            let centre = b.turned(-dx, -dy);
+            let c = Blend::new(shape, centre, view.zoom(), w, h);
+            let (nx, ny) = c.to_screen(held);
+            if (nx - tx).hypot(ny - ty) < err {
+                view.centre = centre;
+                stepped = true;
+                break;
+            }
+            dx /= 2.0;
+            dy /= 2.0;
+        }
+        if !stepped {
+            break;
+        }
     }
 }
 
@@ -2655,5 +2789,62 @@ mod tests {
         assert_ne!(minimal.rgba, rest.rgba, "smoothed edges");
         frames.hold_rung(None);
         assert_eq!(frames.frame(&at(None, true, moved)).layers, Layers::ALL);
+    }
+
+    /// A drag in a blended view keeps the DRAWN ground under the finger
+    /// (audit of 1818, condition 2): `drag_as` panned Equal Earth's blend
+    /// in Mercator pixels, which the blend bends, so the ground slid
+    /// against the finger (9.7 px at 32 N 6 W z3.5). The auditors' test,
+    /// with one change: it drives `drag_about_as`, the entry that knows
+    /// the finger, where the auditors' text drove the finger-less
+    /// `drag_as`. As written it cannot pass: a blended picture moves
+    /// rigidly under NO recentring — the centre that holds the middle's
+    /// ground and the centre that holds this test's finger exactly lie
+    /// 13.5 px apart at 32 N z3.5 `t = 0.1` (measured 2026-11-14;
+    /// Mercator pan 8.8/9.7 px off at the finger, middle-held recentring
+    /// 9.0, `turned` 9.5) — so only the entry the real drags call, the
+    /// one with the pointer, can keep this bound.
+    #[test]
+    fn a_drag_in_the_blend_keeps_the_place_under_the_finger() {
+        use leviculum_map::blend::Blend;
+        let (w, h) = (1224u32, 2197u32);
+        let mut judged = 0usize;
+        for shape in [Shape::Globe, Shape::EqualEarth] {
+            for (lat, lon) in [(32.0, -6.0), (51.0, 10.0), (-60.0, 0.0)] {
+                let at = project(LatLon::from_degrees(lat, lon));
+                for zm in (2_000u32..=12_000).step_by(250) {
+                    let mut view = ExactView::new(at, zm, w, h);
+                    let b0 = Blend::new(shape, view.centre, view.zoom(), w, h);
+                    if !(b0.t() > 0.0 && b0.t() < 1.0) {
+                        continue;
+                    }
+                    // A finger off the centre moves (+20, +12); the content
+                    // follows it, which is a pan of (-20, -12) in pan's sense.
+                    let (fx, fy) = (400.0f64, 700.0f64);
+                    let (mx, my) = (20i32, 12i32);
+                    let Some(ground) = b0.to_world(fx, fy) else {
+                        continue;
+                    };
+                    drag_about_as(
+                        shape,
+                        &mut view,
+                        f64::from(-mx),
+                        f64::from(-my),
+                        fx + f64::from(mx),
+                        fy + f64::from(my),
+                    );
+                    let b1 = Blend::new(shape, view.centre, view.zoom(), w, h);
+                    let (px, py) = b1.to_screen(ground);
+                    let off = (px - (fx + f64::from(mx))).hypot(py - (fy + f64::from(my)));
+                    assert!(
+                        off <= 2.0,
+                        "{shape:?} {lat},{lon} z{zm} t={:.2}: the ground under the finger is {off:.1} px from it",
+                        b0.t()
+                    );
+                    judged += 1;
+                }
+            }
+        }
+        assert!(judged > 10, "only {judged} blended views judged");
     }
 }
