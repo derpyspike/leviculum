@@ -721,18 +721,23 @@ impl<B> UiModel<B> {
     /// Learn what a message in `peer`'s conversation says of a group:
     /// `outbound` when the reader (or another of its devices) sent it. A
     /// group that changed is written to the store with the next writes
-    /// (1307 G2), so a restart lists it as it stood. `verified` is the
-    /// message's signature verdict: an inbound membership is believed
-    /// only from a verified message (the audits of 1816) — an unverified
-    /// one is held with its message and learned again from
-    /// [`super::apply_verdict`] when the verdict says valid, never when
-    /// it says INVALID.
+    /// (1307 G2), so a restart lists it as it stood. Nothing here knows
+    /// about verification (order 1834): the caller applies claims only
+    /// for an outbound message, a VERIFIED inbound one, or a held one
+    /// whose verdict said valid — the gate sits at the entries
+    /// ([`super::apply_message_claims`], [`Self::learn_groups`]).
+    /// `carrier` is the carrying message's key where that message is
+    /// already placed (the verdict path, the restore): the early-copy
+    /// refiling skips it, so no message vouches for its own copy — the
+    /// concept page's rule that a copy is judged by the group state from
+    /// before its own message holds on every path (the second auditor's
+    /// audit of 1828).
     pub(super) fn learn_group(
         &mut self,
         peer: [u8; 16],
         outbound: bool,
         fields: &[Field],
-        verified: bool,
+        carrier: Option<u64>,
     ) {
         let Some(lev) = Lev::from_fields(fields) else {
             return;
@@ -749,7 +754,7 @@ impl<B> UiModel<B> {
             .map(|a| self.groups.get(a).cloned())
             .collect();
         let epoch_before = self.groups.get(&peer).map(|g| g.epoch);
-        self.learn_lev(peer, outbound, &lev, verified);
+        self.learn_lev(peer, outbound, &lev);
         for (address, was) in touched.into_iter().zip(before) {
             if self.groups.get(&address) != was.as_ref() {
                 self.groups_changed.insert(address);
@@ -761,7 +766,7 @@ impl<B> UiModel<B> {
         // decided in loquax-expedition-map.md).
         if let (false, Some(was)) = (outbound, epoch_before) {
             if self.groups.get(&peer).is_some_and(|g| g.epoch > was) {
-                self.file_early_copies(peer, was);
+                self.file_early_copies(peer, was, carrier);
             }
         }
     }
@@ -773,8 +778,11 @@ impl<B> UiModel<B> {
     /// is its first filing, and one whose signature is still unverified
     /// stays held: its verdict files it ([`super::apply_verdict`],
     /// rule 3). The one writer rule judges here as everywhere
-    /// ([`super::copy_writer`], rule 5).
-    fn file_early_copies(&mut self, group: [u8; 16], was: u64) {
+    /// ([`super::copy_writer`], rule 5). The message that carried the
+    /// membership itself (`carrier`) is skipped: a copy is judged by the
+    /// group state from before its own message, so no message vouches
+    /// for its own copy (the second auditor's audit of 1828).
+    fn file_early_copies(&mut self, group: [u8; 16], was: u64, carrier: Option<u64>) {
         let Some(c) = self.conversations.iter().position(|c| c.peer == group) else {
             return;
         };
@@ -782,6 +790,9 @@ impl<B> UiModel<B> {
         let mut fixes = Vec::new();
         for message in &self.conversations[c].messages {
             if message.outbound || !crate::telemetry::has_telemetry(&message.fields) {
+                continue;
+            }
+            if Some(message.activity) == carrier {
                 continue;
             }
             let verified = message.signature == super::Signature::Verified;
@@ -813,7 +824,7 @@ impl<B> UiModel<B> {
         }
     }
 
-    fn learn_lev(&mut self, peer: [u8; 16], outbound: bool, lev: &Lev, verified: bool) {
+    fn learn_lev(&mut self, peer: [u8; 16], outbound: bool, lev: &Lev) {
         let own = self.address;
         if let (Some(status), false) = (&lev.status, outbound) {
             self.learn_status(peer, status);
@@ -858,15 +869,6 @@ impl<B> UiModel<B> {
                         group.standing = Standing::Left;
                     }
                 }
-                return;
-            }
-            // Nothing a message says is believed before its signature is
-            // verified (the audits of 1816): an unverified membership
-            // changes no member list, no epoch and no standing. The
-            // message keeps its list; the verdict applies it
-            // ([`super::apply_verdict`]) or, INVALID, discards it with
-            // the message.
-            if !verified {
                 return;
             }
             // Only a group the reader knows from an invitation, or made,
@@ -1056,27 +1058,24 @@ impl<B> UiModel<B> {
         self.delete_conversation(group, false);
     }
 
-    /// Learn every group the restored conversations speak of.
+    /// Learn every group the restored conversations speak of. The
+    /// restore entry's gate (order 1834): an inbound message whose
+    /// verdict is still owed, or INVALID, teaches nothing — its verdict
+    /// applies it on this run exactly as live ([`super::apply_verdict`]).
     pub(super) fn learn_groups(&mut self) {
-        let seen: Vec<([u8; 16], bool, Vec<Field>, bool)> = self
+        let seen: Vec<([u8; 16], bool, Vec<Field>, u64)> = self
             .conversations
             .iter()
             .flat_map(|c| {
                 c.messages
                     .iter()
                     .filter(|m| Lev::from_fields(&m.fields).is_some())
-                    .map(|m| {
-                        (
-                            c.peer,
-                            m.outbound,
-                            m.fields.clone(),
-                            m.signature == super::Signature::Verified,
-                        )
-                    })
+                    .filter(|m| m.outbound || m.signature == super::Signature::Verified)
+                    .map(|m| (c.peer, m.outbound, m.fields.clone(), m.activity))
             })
             .collect();
-        for (peer, outbound, fields, verified) in seen {
-            self.learn_group(peer, outbound, &fields, verified);
+        for (peer, outbound, fields, key) in seen {
+            self.learn_group(peer, outbound, &fields, Some(key));
         }
         self.forget_deleted_groups();
     }

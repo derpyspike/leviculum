@@ -6466,7 +6466,10 @@ fn on_engine<B: InputBuffer>(model: &mut UiModel<B>, event: OutboxEvent) -> Vec<
                 ))]);
             }
             // A receipt alone is a state, not a message (1230): it changes
-            // the messages it names and nothing else.
+            // the messages it names and nothing else. It is a protocol
+            // receipt of OUR messages, not a claim about a position or a
+            // group, so it is not under order 1834's position/group gate
+            // (the handshake comment below says why).
             if lev
                 .as_ref()
                 .is_some_and(|lev| receipts::alone(&body, &fields, lev))
@@ -6491,13 +6494,6 @@ fn on_engine<B: InputBuffer>(model: &mut UiModel<B>, event: OutboxEvent) -> Vec<
             {
                 return Vec::new();
             }
-            // The copy's writer is judged by the group state before this
-            // message: no message vouches for its own claim (the audit of
-            // 1787). A copy that comes before its membership, or before
-            // its signature's verdict, is judged again when those come
-            // ([`groups`], [`apply_verdict`]).
-            let writer = copy_writer(&model.groups, source, &fields, verified);
-            model.learn_group(source, false, &fields, verified);
             let state = groups::is_state(&String::from_utf8_lossy(&body), &fields);
             // When this device took it, for its ledger and the Info sheet's
             // "Received"; the bubble shows when its writer wrote it (1445).
@@ -6547,7 +6543,35 @@ fn on_engine<B: InputBuffer>(model: &mut UiModel<B>, event: OutboxEvent) -> Vec<
                 .filter(|m| m.is_reaction())
                 .and_then(Message::reaction);
             model.changed.insert((peer, activity));
-            let mut effects = take_telemetry(model, index, placed, message_id, writer);
+            // THE gate (order 1834, Lew's decision of 2026-11-14): nothing
+            // a message says is believed before its signature is verified.
+            // A verified message's claims apply here; an unverified one is
+            // kept as placed with its verdict pending, and
+            // [`apply_verdict`] applies them through this same path when
+            // the verdict says valid — never when it says INVALID.
+            // Nothing behind this gate needs to know about verification.
+            // THE gate's position/group half: a verified message's
+            // readings and group claims apply here; an unverified one is
+            // held, and [`apply_verdict`] applies them on a valid
+            // verdict. The read-receipt handshake below is NOT gated —
+            // see the call to `take_lev`.
+            let received = model.now.map(|now| now.unix_secs);
+            let mut effects = match verified {
+                true => apply_message_claims(model, index, placed, message_id, received),
+                false => Vec::new(),
+            };
+            // The read-receipt handshake (1230, 1233) is the peer's own
+            // protocol capability and the receipts it sends of OUR
+            // messages, not a claim about anyone's position or group. It
+            // is learned for every received message, verified or not, as
+            // LXMF has always done: gating it would stop this device
+            // sending read receipts to a peer whose message has not yet
+            // verified — the normal case until a path to the sender
+            // resolves — which regresses on-the-air interop with
+            // Python-RNS peers (Priority 1). It is outside the reviewer's
+            // enumerated derived state (order 1834: pin, track, liveness,
+            // stored row, group membership/epoch/name/admin/inviter,
+            // position-shared).
             effects.extend(model.take_lev(source, lev.as_ref()));
             // A group's state (1307) is kept and stored, and asks for no
             // attention: no unread, no toast, no cursor. A group the
@@ -6639,16 +6663,54 @@ fn on_engine<B: InputBuffer>(model: &mut UiModel<B>, event: OutboxEvent) -> Vec<
     Vec::new()
 }
 
+/// What a received message's position and group claims change, applied
+/// once its signature is VERIFIED: the one path that derived state takes
+/// (order 1834, Lew's decision of 2026-11-14). A verified message takes
+/// it at arrival; a held one takes it from [`apply_verdict`] when the
+/// verdict says valid, with the message already placed. The read-receipt
+/// handshake is deliberately not here — it is learned for every message
+/// at arrival (the `Received` arm's `take_lev`), as LXMF has always done. On both paths the copy's writer is judged by
+/// the group state from before this message's own word — the membership
+/// it carried applies after the judging, and the early-copy refiling
+/// skips the carrying message ([`groups`]) — so no message vouches for
+/// its own copy. `received` is when this device took the message: the
+/// arrival clock, or the held message's own time at the verdict (the
+/// audits of 1816: an older reading does not replace a newer pin either
+/// way, [`Fix::newer_than`]).
+fn apply_message_claims<B>(
+    model: &mut UiModel<B>,
+    index: usize,
+    placed: usize,
+    message_id: [u8; 32],
+    received: Option<i64>,
+) -> Vec<UiEffect> {
+    let Some(conversation) = model.conversations.get(index) else {
+        return Vec::new();
+    };
+    let source = conversation.peer;
+    let Some(message) = conversation.messages.get(placed) else {
+        return Vec::new();
+    };
+    let key = message.activity;
+    let fields = message.fields.clone();
+    // The copy's writer, judged before this message's own membership is
+    // learned (the audit of 1787): no message vouches for its own claim.
+    let writer = copy_writer(&model.groups, source, &fields, true);
+    model.learn_group(source, false, &fields, Some(key));
+    // The readings; the read-receipt handshake is not here (it is learned
+    // for every message at arrival, verified or not — see the `Received`
+    // arm), so a valid verdict does not repeat it.
+    take_telemetry(model, index, placed, message_id, writer, received)
+}
+
 /// A held message's signature, checked once its sender's key arrived: the
 /// block changes in place and the ledger says when. Only the messages the
 /// screen holds are here; the shell writes the verdict to the store for the
-/// rest. Unverified is not the end (Lew 2026-11-13, rule 3): a reading
-/// held back for want of a signature is filed when the verdict says
-/// valid, and a reading filed before an INVALID verdict is taken back —
-/// the pin, the track and the store row, each only where this message
-/// filed it (the audits of 1816). A membership the message carried is
-/// held the same way ([`groups`]): a valid verdict applies it, an
-/// INVALID one discards it.
+/// rest. Unverified is not the end (order 1834): nothing of a held
+/// message was applied at arrival, so a valid verdict applies its claims
+/// now, through the same path a verified arrival takes
+/// ([`apply_message_claims`], with the message's own time), and an
+/// INVALID verdict applies nothing — there is nothing to take back.
 fn apply_verdict<B>(
     model: &mut UiModel<B>,
     message_id: [u8; 32],
@@ -6656,8 +6718,9 @@ fn apply_verdict<B>(
     valid: bool,
 ) -> Vec<UiEffect> {
     let now = model.now;
+    let mut effects = Vec::new();
     let Some(index) = model.conversations.iter().position(|c| c.peer == source) else {
-        return Vec::new();
+        return effects;
     };
     let conversation = &model.conversations[index];
     // Which held messages this verdict flips: judged before any change.
@@ -6691,45 +6754,23 @@ fn apply_verdict<B>(
             message.activity
         };
         model.changed.insert((source, key));
-        match valid {
-            // The held reading, judged again with the verdict in hand: a
-            // vouched copy's is filed under its writer now, with the
-            // message's time, not the verdict's (the audits of 1816).
-            // The source's own readings and any stream rows were filed
-            // at arrival and are not filed twice. A reading still
-            // refused was said in its one `POSITION_REFUSED` event at
-            // arrival (Lew 2026-11-13, decision 2: one event per
-            // refused reading); the verdict repeats nothing.
-            true => {
-                let fields = model.conversations[index].messages[at].fields.clone();
-                let owner = copy_writer(&model.groups, source, &fields, true);
-                if let leviculum_lxmf::lev::ReadingOwner::Writer(copy) = owner {
-                    let received = model.conversations[index].messages[at]
-                        .at
-                        .map(|a| a.unix_secs);
-                    let read = telemetry::read_judged(
-                        telemetry::Own::Under(copy.sender),
-                        source,
-                        &fields,
-                        received,
-                        telemetry::Rows::Dropped,
-                    );
-                    for mut fix in read.fixes {
-                        fix.message = Some(key);
-                        model.take_fix(fix);
-                    }
-                }
-                // Nothing a message says is believed before its
-                // signature is verified (the audits of 1816): the
-                // membership this message carried waited for this
-                // verdict and applies now — after the judging above, so
-                // the message does not vouch for its own copy.
-                model.learn_group(source, false, &fields, true);
-            }
-            // INVALID: whatever this message filed is taken back — the
-            // pin, the track point and the store row of every fix it
-            // carried, the stream rows' too.
-            false => model.take_back_fixes(index, at, key),
+        // The held claims, applied through the same path a verified
+        // arrival takes, with the message's own time (the audits of
+        // 1816). A reading the writer rule still refuses is said in its
+        // one `POSITION_REFUSED` event here, when the claims are judged
+        // — a held message's claims were not judged at arrival (Lew
+        // 2026-11-13, decision 2: one event per refused reading, said
+        // where the judging happens). INVALID: nothing was applied at
+        // arrival — the gate in the `Received` arm held everything — so
+        // nothing happens.
+        if valid {
+            let received = model.conversations[index].messages[at]
+                .at
+                .map(|a| a.unix_secs);
+            effects.extend(apply_message_claims(model, index, at, message_id, received));
+            // A group this message's membership ended, now believed: as
+            // a verified state arrival would ([`groups`]).
+            model.forget_deleted_groups();
         }
     }
     if !valid {
@@ -6739,21 +6780,24 @@ fn apply_verdict<B>(
             format!("invalid signature on a message from {from}"),
         );
     }
-    Vec::new()
+    effects
 }
 
-/// The telemetry in the newest message of conversation `index`, just
-/// received: each position into the peer's latest where it is newer, and
-/// into the store; each blob that did not decode named in `tui.log`, the
-/// bytes kept with the message. A reading the writer rule refused is
-/// nobody's: not filed at all, said in one `POSITION_REFUSED` event per
-/// reading and nowhere on screen (Lew 2026-11-13, rule 2).
+/// The telemetry of message `placed` of conversation `index`, its claims
+/// being applied ([`apply_message_claims`]): each position into the
+/// peer's latest where it is newer, and into the store; each blob that
+/// did not decode named in `tui.log`, the bytes kept with the message. A
+/// reading the writer rule refused is nobody's: not filed at all, said
+/// in one `POSITION_REFUSED` event per reading and nowhere on screen
+/// (Lew 2026-11-13, rule 2). `received` is when this device took the
+/// message ([`apply_message_claims`]).
 fn take_telemetry<B>(
     model: &mut UiModel<B>,
     index: usize,
     placed: usize,
     message_id: [u8; 32],
     owner: leviculum_lxmf::lev::ReadingOwner,
+    received: Option<i64>,
 ) -> Vec<UiEffect> {
     let Some(conversation) = model.conversations.get(index) else {
         return Vec::new();
@@ -6766,7 +6810,6 @@ fn take_telemetry<B>(
     }
     let source = conversation.peer;
     let key = message.activity;
-    let received = model.now.map(|now| now.unix_secs);
     // The writer rule ([`Writers`]), with the copy's writer the caller
     // judged before the message's own group state was learned; a blob that
     // did not decode is named all the same.
@@ -6905,18 +6948,19 @@ impl Writers<'_> {
 /// The fix a received message from `peer` carries that `peer` itself
 /// measured: what its liveness is judged from ([`Conversation::liveness`]).
 /// `None` for one of ours, for a message without a readable position,
-/// for one whose signature is INVALID, for a stream row (another's,
-/// whoever delivered it) and for any message that names a copy's writer:
-/// the one rule ([`leviculum_lxmf::lev::Lev::reading_writer`], with no
-/// group knowledge, as a conversation's liveness holds none) judges such
-/// a message `Writer` or `Refused`, never `Source`, and a refused
-/// reading moves no liveness either (Lew 2026-11-13, rule 2; rule 5:
-/// liveness and filing share the one definition of "names a copy's
-/// writer").
+/// for one whose signature is not VERIFIED (order 1834: an unverified
+/// word is held, an INVALID one refused — neither moves liveness or the
+/// share mark), for a stream row (another's, whoever delivered it) and
+/// for any message that names a copy's writer: the one rule
+/// ([`leviculum_lxmf::lev::Lev::reading_writer`], with no group
+/// knowledge, as a conversation's liveness holds none) judges such a
+/// message `Writer` or `Refused`, never `Source`, and a refused reading
+/// moves no liveness either (Lew 2026-11-13, rule 2; rule 5: liveness
+/// and filing share the one definition of "names a copy's writer").
 pub fn peers_own_fix(peer: [u8; 16], message: &Message) -> Option<Fix> {
     if message.outbound
         || !telemetry::has_telemetry(&message.fields)
-        || message.signature == Signature::Invalid
+        || message.signature != Signature::Verified
     {
         return None;
     }
@@ -7113,79 +7157,6 @@ impl<B> UiModel<B> {
                 .title_word()
                 .map(|w| w.text(self.lang).to_string()),
             moving: self.map_press.as_ref().is_some_and(|p| p.dragging),
-        })
-    }
-
-    /// Everything message `at` of conversation `index` filed, taken back
-    /// (Lew 2026-11-13, rule 3: a reading filed before an INVALID verdict)
-    /// — and ONLY what this message filed (the audits of 1816): the pin
-    /// where it is this message's, the track points of the fixes the
-    /// message carried that no other live message also stands behind, the
-    /// rows still queued for the store, and a delete for the store's rows,
-    /// keyed by this message so a row another message filed with the same
-    /// peer and fix time stays.
-    fn take_back_fixes(&mut self, index: usize, at: usize, key: u64) {
-        let Some(conversation) = self.conversations.get(index) else {
-            return;
-        };
-        let source = conversation.peer;
-        let Some(message) = conversation.messages.get(at) else {
-            return;
-        };
-        // What arrival filed: the same read, judged as at arrival —
-        // unverified, so a named copy's readings were never filed.
-        let owner = copy_writer(&self.groups, source, &message.fields, false);
-        let own = match owner.filed_under(&source) {
-            Some(under) => telemetry::Own::Under(under),
-            None => telemetry::Own::Refused,
-        };
-        let received = message.at.map(|a| a.unix_secs);
-        let rows = self.writers().rows(&source);
-        let read = telemetry::read_judged(own, source, &message.fields, received, rows);
-        for fix in read.fixes {
-            if self
-                .positions
-                .get(&fix.peer)
-                .is_some_and(|held| held.message == Some(key))
-            {
-                self.positions.remove(&fix.peer);
-            }
-            // The screen's track point at this time goes only when no
-            // other live message also files a reading there: the first
-            // filer's point is kept by [`tracks::insert`], whichever
-            // message that was.
-            if !self.another_files(key, fix.peer, fix.order_time()) {
-                if let Some(track) = self.tracks.get_mut(&fix.peer) {
-                    alloc::sync::Arc::make_mut(track).retain(|f| f.t != fix.order_time());
-                }
-            }
-            self.forgotten.push(history::StoreWrite::ForgetPosition {
-                peer: fix.peer,
-                fix_time: fix.location.last_update,
-                message: key,
-            });
-        }
-        self.fixes_received.retain(|f| f.message != Some(key));
-    }
-
-    /// Whether any live message other than `key` files a reading for
-    /// `peer` at order time `t` — judged by the one writer rule as the
-    /// messages stand now, INVALID ones aside. What such a message filed
-    /// is not the taken-back message's to remove (the audits of 1816).
-    fn another_files(&self, key: u64, peer: [u8; 16], t: i64) -> bool {
-        let writers = self.writers();
-        self.conversations.iter().any(|c| {
-            c.messages.iter().any(|m| {
-                !m.outbound
-                    && m.activity != key
-                    && m.signature != Signature::Invalid
-                    && crate::telemetry::has_telemetry(&m.fields)
-                    && writers
-                        .read(c.peer, m)
-                        .fixes
-                        .iter()
-                        .any(|f| f.peer == peer && f.order_time() == t)
-            })
         })
     }
 
@@ -7618,7 +7589,7 @@ fn home_sent<B: InputBuffer>(
         unix_secs: sent_at,
         ..now
     });
-    model.learn_group(destination, true, &fields, true);
+    model.learn_group(destination, true, &fields, None);
     let mut message = Message::ours(String::from_utf8_lossy(&body).into_owned(), at);
     message.id = Some(message_id);
     message.delivery = Some(DeliveryState::Sent);
@@ -15755,8 +15726,8 @@ pub(crate) mod tests {
     /// copy's reading is its named writer's only when the message's
     /// signature was verified. An unverified copy from the joined group's
     /// own address moves no member's pin, writes no store row and shows
-    /// no Info line; the refusal is one structured event, no text on
-    /// screen.
+    /// no Info line. Held, not judged (order 1834): no `POSITION_REFUSED`
+    /// event at arrival — the verdict judges it — and no text on screen.
     #[test]
     fn audit2_an_unverified_copy_from_a_joined_groups_address_moves_no_members_pin() {
         let mut model = reader_with_peers_pin(&[PEER, OTHER]);
@@ -15777,13 +15748,11 @@ pub(crate) mod tests {
         assert!(stored_under(&mut model).is_empty());
         assert!(!a_message_fix_names(&model, GROUP, PEER));
         assert!(
-            effects.iter().any(|e| matches!(
+            !effects.iter().any(|e| matches!(
                 e,
-                UiEffect::Log(line) if line.starts_with("POSITION_REFUSED source=6f6f")
-                    && line.contains("reason=unverified")
-                    && line.contains(" t=")
+                UiEffect::Log(line) if line.starts_with("POSITION_REFUSED")
             )),
-            "refused, said in one event: {effects:?}"
+            "held, not judged: {effects:?}"
         );
         assert!(model.toasts.is_empty(), "nothing on screen");
     }
@@ -15908,52 +15877,11 @@ pub(crate) mod tests {
         assert_eq!(stored_under(&mut model), [PEER]);
     }
 
-    /// A plain message about the sender's own position is untouched by
-    /// the copy rule and filed while the verdict is owed; an INVALID
-    /// verdict takes the reading back: the pin, the track and the shown
-    /// fix (Lew 2026-11-13, rule 3).
-    #[test]
-    fn a_plain_reading_filed_before_an_invalid_verdict_is_taken_back() {
-        let mut model = UiModel::<Field>::new(&[PEER]);
-        model.address = Some(READER);
-        clock(&mut model, 26, 14, 0);
-        arrive_unverified(
-            &mut model,
-            PEER,
-            1,
-            "",
-            report_of(&fix_at(52_000_000, 13_000_000, two_pm() - 600)),
-        );
-        assert_eq!(model.positions[&PEER].location.latitude_e6, 52_000_000);
-        assert_eq!(stored_under(&mut model), [PEER]);
-        verdict(&mut model, PEER, 1, false);
-        assert!(!model.positions.contains_key(&PEER));
-        assert!(model.tracks.get(&PEER).is_none_or(|t| t.is_empty()));
-        assert!(
-            !a_message_fix_names(&model, PEER, PEER),
-            "an INVALID message shows no fix"
-        );
-        // The store's row goes too, keyed by the INVALID message so only
-        // its own row can match (the audits of 1816).
-        let forgets = model
-            .take_writes()
-            .iter()
-            .filter(|w| {
-                matches!(
-                    w,
-                    StoreWrite::ForgetPosition { peer, fix_time, .. }
-                        if *peer == PEER && *fix_time == two_pm() - 600
-                )
-            })
-            .count();
-        assert_eq!(forgets, 1, "one delete for the one kept row");
-    }
-
     /// A valid verdict does not end the judging: a copy nobody vouches
-    /// for stays nobody's. Its refusal was said in ONE `POSITION_REFUSED`
-    /// event, at arrival (one structured event per refused reading, Lew
-    /// 2026-11-13 decision 2; the audits of 1816): the verdict repeats
-    /// nothing.
+    /// for stays nobody's. A held message's claims are not judged at
+    /// arrival (order 1834), so its one `POSITION_REFUSED` event is said
+    /// where the judging happens: at the valid verdict, exactly once
+    /// (Lew 2026-11-13 decision 2: one event per refused reading).
     #[test]
     fn a_valid_verdict_on_an_unvouched_copy_still_refuses_and_says_so() {
         let mut model = reader_with_peers_pin(&[PEER]);
@@ -15972,14 +15900,14 @@ pub(crate) mod tests {
             "",
             copied_report(PEER, 1, 10_000_000, 60),
         );
-        assert_eq!(refused(&effects), 1, "said once at arrival: {effects:?}");
+        assert_eq!(refused(&effects), 0, "held, not judged: {effects:?}");
         let effects = verdict(&mut model, STRANGER, 2, true);
         assert_eq!(model.positions[&PEER].location.latitude_e6, 52_000_000);
         assert!(!model.positions.contains_key(&STRANGER));
         assert_eq!(
             refused(&effects),
-            0,
-            "one event per refused reading, said at arrival: {effects:?}"
+            1,
+            "one event per refused reading, said at the judging: {effects:?}"
         );
     }
 
@@ -16251,25 +16179,27 @@ pub(crate) mod tests {
         );
     }
 
-    /// Third audit of 1757: an INVALID verdict takes back what THAT message
-    /// filed, nothing else. A genuine verified group copy keeps PEER's row
-    /// at fix time T; a forged, unverifiable message claiming PEER's address
-    /// repeats T and is then found INVALID. Secure outcome: no delete that
-    /// could reach PEER's genuine row at T is queued for the store — the
-    /// audit ran this with an unkeyed `ForgetPosition`; since the fix the
-    /// variant carries the INVALID message's own key, which the store
-    /// matches against the row's filer, so the assert checks that every
-    /// queued delete for (PEER, T) is scoped to the forged message. The
-    /// store-level half lives in `store::tests`
-    /// (`a_forgotten_position_leaves_anothers_row_with_the_same_peer_and_time`).
+    /// Third audit of 1757, the assert sharpened as the audit of 1828
+    /// asked: proven against a real store, not against the shape of the
+    /// queued deletes. A genuine verified group copy keeps PEER's row at
+    /// fix time T; a forged, unverifiable message claiming PEER's address
+    /// repeats T and is then found INVALID. Secure outcome: after every
+    /// queued write is applied, PEER's row at T still exists and carries
+    /// the genuine copy's message key (under order 1834 the forged
+    /// message never filed anything, so there is nothing to delete).
+    #[cfg(feature = "history")]
     #[test]
     fn audit3_an_invalid_message_takes_back_no_row_another_message_kept() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("store.db");
         let mut model = reader_with_peers_pin(&[PEER, OTHER]);
         in_group(
             &mut model,
             groups::Standing::Joined,
             &[(READER, false), (PEER, false)],
         );
+        let mut store = crate::store::Store::open(&path, READER).expect("store");
+        store.write(&model.take_writes()).expect("write");
         arrive(
             &mut model,
             GROUP,
@@ -16278,7 +16208,14 @@ pub(crate) mod tests {
             copied_report(PEER, 1, 10_000_000, 60),
         );
         assert_eq!(model.positions[&PEER].location.latitude_e6, 10_000_000);
-        let _ = model.take_writes();
+        let genuine = model
+            .conversations
+            .iter()
+            .find(|c| c.peer == GROUP)
+            .and_then(|c| c.messages.last())
+            .expect("message")
+            .activity;
+        store.write(&model.take_writes()).expect("write");
         let t = two_pm() - 60;
         arrive_unverified(
             &mut model,
@@ -16287,26 +16224,20 @@ pub(crate) mod tests {
             "",
             report_of(&fix_at(11_000_000, 13_000_000, t)),
         );
-        let _ = model.take_writes();
-        let c = model
-            .conversations
-            .iter()
-            .position(|c| c.peer == PEER)
-            .expect("row");
-        let forged = model.conversations[c]
-            .messages
-            .last()
-            .expect("message")
-            .activity;
+        store.write(&model.take_writes()).expect("write");
         verdict(&mut model, PEER, 3, false);
-        let writes = model.take_writes();
-        assert!(
-            !writes.iter().any(|w| matches!(
-                w,
-                StoreWrite::ForgetPosition { peer, fix_time, message }
-                    if *peer == PEER && *fix_time == t && *message != forged
-            )),
-            "the INVALID message deletes the genuine copy's row: {writes:?}"
+        store.write(&model.take_writes()).expect("write");
+        let rows: Vec<_> = store
+            .positions()
+            .expect("positions")
+            .into_iter()
+            .filter(|f| f.peer == PEER && f.location.last_update == t)
+            .collect();
+        assert_eq!(rows.len(), 1, "the genuine copy's row at t is gone");
+        assert_eq!(
+            rows[0].message,
+            Some(genuine),
+            "the row is the genuine copy's"
         );
         assert_eq!(
             model.positions[&PEER].location.latitude_e6, 10_000_000,
@@ -16317,7 +16248,7 @@ pub(crate) mod tests {
                 .tracks
                 .get(&PEER)
                 .is_some_and(|track| track.iter().any(|f| f.t == t)),
-            "the genuine track point stays: another message stands behind it"
+            "the genuine track point stays"
         );
     }
 
@@ -16412,6 +16343,572 @@ pub(crate) mod tests {
         msgpack::uint(&mut cut_extra, 4 + 1);
         msgpack::uint(&mut cut_extra, 0);
         unchanged(&cut_extra);
+    }
+
+    /// Audit of 1828, adapted to the gate (order 1834: an unverified
+    /// message files nothing, so the first assert flips from "filed
+    /// while the verdict is owed" to "held, nothing filed"): the
+    /// INVALID message leaves no track point at `t` even when the peer
+    /// has genuine readings at OTHER times.
+    #[test]
+    fn audit4_an_invalid_readings_track_point_goes_though_the_peer_has_other_readings() {
+        let mut model = reader_with_peers_pin(&[PEER]);
+        let t = two_pm() - 60;
+        arrive_unverified(
+            &mut model,
+            PEER,
+            3,
+            "",
+            report_of(&fix_at(11_000_000, 13_000_000, t)),
+        );
+        assert!(
+            model
+                .tracks
+                .get(&PEER)
+                .is_none_or(|tr| !tr.iter().any(|f| f.t == t)),
+            "held while the verdict is owed: nothing filed"
+        );
+        verdict(&mut model, PEER, 3, false);
+        assert!(
+            model
+                .tracks
+                .get(&PEER)
+                .is_none_or(|tr| !tr.iter().any(|f| f.t == t)),
+            "the INVALID message's own track point stayed"
+        );
+    }
+
+    /// Audit of 1828: an INVALID message does not stand behind another
+    /// INVALID message's track point.
+    #[test]
+    fn audit4_two_invalid_readings_at_one_time_leave_no_track_point() {
+        let mut model = reader_with_peers_pin(&[PEER]);
+        let t = two_pm() - 60;
+        arrive_unverified(
+            &mut model,
+            PEER,
+            3,
+            "",
+            report_of(&fix_at(11_000_000, 13_000_000, t)),
+        );
+        arrive_unverified(
+            &mut model,
+            PEER,
+            4,
+            "",
+            report_of(&fix_at(11_500_000, 13_000_000, t)),
+        );
+        verdict(&mut model, PEER, 3, false);
+        verdict(&mut model, PEER, 4, false);
+        assert!(
+            model
+                .tracks
+                .get(&PEER)
+                .is_none_or(|tr| !tr.iter().any(|f| f.t == t)),
+            "two INVALID messages kept each other's track point"
+        );
+    }
+
+    /// Audit of 1828, adapted to the gate (order 1834: the middle assert
+    /// flips from "the forged pin shows while the verdict is owed" to
+    /// "the genuine pin stays throughout — nothing was applied"): a
+    /// forged, newer reading found INVALID takes nothing; PEER's genuine
+    /// pin (52 N) never left.
+    #[test]
+    fn audit4_an_invalid_newer_reading_gives_the_pin_back_to_the_genuine_one() {
+        let mut model = reader_with_peers_pin(&[PEER]);
+        arrive_unverified(
+            &mut model,
+            PEER,
+            3,
+            "",
+            report_of(&fix_at(11_000_000, 13_000_000, two_pm() - 60)),
+        );
+        assert_eq!(
+            model.positions[&PEER].location.latitude_e6, 52_000_000,
+            "held while the verdict is owed: the pin does not move"
+        );
+        verdict(&mut model, PEER, 3, false);
+        assert_eq!(
+            model.positions.get(&PEER).map(|f| f.location.latitude_e6),
+            Some(52_000_000),
+            "the INVALID message took PEER's genuine pin away"
+        );
+    }
+
+    /// Audit of 1828: the forged message files (PEER, t) first, the
+    /// group's verified copy repeats t. After the INVALID verdict the
+    /// genuine reading at t is PEER's pin and its track point stays.
+    #[test]
+    fn audit4_a_forged_first_reading_found_invalid_leaves_the_genuine_pin_at_the_same_time() {
+        let mut model = reader_with_peers_pin(&[PEER, OTHER]);
+        in_group(
+            &mut model,
+            groups::Standing::Joined,
+            &[(READER, false), (PEER, false)],
+        );
+        let t = two_pm() - 60;
+        arrive_unverified(
+            &mut model,
+            PEER,
+            3,
+            "",
+            report_of(&fix_at(11_000_000, 13_000_000, t)),
+        );
+        arrive(
+            &mut model,
+            GROUP,
+            4,
+            "",
+            copied_report(PEER, 1, 10_000_000, 60),
+        );
+        verdict(&mut model, PEER, 3, false);
+        assert_eq!(
+            model.positions.get(&PEER).map(|f| f.location.latitude_e6),
+            Some(10_000_000),
+            "the genuine copy's reading at t is not PEER's pin"
+        );
+        assert!(
+            model
+                .tracks
+                .get(&PEER)
+                .is_some_and(|tr| tr.iter().any(|f| f.t == t)),
+            "the genuine track point at t went"
+        );
+    }
+
+    /// Audit of 1828: nothing a message says is believed before its
+    /// signature is verified. An unverified invitation naming the
+    /// reader's joined group changes nothing of it (name, admin name,
+    /// inviter, standing, members).
+    #[test]
+    fn audit4_an_unverified_invitation_changes_no_known_group() {
+        let mut model = reader_with_peers_pin(&[PEER]);
+        in_group(
+            &mut model,
+            groups::Standing::Joined,
+            &[(READER, false), (PEER, false)],
+        );
+        let before = model.groups[&GROUP].clone();
+        arrive_unverified(&mut model, STRANGER, 2, "", lev_only(invitation_to(GROUP)));
+        assert!(
+            model.groups[&GROUP] == before,
+            "an unverified invitation changed the joined group"
+        );
+    }
+
+    /// Second auditor, audit of 1828: one unverified message from the
+    /// joined group carries BOTH the membership that first lists STRANGER
+    /// (epoch 5) and STRANGER's copy stamped epoch 5. When the verdict
+    /// comes back valid, the held membership applies — but the copy must
+    /// still be judged by the group state from before its own message
+    /// (the concept page's rule): this same message must not vouch for
+    /// its own copy through the early-copy refiling. Secure outcome: the
+    /// epoch moves to 5, and no pin and no stored row appear for
+    /// STRANGER from this message.
+    #[test]
+    fn audit2_a_valid_memberships_own_copy_is_not_its_own_voucher() {
+        let mut model = reader_with_peers_pin(&[PEER, OTHER]);
+        in_group(
+            &mut model,
+            groups::Standing::Joined,
+            &[(READER, false), (PEER, false)],
+        );
+        let mut lev = membership(5, &[PEER, STRANGER]);
+        lev.group_copy = Some(copy_claim(STRANGER, 5));
+        arrive_unverified(&mut model, GROUP, 2, "", lev_with_fix(lev, 10_000_000));
+        let _ = model.take_writes();
+        verdict(&mut model, GROUP, 2, true);
+        assert_eq!(
+            model.groups.get(&GROUP).expect("group").epoch,
+            5,
+            "the held membership applies on the valid verdict"
+        );
+        assert!(
+            !model.positions.contains_key(&STRANGER),
+            "the message vouched for its own copy through file_early_copies"
+        );
+        assert!(
+            !stored_under(&mut model).contains(&STRANGER),
+            "nothing of the self-vouched copy reaches the store"
+        );
+    }
+
+    /// Second auditor, audit of 1828, adapted to the gate (order 1834:
+    /// the forged reading is never filed, so its point never exists and
+    /// no delete is ever queued — the original's `ForgetPosition` assert
+    /// went with the variant). A genuine verified group copy files PEER's
+    /// track point at t1; a forged, unverifiable message claiming PEER's
+    /// address carries a plain reading at t2. Found INVALID, it leaves
+    /// what it found: the point at t1 stays, no point at t2 ever shows,
+    /// and no store write for (PEER, t2) is queued.
+    #[test]
+    fn audit2_an_invalid_readings_own_track_point_goes_the_genuine_stays() {
+        let mut model = reader_with_peers_pin(&[PEER, OTHER]);
+        in_group(
+            &mut model,
+            groups::Standing::Joined,
+            &[(READER, false), (PEER, false)],
+        );
+        arrive(
+            &mut model,
+            GROUP,
+            2,
+            "",
+            copied_report(PEER, 1, 10_000_000, 300),
+        );
+        let t1 = two_pm() - 300;
+        let t2 = two_pm() - 60;
+        arrive_unverified(
+            &mut model,
+            PEER,
+            3,
+            "",
+            report_of(&fix_at(11_000_000, 13_000_000, t2)),
+        );
+        let _ = model.take_writes();
+        verdict(&mut model, PEER, 3, false);
+        let track = model.tracks.get(&PEER).expect("track");
+        assert!(
+            track.iter().any(|f| f.t == t1),
+            "the genuine copy's track point stays"
+        );
+        assert!(
+            !track.iter().any(|f| f.t == t2),
+            "the INVALID message's reading was never filed"
+        );
+        let writes = model.take_writes();
+        assert!(
+            writes.iter().all(|w| !matches!(
+                w,
+                StoreWrite::Position(f) if f.peer == PEER && f.location.last_update == t2
+            )),
+            "nothing of the INVALID message reaches the store: {writes:?}"
+        );
+    }
+
+    /// Order 1834, the gate on every kind of derived state at once: an
+    /// unverified message carrying a membership, an invitation, a group
+    /// status and a reading changes no group, no pin, no track — the
+    /// whole of each compared, not one field — and queues no position
+    /// and no group row for the store.
+    #[test]
+    fn an_unverified_message_changes_no_derived_state() {
+        let mut model = reader_with_peers_pin(&[PEER, OTHER]);
+        in_group(
+            &mut model,
+            groups::Standing::Joined,
+            &[(READER, false), (PEER, false)],
+        );
+        let _ = model.take_writes();
+        let groups_before = model.groups.clone();
+        let positions_before = model.positions.clone();
+        let tracks_before = model.tracks.clone();
+        let mut lev = membership(5, &[OTHER]);
+        lev.invite = invitation_to([0x3a; 16]).invite;
+        lev.status = Some(leviculum_lxmf::lev::GroupStatus {
+            original: [40; 32],
+            delivered: 2,
+            read: 0,
+            members: 2,
+            readers: 0,
+            on_device: None,
+            rungs: Vec::new(),
+        });
+        arrive_unverified(&mut model, GROUP, 2, "", lev_with_fix(lev, 11_000_000));
+        assert_eq!(model.groups, groups_before, "a group changed");
+        assert_eq!(model.positions, positions_before, "a pin changed");
+        assert_eq!(model.tracks, tracks_before, "a track changed");
+        let writes = model.take_writes();
+        assert!(
+            writes
+                .iter()
+                .all(|w| !matches!(w, StoreWrite::Position(_) | StoreWrite::Group(_))),
+            "an unverified message queued derived state: {writes:?}"
+        );
+    }
+
+    /// Order 1834: the held invitation applies when the verdict says
+    /// valid — through the same path a verified arrival takes — and a
+    /// second unverified invitation whose verdict says INVALID leaves
+    /// everything as it was.
+    #[test]
+    fn an_unverified_invitation_applies_once_the_verdict_says_valid() {
+        const NEW_GROUP: [u8; 16] = [0x3a; 16];
+        let mut model = reader_with_peers_pin(&[PEER]);
+        arrive_unverified(&mut model, PEER, 2, "", lev_only(invitation_to(NEW_GROUP)));
+        assert!(
+            !model.groups.contains_key(&NEW_GROUP),
+            "held while the verdict is owed"
+        );
+        verdict(&mut model, PEER, 2, true);
+        let group = model
+            .groups
+            .get(&NEW_GROUP)
+            .expect("the valid invitation applies");
+        assert_eq!(group.name, "Familie");
+        assert_eq!(group.inviter, Some(PEER));
+        let before = model.groups.clone();
+        arrive_unverified(
+            &mut model,
+            STRANGER,
+            3,
+            "",
+            lev_only(invitation_to([0x3b; 16])),
+        );
+        verdict(&mut model, STRANGER, 3, false);
+        assert_eq!(model.groups, before, "an INVALID invitation applied");
+    }
+
+    /// Order 1834: a plain reading is held while the verdict is owed —
+    /// no pin, no track, no liveness, no store row — and an INVALID
+    /// verdict applies nothing. Replaces the take-back test of rounds
+    /// three to five (`a_plain_reading_filed_before_an_invalid_verdict_
+    /// is_taken_back`): there is nothing to take back.
+    #[test]
+    fn a_plain_reading_is_held_and_an_invalid_verdict_applies_nothing() {
+        let mut model = reader_with_peers_pin(&[PEER]);
+        let liveness_before = model.liveness(&PEER).last_fix_at;
+        let t = two_pm() - 60;
+        arrive_unverified(
+            &mut model,
+            PEER,
+            3,
+            "",
+            report_of(&fix_at(11_000_000, 13_000_000, t)),
+        );
+        assert_eq!(
+            model.positions[&PEER].location.latitude_e6, 52_000_000,
+            "the pin does not move while the verdict is owed"
+        );
+        assert!(
+            model
+                .tracks
+                .get(&PEER)
+                .is_none_or(|tr| !tr.iter().any(|f| f.t == t)),
+            "no track point while the verdict is owed"
+        );
+        assert_eq!(
+            model.liveness(&PEER).last_fix_at,
+            liveness_before,
+            "no liveness from an unbelieved word"
+        );
+        assert!(
+            !stored_under(&mut model).contains(&PEER),
+            "no store row while the verdict is owed"
+        );
+        verdict(&mut model, PEER, 3, false);
+        assert_eq!(model.positions[&PEER].location.latitude_e6, 52_000_000);
+        assert!(!stored_under(&mut model).contains(&PEER));
+    }
+
+    /// Order 1834: a genuine verified reading arriving between two
+    /// forged repeats of the same (peer, fix time), both found INVALID,
+    /// is stored and pinned exactly once — proven against a real store,
+    /// every queued write applied as the shell applies them.
+    #[cfg(feature = "history")]
+    #[test]
+    fn a_genuine_reading_between_forged_ones_is_stored_and_pinned_exactly_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("store.db");
+        let mut model = reader_with_peers_pin(&[PEER, OTHER]);
+        in_group(
+            &mut model,
+            groups::Standing::Joined,
+            &[(READER, false), (PEER, false)],
+        );
+        let mut store = crate::store::Store::open(&path, READER).expect("store");
+        let t = two_pm() - 60;
+        let settle = |model: &mut UiModel<Field>, store: &mut crate::store::Store| {
+            let writes = model.take_writes();
+            store.write(&writes).expect("write");
+        };
+        settle(&mut model, &mut store);
+        // The forged repeat before the genuine reading…
+        arrive_unverified(
+            &mut model,
+            PEER,
+            3,
+            "",
+            report_of(&fix_at(11_000_000, 13_000_000, t)),
+        );
+        settle(&mut model, &mut store);
+        // …the genuine, verified copy at the same (peer, fix time)…
+        arrive(
+            &mut model,
+            GROUP,
+            4,
+            "",
+            copied_report(PEER, 1, 10_000_000, 60),
+        );
+        let genuine = model
+            .conversations
+            .iter()
+            .find(|c| c.peer == GROUP)
+            .and_then(|c| c.messages.last())
+            .expect("message")
+            .activity;
+        settle(&mut model, &mut store);
+        // …and the forged repeat after it; both verdicts INVALID.
+        arrive_unverified(
+            &mut model,
+            PEER,
+            5,
+            "",
+            report_of(&fix_at(11_500_000, 13_000_000, t)),
+        );
+        settle(&mut model, &mut store);
+        verdict(&mut model, PEER, 3, false);
+        verdict(&mut model, PEER, 5, false);
+        settle(&mut model, &mut store);
+        let rows: Vec<_> = store
+            .positions()
+            .expect("positions")
+            .into_iter()
+            .filter(|f| f.peer == PEER && f.location.last_update == t)
+            .collect();
+        assert_eq!(rows.len(), 1, "stored exactly once");
+        assert_eq!(rows[0].message, Some(genuine), "the genuine message's row");
+        assert_eq!(rows[0].location.latitude_e6, 10_000_000);
+        assert_eq!(
+            model.positions[&PEER].location.latitude_e6, 10_000_000,
+            "pinned exactly once: the genuine reading"
+        );
+        assert_eq!(
+            model
+                .tracks
+                .get(&PEER)
+                .map(|tr| tr.iter().filter(|f| f.t == t).count()),
+            Some(1),
+            "one track point at t"
+        );
+    }
+
+    /// Order 1834 and the audit of 1828: a group status is applied
+    /// exactly once. Held while the verdict is owed, applied on valid —
+    /// one `group-status` ledger line on the original, its rung moved —
+    /// and never applied twice.
+    #[test]
+    fn a_held_group_status_notes_the_original_once_on_the_valid_verdict() {
+        let mut model = reader_with_peers_pin(&[PEER, OTHER]);
+        in_group(
+            &mut model,
+            groups::Standing::Joined,
+            &[(READER, false), (PEER, false)],
+        );
+        model.restore(vec![restored(
+            GROUP,
+            vec![stored(40, true, "hi", Some(DeliveryState::Sent))],
+            0,
+        )]);
+        let status_lines = |model: &UiModel<Field>| {
+            model
+                .conversations
+                .iter()
+                .find(|c| c.peer == GROUP)
+                .and_then(|c| c.messages.iter().find(|m| m.outbound))
+                .map(|m| {
+                    m.ledger
+                        .iter()
+                        .filter(|l| l.what.starts_with("group-status"))
+                        .count()
+                })
+        };
+        let status = leviculum_lxmf::lev::Lev {
+            status: Some(leviculum_lxmf::lev::GroupStatus {
+                original: [40; 32],
+                delivered: 2,
+                read: 0,
+                members: 2,
+                readers: 0,
+                on_device: None,
+                rungs: Vec::new(),
+            }),
+            ..leviculum_lxmf::lev::Lev::default()
+        };
+        arrive_unverified(&mut model, GROUP, 7, "", lev_only(status));
+        assert_eq!(
+            status_lines(&model),
+            Some(0),
+            "held while the verdict is owed: no status line"
+        );
+        verdict(&mut model, GROUP, 7, true);
+        assert_eq!(status_lines(&model), Some(1), "applied exactly once");
+        let delivery = model
+            .conversations
+            .iter()
+            .find(|c| c.peer == GROUP)
+            .and_then(|c| c.messages.iter().find(|m| m.outbound))
+            .and_then(|m| m.delivery);
+        assert_eq!(
+            delivery,
+            Some(DeliveryState::Arrived),
+            "the rung moved once"
+        );
+    }
+
+    /// Order 1834 scope: the read-receipt handshake is NOT under the
+    /// position/group gate — gating it would stop this device sending
+    /// read receipts to a peer whose message has not verified (the
+    /// normal case until a path resolves), regressing Python-RNS interop
+    /// (the loquax-android facade proves it). An unverified message's
+    /// receipt of OUR message still moves the rung, as before 1834.
+    #[test]
+    fn an_unverified_receipt_still_moves_the_delivery_rung() {
+        let mut model = UiModel::<Field>::new(&[]);
+        clock(&mut model, 26, 14, 0);
+        model.restore(vec![restored(
+            PEER,
+            vec![stored(41, true, "hi", Some(DeliveryState::Sent))],
+            0,
+        )]);
+        let receipt = leviculum_lxmf::lev::Lev {
+            receipt: Some(leviculum_lxmf::lev::Receipt {
+                read_at: u32::try_from(two_pm()).unwrap_or(0),
+                ids: vec![[41; 32]],
+            }),
+            ..leviculum_lxmf::lev::Lev::default()
+        };
+        let delivery = |model: &UiModel<Field>| {
+            model
+                .conversations
+                .iter()
+                .find(|c| c.peer == PEER)
+                .and_then(|c| c.messages.iter().find(|m| m.outbound))
+                .and_then(|m| m.delivery)
+        };
+        arrive_unverified(&mut model, PEER, 8, "thanks", lev_only(receipt));
+        assert!(
+            matches!(delivery(&model), Some(DeliveryState::Read { .. })),
+            "the handshake is not gated: {:?}",
+            delivery(&model)
+        );
+    }
+
+    /// The restore entry's gate (order 1834): a stored invitation whose
+    /// verdict is still owed makes no group at start — its verdict
+    /// applies it on this run exactly as live. The control: restored
+    /// verified, the group is there.
+    #[test]
+    fn a_restored_unverified_invitation_makes_no_group_at_start() {
+        let restored_with = |signature| {
+            let mut model = UiModel::<Field>::new(&[]);
+            clock(&mut model, 26, 14, 0);
+            let mut message = stored(3, false, "join us", None);
+            message.signature = signature;
+            message.fields = lev_only(invitation_to(GROUP));
+            model.restore(vec![restored(STRANGER, vec![message], 0)]);
+            model
+        };
+        // The restore entry's gate (order 1834): a message whose verdict
+        // is still owed teaches nothing at start either.
+        let model = restored_with(Signature::Unverified);
+        assert!(
+            !model.groups.contains_key(&GROUP),
+            "an unverified stored invitation made a group at start"
+        );
+        let control = restored_with(Signature::Verified);
+        assert!(control.groups.contains_key(&GROUP), "the control applies");
     }
 
     /// A restored stored message with its signature still unverified,
