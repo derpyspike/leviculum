@@ -4449,3 +4449,108 @@ fn the_own_dot_sits_on_its_ground_in_every_blended_frame() {
     assert!(judged > 10, "only {judged} frames judged");
     assert!(blended > 2, "only {blended} blended frames judged");
 }
+
+/// The first auditor's test of order 1833's round 2 (MapView.java feeds
+/// the scale detector, then the gesture detector, and a focal point that
+/// jitters by a pixel fires `onScroll`, which put the focus on pointer
+/// 0) while the detector was in progress.
+#[test]
+fn a_pinch_with_the_detectors_scroll_keeps_the_place_under_the_focal_point() {
+    // A jittering focal point makes onScroll fire, which set the focus to
+    // pointer 0, not to the pinch's focal point; and MapView.onTouchEvent
+    // fed the scale detector before the gesture detector, a zoom about
+    // the focal point's new place of a frame not yet moved there. The
+    // events go through the mirror's `on_touch`, in Java's order.
+    use leviculum_map::blend::Blend;
+    let home = home();
+    let at = project(LatLon::from_degrees(32.0, -6.0));
+    let base = MapRequest {
+        x: Some(at.x),
+        y: Some(at.y),
+        zoom: None,
+        zoom_milli: Some(2_000),
+        ..request(home.path(), false)
+    };
+    let mut java = loquax_android::gesture::Gesture::new(W, H);
+    let render = |java: &mut loquax_android::gesture::Gesture, moving: bool, first: bool| {
+        let mut ask = MapRequest {
+            dir: base.dir.clone(),
+            density_milli: base.density_milli,
+            ..java.ask()
+        };
+        ask.moving = moving;
+        if first {
+            ask.x = base.x;
+            ask.y = base.y;
+            ask.zoom_milli = base.zoom_milli;
+        }
+        let (shown, _) = frame(&loquax_android::map::render(&ask, Some(Vec::new()), now()));
+        java.place(&shown, moving);
+        shown
+    };
+    let shape = loquax::picture::world_shape();
+    let blend = |s: &MapShown| {
+        Blend::new(
+            shape,
+            World { x: s.x, y: s.y },
+            f64::from(s.zoom_milli) / 1000.0,
+            W,
+            H,
+        )
+    };
+    let first = render(&mut java, false, true);
+    let (f0x, fy) = (200.0f64, 160.0f64);
+    let ground = loquax::mapframe::ground_under_as(
+        shape,
+        &ExactView::new(
+            World {
+                x: first.x,
+                y: first.y,
+            },
+            first.zoom_milli,
+            W,
+            H,
+        ),
+        f0x,
+        fy,
+    )
+    .expect("the focal point is on the world");
+    let judge = |java: &loquax_android::gesture::Gesture,
+                 shown: &MapShown,
+                 fx: f64,
+                 bound: f64,
+                 when: &str| {
+        let (px, py) = blend(shown).to_screen(ground);
+        let (sx, sy) = java.drawn(px, py);
+        let off = (sx - fx).hypot(sy - fy);
+        assert!(
+            off <= bound,
+            "{when} z{} (blended {}): the ground under the pinch's focal point is {off:.1} px from it",
+            shown.zoom_milli,
+            shown.blended
+        );
+    };
+    let per_event = (540f64 / 60.0).powf(1.0 / 180.0);
+    let mut blended = 0usize;
+    let mut fx = f0x;
+    for _ in 0..3 {
+        for e in 0..180 {
+            let nx = f0x + f64::from(e % 2);
+            let dx = -(nx - fx);
+            // Pointer 0 sits 120 px left of the focal point.
+            let scroll = (dx != 0.0).then_some((dx, 0.0, nx - 120.0, fy));
+            java.on_touch(scroll, Some((per_event, nx, fy)));
+            fx = nx;
+            if e % 5 == 4 {
+                let shown = render(&mut java, true, false);
+                if shown.blended {
+                    blended += 1;
+                }
+                judge(&java, &shown, fx, 2.0, "moving");
+            }
+        }
+        let shown = render(&mut java, false, false);
+        judge(&java, &shown, fx, 1.0, "rest");
+    }
+    assert!(blended > 3, "only {blended} blended frames crossed");
+}

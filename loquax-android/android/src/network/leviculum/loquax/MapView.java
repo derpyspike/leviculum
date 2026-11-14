@@ -354,9 +354,15 @@ final class MapView extends View {
                     offX -= dx;
                     offY -= dy;
                     // The drag's finger: the library holds the ground
-                    // under it through a blended view (order 1833).
-                    focusX = b.getX();
-                    focusY = b.getY();
+                    // under it through a blended view (order 1833). Not
+                    // while the scale detector is in progress: its focal
+                    // point is the pinch's, and b.getX() is pointer 0
+                    // alone, up to half the span away (order 1840, the
+                    // first auditor's round 2).
+                    if (!pinch.isInProgress()) {
+                        focusX = b.getX();
+                        focusY = b.getY();
+                    }
                     focused = true;
                 }
                 invalidate();
@@ -702,8 +708,14 @@ final class MapView extends View {
         if (velocity != null) {
             velocity.addMovement(event);
         }
-        pinch.onTouchEvent(event);
+        // The gesture detector first: an event's focal movement (onScroll)
+        // moves the frame before the scale detector zooms it about the
+        // focal point's NEW place (onScale). The other way round each
+        // event zoomed about the new place a frame the fingers had not
+        // moved yet, (by - 1) of the movement off, which a pinch's zoom
+        // compounded to 2 px at z10 (order 1840).
         gestures.onTouchEvent(event);
+        pinch.onTouchEvent(event);
         if (action == MotionEvent.ACTION_DOWN) {
             if (fly != null && fly.isRunning()) {
                 // A finger stops a fly where it is.

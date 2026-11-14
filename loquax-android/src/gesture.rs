@@ -76,6 +76,10 @@ pub struct Gesture {
     turns: bool,
     /// The last frame was drawn blended (`t < 1`), as `MapView.blended`.
     blended: bool,
+    /// A pinch is in progress, as `ScaleGestureDetector.isInProgress()`:
+    /// from its first scale event until the fingers lift, which the
+    /// mirror reads as the next frame asked at rest.
+    scaling: bool,
 }
 
 impl Gesture {
@@ -93,6 +97,7 @@ impl Gesture {
             min_zoom_milli: 0,
             turns: false,
             blended: false,
+            scaling: false,
         }
     }
 
@@ -110,15 +115,39 @@ impl Gesture {
         self.pinch.0 = by * (self.pinch.0 - fx) + fx;
         self.pinch.1 = by * (self.pinch.1 - fy) + fy;
         self.focus = Some((fx, fy));
+        self.scaling = true;
     }
 
-    /// `onScroll` (`MapView.java:316-332`): the finger at `(fx, fy)`
-    /// moved the map by `(-dx, -dy)` — Android hands the distance the
-    /// content is to move against.
+    /// `onScroll` (`MapView.java`, the gesture detector's listener): the
+    /// event's pointer 0 at `(fx, fy)` moved the map by `(-dx, -dy)` —
+    /// Android hands the distance the content is to move against. While
+    /// a pinch is in progress the focus stays the scale detector's
+    /// (order 1840): pointer 0 is up to half the fingers' span from it.
     pub fn on_scroll(&mut self, dx: f64, dy: f64, fx: f64, fy: f64) {
         self.off.0 -= dx;
         self.off.1 -= dy;
-        self.focus = Some((fx, fy));
+        if !self.scaling || self.focus.is_none() {
+            self.focus = Some((fx, fy));
+        }
+    }
+
+    /// One touch event as `MapView.onTouchEvent` hands it on: the gesture
+    /// detector first, its `onScroll` when the focal point moved (`dx`,
+    /// `dy`, pointer 0 at `(px, py)`), then the scale detector's `onScale`
+    /// while a pinch is in progress (`by` about the focal point `(fx,
+    /// fy)`). The order is Java's since order 1840: the event's movement,
+    /// then its zoom about the focal point's new place.
+    pub fn on_touch(
+        &mut self,
+        scroll: Option<(f64, f64, f64, f64)>,
+        scale: Option<(f64, f64, f64)>,
+    ) {
+        if let Some((dx, dy, px, py)) = scroll {
+            self.on_scroll(dx, dy, px, py);
+        }
+        if let Some((by, fx, fy)) = scale {
+            self.on_scale(by, fx, fy);
+        }
     }
 
     /// The frame request `drawFrames` builds (`MapView.java:991-1062`):
@@ -176,6 +205,10 @@ impl Gesture {
     pub fn place(&mut self, shown: &MapShown, moving: bool) {
         let first = self.shown.is_none();
         let z1 = i64::from(shown.zoom_milli);
+        if !moving {
+            // Asked at rest: the fingers lifted, the pinch ended.
+            self.scaling = false;
+        }
         if first || !moving {
             self.scale = 1.0;
             self.off = (0.0, 0.0);
