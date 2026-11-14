@@ -938,6 +938,9 @@ struct Press {
 struct Glide {
     from: ExactView,
     to: ExactView,
+    /// The screen point the wheel turned at: in a blended view the
+    /// glide's steps hold the geographic point under it (1818).
+    focus: (f64, f64),
     start: Instant,
 }
 
@@ -945,24 +948,32 @@ impl Glide {
     /// The view on screen at `now`, and whether the glide is over. The
     /// zoom moves evenly in steps (the scale by its logarithm) about the
     /// one screen point the two views share, so what is under the
-    /// pointer stays under it all the way.
+    /// pointer stays under it all the way. While either end is blended
+    /// the shared point is the wheel's own focus, held through the blend
+    /// (1818): the flat fixed-point formula is Mercator's and would walk
+    /// the view off its place.
     fn at(&self, now: Instant) -> (ExactView, bool) {
         let t = now.saturating_duration_since(self.start).as_secs_f64() * 1e3 / GLIDE_MS as f64;
         if t >= 1.0 {
             return (self.to, true);
+        }
+        let eased = 1.0 - (1.0 - t).powi(3);
+        let (a, b) = (
+            f64::from(self.from.zoom_milli()),
+            f64::from(self.to.zoom_milli()),
+        );
+        let z = (a + (b - a) * eased).round() as u32;
+        let mut view = self.from;
+        if loquax::mapframe::blends(&self.from) || loquax::mapframe::blends(&self.to) {
+            loquax::mapframe::zoom_about(&mut view, z, self.focus.0, self.focus.1);
+            return (view, false);
         }
         let (x, y, k) = onto(&self.from, &self.to);
         if (1.0 - k).abs() < 1e-6 {
             return (self.to, true);
         }
         let (px, py) = (x / (1.0 - k), y / (1.0 - k));
-        let eased = 1.0 - (1.0 - t).powi(3);
-        let (a, b) = (
-            f64::from(self.from.zoom_milli()),
-            f64::from(self.to.zoom_milli()),
-        );
-        let mut view = self.from;
-        view.zoom_about((a + (b - a) * eased).round() as u32, px, py);
+        view.zoom_about(z, px, py);
         (view, false)
     }
 }
@@ -2461,7 +2472,7 @@ impl App {
                 if landed {
                     self.regions_changed();
                 }
-                if !self.fitted {
+                if !self.fitted && self.unmoved() {
                     self.fit();
                 }
             }
@@ -2469,7 +2480,7 @@ impl App {
                 self.settle();
                 self.size = Some(size);
                 self.hold();
-                if !self.fitted {
+                if !self.fitted && self.unmoved() {
                     self.fit();
                 }
             }
@@ -2774,6 +2785,17 @@ impl App {
         Task::batch(tasks)
     }
 
+    /// Whether the view still sits where the last fit left it, or none
+    /// ran yet: only then may a background change — the first pins, a
+    /// resize — fit anew. A `Seen` landing seconds after the wheel
+    /// stomped the view back to the start otherwise (D1, order 1818).
+    fn unmoved(&self) -> bool {
+        match self.fitted_at {
+            None => true,
+            Some(at) => at == (self.view.centre, self.view.zoom_milli()),
+        }
+    }
+
     /// Every pin in view, as `0` does; before the first pins and the
     /// canvas, nothing. The first fit with pins asks for the places no
     /// region holds (1089).
@@ -2851,8 +2873,9 @@ impl App {
         );
         let z = zoom_milli.clamp(floor, ceiling);
         self.motion.zoom(z - i64::from(self.view.zoom_milli()));
-        self.view
-            .zoom_about(u32::try_from(z).unwrap_or(MILLI), x, y);
+        // Through the blend where the view is blended (1818): the
+        // geographic point under the pointer stays under it.
+        loquax::mapframe::zoom_about(&mut self.view, u32::try_from(z).unwrap_or(MILLI), x, y);
         self.hold();
     }
 
@@ -2934,6 +2957,7 @@ impl App {
                 self.glide = (to != from).then_some(Glide {
                     from,
                     to,
+                    focus: (f64::from(x), f64::from(y)),
                     start: now,
                 });
             }
@@ -3923,15 +3947,10 @@ mod tests {
     use leviculum_map::mercator::{project, LatLon};
     use map::tests::{florence, pin};
 
-    /// The window over the Florence fixture, 480 x 320 at a density of
-    /// one, `pins` seen, the view at `zoom_milli` over Piazza d'Azeglio.
-    pub(super) fn window_over_florence(pins: Vec<MapPin>, zoom_milli: u32) -> App {
-        let frames = florence();
-        let maps = frames.painter().epoch();
-        let mut app = App::new(frames, None);
-        app.screen = Screen::Map;
-        app.apply(Message::MapSize(Size::new(480.0, 320.0)));
-        app.apply(Message::Seen(Box::new(Seen {
+    /// The `Seen` the Florence window applies: `pins` over the fixture's
+    /// maps at epoch `maps`, everything else quiet.
+    fn florence_seen(pins: Vec<MapPin>, maps: u64) -> Seen {
+        Seen {
             pins,
             tracks: Vec::new(),
             track_window: Default::default(),
@@ -3952,7 +3971,18 @@ mod tests {
             info: None,
             own_fix: None,
             cards: Vec::new(),
-        })));
+        }
+    }
+
+    /// The window over the Florence fixture, 480 x 320 at a density of
+    /// one, `pins` seen, the view at `zoom_milli` over Piazza d'Azeglio.
+    pub(super) fn window_over_florence(pins: Vec<MapPin>, zoom_milli: u32) -> App {
+        let frames = florence();
+        let maps = frames.painter().epoch();
+        let mut app = App::new(frames, None);
+        app.screen = Screen::Map;
+        app.apply(Message::MapSize(Size::new(480.0, 320.0)));
+        app.apply(Message::Seen(Box::new(florence_seen(pins, maps))));
         let at = project(LatLon::from_degrees(43.7752, 11.2660));
         app.view = ExactView::new(at, zoom_milli, 480, 320);
         app.hold();
@@ -4485,6 +4515,54 @@ mod tests {
         assert!(
             (x - under.0).abs() < 1.0 && (y - under.1).abs() < 1.0,
             "{x} {y}"
+        );
+    }
+
+    /// D1 (order 1799, P0; 1818): at the smallest zoom one more wheel
+    /// step out made the map jump back to the start view (z12) about 3 s
+    /// later without any input (`map.trace`: `47344 ask 3101 rest`, then
+    /// `49729 ask 12000 rest`). With no pins the first fit never counts
+    /// as done (`fitted` stays false), so the NEXT background `Seen` — a
+    /// region landing, any state change — ran `fit()` again and stomped
+    /// the view the wheel had left. A background change may fit only
+    /// while the view still sits where the last fit left it.
+    #[test]
+    fn a_background_seen_does_not_stomp_a_view_the_wheel_moved() {
+        let mut app = window_over_florence(Vec::new(), 12 * MILLI);
+        let maps = {
+            let frames = app.frames.lock().unwrap_or_else(PoisonError::into_inner);
+            frames.painter().maps().epoch()
+        };
+        // The wheel steps out; the glide lands; no input after.
+        app.apply(Message::Pointer(Pointer::Wheel(
+            Point::new(100.0, 80.0),
+            -9_000,
+        )));
+        app.settle();
+        let moved = app.view;
+        assert_ne!(
+            app.fitted_at,
+            Some((moved.centre, moved.zoom_milli())),
+            "the wheel moved the view off the fit"
+        );
+        // Seconds later a Seen lands, the same state again: nothing the
+        // user did may move the view.
+        app.apply(Message::Seen(Box::new(florence_seen(Vec::new(), maps))));
+        assert_eq!(app.view, moved, "no input, the view stays");
+        // The control: while the view still sits where the last fit left
+        // it, the first pins do fit — the map zooms to the peers.
+        let mut fresh = window_over_florence(Vec::new(), 12 * MILLI);
+        let (centre, zoom) = fresh.fitted_at.expect("the empty fit");
+        fresh.view = ExactView::new(centre, zoom, 480, 320);
+        fresh.apply(Message::Seen(Box::new(florence_seen(
+            vec![pin(1, "alice", 43.7752, 11.2640)],
+            maps,
+        ))));
+        assert!(fresh.fitted, "the first pins fit");
+        assert_ne!(
+            (fresh.view.centre, fresh.view.zoom_milli()),
+            (centre, zoom),
+            "the fit went to the pins"
         );
     }
 

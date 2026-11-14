@@ -108,21 +108,29 @@ live in `loquax-android/src/render_walk.rs`.
 | `world_spans_view` | a turning globe | more than 2 % of the middle line across the shorter side is space |
 | `no_error_text` | every map frame | the frame says an error or a notice |
 | `no_map_chip_over_data` | every map frame | the "no map here" chip is up at a zoom where the world's outline is drawn (z10 or shallower) |
-| `label_inside_view` | a settled frame | a shown name straddles the screen's edge |
-| `label_clear_of_controls` | a settled frame | a shown name lies under the map's two round buttons (56 dp, 16 dp from the end, 16 dp and 84 dp from the bottom) |
-| `label_overlap` | a settled frame | two shown names overlap |
+| `label_inside_view` | every map frame | a shown name straddles the screen's edge |
+| `label_clear_of_controls` | every map frame | a shown name lies under the map's two round buttons (56 dp, 16 dp from the end, 16 dp and 84 dp from the bottom) |
+| `label_overlap` | every map frame | two shown names overlap |
 | `label_current_zoom` | a settled frame | a name is from a deeper zoom than the frame's, or is still fading out |
 | `label_on_world` | a turning globe | a name floats in space: three of its box's corners and middle are space |
 | `frame_p95` | a gesture | the 95th percentile frame time is over one frame at 60 Hz (16.7 ms, the host gate of 1799); the half-frame line (8.3 ms) stays in the note as information |
 | `heap_returns` | a gesture | the live heap ends more than 160 MB above its start |
 | `heap_peak` | a gesture | the live heap grows more than 320 MB during the gesture |
 | `view_kept` | the rotation | the centre or the zoom moved |
+| `globe_disk_fixed` | a turning globe's gesture frame | the disk fitted from the frame's own pixels differs from the gesture's reference frame at the same zoom by more than 1 px in centre or radius (order 1818, the wobble proof) |
+| `zoom_keeps_the_place` | a zoom gesture's frame | the geographic point that started under the pinch focus is more than 2 px from it; the rest frame of an out-and-in pinch adds one row for "the start view is back" (order 1818, the Morocco-to-Spain jump) |
 | `screen_drawn` | a window or terminal screen | it drew nothing. For the window, that is at most two of four quarters with more than one colour. For the terminal, it is text on less than a tenth of its rows |
 | `screen_repeats` | a window or terminal screen | the same screen drawn twice differs |
 
-A moving frame is judged by the frame rules and by `label_on_world` only.
-While a finger moves, the names of the last rest frame ride along by
-design, so the other label rules wait for a frame at rest.
+A moving frame is judged by the frame rules, `label_on_world`,
+`label_inside_view`, `label_clear_of_controls` and `label_overlap`
+(order 1818): the names of the last rest frame ride along while a
+finger moves, and the ride must not push them over the edge, the
+buttons or each other. Only `label_current_zoom` waits for the settle,
+since names fade by design while the map moves. The gestures' moving
+frames run on a held clock, 16 ms a frame, so two runs give identical
+frames; the frame-time rows stay the wall clock's, measured around the
+draw itself.
 
 `RENDER_WALK_NAMES=<image>` makes the driver print the names of that
 picture with their boxes, which is useful for checking a label verdict
@@ -143,6 +151,8 @@ turn its rules red on a frame or gesture where the clean walk is green.
 | `slow-frame` | `frame_p95` |
 | `heap-kept` | `heap_returns`, `heap_peak` |
 | `view-lost` | `view_kept` |
+| `disk-shift` (every moving frame's picture 3 px right) | `globe_disk_fixed` (runs on the globe variant) |
+| `zoom-drift` (the view pushed 5 px once a zoom stands in the handover) | `zoom_keeps_the_place` |
 
 On the host the clean walk fails `frame_p95` on nearly every gesture. The
 rotation sometimes passes, but its frames are at rest and the fault does

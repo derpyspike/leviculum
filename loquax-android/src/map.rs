@@ -538,7 +538,10 @@ impl Renderer {
             let zoom = (i64::from(view.zoom_milli()) + by)
                 .clamp(i64::from(floor), i64::from(ceiling.max(floor)));
             let about = |v: i32, of: u16| f64::from(v.clamp(0, i32::from(of)));
-            view.zoom_about(
+            // Through the blend where the frame is blended (1818): the
+            // geographic point under the fingers stays under them.
+            loquax::mapframe::zoom_about(
+                &mut view,
                 u32::try_from(zoom).unwrap_or(floor),
                 about(request.about_x, area.width),
                 about(request.about_y, area.height),
@@ -1076,6 +1079,20 @@ pub fn drawn_names(dir: &Path) -> Option<Vec<DrawnName>> {
         .iter()
         .find(|r| r.dir == dir)
         .map(|r| r.frames.drawn_names())
+}
+
+/// The passes the renderer over `dir` ran for its last frame, each with
+/// its microseconds ([`loquax::mapframe::Frames::trace`]): where a slow
+/// frame's time went, for the walk's strip (order 1818).
+pub fn frame_trace(dir: &Path) -> Vec<(leviculum_map::ladder::Pass, u32)> {
+    let renderers = RENDERERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    renderers
+        .iter()
+        .find(|r| r.dir == dir)
+        .map(|r| r.frames.trace().to_vec())
+        .unwrap_or_default()
 }
 
 /// What the last frame that zoomed of the renderer over `dir` spent

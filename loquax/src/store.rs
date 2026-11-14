@@ -4082,10 +4082,19 @@ fn apply(
                 ],
             )?;
         }
-        StoreWrite::ForgetPosition { peer, fix_time } => {
+        StoreWrite::ForgetPosition {
+            peer,
+            fix_time,
+            message,
+        } => {
+            // Only the row the INVALID message itself filed (the audits
+            // of 1816): a row another message filed with the same peer
+            // and fix time — or one with no message, an announced one —
+            // stays.
             tx.execute(
-                "DELETE FROM positions WHERE identity = ?1 AND peer = ?2 AND fix_time = ?3",
-                params![&identity[..], &peer[..], fix_time],
+                "DELETE FROM positions WHERE identity = ?1 AND peer = ?2 AND fix_time = ?3 \
+                 AND message = ?4",
+                params![&identity[..], &peer[..], fix_time, seq_of(*message)],
             )?;
         }
         StoreWrite::Position(fix) => {
@@ -5977,16 +5986,13 @@ mod tests {
         assert_eq!(groups[&group.address].members[0], member);
     }
 
-    /// Lew 2026-11-13, rule 3: `ForgetPosition` deletes exactly the one
-    /// kept row of a reading an INVALID verdict took back.
-    #[test]
-    fn a_forgotten_position_leaves_the_store() {
-        let home = tempfile::tempdir().expect("home");
-        let mut store = Store::open_in(home.path(), US).expect("create");
-        let fix = |t: i64| Fix {
+    /// A position row of `message` (the store's seq, as a model key) for
+    /// BOB at fix time `t`.
+    fn bobs_fix(message: Option<u64>, t: i64) -> Fix {
+        Fix {
             peer: BOB,
             via: BOB,
-            message: None,
+            message,
             received_at: Some(t),
             location: Location {
                 latitude_e6: 52_000_000,
@@ -5999,17 +6005,29 @@ mod tests {
             },
             telemetry: Vec::new(),
             source: crate::telemetry::Source::Telemetry,
-        };
+        }
+    }
+
+    /// Lew 2026-11-13, rule 3: `ForgetPosition` deletes exactly the one
+    /// kept row of a reading an INVALID verdict took back — the row its
+    /// own message filed (the audits of 1816), no other.
+    #[test]
+    fn a_forgotten_position_leaves_the_store() {
+        let home = tempfile::tempdir().expect("home");
+        let mut store = Store::open_in(home.path(), US).expect("create");
+        put(&mut store, BOB, message(1, false, "one"));
+        put(&mut store, BOB, message(2, false, "two"));
         store
             .write(&[
-                StoreWrite::Position(fix(1_000)),
-                StoreWrite::Position(fix(2_000)),
+                StoreWrite::Position(bobs_fix(Some(key_of(1)), 1_000)),
+                StoreWrite::Position(bobs_fix(Some(key_of(2)), 2_000)),
             ])
             .expect("write");
         store
             .write(&[StoreWrite::ForgetPosition {
                 peer: BOB,
                 fix_time: 2_000,
+                message: key_of(2),
             }])
             .expect("forget");
         let left: Vec<i64> = store
@@ -6019,6 +6037,52 @@ mod tests {
             .map(|f| f.location.last_update)
             .collect();
         assert_eq!(left, [1_000], "the taken-back row alone is gone");
+    }
+
+    /// The audits of 1816: two messages repeat one (peer, fix time) — the
+    /// first filer's row stands. Forgetting it with the OTHER message's
+    /// key leaves it: an INVALID message takes back only the row it filed
+    /// itself. The control: the owner's key deletes it.
+    #[test]
+    fn a_forgotten_position_leaves_anothers_row_with_the_same_peer_and_time() {
+        let home = tempfile::tempdir().expect("home");
+        let mut store = Store::open_in(home.path(), US).expect("create");
+        put(&mut store, BOB, message(1, false, "genuine"));
+        put(&mut store, BOB, message(2, false, "forged"));
+        store
+            .write(&[
+                // The genuine message files first and owns the row; the
+                // forged repeat of the same (peer, fix time) changes
+                // nothing, as the insert keeps the first filer.
+                StoreWrite::Position(bobs_fix(Some(key_of(1)), 1_000)),
+                StoreWrite::Position(bobs_fix(Some(key_of(2)), 1_000)),
+            ])
+            .expect("write");
+        store
+            .write(&[StoreWrite::ForgetPosition {
+                peer: BOB,
+                fix_time: 1_000,
+                message: key_of(2),
+            }])
+            .expect("forget by the non-owner");
+        let rows = store.positions().expect("positions");
+        assert_eq!(
+            rows.len(),
+            1,
+            "the non-owner's delete leaves the genuine row"
+        );
+        assert_eq!(rows[0].message, Some(key_of(1)), "still the first filer's");
+        store
+            .write(&[StoreWrite::ForgetPosition {
+                peer: BOB,
+                fix_time: 1_000,
+                message: key_of(1),
+            }])
+            .expect("forget by the owner");
+        assert!(
+            store.positions().expect("positions").is_empty(),
+            "the owner's delete takes its own row back"
+        );
     }
 
     /// 1219: a draft is kept beside its conversation, comes back at start

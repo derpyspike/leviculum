@@ -65,8 +65,13 @@ CONTROLS = {
     "slow-frame": ["frame_p95"],
     "heap-kept": ["heap_returns", "heap_peak"],
     "view-lost": ["view_kept"],
+    "disk-shift": ["globe_disk_fixed"],
+    "zoom-drift": ["zoom_keeps_the_place"],
 }
 STEP = {"frame_p95": 15.0}
+# A fault that only shows on one variant's walk runs on that binary; the
+# disk only turns on the globe (order 1818).
+CONTROL_VARIANT = {"disk-shift": "globe"}
 
 VARIANTS = [("equal", []), ("globe", ["--features", "loquax/globe-world"])]
 
@@ -138,6 +143,22 @@ def screens(out, log):
         if done.returncode != 0 and "every_" not in done.stdout:
             sys.stderr.write(done.stderr[-4000:])
             raise RuntimeError(f"{' '.join(cmd)} did not run")
+
+
+def globe_tests(out, log):
+    """The loquax map tests on the globe build (order 1818): the carried
+    names' far-side and limb-box drops and the zoom hold only run with
+    the globe feature on, which no plain test run enables. One row says
+    how they went; a red run fails the walk."""
+    done = subprocess.run(["just", "loquax-globe"], cwd=ROOT,
+                          capture_output=True, text=True)
+    log.write(done.stdout + done.stderr)
+    verdict = "pass" if done.returncode == 0 else "FAIL"
+    note = "" if done.returncode == 0 else "just loquax-globe is red; its log is in build.log"
+    with open(os.path.join(out, "rows-globe-tests.tsv"), "w") as f:
+        f.write("\t".join(["globe", "tests", "loquax-globe", "", "", "", "",
+                           "globe_map_tests", str(int(done.returncode == 0)),
+                           "1.000", verdict, note]) + "\n")
 
 
 def m9(out, log):
@@ -264,23 +285,35 @@ def write_sheet(out, rows, title, seconds):
 
 def selftest(bins, out):
     """Each fault red on a row the clean walk has green; the verdict lines."""
-    exe = bins["equal"]
-    clean_dir = os.path.join(out, "clean")
-    os.makedirs(clean_dir, exist_ok=True)
-    # Each walk under its own name, so its pictures keep theirs; a row is
-    # matched to the clean one by the picture's name after that.
-    walk(exe, clean_dir, "clean", "--selftest")
 
     def bare(r):
         return r["image"][len(r["variant"]) + 1:]
 
-    clean = {(bare(r), r["rule"]): r for r in read_rows(clean_dir)}
+    # Each walk under its own name, so its pictures keep theirs; a row is
+    # matched to the clean one by the picture's name after that. A fault
+    # of CONTROL_VARIANT runs on that variant's binary, against a clean
+    # walk of the same variant.
+    cleans = {}
+    dirs = []
+
+    def clean_for(variant):
+        if variant not in cleans:
+            d = os.path.join(out, f"clean-{variant}")
+            os.makedirs(d, exist_ok=True)
+            dirs.append(d)
+            walk(bins[variant], d, "clean", "--selftest")
+            cleans[variant] = {(bare(r), r["rule"]): r for r in read_rows(d)}
+        return cleans[variant]
+
     lines = []
     ok = True
     for fault, rules in CONTROLS.items():
+        variant = CONTROL_VARIANT.get(fault, "equal")
+        clean = clean_for(variant)
         d = os.path.join(out, fault)
         os.makedirs(d, exist_ok=True)
-        walk(exe, d, fault, "--selftest", fault)
+        dirs.append(d)
+        walk(bins[variant], d, fault, "--selftest", fault)
         injected = read_rows(d)
         for rule in rules:
             fired = 0
@@ -301,7 +334,7 @@ def selftest(bins, out):
             lines.append(f"{'PASS' if held else 'FAIL'} {fault} -> {rule}: red on {fired} rows "
                          f"the clean walk has green ({green} green there)"
                          + (f", {stepped} rows {STEP[rule]:.0f}+ higher" if rule in STEP else ""))
-    rows = [r for name in ["clean", *CONTROLS] for r in read_rows(os.path.join(out, name))]
+    rows = [r for d in dirs for r in read_rows(d)]
     return ok, lines, rows
 
 
@@ -324,7 +357,7 @@ def main():
             ok, lines, rows = selftest(bins, out)
             for line in lines:
                 print(f"render-walk selftest: {line}")
-            for name in ["clean", *CONTROLS]:
+            for name in ["clean-equal", "clean-globe", *CONTROLS]:
                 for sub in ("thumb", "full"):
                     src = os.path.join(out, name, sub)
                     if os.path.isdir(src):
@@ -341,6 +374,7 @@ def main():
             walk(bins[variant], out, variant, mode)
         if not args.no_screens:
             screens(out, log)
+            globe_tests(out, log)
         if args.m9:
             m9(out, log)
     rows = read_rows(out)

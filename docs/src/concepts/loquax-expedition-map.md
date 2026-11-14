@@ -666,33 +666,51 @@ Additions (decided):
      an epoch at or before the copy's and not left by then
      (`GroupMember::since` and `left_from`, kept in the store from
      schema 23; where the store cannot date a member, the copy is
-     refused — rule 4; a member listed left and later listed in again
-     starts over at the epoch that lists it again, so neither its gap
-     nor its time before the gap vouches for a copy, the second audit
-     of 1823); and the `lev` map is the group's own word
-     (`Lev::said_by`, 1482). The rule is one function in LXMF,
-     `Lev::reading_writer` (`copy_writer`, `loquax/src/ui.rs:6834`, the
+     refused — rule 4; a member relisted after it left starts over at
+     the relisting epoch, so neither its gap nor its time before the
+     gap vouches for a copy — the audits of 1816, the second audit of
+     1823); and the `lev` map is the group's own word
+     (`Lev::said_by`, 1482). A message whose `lev` map names
+     ANOTHER writer is nobody's reading even without a group copy: a
+     relay's pass-through of a member's plain telemetry field names the
+     member in `lev.writer`, that word is foreign
+     (`Refusal::ForeignWord`, said as `reason=foreign-word`), and no
+     pin moves for the relay or for the member — the member's own
+     signed message is the only word about the member's position
+     outside a vouched group copy. The rule is one function in LXMF,
+     `Lev::reading_writer` (`copy_writer`, `loquax/src/ui.rs:6826`, the
      audits of 1757, 1787 and 1808), which the node helper's telemetry
      report and the liveness judgement go through too (rule 5: one
      definition of "this message names a copy's writer", so filing and
      liveness cannot disagree). A membership list never joins the
      reader, an invitation to the sender's own address makes no group,
      and a copy is judged by the group state from before its own
-     message.
+     message. The membership itself stands under the same gate as the
+     readings it vouches for (the audits of 1816): a list carried by a
+     message whose signature is not verified changes no member list, no
+     epoch and no standing — it is held with its message and applied
+     when the verdict says valid, discarded when it says INVALID.
      A reading that fails the rule is NOBODY's (rule 2, back to what
      1792 did): it moves no pin, no track and no liveness, for the named
      writer, for the source and for the group address — a group is not
      a place and gets no pin of its own. Nothing of it shows in the
      pin, the store, the bubble's position line or the Info (`Writers`,
-     `loquax/src/ui.rs:6857`); each refused reading is said in one
+     `loquax/src/ui.rs:6849`); each refused reading is said in one
      structured `POSITION_REFUSED reason=…` event in `tui.log`, nothing
-     on screen. A plain message from a person about its OWN position is
-     untouched by all of this.
+     on screen — exactly one, at arrival: a verdict that re-judges the
+     reading and still refuses it repeats nothing (the audits of 1816).
+     A plain message from a person about its OWN position is untouched
+     by all of this.
      Unverified is not the end (rule 3): a copy's reading held back for
      want of a signature is filed when the verdict comes back valid
-     (`apply_verdict`), and a reading filed before an INVALID verdict —
-     a plain one's too — is taken back: the pin, the track and the
-     store's row (`ForgetPosition`, store schema 23's companion rule).
+     (`apply_verdict`, with the message's time, not the verdict's), and
+     a reading filed before an INVALID verdict — a plain one's too — is
+     taken back: the pin, the track and the store's row
+     (`ForgetPosition`, store schema 23's companion rule). Taken back
+     is only what THAT message filed (the audits of 1816): the store's
+     delete is keyed by the message, so a row another message filed
+     with the same peer and fix time stays, and a track point another
+     live message stands behind stays on the screen too.
      A copy whose epoch is newer than the membership the reader holds
      is nobody's reading when it comes, and filed under its writer once
      that membership comes (`file_early_copies`; the second audit of

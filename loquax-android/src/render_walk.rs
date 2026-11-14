@@ -33,8 +33,22 @@
 //! - [`LABEL_ON_WORLD`]: on a turning globe, moving or not, no name floats
 //!   in space: at most two of its box's corners and middle are space.
 //!
-//! The four label rules before the last judge a frame at rest only: while
-//! a finger moves, the names of the last rest frame ride along by design.
+//! [`LABEL_INSIDE_VIEW`], [`LABEL_CLEAR_OF_CONTROLS`] and
+//! [`LABEL_OVERLAP`] judge moving frames too (order 1818): the names of
+//! the last rest frame ride along while a finger moves, and the ride
+//! must not push them over the edge, the buttons or each other.
+//! [`LABEL_CURRENT_ZOOM`] judges a settled frame only, since names fade
+//! by design while the map moves.
+//!
+//! Two rules watch a gesture frame by frame (order 1818):
+//!
+//! - [`GLOBE_DISK_FIXED`]: on a turning globe, the disk fitted from the
+//!   frame's own pixels ([`disk_fit`]) stays where the gesture's
+//!   reference frame at the same zoom put it, centre and radius within
+//!   [`DISK_MAX_PX`]: the wobble proof.
+//! - [`ZOOM_KEEPS_THE_PLACE`]: through a zoom gesture, the geographic
+//!   point under the pinch focus stays under it within
+//!   [`PLACE_MAX_PX`], in every frame, blended or not.
 //!
 //! The gesture rules ([`sequence_rules`]):
 //!
@@ -232,6 +246,16 @@ pub const FRAME_P95: &str = "frame_p95";
 pub const HEAP_RETURNS: &str = "heap_returns";
 pub const HEAP_PEAK: &str = "heap_peak";
 pub const VIEW_KEPT: &str = "view_kept";
+pub const GLOBE_DISK_FIXED: &str = "globe_disk_fixed";
+pub const ZOOM_KEEPS_THE_PLACE: &str = "zoom_keeps_the_place";
+
+/// Pixels the fitted disk's centre or radius may move between a
+/// gesture's frames at one zoom: the rim's smoothing, nothing a person
+/// sees (order 1818, the wobble item).
+pub const DISK_MAX_PX: f64 = 1.0;
+/// Pixels the ground under a pinch's focus may wander over a zoom
+/// gesture (order 1818, the Morocco-to-Spain jump).
+pub const PLACE_MAX_PX: f64 = 2.0;
 
 /// Per cent of the screen that may be undrawn: a pixel row's worth of
 /// rounding at the edges, nothing a person sees.
@@ -359,7 +383,7 @@ pub fn frame_rules(f: &FrameFacts<'_>) -> Vec<Verdict> {
         0.0,
         String::new(),
     ));
-    if f.settled && f.shown.ok {
+    if f.shown.ok {
         out.extend(label_rules(f));
     }
     if f.shown.turns && f.shown.ok {
@@ -461,13 +485,8 @@ fn label_rules(f: &FrameFacts<'_>) -> Vec<Verdict> {
             }
         }
     }
-    let stale: Vec<String> = shown
-        .iter()
-        .filter(|(n, _)| !n.shown || n.min_zoom > f.shown.zoom)
-        .map(|(n, _)| format!("{} (z{})", n.text, n.min_zoom))
-        .collect();
     let list = |v: &[&str]| v.join(", ");
-    vec![
+    let mut out = vec![
         Verdict::at_most(
             LABEL_INSIDE_VIEW,
             straddle.len() as f64,
@@ -481,13 +500,133 @@ fn label_rules(f: &FrameFacts<'_>) -> Vec<Verdict> {
             list(&under),
         ),
         Verdict::at_most(LABEL_OVERLAP, pairs.len() as f64, 0.0, pairs.join(", ")),
-        Verdict::at_most(
+    ];
+    // Only a settled frame owes current names: they fade by design
+    // while the map moves (order 1818 judges the three rules above on
+    // moving frames too).
+    if f.settled {
+        let stale: Vec<String> = shown
+            .iter()
+            .filter(|(n, _)| !n.shown || n.min_zoom > f.shown.zoom)
+            .map(|(n, _)| format!("{} (z{})", n.text, n.min_zoom))
+            .collect();
+        out.push(Verdict::at_most(
             LABEL_CURRENT_ZOOM,
             stale.len() as f64,
             0.0,
             stale.join(", "),
+        ));
+    }
+    out
+}
+
+/// The globe's disk fitted from a frame's own pixels: its centre and
+/// radius in screen pixels, by a least-squares circle (Kåsa) through
+/// the space-to-world boundary, sampled down every column from the top
+/// edge and up from the bottom, and across every row from the left and
+/// right. `None` without enough boundary (no space in view, or no
+/// world).
+pub fn disk_fit(screen: &Screen, space: [u8; 3]) -> Option<(f64, f64, f64)> {
+    let (w, h) = (screen.w as usize, screen.h as usize);
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let is_space = |x: usize, y: usize| {
+        let i = (y * w + x) * 4;
+        screen.rgba.get(i..i + 3) == Some(&space[..])
+    };
+    let mut pts: Vec<(f64, f64)> = Vec::new();
+    for x in 0..w {
+        if is_space(x, 0) {
+            if let Some(y) = (0..h).find(|&y| !is_space(x, y)) {
+                pts.push((x as f64 + 0.5, y as f64));
+            }
+        }
+        if is_space(x, h - 1) {
+            if let Some(y) = (0..h).rev().find(|&y| !is_space(x, y)) {
+                pts.push((x as f64 + 0.5, y as f64 + 1.0));
+            }
+        }
+    }
+    for y in 0..h {
+        if is_space(0, y) {
+            if let Some(x) = (0..w).find(|&x| !is_space(x, y)) {
+                pts.push((x as f64, y as f64 + 0.5));
+            }
+        }
+        if is_space(w - 1, y) {
+            if let Some(x) = (0..w).rev().find(|&x| !is_space(x, y)) {
+                pts.push((x as f64 + 1.0, y as f64 + 0.5));
+            }
+        }
+    }
+    if pts.len() < 20 {
+        return None;
+    }
+    // Kåsa: minimise Σ (x² + y² + D x + E y + F)²; centre (-D/2, -E/2).
+    let n = pts.len() as f64;
+    let (mut sx, mut sy, mut sxx, mut syy, mut sxy) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    let (mut sxz, mut syz, mut sz) = (0.0, 0.0, 0.0);
+    for &(x, y) in &pts {
+        let z = x * x + y * y;
+        sx += x;
+        sy += y;
+        sxx += x * x;
+        syy += y * y;
+        sxy += x * y;
+        sxz += x * z;
+        syz += y * z;
+        sz += z;
+    }
+    let (a11, a12, a13) = (sxx, sxy, sx);
+    let (a21, a22, a23) = (sxy, syy, sy);
+    let (a31, a32, a33) = (sx, sy, n);
+    let (b1, b2, b3) = (sxz, syz, sz);
+    let det = a11 * (a22 * a33 - a23 * a32) - a12 * (a21 * a33 - a23 * a31)
+        + a13 * (a21 * a32 - a22 * a31);
+    if det.abs() < 1e-9 {
+        return None;
+    }
+    let d = (b1 * (a22 * a33 - a23 * a32) - a12 * (b2 * a33 - a23 * b3)
+        + a13 * (b2 * a32 - a22 * b3))
+        / det;
+    let e = (a11 * (b2 * a33 - a23 * b3) - b1 * (a21 * a33 - a23 * a31)
+        + a13 * (a21 * b3 - b2 * a31))
+        / det;
+    let f = (a11 * (a22 * b3 - b2 * a32) - a12 * (a21 * b3 - b2 * a31)
+        + b1 * (a21 * a32 - a22 * a31))
+        / det;
+    let (cx, cy) = (d / 2.0, e / 2.0);
+    let r2 = cx * cx + cy * cy + f;
+    if r2 <= 0.0 {
+        return None;
+    }
+    Some((cx, cy, r2.sqrt()))
+}
+
+/// [`GLOBE_DISK_FIXED`]: how far the disk of `now` is from the disk of
+/// the gesture's reference frame at the same zoom, the worst of centre
+/// x, centre y and radius.
+pub fn globe_disk_fixed(now: (f64, f64, f64), reference: (f64, f64, f64)) -> Verdict {
+    let value = (now.0 - reference.0)
+        .abs()
+        .max((now.1 - reference.1).abs())
+        .max((now.2 - reference.2).abs());
+    Verdict::at_most(
+        GLOBE_DISK_FIXED,
+        value,
+        DISK_MAX_PX,
+        format!(
+            "centre ({:.1}, {:.1}) r {:.1}, reference ({:.1}, {:.1}) r {:.1}",
+            now.0, now.1, now.2, reference.0, reference.1, reference.2
         ),
-    ]
+    )
+}
+
+/// [`ZOOM_KEEPS_THE_PLACE`]: how far the ground that started under the
+/// pinch focus is from it in this frame, screen pixels.
+pub fn zoom_keeps_the_place(off: f64, note: String) -> Verdict {
+    Verdict::at_most(ZOOM_KEEPS_THE_PLACE, off, PLACE_MAX_PX, note)
 }
 
 /// What a gesture measured: its frame times and the live heap.
@@ -864,6 +1003,67 @@ mod tests {
         let mut lost = good;
         lost.moved_px = Some(12.0);
         assert!(!verdict(&sequence_rules(&lost), VIEW_KEPT).pass);
+    }
+
+    /// A disk drawn into space is fitted to within a pixel; the same
+    /// disk three pixels over turns [`GLOBE_DISK_FIXED`] red (order
+    /// 1818, the wobble item's positive control); all world or all
+    /// space fits nothing.
+    #[test]
+    fn the_disk_fit_finds_a_drawn_circle_and_a_shift_turns_the_rule_red() {
+        let space = [1, 2, 3];
+        let disk = |cx: f64, cy: f64, r: f64| {
+            let mut screen = filled(200, 300, [1, 2, 3, 255]);
+            for y in 0..300usize {
+                for x in 0..200usize {
+                    let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
+                    if dx * dx + dy * dy <= r * r {
+                        let i = (y * 200 + x) * 4;
+                        screen.rgba[i..i + 4].copy_from_slice(&[9, 9, 9, 255]);
+                    }
+                }
+            }
+            screen
+        };
+        let at = disk_fit(&disk(100.0, 150.0, 90.0), space).expect("a fit");
+        assert!(
+            (at.0 - 100.0).abs() < 0.6 && (at.1 - 150.0).abs() < 0.6 && (at.2 - 90.0).abs() < 1.0,
+            "{at:?}"
+        );
+        let same = disk_fit(&disk(100.0, 150.0, 90.0), space).expect("a fit");
+        assert!(globe_disk_fixed(same, at).pass);
+        let shifted = disk_fit(&disk(103.0, 150.0, 90.0), space).expect("a fit");
+        let v = globe_disk_fixed(shifted, at);
+        assert!(!v.pass && (v.value - 3.0).abs() < 0.5, "{v:?}");
+        assert!(disk_fit(&filled(200, 300, [9, 9, 9, 255]), space).is_none());
+        assert!(disk_fit(&filled(200, 300, [1, 2, 3, 255]), space).is_none());
+    }
+
+    /// The ground under the pinch focus may wander two pixels, no more
+    /// (order 1818, the Morocco-to-Spain jump).
+    #[test]
+    fn the_place_rule_holds_two_pixels() {
+        assert!(zoom_keeps_the_place(1.9, String::new()).pass);
+        assert!(!zoom_keeps_the_place(2.1, String::new()).pass);
+    }
+
+    /// Order 1818: the edge, button and overlap rules judge a moving
+    /// frame too; only the current-zoom rule waits for the settle.
+    #[test]
+    fn a_moving_frame_is_judged_by_edge_button_and_overlap() {
+        let (s, screen, mut names) = clean();
+        names.push(name("Murmansk", 3, (330, 100, 370, 110)));
+        let v = frame_rules(&FrameFacts {
+            shown: &s,
+            screen: &screen,
+            view: (300, 400),
+            density: 1.0,
+            names: &names,
+            settled: false,
+            space: [1, 2, 3],
+        });
+        assert!(!verdict(&v, LABEL_INSIDE_VIEW).pass);
+        assert!(v.iter().all(|v| v.rule != LABEL_CURRENT_ZOOM));
     }
 
     #[test]
