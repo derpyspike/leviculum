@@ -186,6 +186,81 @@ mod tests {
             panic!("MIMALLOC_ALLOW_THP is set; this test reads the compiled default");
         }
         assert_eq!(huge_pages_allowed(), Some(false));
+
+        // And the answer is read, not assumed: with the option switched on
+        // at run time the function says so (1850, the audit's surviving
+        // constant-return mutants). In this one test, so no other test of
+        // the binary reads the option while it is on.
+        #[cfg(not(target_os = "android"))]
+        {
+            let option = env!("LEVICULUM_ALLOC_MI_OPTION_ALLOW_THP")
+                .parse::<libmimalloc_sys::mi_option_t>()
+                .expect("build.rs hands over the option's index");
+            // SAFETY: sets one option to an integer; no pointers.
+            unsafe { libmimalloc_sys::mi_option_set(option, 1) };
+            let on = huge_pages_allowed();
+            // SAFETY: as above.
+            unsafe { libmimalloc_sys::mi_option_set(option, 0) };
+            assert_eq!(on, Some(true), "the option switched on reads as on");
+            assert_eq!(huge_pages_allowed(), Some(false));
+        }
+    }
+
+    /// This process's resident bytes, from `/proc/self/statm`.
+    ///
+    /// Resident and not mimalloc's own `current_commit`: on Linux mimalloc
+    /// purges a span by `MADV_DONTNEED`, which hands the pages back without
+    /// decommitting them, so its commit count stays where it was (measured
+    /// 69.6 MB before and after) while the resident set falls from 68.6 MB
+    /// to 1.5 MB.
+    #[cfg(target_os = "linux")]
+    fn resident() -> usize {
+        let statm = std::fs::read_to_string("/proc/self/statm").expect("procfs");
+        let pages: usize = statm
+            .split_whitespace()
+            .nth(1)
+            .and_then(|f| f.parse().ok())
+            .expect("statm's second field");
+        // SAFETY: sysconf with a constant name.
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        pages * usize::try_from(page).expect("a page size")
+    }
+
+    /// A freed spike stays resident until something purges it, and
+    /// [`release`] is what does (1850: the audit's mutant that empties
+    /// `release` survived a test that only called it). The spike is
+    /// allocated from mimalloc directly, because this test binary does not
+    /// install [`GLOBAL`]; small blocks, so it lives in mimalloc's pages
+    /// rather than in a mapping of its own that `free` unmaps at once.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn release_hands_a_freed_spike_back() {
+        const BLOCK: usize = 32 << 10;
+        const SPIKE: usize = 64 << 20;
+        let blocks: Vec<*mut std::ffi::c_void> = (0..SPIKE / BLOCK)
+            .map(|_| {
+                // SAFETY: a fresh block of BLOCK bytes, checked non-null and
+                // written within its length.
+                unsafe {
+                    let p = libmimalloc_sys::mi_malloc(BLOCK);
+                    assert!(!p.is_null(), "mi_malloc({BLOCK})");
+                    std::ptr::write_bytes(p.cast::<u8>(), 1, BLOCK);
+                    p
+                }
+            })
+            .collect();
+        for p in blocks {
+            // SAFETY: each pointer came from mi_malloc above, freed once.
+            unsafe { libmimalloc_sys::mi_free(p) };
+        }
+        let held = resident();
+        release();
+        let after = resident();
+        assert!(
+            held.saturating_sub(after) >= SPIKE / 2,
+            "release() handed back {} of a freed {SPIKE}-byte spike (resident {held} -> {after})",
+            held.saturating_sub(after)
+        );
     }
 
     #[test]

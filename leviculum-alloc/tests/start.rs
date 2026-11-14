@@ -23,6 +23,24 @@ fn release_threads() -> usize {
         .count()
 }
 
+/// The number of release threads once it reaches `want`, or what it is at a
+/// five-second deadline.
+///
+/// A thread names itself: std's spawn returns before the new thread has
+/// written its `comm`, so a count read straight after `start()` can see the
+/// thread still under the parent's name. The baseline of a cargo-mutants
+/// run on 2026-11-14 caught it that way, `left: 0` (1850).
+fn release_threads_reaching(want: usize) -> usize {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let n = release_threads();
+        if n == want || std::time::Instant::now() > deadline {
+            return n;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
 /// One test function, so libtest's parallel threads cannot interleave two
 /// `start()` calls of this process.
 #[test]
@@ -33,12 +51,15 @@ fn start_spawns_one_release_thread_and_declines_huge_pages() {
     leviculum_alloc::start();
     assert!(leviculum_alloc::started());
     assert_eq!(
-        release_threads(),
+        release_threads_reaching(1),
         1,
         "start() spawns exactly one release thread"
     );
 
     leviculum_alloc::start();
+    // A second thread would have to name itself too: give it the time the
+    // first one was given before counting.
+    std::thread::sleep(std::time::Duration::from_millis(200));
     assert_eq!(
         release_threads(),
         1,
