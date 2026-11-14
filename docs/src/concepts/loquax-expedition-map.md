@@ -108,48 +108,53 @@ not in the tree). Total about 166 KB beside today's 209 KB.
   `VIEW_BELOW` (`loquax/src/ui/map.rs:127`), three zooms above its own.
   The world view is ours alone.
 
-### The world in Equal Earth, flowing into Mercator
+### The world as a globe, flowing into Mercator
 
-Built by order 1710 (Lew, 2026-11-11): the world view's projection.
+**Globe, decided 2026-11-13** (Lew, order 1809): the world view is the
+orthographic globe on every target and in every build, and from some
+zoom on it goes over into Mercator, what every tile in the world is
+cut in. Built by order 1710 (2026-11-11) as one of two candidates; the
+globe's fixes came with 1762 and 1799.
 
-The world view is drawn in the Equal Earth projection — areas true to
-size, so Greenland is a third of Australia and not seven times
-Africa's share — and from some zoom on it goes over into Mercator,
-what every tile in the world is cut in. There is no hard break: one
-mapping for the view, a blend of two screen positions
-(`leviculum-map/src/blend.rs`),
+History: 1710 shipped Equal Earth (Šavrič, Patterson, Jenny 2018) as
+the default world projection — areas true to size, Greenland a third
+of Australia — with the globe behind a `globe-world` build switch, so
+Lew could choose on pictures. He chose the globe on 2026-11-13; order
+1809 removed Equal Earth's projection, its blend arm, its goldens and
+tests, the build switch and the render walk's second variant. Its
+measurements (area ratios within 2 % at `t = 0`, a 0.47 px shape morph
+per tenth of a zoom, an anisotropy of up to 2.82 px raw at 65 N) are in
+the 1710 report and this page's history.
+
+There is no hard break: one mapping for the view, a blend of two screen
+positions (`leviculum-map/src/blend.rs`),
 
 ```text
-P(point) = (1 - t) · W_c(point) + t · M_c(point)
+P(point) = (1 - t) · G_c(point) + t · M_c(point)
 ```
 
 - `M_c` is the view's Mercator as every deeper zoom draws it, the
   centre on the middle pixel.
-- `W_c` is the world projection with its **central meridian at the view
-  centre's longitude** (north is up at the centre in both, nothing
-  tilts while blending), **scaled and shifted so the view centre maps
-  to the same pixel at the same local scale** as Mercator's. The world
-  projection is a parameter: Equal Earth (Šavrič, Patterson, Jenny
-  2018; the published polynomial, its inverse by Newton) ships as the
-  default; the orthographic globe is implemented behind the same
-  parameter and the `globe-world` build switch, until Lew has chosen
-  on pictures.
+- `G_c` is the orthographic globe with its **central meridian at the
+  view centre's longitude** (north is up at the centre in both,
+  nothing tilts while blending), **scaled so the view centre maps to
+  the same pixel at the same local scale** as Mercator's.
 - `t` is a smooth step of the view zoom, `6u⁵−15u⁴+10u³` — C² at both
-  ends, no kink: 0 up to z2 (or the width's world floor on a screen
-  wider than 1024 px), 1 from z5 on. Regions are cut from z6 down
-  today, and the blend additionally holds **only where no region
-  reaches into the view**, so no raster or tile is ever reprojected:
-  the moment region data appears, the view is Mercator-linear exactly.
+  ends, no kink. Its window follows the limb and the visible ground
+  (`blend::globe_window`, 1799 item 0): the pure sphere while any of
+  the limb is within two half-diagonals of the view or the short side
+  shows more than 900 km, Mercator exactly from where it shows 200 km.
+  On the phone's 1224 × 2197 that is about z7.7 to z9.9. A region that
+  reaches into a blended view draws through the blend, each placed
+  point warped (1799); no raster or tile is ever reprojected.
 
 Because both mappings pin the centre at the same local scale, what is
 in the middle of the screen does not move during a zoom beyond what
 the zoom itself explains; only the far parts of a world view bend.
 Panning turns the central meridian with the view, so the world wraps
-and nothing jumps at the antimeridian; a land ring crossing the
-projection's cut (the meridian opposite the centre) is unwrapped and,
-where it overshoots one edge, drawn again a turn over, so both edges
-show their part (Equal Earth; the globe needs no second copy, it is
-periodic).
+and nothing jumps at the antimeridian; the globe is periodic, so a
+land ring across the cut (the meridian opposite the centre) needs no
+second copy.
 
 #### The globe's horizon and ground (1762)
 
@@ -199,48 +204,57 @@ instead, measured below.
 
 #### The scale match, and what it costs at high latitudes
 
-Equal Earth is not conformal: at the centre its east–west and
-north–south scales differ by k², where k is the east–west scale per
-unit of arc. The match takes their geometric mean — exactly one, Equal
-Earth being equal-area — so `t = 0` is true Equal Earth and area
-ratios hold; as `t` grows, each axis' scale slides towards Mercator's
-(`k^∓t`), so near the handover the world term agrees with Mercator
-locally. The anisotropy k² per latitude:
-
-| centre latitude | 0° | 31° | 52.5° | 65° |
-|---|---|---|---|---|
-| k² (EW/NS) | 0.74 | 0.95 | 1.31 | 2.12 |
-
-Measured on the z1→z7 ramp at 0/0, Berlin, Merzouga, Singapore and
-65 N (every tenth of a zoom, fixed ground points in the middle third
-of a 480×320 view; `leviculum-map/tests/blend.rs`, asserted):
+The globe is conformal at its centre: one scale in every direction,
+matched to Mercator's there, so nothing slides between axes. Measured
+on the z1→z9 ramp at 0/0, Berlin, Merzouga, Singapore and 65 N (every
+tenth of a zoom, fixed ground points in the middle third of a 480×320
+view; `leviculum-map/tests/blend.rs`, asserted, measured again
+2026-11-14 for 1809):
 
 - Beyond the zoom and a per-axis scale about the centre, the middle
-  third moves at most **0.47 px (Equal Earth)** per tenth of a zoom —
-  the irreducible shape morph, under the one-pixel bound. The globe
-  measured 0.59 px until 1762; since its radius at the world no longer
-  carries sec φ it grows by that factor through the handover at a
-  high-latitude centre, a tenth of a zoom there is up to 0.18 of one
-  in scale, and the morph per step is **1.29 px** at 65 N (bound 1.5).
-- Raw (beyond the uniform zoom alone) the globe paid 0.59 px before
-  1762 and **5.52 px** at 65 N z3.4 since (bound 6), the sec φ growth;
-  Equal Earth pays its anisotropy with up to **2.82 px** per tenth of
-  a zoom at the 65 N centre (1.1 px at Berlin-like latitudes), spread
-  evenly across the thirty steps of the band. The one-pixel bound
-  does not hold raw for Equal Earth at high latitudes and cannot:
-  the shapes themselves differ by k² between the ends of the ramp.
-- Where it further does not hold: with the scale matched at a 65 N
-  centre, the drawn world is sec 65° ≈ 2.4 times wider than
-  Mercator's square, so the whole world does not fit one screen
-  there; it shrinks back as the centre pans south. The globe shows
-  half the world by its nature.
+  third moves at most **0.14 px** per tenth of a zoom (bound 0.5): at
+  the handover the view shows a country, where the sphere and Mercator
+  barely differ in shape.
+- Raw (beyond the uniform zoom alone) **7.04 px** at 65 N z6.8 (bound
+  8): the globe's radius at the world carries no sec φ (1762), so at
+  a high-latitude centre it grows by that factor (2.37 at 65 N)
+  through the handover on top of the zoom.
+- The globe shows half the world by its nature; what that means for
+  the views that want all of it is below.
 
-Area check at `t = 0`: Greenland against Africa in drawn pixels is
-the true spherical ratio to well within 2 % (the same table's rings,
-Lambert shoelace against screen shoelace, asserted). Angle check at
-`t = 1`: the blend equals today's Mercator mapping to float precision,
-and every golden from z5 up is untouched — the linear drawers' code
-path did not change.
+Angle check at `t = 1`: the blend equals today's Mercator mapping to
+float precision, and every golden past the handover is untouched — the
+linear drawers' code path did not change.
+
+#### Views that want the whole world (1809)
+
+1710 listed the views that need the whole world at once. On the globe
+each does this now:
+
+- **Fit all over people on two continents** turns the globe to their
+  centroid on the sphere (the mean of their unit vectors), at the
+  globe's floor, whenever the fit needs the whole disk
+  (`ui::map::whole_world_fit`, shared by the phone, the window and the
+  terminal). The Mercator box's middle left Anchorage behind the limb
+  with Cape Town, and Lima with Berlin and Tokyo; turned to the
+  centroid all of them face the viewer. Fallbacks: one point, a fit
+  deeper than the floor, or a centroid that is no direction (people at
+  antipodes, whose vectors cancel) keep the box's middle; people more
+  than a quarter turn from the centroid stay on the far side, a drag
+  away. In the terminal the whole-zoom floor draws the disk larger
+  than the picture's short side, so a pin near the limb can lie past
+  the picture's edge there. Tested by
+  `ui::map::tests::a_fit_over_two_continents_turns_the_globe_to_their_centroid`.
+- **The time zone view** keeps the view where it is and shows the zones
+  of the hemisphere the globe is turned to; their borders and clocks
+  behind the limb are not drawn, and a drag turns to the rest. The
+  ocean zones run from pole to pole, so a far zone's polar end can
+  carry its clock near the limb. Tested by
+  `mapframe::tests::the_time_zone_view_shows_the_hemisphere_the_globe_is_turned_to`.
+- **The terminal's world outline** is the globe: the terminal paints
+  through the same painter with the blend on, its disk on the ground,
+  the ground alone either side of it in a wide pane. Tested by
+  `tui::map::tests::the_terminal_draws_the_world_as_the_globe`.
 
 #### Everything that reads the projection
 
@@ -259,15 +273,14 @@ The blend holds in every reader of the view's mapping when (shape set,
   none of them;
 - hit testing: screen to world is Newton on the blend
   (`Blend::to_world`), started at the Mercator inverse, answering
-  only within 1/32 px; a point off the world (past Equal Earth's
-  edge, off the globe) has no answer. Wired in the core; the
+  only within 1/32 px; a point off the globe has no answer. Wired in the core; the
   frontends' click paths still use the Mercator inverse and meet the
   blend only on world views, where a click's error is the blend's
   bend at that point — the remaining wiring is listed in the 1710
   report;
-- the fit-all rule and fly-to run in world coordinates and need no
-  change: the centre they aim at lands on the centre pixel under any
-  `t`;
+- fly-to runs in world coordinates and needs no change: the centre it
+  aims at lands on the centre pixel under any `t`; fit all turns the
+  globe to the centroid where it needs the whole world (above);
 - the scale bar (1701, not yet landed): under `t < 1` there is no
   single scale; the decision recorded here is **show none at world
   zoom**, from `t = 1` down the bar as specified;
@@ -276,30 +289,31 @@ The blend holds in every reader of the view's mapping when (shape set,
   blended ground until the frame comes to rest, which replaces them
   exactly.
 
-The M9 keeps Mercator: its world view is not the outline but its own
-z0–z3 overview region — tiles, which the blend never reprojects by
+The M9 keeps its own world table and Mercator (confirmed by 1809, the
+same rule does not fit): its world view is not the outline but its
+own z0–z3 overview region — tiles, which the blend never reprojects by
 design — and its FPU has no doubles for the per-vertex trigonometry.
 A later fixed-point or table build can revisit this; nothing in its
 budget moved.
 
 #### Pictures and cost
 
-Pinned: `leviculum-map/tests/golden/world-blend-{ee,globe}-480x320-{z2,z35}.png`,
+Pinned: `leviculum-map/tests/golden/world-blend-globe-480x320-{z2,z69}.png`,
 and since 1762 the turned globe, `world-turned-*.png`: Africa with the
 Americas across the limb, the Pacific with Antarctica, the Arctic from
-80 N, and the 40 S 75 E handover view of Lew's screenshot in both
-shapes (`tests/globe.rs` holds the mechanism without pictures).
-The zoom strips (five centres, both shapes, z1→z7) and the two frame
-series at Berlin and Merzouga are the 1710 report's, rendered by
+80 N, and the 40 S 75 E view of Lew's screenshot (`tests/globe.rs`
+holds the mechanism without pictures; Equal Earth's goldens went with
+1809). The zoom strips (five centres, z1→z7) and the two frame series
+at Berlin and Merzouga are rendered by
 `cargo run --release -p leviculum-map --example world_blend_pictures`.
-A 1024×768 world view on the reference host draws in 11.3 ms linear,
-21.1 ms Equal Earth, 24.1 ms globe (release, median of nine): a
-blended frame redrawn whole every zoom frame holds 40 fps on the
-desktop; the phone runs the same code through the facade.
+A 1024×768 world view on the reference host drew in 11.3 ms linear and
+24.1 ms globe in 1710 (release, median of nine): a blended frame
+redrawn whole every zoom frame holds 40 fps on the desktop; the phone
+runs the same code through the facade.
 
 Turning the globe (1762), the phone's frame path on the host
-(`cargo run --release -p loquax-android --example globe_fps
---features loquax/globe-world`, 1224×2100 at density 2.75, a drag of
+(`cargo run --release -p loquax-android --example globe_fps`,
+1224×2100 at density 2.75, a drag of
 40 px a frame, 60 frames a row, median and 95th percentile; the host
 under a load of 5 to 9 on four cores, so the rows are comparisons,
 not budgets): before 1762 the rows were 20 to 38 ms at the median,

@@ -46,9 +46,9 @@ renderer.
   it. When a frame fails, Java shows the last good frame scaled to the zoom
   the fingers asked for. That is how the failed globe frames of 2026-11-13
   became Lew's "small rectangle".
-  The driver is `loquax-android/examples/render_walk.rs`. It is built
-  twice: once for Equal Earth and once with `loquax/globe-world` for the
-  globe.
+  The driver is `loquax-android/examples/render_walk.rs`, built once:
+  the globe is the only world view since 1809 (until then it was built
+  twice, for Equal Earth and with the `loquax/globe-world` switch).
 - **The zoom ladder** covers every integer zoom from the world at its
   smallest to the deepest zoom the regions hold.
   - Centres: Germany (51 N 10 E), Morocco (31 N 5 W), both poles (85°),
@@ -72,7 +72,7 @@ renderer.
   - `pinch-out-in`: a quarter step a frame from z12 out to the world and
     back.
   - `drag-pole-around`: 30 frames toward the north pole, then 30 frames
-    around. This turns the globe and pans Equal Earth.
+    around. This turns the globe.
   - `jump-street-to-z5`: from Berlin z16 to Europe z5, the way a tap on a
     position asks for it.
   - `rotate`: portrait to landscape and back, at rest.
@@ -155,7 +155,7 @@ turn its rules red on a frame or gesture where the clean walk is green.
 | `slow-frame` | `frame_p95` |
 | `heap-kept` | `heap_returns`, `heap_peak` |
 | `view-lost` | `view_kept` |
-| `disk-shift` (every moving frame's picture 3 px right) | `globe_disk_fixed` (runs on the globe variant) |
+| `disk-shift` (every moving frame's picture 3 px right) | `globe_disk_fixed` |
 | `zoom-drift` (the view pushed 5 px once a zoom stands in the handover) | `zoom_keeps_the_place` |
 
 On the host the clean walk fails `frame_p95` on nearly every gesture. The
@@ -175,9 +175,6 @@ runs the Bitmap rules on a real Florence frame.
   Java hands back is kept. It does not check whether `MapView` restores
   its view after an activity is recreated, which is walk finding 10 of
   2026-11-13.
-- **Equal Earth's edge.** Outside the Equal Earth shape the frame is
-  ocean, the same colour as the sea. `world_spans_view` therefore judges
-  the globe only.
 - **The phone's own frame times and heap.** The walk measures on the
   host. The rate the rule holds to is 60 Hz, and the walk cannot see the
   display's real rate.
