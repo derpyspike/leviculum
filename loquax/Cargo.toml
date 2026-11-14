@@ -427,6 +427,9 @@ leviculum-mapcut = { path = "../leviculum-mapcut" }
 # The window's golden picture of the map's names is a PNG (1100); in the
 # lock already, through leviculum-map's goldens.
 png = "0.18"
+# The relief test writes a synthetic height pack (1741); in the lock
+# already, through leviculum-map's height pieces.
+ruzstd = { version = "0.9", default-features = false, features = ["hash"] }
 # The emoji table's test counts graphemes (1137); in the lock already,
 # through ratatui.
 unicode-segmentation = "1"

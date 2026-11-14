@@ -31,6 +31,12 @@ libm = "0.2"
 # the same code. `hash` checks each frame's content checksum.
 ruzstd = { version = "0.9", default-features = false, features = ["hash"] }
 
+# The bench times the threaded kernels too, and `relief::par` is the `std`
+# half of the module.
+[[example]]
+name = "relief_bench"
+required-features = ["std"]
+
 [dev-dependencies]
 # The golden images of `tests/golden.rs` are PNG files; the crate is in the
 # lock already, through ratatui-image's `image`.

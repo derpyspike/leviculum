@@ -40,6 +40,8 @@
 //!   becomes a height above sea level.
 //! - [`elevation`]: height pieces, ground heights in metres per z12 tile,
 //!   the coarser zooms averaged on the device (1740).
+//! - [`relief`]: the ground relief those heights shade under a view,
+//!   style R′, one parameter set for the whole world (1741).
 //! - [`style`]: the colour tables, `leviculum-mapfill`'s own.
 //!
 //! `no_std` with `alloc`; the feature `std` adds only a [`Storage`] for a
@@ -69,6 +71,7 @@ pub mod pins;
 pub mod pois;
 pub mod profile;
 pub mod region;
+pub mod relief;
 pub mod timezones;
 pub mod viewport;
 

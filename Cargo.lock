@@ -3569,6 +3569,7 @@ dependencies = [
  "rmp-serde",
  "rqrr",
  "rusqlite",
+ "ruzstd",
  "serde",
  "serde_json",
  "tempfile",
