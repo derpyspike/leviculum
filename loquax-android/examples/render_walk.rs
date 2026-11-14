@@ -49,16 +49,15 @@ use loquax_android::render_walk::{
 };
 use loquax_android::schema::{MapRequest, MapShown};
 
-/// The blend the facade drew `shown`'s view through: what the walk's
-/// gesture rules project grounds with (order 1818).
-fn blend_of(shown: &MapShown, w: u32, h: u32) -> Blend {
+/// The blend the facade drew the view through: what the walk's gesture
+/// rules project grounds with (order 1818). The zoom is the EXACT one
+/// the driver holds, as `MapView.java` holds it: a moving frame's
+/// `shown.zoom_milli` is its tile step's, not the view's.
+fn blend_of(x: u32, y: u32, zoom_milli: u32, w: u32, h: u32) -> Blend {
     Blend::new(
         loquax::picture::world_shape(),
-        World {
-            x: shown.x,
-            y: shown.y,
-        },
-        f64::from(shown.zoom_milli) / f64::from(MILLI),
+        World { x, y },
+        f64::from(zoom_milli) / f64::from(MILLI),
         w,
         h,
     )
@@ -368,7 +367,7 @@ impl Java {
             // centre is pushed five pixels; Java feeds the drifted view
             // back, as a real drift would ride along.
             Some(Fault::ZoomDrift) if (ask.zoom_by_milli != 0 || ask.zoom_by != 0) && shown.ok => {
-                let t = blend_of(&shown, ask.w, ask.h).t();
+                let t = blend_of(shown.x, shown.y, shown.zoom_milli, ask.w, ask.h).t();
                 if t > 0.0 && t < 1.0 {
                     let unit = (24.0 - f64::from(shown.zoom_milli) / f64::from(MILLI)).exp2();
                     shown.x = shown.x.wrapping_add((5.0 * unit) as u32);
@@ -736,11 +735,16 @@ impl Walk {
         // The ground under the pinch focus at the gesture's start, once
         // a step zooms (order 1818, the Morocco-to-Spain jump).
         let mut ground: Option<(World, f64, f64)> = None;
+        // The exact zoom, held by the driver as MapView.java holds it
+        // (1134): a moving frame's answer carries its tile step's zoom
+        // (1155), and feeding that back snapped the pinch to whole
+        // steps and judged the step view instead of the screen's.
+        let mut exact_zoom = last.zoom_milli;
         for i in 0..steps {
             let base = MapRequest {
                 x: Some(last.x),
                 y: Some(last.y),
-                zoom_milli: Some(last.zoom_milli),
+                zoom_milli: Some(exact_zoom),
                 ..java.ask(true)
             };
             let Some(ask) = step(i, &last, base) else {
@@ -748,7 +752,7 @@ impl Walk {
             };
             if (ask.zoom_by_milli != 0 || ask.zoom_by != 0) && ground.is_none() {
                 let (fx, fy) = (f64::from(ask.about_x), f64::from(ask.about_y));
-                ground = blend_of(&last, size.w, size.h)
+                ground = blend_of(last.x, last.y, exact_zoom, size.w, size.h)
                     .to_world(fx, fy)
                     .map(|g| (g, fx, fy));
             }
@@ -768,8 +772,15 @@ impl Walk {
                     }
                 }
             }
+            if drawn.shown.ok {
+                let by = i64::from(ask.zoom_by) * i64::from(MILLI) + i64::from(ask.zoom_by_milli);
+                let lo = i64::from(drawn.shown.min_zoom_milli);
+                let hi = i64::from(drawn.shown.max_zoom) * i64::from(MILLI);
+                exact_zoom = (i64::from(exact_zoom) + by).clamp(lo, hi.max(lo)) as u32;
+            }
             if let (Some((g, fx, fy)), true) = (ground, drawn.shown.ok) {
-                let (px, py) = blend_of(&drawn.shown, size.w, size.h).to_screen(g);
+                let (px, py) =
+                    blend_of(drawn.shown.x, drawn.shown.y, exact_zoom, size.w, size.h).to_screen(g);
                 let off = (px - fx).hypot(py - fy);
                 verdicts.push(zoom_keeps_the_place(
                     off,
@@ -792,7 +803,7 @@ impl Walk {
         let rest = MapRequest {
             x: Some(last.x),
             y: Some(last.y),
-            zoom_milli: Some(last.zoom_milli),
+            zoom_milli: Some(exact_zoom),
             ..java.ask(false)
         };
         let drawn = java.settle(rest, self.fault);
@@ -804,7 +815,13 @@ impl Walk {
         // view").
         if let (Some(_), true) = (ground, drawn.shown.ok) {
             if drawn.shown.zoom_milli == zoom_milli {
-                let b = blend_of(&drawn.shown, size.w, size.h);
+                let b = blend_of(
+                    drawn.shown.x,
+                    drawn.shown.y,
+                    drawn.shown.zoom_milli,
+                    size.w,
+                    size.h,
+                );
                 let (px, py) = b.to_screen(at);
                 let (cx, cy) = (f64::from(size.w) / 2.0, f64::from(size.h) / 2.0);
                 let off = (px - cx).hypot(py - cy);
@@ -918,10 +935,11 @@ impl Walk {
         self.gesture("pinch-out-in", size, germany, 12 * MILLI, 120, &{
             let out = std::cell::Cell::new(true);
             move |_, last: &MapShown, ask| {
-                if out.get() && last.zoom_milli <= last.min_zoom_milli {
+                let zoom = ask.zoom_milli.unwrap_or(12 * MILLI);
+                if out.get() && zoom <= last.min_zoom_milli {
                     out.set(false);
                 }
-                if !out.get() && last.zoom_milli >= 12 * MILLI {
+                if !out.get() && zoom >= 12 * MILLI {
                     return None;
                 }
                 let by = if out.get() { -250 } else { 250 };
@@ -938,10 +956,11 @@ impl Walk {
         self.gesture("pinch-at-thumb", size, germany, 12 * MILLI, 120, &{
             let out = std::cell::Cell::new(true);
             move |_, last: &MapShown, ask| {
-                if out.get() && last.zoom_milli <= last.min_zoom_milli {
+                let zoom = ask.zoom_milli.unwrap_or(12 * MILLI);
+                if out.get() && zoom <= last.min_zoom_milli {
                     out.set(false);
                 }
-                if !out.get() && last.zoom_milli >= 12 * MILLI {
+                if !out.get() && zoom >= 12 * MILLI {
                     return None;
                 }
                 let by = if out.get() { -250 } else { 250 };
