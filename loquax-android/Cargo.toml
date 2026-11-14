@@ -2,7 +2,7 @@
 name = "loquax-android"
 # The app's own version, like loquax's: it tracks the Android frontend, not
 # the protocol core underneath.
-version = "0.1.8"
+version = "0.1.9"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -16,7 +16,7 @@ publish = false
 # moves; the Makefile stamps it into the manifest with loquax's version as
 # the versionName, the version the app shows (1667).
 [package.metadata.android]
-version-code = 9
+version-code = 10
 
 # A cdylib for the app (`make` in this directory builds it for Android and
 # puts it in the APK), an rlib so the host's `cargo test` runs its tests.
