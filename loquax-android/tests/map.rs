@@ -2856,7 +2856,7 @@ fn a_fault_at_rest_heals_with_frames_asked_only_as_java_asks() {
 /// wait has passed it is due but cannot start — `start_next` holds
 /// everything behind the waiting screen boxes — and a loader that names
 /// that overdue instant as its wake (`retry_in_ms` 0) makes MapView
-/// (MapView.java:1145-1156, `max(50, retry_in_ms)`) redraw every 50 ms
+/// (MapView.java:1252-1264, `max(50, retry_in_ms)`) redraw every 50 ms
 /// for the rest of the screen box's wait. Frames are asked only as
 /// MapView asks them; while nothing is running, no two consecutive
 /// frames may be asked less than 1 s apart, and the wakes over the whole
@@ -3623,7 +3623,7 @@ impl PhoneWalk {
         });
         // no_busy_wake (1835): no frame drawn while the loader is idle
         // names a wake of 0 ms. MapView asks its next frame at
-        // `max(50, retry_in_ms)` (MapView.java:1145-1156), so a 0 wake
+        // `max(50, retry_in_ms)` (MapView.java:1252-1264), so a 0 wake
         // at which nothing can start redraws the phone every 50 ms
         // until the next real retry.
         let busy_wakes: Vec<u64> = self

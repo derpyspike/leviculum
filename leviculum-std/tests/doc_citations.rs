@@ -4567,3 +4567,212 @@ fn an_identifier_citation_is_renumbered_only_on_proof() {
         Some("the identifier is not inside the span the anchor places")
     );
 }
+
+// --- pages whose every citation is checked against its own line ----------
+//
+// The anchor check above baselines a bare citation on the citing line's own
+// last edit. A merge that rewrites a table row therefore re-baselines every
+// citation in it, and a row written after its target file moved passes with
+// whatever now sits on the cited line. That is how row 41 of
+// `docs/src/concepts/loquax-targets.md` reached master at dddbed74457e
+// pointing the window's Help at `Intent::SendFile` and at a closing brace,
+// under a merge message that said this guard had checked it (audit of
+// 1847). The same table had 58 more rows of the kind, most of them drifted.
+//
+// The identifier check does not help either: it accepts the name within
+// `WINDOW` lines, so a named citation can slide eight lines and stay green.
+//
+// A page listed here is held to the strict form instead. Every citation on
+// it names what it points at, and that name stands on a cited line itself,
+// not near it. A bare citation is refused outright, because nothing could
+// tell it from one that moved. A page that is a table of `file:line` cells
+// read by people deciding where a feature lives is the kind that belongs
+// here: its rows are rewritten in merges, which is exactly when the
+// baseline goes blind.
+
+/// Pages every citation of which must name its subject on the cited line.
+const EXACT_PAGES: &[&str] = &["docs/src/concepts/loquax-targets.md"];
+
+/// The refusals of the strict check over `citations`, and how many it read.
+///
+/// Only citations whose page is in `pages` are looked at. Each must carry an
+/// attached identifier (see [`attached_ident`]) and the identifier's last
+/// segment must occur on a line inside the cited span, in the one file the
+/// path resolves to.
+fn exact_line_failures(
+    root: &Path,
+    citations: &[Citation],
+    pages: &[&str],
+) -> (usize, Vec<String>) {
+    let mut files = Vec::new();
+    walk(root, SKIP_DIRS, &mut files);
+    let rel: Vec<String> = files
+        .iter()
+        .map(|p| {
+            p.strip_prefix(root)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    let mut read = 0;
+    let mut failures = Vec::new();
+    for c in citations
+        .iter()
+        .filter(|c| pages.iter().any(|p| c.doc == Path::new(p)))
+    {
+        read += 1;
+        let where_ = format!("{}:{}: {}", c.doc.display(), c.doc_line, c.raw);
+        let Some(ident) = &c.ident else {
+            failures.push(format!(
+                "{where_}\n    names nothing. On this page every citation names what its \
+                 line holds, ``name` (`path:line`)`, because a bare line number cannot be \
+                 told from one that moved."
+            ));
+            continue;
+        };
+        let suffix = format!("/{}", c.path);
+        let hits: Vec<&String> = rel
+            .iter()
+            .filter(|f| **f == c.path || f.ends_with(&suffix))
+            .collect();
+        let [file] = hits.as_slice() else {
+            failures.push(format!(
+                "{where_}\n    `{}` resolves to {} files, not one: {hits:?}",
+                c.path,
+                hits.len()
+            ));
+            continue;
+        };
+        let text = fs::read_to_string(root.join(file)).unwrap_or_default();
+        let lines: Vec<&str> = text.lines().collect();
+        let needle = ident_needle(ident);
+        let on_line = c.spans.iter().any(|&(a, b)| {
+            (a..=b).any(|n| n >= 1 && lines.get(n - 1).is_some_and(|l| l.contains(needle)))
+        });
+        if !on_line {
+            let nearest = lines
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| l.contains(needle))
+                .map(|(i, _)| i + 1)
+                .min_by_key(|&n| n.abs_diff(c.spans[0].0));
+            failures.push(format!(
+                "{where_}\n    `{needle}` is not on the cited line of {file}{}",
+                match nearest {
+                    Some(n) => format!("; the nearest occurrence is line {n}"),
+                    None => " nor anywhere in it".to_string(),
+                }
+            ));
+        }
+    }
+    (read, failures)
+}
+
+#[test]
+fn exact_pages_name_what_each_cited_line_holds() {
+    let root = repo_root();
+    let citations = book_citations(&root);
+    let (read, failures) = exact_line_failures(&root, &citations, EXACT_PAGES);
+    println!(
+        "exact-line pages ({}): {read} citations read, {} refused",
+        EXACT_PAGES.join(", "),
+        failures.len()
+    );
+    // Tripwire: the table alone carries over 150.
+    assert!(
+        read >= 150,
+        "only {read} citations on the exact-line pages -- parser rot?"
+    );
+    assert!(
+        failures.is_empty(),
+        "{} citation(s) on an exact-line page do not hold:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// Two lines of `gui.rs` as the window's Help sits in it, with the arm five
+/// lines below an unrelated one, as at dddbed74457e.
+const EXACT_FIXTURE_GUI: &str = "\
+fn intent(&mut self, intent: Intent) {
+    match intent {
+        Intent::SendFile { peer, .. } => {
+            self.tell(UiEvent::Attach { peer });
+        }
+        Intent::Help => self.help = Some(0),
+        _ => {}
+    }
+}
+";
+
+/// Runs the strict check over `doc` against [`EXACT_FIXTURE_GUI`].
+fn exact_fixture(doc: &str) -> Vec<String> {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    fs::create_dir_all(root.join("loquax/src")).unwrap();
+    fs::create_dir_all(root.join("docs/src/concepts")).unwrap();
+    fs::write(root.join("loquax/src/gui.rs"), EXACT_FIXTURE_GUI).unwrap();
+    let page = root.join("docs/src/concepts/loquax-targets.md");
+    fs::write(&page, doc).unwrap();
+    let citations = scan(root, &[page], Corpus::Book);
+    assert_eq!(citations.len(), 1, "FIXTURE: one citation expected");
+    exact_line_failures(root, &citations, EXACT_PAGES).1
+}
+
+#[test]
+fn an_exact_page_refuses_a_bare_citation_written_after_its_target_moved() {
+    // Row 41 as the merge dddbed74457e wrote it: bare, and pointing at the
+    // arm above the one its row is about. The anchor check baselines it on
+    // the merge itself, so it passed there.
+    let failures =
+        exact_fixture("| 41 | Help | x | `loquax/src/gui.rs:3` (the shared overlay) | y |\n");
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(failures[0].contains("names nothing"), "{failures:?}");
+}
+
+#[test]
+fn an_exact_page_refuses_a_named_citation_five_lines_off() {
+    // On line 6 the name holds; shifted by five lines it is still inside
+    // `WINDOW`, which is why the ordinary check stays green there.
+    assert!(exact_fixture("| 41 | `Intent::Help` (`loquax/src/gui.rs:6`) |\n").is_empty());
+    let failures = exact_fixture("| 41 | `Intent::Help` (`loquax/src/gui.rs:1`) |\n");
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(
+        failures[0].contains("nearest occurrence is line 6"),
+        "{failures:?}"
+    );
+}
+
+#[test]
+fn audit2_1847_row_41_gui_help_citations_land_on_help() {
+    let root = repo_root();
+    let page = fs::read_to_string(root.join("docs/src/concepts/loquax-targets.md")).unwrap();
+    let row = page
+        .lines()
+        .find(|l| l.starts_with("| 41 | Help |"))
+        .expect("row 41 is the Help row");
+    let window = row.split('|').nth(4).expect("row 41 has a Window cell");
+    let gui = fs::read_to_string(root.join("loquax/src/gui.rs")).unwrap();
+    let gui: Vec<&str> = gui.lines().collect();
+    let cited: Vec<&str> = Regex::new(r"`loquax/src/gui\.rs:(\d+)`")
+        .unwrap()
+        .captures_iter(window)
+        .map(|c| gui[c[1].parse::<usize>().unwrap() - 1])
+        .collect();
+    assert_eq!(
+        cited.len(),
+        2,
+        "row 41's Window cell cites two lines: {window}"
+    );
+    assert!(
+        cited[0].contains("Intent::Help"),
+        "first cites {:?}",
+        cited[0]
+    );
+    assert!(
+        cited[1].contains("fn help_layer"),
+        "second cites {:?}",
+        cited[1]
+    );
+}

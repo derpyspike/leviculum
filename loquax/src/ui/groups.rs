@@ -4063,6 +4063,12 @@ mod tests {
     /// epoch, the safe side of Lew 2026-11-13 rule 4 ("if the store cannot
     /// say, the copy is refused"). The store reads the restarted epochs
     /// back as written.
+    ///
+    /// Pins existing behaviour (audit of 1823), green on the base by
+    /// design: the relisting rule it pins was on master before the merge
+    /// dddbed74457e (the audits of 1816), which brought this test and only
+    /// doc comments of the group code, so taking that range's non-test
+    /// changes out leaves it green, as the mutation check found (1850).
     #[test]
     fn audit_second_1823_a_member_who_left_and_came_back_vouches_for_no_copy_from_the_gap() {
         let listed = |epoch, flags| Members {
@@ -4113,6 +4119,9 @@ mod tests {
     /// The same gap through the reader's model and the writer rule: a
     /// verified copy from Anna at an epoch while she was out is nobody's
     /// reading, one from after she came back is hers.
+    ///
+    /// Pins existing behaviour (audit of 1823), green on the base by
+    /// design, for the same reason as the test above (1850).
     #[test]
     fn audit_second_1823_a_copy_from_a_rejoined_members_gap_is_nobodys_reading() {
         use leviculum_lxmf::lev::ReadingOwner;
