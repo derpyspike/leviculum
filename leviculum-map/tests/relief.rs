@@ -7,8 +7,8 @@
 
 use leviculum_map::elevation::{split, TileDecoder, TILE_CELLS};
 use leviculum_map::relief::{
-    self, ao_of, assemble, gblur, gblur_exact, par, sample, shade_rgb, sky_exaggeration,
-    sky_radius_m, Plane, ShadePlane, APRON, PLANE_SIDE, SIDE, TILE,
+    self, ao_of, assemble, gblur, gblur_exact, sample, shade_rgb, sky_exaggeration, sky_radius_m,
+    Plane, ShadePlane, APRON, PLANE_SIDE, SIDE, TILE,
 };
 
 const CHEBBI: &[u8] = include_bytes!("../fixtures/erg-chebbi.lmh");
@@ -158,11 +158,13 @@ fn nothing_sinks_into_shadow() {
 }
 
 /// The threaded kernels are the single-thread kernels bit for bit.
+/// `par` is the `std` half of the module, so the test is too.
+#[cfg(feature = "std")]
 #[test]
 fn threads_change_nothing() {
     let p = dunes(40.0);
     let a = gblur_exact(&p, 2.5);
-    let b = par::gblur_exact_mt(&p, 2.5, 4);
+    let b = relief::par::gblur_exact_mt(&p, 2.5, 4);
     assert_eq!(a.v, b.v, "threaded blur equals scalar blur");
 }
 
@@ -263,7 +265,7 @@ fn sampling_hits_the_grid() {
     };
     for y in 0..PLANE_SIDE {
         for x in 0..PLANE_SIDE {
-            sp.t[y * PLANE_SIDE + x] = ((x * 7 + y * 3) % 200) as i8 - 100;
+            sp.t[y * PLANE_SIDE + x] = (((x * 7 + y * 3) % 200) as i32 - 100) as i8;
         }
     }
     for (u, v) in [(0.5, 0.5), (100.5, 7.5), (255.5, 255.5), (0.5, 255.5)] {
