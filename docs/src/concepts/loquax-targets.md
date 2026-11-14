@@ -79,7 +79,7 @@ Rows marked (1341) or (1371) were MISSING before that pass and are closed by it.
 | 18 | Play a voice message | `ChatActivity.java:1581` | `loquax/src/gui.rs:1894`, `loquax/src/shell.rs:498` | `loquax/src/ui.rs:4746`, `loquax/src/shell.rs:404` |
 | 19 | Groups: new, join, members, add, remove, leave, delete, start again | `GroupDialogs.java:43` | `loquax/src/gui.rs:1653` (all verbs) | `loquax/src/ui.rs:6043` to `loquax/src/ui.rs:6125` |
 | 20 | Map with positions | `MapPane.java:456` | `loquax/src/gui.rs:1733` | `loquax/src/ui.rs:5993`, `tui/map.rs` |
-| 21 | Buildings on the map | `loquax/src/picture.rs:47` (shared) | `loquax/src/picture.rs:47` | `loquax/src/picture.rs:47` (sixel, kitty) |
+| 21 | Buildings on the map | `loquax/src/picture.rs:1037` (shared) | `loquax/src/picture.rs:1037` | `loquax/src/picture.rs:1037` (sixel, kitty) |
 | 22 | Load the map area | `MapPane.java:35` (autoload) | `loquax/src/gui.rs:1918` | `loquax/src/ui.rs:5989` |
 | 23 | Delete all downloaded maps | `SettingsActivity.java:791` | `loquax/src/gui.rs:1422` | `loquax/src/ui.rs:5968` (palette `delete all maps`), `loquax/src/shell.rs:449` (1371) |
 | 24 | Mesh positions (nodes nearby) | `MapPane.java:494` | `loquax/src/gui.rs:2321` | `loquax/src/tui/map.rs:1590` |
