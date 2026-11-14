@@ -246,6 +246,10 @@ pub struct Frames {
     last_zoom: Option<u8>,
     /// The names the last placement set, as sprites.
     names: Vec<Sprite>,
+    /// The frame view the last draw's sprites were offset against
+    /// ([`Frames::drawn_names`]): the screen itself unless the frontend
+    /// scales the frame.
+    last_drawn: Option<ExactView>,
     /// The frame the sprites are drawn in.
     names_view: Option<ExactView>,
     /// The same names as placed, at screen size.
@@ -487,6 +491,7 @@ impl Frames {
             tiles,
             last_zoom: None,
             names: Vec::new(),
+            last_drawn: None,
             names_view: None,
             set: Vec::new(),
             set_view: None,
@@ -771,18 +776,66 @@ impl Frames {
             }
         }
         self.last_view = Some(exact);
+        self.last_drawn = Some(drawn);
         self.drawn_names.clear();
         self.drawn_leaving.clear();
         if ask.radar.is_some() {
             self.leaving.clear();
         }
+        // On a curved frame a flat ride-along slides a name off the
+        // sphere (1799, Lew 13:5x): each carried name's ground, found
+        // through the blend it was placed under, is projected through
+        // the frame's own blend every frame; a ground behind the limb
+        // or off the world drops its name for the frame. The flat
+        // translation stays only where both frames are Mercator, where
+        // it is exact.
+        let from_blend = self
+            .names_view
+            .and_then(|from| self.tiles.world_blend(&from));
+        let curved = wblend.is_some() || from_blend.is_some();
         if let Some(from) = self.names_view.filter(|_| ask.radar.is_none()) {
             for (i, name) in self.names.iter().enumerate() {
                 let alpha = self.fades[i].alpha(now);
                 if alpha == 0 {
                     continue;
                 }
-                let (x, y) = moved(&from, &drawn, name.centre);
+                let (x, y) = match curved {
+                    false => moved(&from, &drawn, name.centre),
+                    true => {
+                        let ground = match &from_blend {
+                            Some(b) => b.to_world(name.centre.0, name.centre.1),
+                            None => Some(from.to_world(name.centre.0, name.centre.1)),
+                        };
+                        let Some(ground) = ground else {
+                            continue;
+                        };
+                        match &wblend {
+                            Some(b) if !b.facing(ground) => continue,
+                            Some(b) => b.to_screen(ground),
+                            None => drawn.to_screen(ground),
+                        }
+                    }
+                };
+                // On the pure sphere a carried name whose box the turn
+                // pushes over the limb goes for the frame (1799): its
+                // anchor still faces, but part of the name would stand
+                // in space.
+                if let Some(b) = wblend.as_ref().filter(|b| b.is_globe() && b.t() <= 0.0) {
+                    let (bw, bh) = b.size();
+                    let (cx, cy) = (f64::from(bw) / 2.0, f64::from(bh) / 2.0);
+                    let r = b.radius() - 1.0;
+                    let (dx, dy) = (x - name.centre.0, y - name.centre.1);
+                    let out = name.boxes.iter().any(|bx| {
+                        [bx.x0, bx.x1].iter().any(|&px| {
+                            [bx.y0, bx.y1].iter().any(|&py| {
+                                (f64::from(px) + dx - cx).hypot(f64::from(py) + dy - cy) > r
+                            })
+                        })
+                    });
+                    if out {
+                        continue;
+                    }
+                }
                 let by = ((x - name.centre.0).round(), (y - name.centre.1).round());
                 self.drawn_names.push(Carried {
                     i,
@@ -794,8 +847,14 @@ impl Frames {
         }
         // The names the last placement no longer set, fading out where
         // the map moves them, under the others: a pan moves each sprite by
-        // whole pixels, a zoom samples it again at its screen size.
+        // whole pixels, a zoom samples it again at its screen size. On a
+        // curved frame they are not drawn (1799): their flat ride would
+        // slide them off the sphere, so a name a turn stops placing just
+        // goes.
         self.leaving.retain(|l| l.fade.alpha(now) > 0);
+        if curved {
+            self.leaving.clear();
+        }
         let k = drawn.scale_at(0) / exact.scale_at(0);
         for (j, l) in self.leaving.iter_mut().enumerate() {
             let by =
@@ -1330,7 +1389,15 @@ impl Frames {
                 text: sprite.text.clone(),
                 kind: sprite.kind,
                 min_zoom: sprite.min_zoom,
-                at: moved(set_view, &screen, name.centre),
+                // Where the frame drew it: its placed middle plus the
+                // frame's own offset where the frame is the screen (a
+                // curved frame always is, and its offset is the blend's,
+                // 1799); the flat scaled frame reports in the screen's
+                // pixels as before.
+                at: match self.last_drawn == Some(screen) {
+                    true => (name.centre.0 + c.by.0 as f64, name.centre.1 + c.by.1 as f64),
+                    false => moved(set_view, &screen, name.centre),
+                },
                 angle: name.angle,
                 boxes: sprite.boxes.iter().map(|b| shifted(b, c.by)).collect(),
                 alpha: c.alpha,
@@ -1679,6 +1746,67 @@ mod tests {
         drag_as(Shape::EqualEarth, &mut flat, 30, -40);
         panned.pan(30, -40);
         assert_eq!(flat, panned);
+    }
+
+    /// 1799 (Lew, 13:5x): while the globe turned, the carried names
+    /// slid flat off the sphere — a screen translation of the last
+    /// frame's positions — and only the lift placed them again. Every
+    /// moving frame of a curved view re-projects each carried name's
+    /// anchor through the frame's own blend: a drawn name sits within
+    /// two pixels of the current projection of its ground. The product
+    /// shape of the test build is Equal Earth; the path under test is
+    /// the one blend path both shapes share.
+    #[test]
+    fn a_moving_curved_frames_names_sit_on_their_ground() {
+        use leviculum_map::blend::Blend;
+        let shape = crate::picture::world_shape();
+        let centre = project(LatLon::from_degrees(30.0, 10.0));
+        let (w, h) = (1000u32, 700u32);
+        let zoom = floor_milli_as(shape, w, h, 0);
+        let view = ExactView::new(centre, zoom, w, h);
+        let mut frames = florence();
+        frames.frame(&ask(view, false, 1.0, MapTheme::Light));
+        let rest = frames.drawn_names();
+        assert!(rest.len() > 5, "{} names at rest", rest.len());
+        // The frame carries the ask's margins and blends at the
+        // screen's own t: names report in the frame's pixels.
+        let (fw, fh) = (w + 2 * (w / 4), h + 2 * (h / 4));
+        let framed = |v: &ExactView| {
+            let t = Blend::new(shape, v.centre, v.zoom(), w, h).t();
+            Blend::with_t(shape, v.centre, v.zoom(), fw, fh, t)
+        };
+        let before = framed(&view);
+        let mut moved_view = view;
+        drag_as(shape, &mut moved_view, 300, 100);
+        frames.frame(&ask(moved_view, true, 1.0, MapTheme::Light));
+        let shown = frames.drawn_names();
+        let now = framed(&moved_view);
+        let mut held = 0usize;
+        let mut judged = 0usize;
+        for name in shown.iter().filter(|n| n.shown && n.alpha > 0) {
+            let was = rest.iter().find(|r| r.text == name.text);
+            let Some(was) = was else {
+                continue;
+            };
+            let Some(ground) = before.to_world(was.at.0, was.at.1) else {
+                continue;
+            };
+            judged += 1;
+            let (x, y) = now.to_screen(ground);
+            let off = (name.at.0 - x).hypot(name.at.1 - y);
+            if off < 2.0 {
+                held += 1;
+            } else {
+                println!("{}: off by {off:.1} px", name.text);
+            }
+        }
+        assert!(judged > 5, "only {judged} names judged");
+        assert_eq!(
+            judged - held,
+            0,
+            "{} of {judged} names off their ground",
+            judged - held
+        );
     }
 
     /// The frames over the committed Florence region, which carries its

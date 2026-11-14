@@ -658,27 +658,50 @@ Additions (decided):
      the field loop at lines 1407 to 1426), and its LXMF source is the
      group, so the reader books a plain telemetry field under the writer
      `lev.group_copy` names, not under the group the copy came from
-     (1687), but only where the copy's source is a group that vouches for
-     that writer: one the reader joined itself, by its own Join from any
-     of its devices or because it made the group, whose membership lists
-     the writer, not as left (`copy_writer`, `loquax/src/ui.rs:6742`, the
-     audits of 1757 and 1787), and whose `lev` map is the group's own
-     word (`Lev::from_fields_of`, 1482). The rule is one function in
-     LXMF, `Lev::reading_writer`, which the node helper's telemetry
-     report goes through too. A membership list never joins the reader,
-     an invitation to the sender's own address makes no group, and a copy
-     is judged by the group state from before its own message. A copy
-     whose writer no such group vouches for is the source's own reading,
-     a stranger's on the stranger's pin and a group's on the group's, in
-     the pin, the store, the bubble and the Info (`Writers`,
-     `loquax/src/ui.rs:6782`; the second audit of 1757); the source's
-     liveness leaves every message that names a writer out
-     (`peers_own_fix`).
-     A copy whose epoch is newer than the membership the reader holds is
-     the group's reading when it comes, and filed under its writer once
-     that membership comes (the pass of order 1792, 2026-11-13,
-     answering the second audit of 1787: a copy that outruns its list
-     would otherwise lose a member's position for good).
+     (1687), but only where ALL of this holds (Lew 2026-11-13, rule 1):
+     the message's signature was verified; the copy's source is a group
+     that vouches for that writer — one the reader joined itself, by its
+     own Join from any of its devices or because it made the group,
+     whose membership at the copy's epoch lists the writer, listed from
+     an epoch at or before the copy's and not left by then
+     (`GroupMember::since` and `left_from`, kept in the store from
+     schema 23; where the store cannot date a member, the copy is
+     refused — rule 4); and the `lev` map is the group's own word
+     (`Lev::said_by`, 1482). The rule is one function in LXMF,
+     `Lev::reading_writer` (`copy_writer`, `loquax/src/ui.rs:6834`, the
+     audits of 1757, 1787 and 1808), which the node helper's telemetry
+     report and the liveness judgement go through too (rule 5: one
+     definition of "this message names a copy's writer", so filing and
+     liveness cannot disagree). A membership list never joins the
+     reader, an invitation to the sender's own address makes no group,
+     and a copy is judged by the group state from before its own
+     message.
+     A reading that fails the rule is NOBODY's (rule 2, back to what
+     1792 did): it moves no pin, no track and no liveness, for the named
+     writer, for the source and for the group address — a group is not
+     a place and gets no pin of its own. Nothing of it shows in the
+     pin, the store, the bubble's position line or the Info (`Writers`,
+     `loquax/src/ui.rs:6857`); each refused reading is said in one
+     structured `POSITION_REFUSED reason=…` event in `tui.log`, nothing
+     on screen. A plain message from a person about its OWN position is
+     untouched by all of this.
+     Unverified is not the end (rule 3): a copy's reading held back for
+     want of a signature is filed when the verdict comes back valid
+     (`apply_verdict`), and a reading filed before an INVALID verdict —
+     a plain one's too — is taken back: the pin, the track and the
+     store's row (`ForgetPosition`, store schema 23's companion rule).
+     A copy whose epoch is newer than the membership the reader holds
+     is nobody's reading when it comes, and filed under its writer once
+     that membership comes (`file_early_copies`; the second audit of
+     1787: a copy that outruns its list would otherwise lose a member's
+     position for good) — still held, though, while its signature is
+     unverified.
+     The M9 board marks every received message unverified
+     (`loquax/src/home/board.rs:962`: the archive entry does not carry
+     the home's verification), so the board credits no group copy to
+     its writer: on the M9 a member's shared position stays off the map
+     until the archive carries the home's verdict. The rule is not
+     weakened for the board (Lew 2026-11-13, rule 3).
      A collector's `FIELD_TELEMETRY_STREAM` row names its measurer, a
      claim of the same kind. It is filed under that measurer only when the
      deliverer is a collector the reader chose (`UiModel::collectors`).

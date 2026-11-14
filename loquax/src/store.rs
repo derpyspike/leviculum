@@ -86,8 +86,9 @@
 //! a conversation's mute, archive and verification, schema 8 the drafts,
 //! schema 9 the two read-receipt columns, schema 10 the shares, schema 11
 //! the groups a home hosts, schema 12 a copy's digest and the groups a
-//! device knows and schema 13 whether a copy waits at a propagation node,
-//! nothing else, so
+//! device knows, schema 13 whether a copy waits at a propagation node and
+//! schema 23 the epochs of a device's group members (rule 4, Lew
+//! 2026-11-13), nothing else, so
 //! an older file is migrated in place at open, in one transaction. A file newer than this program is refused
 //! ([`StoreError::Newer`]): a loquax that knows only schema 1 refuses a
 //! schema 2 file, and leaves it as it is.
@@ -131,7 +132,7 @@ use leviculum_lxmf::telemetry::Location;
 pub const STORE_FILE: &str = "history.sqlite3";
 
 /// The schema this program writes, in SQLite's `user_version`.
-pub const SCHEMA_VERSION: i32 = 22;
+pub const SCHEMA_VERSION: i32 = 23;
 
 /// How long a write waits for another loquax holding the file.
 const BUSY_MS: u64 = 5_000;
@@ -527,6 +528,16 @@ CREATE INDEX home_names_by_stamp ON home_names(identity, stamp);
 CREATE INDEX home_names_by_last_seen ON home_names(identity, last_seen);
 ";
 
+/// What schema 23 adds to schema 22 (Lew 2026-11-13, rule 4): the epochs
+/// of a device's group members (`member_epochs`,
+/// [`GroupInfo::epochs_bytes`]) — from which epoch each member is listed
+/// and from which it is left. NULL, a row from before this schema,
+/// leaves every epoch unknown, and a member without epochs vouches for
+/// no group copy until the next membership comes.
+const SCHEMA_V23: &str = "
+ALTER TABLE client_groups ADD COLUMN member_epochs BLOB;
+";
+
 pub mod groups;
 pub mod pages;
 
@@ -773,7 +784,7 @@ impl Store {
             "BEGIN IMMEDIATE; {SCHEMA} {SCHEMA_V2} {SCHEMA_V3} {SCHEMA_V4} {SCHEMA_V5} \
              {SCHEMA_V6} {SCHEMA_V7} {SCHEMA_V8} {SCHEMA_V9} {SCHEMA_V10} {SCHEMA_V11} \
              {SCHEMA_V12} {SCHEMA_V13} {SCHEMA_V14} {SCHEMA_V15} {SCHEMA_V16} {SCHEMA_V17} \
-             {SCHEMA_V18} {SCHEMA_V19} {SCHEMA_V20} {SCHEMA_V21} {SCHEMA_V22} \
+             {SCHEMA_V18} {SCHEMA_V19} {SCHEMA_V20} {SCHEMA_V21} {SCHEMA_V22} {SCHEMA_V23} \
              PRAGMA user_version = {SCHEMA_VERSION}; \
              COMMIT;"
         );
@@ -976,7 +987,10 @@ impl Store {
                 if version < 21 {
                     batch.push_str(SCHEMA_V21);
                 }
-                batch.push_str(SCHEMA_V22);
+                if version < 22 {
+                    batch.push_str(SCHEMA_V22);
+                }
+                batch.push_str(SCHEMA_V23);
                 batch.push_str(&format!("PRAGMA user_version = {SCHEMA_VERSION};"));
                 if let Err(error) = self.conn.execute_batch(&batch) {
                     let _ = self.conn.execute_batch("ROLLBACK");
@@ -1192,8 +1206,8 @@ impl Store {
         let mut statement = self
             .conn
             .prepare(
-                "SELECT address, name, admin_name, inviter, ours, epoch, standing, members \
-                 FROM client_groups WHERE identity = ?1",
+                "SELECT address, name, admin_name, inviter, ours, epoch, standing, members, \
+                 member_epochs FROM client_groups WHERE identity = ?1",
             )
             .map_err(|e| self.failed(e))?;
         let rows = statement
@@ -1207,20 +1221,22 @@ impl Store {
                     row.get::<_, i64>(5)?,
                     row.get::<_, i64>(6)?,
                     row.get::<_, Vec<u8>>(7)?,
+                    row.get::<_, Option<Vec<u8>>>(8)?,
                 ))
             })
             .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
             .map(|rows| self.read(rows))
             .map_err(|e| self.failed(e))?;
         let mut out = BTreeMap::new();
-        for (address, name, admin_name, inviter, ours, epoch, standing, members) in rows {
+        for (address, name, admin_name, inviter, ours, epoch, standing, members, epochs) in rows {
             let address = self.address(&address)?;
             let corrupt = |what: &str| StoreError::Corrupt {
                 path: self.path.clone(),
                 detail: format!("a group's {what}"),
             };
-            let (_, members) =
+            let (_, mut members) =
                 GroupInfo::members_from(&members).ok_or_else(|| corrupt("members"))?;
+            GroupInfo::epochs_from(&mut members, epochs.as_deref());
             let standing = match standing {
                 0 => Standing::Invited,
                 1 => Standing::Joined,
@@ -3974,11 +3990,12 @@ fn apply(
         StoreWrite::Group(group) => {
             tx.execute(
                 "INSERT INTO client_groups(identity, address, name, admin_name, inviter, ours, \
-                 epoch, standing, members) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+                 epoch, standing, members, member_epochs) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
                  ON CONFLICT(identity, address) DO UPDATE SET name = excluded.name, \
                  admin_name = excluded.admin_name, inviter = excluded.inviter, \
                  ours = excluded.ours, epoch = excluded.epoch, standing = excluded.standing, \
-                 members = excluded.members",
+                 members = excluded.members, member_epochs = excluded.member_epochs",
                 params![
                     &identity[..],
                     &group.address[..],
@@ -3993,7 +4010,8 @@ fn apply(
                         Standing::Left => 2,
                         Standing::Ended => 3,
                     },
-                    group.members_bytes()
+                    group.members_bytes(),
+                    group.epochs_bytes()
                 ],
             )?;
         }
@@ -4062,6 +4080,12 @@ fn apply(
                     last.map(|l| l.at),
                     last.is_some_and(|l| l.moved),
                 ],
+            )?;
+        }
+        StoreWrite::ForgetPosition { peer, fix_time } => {
+            tx.execute(
+                "DELETE FROM positions WHERE identity = ?1 AND peer = ?2 AND fix_time = ?3",
+                params![&identity[..], &peer[..], fix_time],
             )?;
         }
         StoreWrite::Position(fix) => {
@@ -5636,7 +5660,7 @@ mod tests {
         let conn = Connection::open(old.path().join(STORE_FILE)).expect("raw");
         conn.execute_batch(
             "DROP TABLE owed_petnames; ALTER TABLE home_devices DROP COLUMN last_seen; \
-             DROP TABLE owed_peer_states; DROP TABLE home_names; PRAGMA user_version = 18;",
+             DROP TABLE owed_peer_states; DROP TABLE home_names; ALTER TABLE client_groups DROP COLUMN member_epochs; PRAGMA user_version = 18;",
         )
         .expect("made schema 18");
         drop(conn);
@@ -5667,7 +5691,7 @@ mod tests {
             .expect("stamped");
         drop(store);
         let conn = Connection::open(old.path().join(STORE_FILE)).expect("raw");
-        conn.execute_batch("DROP TABLE home_names; PRAGMA user_version = 21;")
+        conn.execute_batch("DROP TABLE home_names; ALTER TABLE client_groups DROP COLUMN member_epochs; PRAGMA user_version = 21;")
             .expect("made schema 21");
         drop(conn);
         let mut store = Store::open_in(old.path(), US).expect("migrated");
@@ -5708,7 +5732,7 @@ mod tests {
         let conn = Connection::open(old.path().join(STORE_FILE)).expect("raw");
         conn.execute_batch(
             "ALTER TABLE home_devices DROP COLUMN last_seen; DROP TABLE owed_peer_states; \
-             DROP TABLE home_names; PRAGMA user_version = 19;",
+             DROP TABLE home_names; ALTER TABLE client_groups DROP COLUMN member_epochs; PRAGMA user_version = 19;",
         )
         .expect("made schema 19");
         drop(conn);
@@ -5775,7 +5799,7 @@ mod tests {
         drop(Store::open_in(old.path(), US).expect("create"));
         let conn = Connection::open(old.path().join(STORE_FILE)).expect("raw");
         conn.execute_batch(
-            "DROP TABLE owed_peer_states; DROP TABLE home_names; PRAGMA user_version = 20;",
+            "DROP TABLE owed_peer_states; DROP TABLE home_names; ALTER TABLE client_groups DROP COLUMN member_epochs; PRAGMA user_version = 20;",
         )
         .expect("made schema 20");
         drop(conn);
@@ -5850,6 +5874,8 @@ mod tests {
                     admin: true,
                     joined: true,
                     left: false,
+                    since: Some(1),
+                    left_from: None,
                 },
                 GroupMember {
                     address: US,
@@ -5857,6 +5883,8 @@ mod tests {
                     admin: false,
                     joined: true,
                     left: false,
+                    since: Some(2),
+                    left_from: None,
                 },
                 GroupMember {
                     address: [0x55; 16],
@@ -5864,6 +5892,8 @@ mod tests {
                     admin: false,
                     joined: false,
                     left: true,
+                    since: Some(1),
+                    left_from: Some(3),
                 },
             ],
             standing: Standing::Joined,
@@ -5891,6 +5921,104 @@ mod tests {
             }])
             .expect("forget");
         assert!(store.restore().expect("restore").is_empty());
+    }
+
+    /// Schema 23 (Lew 2026-11-13, rule 4): a schema-22 store gains the
+    /// `member_epochs` column at open, its old group rows load with every
+    /// member's epochs unknown — a member the store cannot date vouches
+    /// for no copy — and the next write says them.
+    #[test]
+    fn a_schema_22_store_gains_the_member_epochs() {
+        use crate::ui::groups::{GroupInfo, GroupMember, Standing};
+        let home = tempfile::tempdir().expect("home");
+        let mut store = Store::open_in(home.path(), US).expect("create");
+        let member = GroupMember {
+            address: BOB,
+            name: "Lew".into(),
+            admin: false,
+            joined: true,
+            left: false,
+            since: Some(2),
+            left_from: None,
+        };
+        let group = GroupInfo {
+            address: [0x22; 16],
+            name: "Familie".into(),
+            admin_name: "Lew".into(),
+            inviter: None,
+            ours: false,
+            epoch: 3,
+            members: vec![member.clone()],
+            standing: Standing::Joined,
+        };
+        store
+            .write(&[StoreWrite::Group(group.clone())])
+            .expect("write");
+        drop(store);
+        let conn = Connection::open(home.path().join(STORE_FILE)).expect("raw");
+        conn.execute_batch(
+            "ALTER TABLE client_groups DROP COLUMN member_epochs; PRAGMA user_version = 22;",
+        )
+        .expect("made schema 22");
+        drop(conn);
+        let mut store = Store::open_in(home.path(), US).expect("migrated");
+        let groups = store.client_groups().expect("groups");
+        let loaded = &groups[&group.address].members[0];
+        assert_eq!(
+            (loaded.since, loaded.left_from),
+            (None, None),
+            "the store cannot say"
+        );
+        // The next write dates them again.
+        store
+            .write(&[StoreWrite::Group(group.clone())])
+            .expect("write again");
+        let groups = store.client_groups().expect("groups again");
+        assert_eq!(groups[&group.address].members[0], member);
+    }
+
+    /// Lew 2026-11-13, rule 3: `ForgetPosition` deletes exactly the one
+    /// kept row of a reading an INVALID verdict took back.
+    #[test]
+    fn a_forgotten_position_leaves_the_store() {
+        let home = tempfile::tempdir().expect("home");
+        let mut store = Store::open_in(home.path(), US).expect("create");
+        let fix = |t: i64| Fix {
+            peer: BOB,
+            via: BOB,
+            message: None,
+            received_at: Some(t),
+            location: Location {
+                latitude_e6: 52_000_000,
+                longitude_e6: 13_000_000,
+                altitude_e2: 0,
+                speed_e2: 0,
+                bearing_e2: 0,
+                accuracy_e2: 100,
+                last_update: t,
+            },
+            telemetry: Vec::new(),
+            source: crate::telemetry::Source::Telemetry,
+        };
+        store
+            .write(&[
+                StoreWrite::Position(fix(1_000)),
+                StoreWrite::Position(fix(2_000)),
+            ])
+            .expect("write");
+        store
+            .write(&[StoreWrite::ForgetPosition {
+                peer: BOB,
+                fix_time: 2_000,
+            }])
+            .expect("forget");
+        let left: Vec<i64> = store
+            .positions()
+            .expect("positions")
+            .iter()
+            .map(|f| f.location.last_update)
+            .collect();
+        assert_eq!(left, [1_000], "the taken-back row alone is gone");
     }
 
     /// 1219: a draft is kept beside its conversation, comes back at start

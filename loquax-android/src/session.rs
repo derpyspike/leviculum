@@ -5393,7 +5393,7 @@ mod tests {
         // No name on this phone: the room shows none (1629, walk 3 new 9).
         assert_eq!(
             choice.note,
-            "Auf diesem Server hast du noch keinen Namen: Im Raum erscheinst du ohne Namen."
+            "Noch kein Name auf diesem Server: Im Raum erscheinst du ohne Namen."
         );
         model.profile.name = "Lew".into();
         let named = rooms_hub_choice(&model, Lang::De, String::new());

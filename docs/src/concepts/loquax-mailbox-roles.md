@@ -80,7 +80,7 @@ What enforces it today:
   (`NotAdmitted`) before it is read when the link's identity is not an
   admitted device: the gate in `route` (`loquax/src/home/server.rs:151`),
   through `refuse_unless_admitted` (`loquax/src/home/server.rs:222`), which
-  asks `is_admitted` (`loquax/src/store.rs:2946`). A link that was not
+  asks `is_admitted` (`loquax/src/store.rs:2962`). A link that was not
   identified gets status 1 before that. Each handler keeps its own check
   as a second line.
 - Every refusal says so in the log with the device's hash: the free-text

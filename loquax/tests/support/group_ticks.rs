@@ -81,6 +81,8 @@ pub fn group_ticks<B: InputBuffer + Default>(
         admin: false,
         joined: true,
         left: false,
+        since: Some(0),
+        left_from: None,
     };
     model.groups.insert(
         TICKS_GROUP,

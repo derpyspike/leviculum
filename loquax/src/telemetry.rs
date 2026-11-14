@@ -9,8 +9,9 @@
 //!   message: the home signs that with the group, and the writer travels in
 //!   `lev.group_copy` (1687). That name is a claim the signature does not
 //!   cover; [`read`] files under the source, and only the caller, who
-//!   knows the reader's groups, may file under the claimed writer
-//!   ([`read_as`], [`claimed_writer`]).
+//!   knows the reader's groups, may file under the claimed writer — or
+//!   refuse the reading entirely ([`read_judged`],
+//!   [`leviculum_lxmf::lev::Lev::reading_writer`], the one rule).
 //! - `FIELD_TELEMETRY_STREAM`, a collector's rows. Each row names who
 //!   measured it, and that name is a claim too: anyone can send a stream
 //!   naming anyone. A row is filed under its measurer only where the
@@ -33,7 +34,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use leviculum_lxmf::constants::{FIELD_TELEMETRY, FIELD_TELEMETRY_STREAM};
-use leviculum_lxmf::lev::Lev;
+
 use leviculum_lxmf::msgpack::{self, Number};
 use leviculum_lxmf::telemetry::{decode_stream_field_value, Location, Telemetry};
 use leviculum_lxmf::Field;
@@ -166,6 +167,10 @@ pub struct Read {
     /// The stream rows with a position that were filed under nobody: the
     /// deliverer is no collector the reader chose ([`Rows::Dropped`]).
     pub dropped_rows: usize,
+    /// The message's own readings the writer rule refused ([`Own::Refused`],
+    /// Lew 2026-11-13): nobody's, only counted so the caller says so in
+    /// one `POSITION_REFUSED` event per reading.
+    pub refused: usize,
 }
 
 /// Whom a `FIELD_TELEMETRY_STREAM` row is filed under.
@@ -194,12 +199,17 @@ pub fn read(source: [u8; 16], fields: &[Field], received_at: Option<i64>) -> Rea
     read_as(source, source, fields, received_at, Rows::Dropped)
 }
 
-/// The writer a group copy names (1687): `lev.group_copy`'s sender. Any
-/// sender can put any address there, so the name is worth what its signed
-/// source is: the caller files a fix under it only through
-/// `ui::copy_writer` (the audits of 1757), else under the source.
-pub fn claimed_writer(fields: &[Field]) -> Option<leviculum_lxmf::lev::GroupCopy> {
-    Lev::from_fields(fields).and_then(|lev| lev.group_copy)
+/// Where a message's own `FIELD_TELEMETRY` readings go ([`read_judged`]):
+/// the caller's verdict from the one writer rule
+/// ([`leviculum_lxmf::lev::Lev::reading_writer`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Own {
+    /// Under this address: the signed source, or the writer a vouched
+    /// copy names.
+    Under([u8; 16]),
+    /// Nowhere (Lew 2026-11-13, rule 2): the rule refused the reading;
+    /// it is only counted ([`Read::refused`]).
+    Refused,
 }
 
 /// [`read`] with the message's own readings filed under `writer`, which
@@ -209,6 +219,19 @@ pub fn claimed_writer(fields: &[Field]) -> Option<leviculum_lxmf::lev::GroupCopy
 /// `source`.
 pub fn read_as(
     writer: [u8; 16],
+    source: [u8; 16],
+    fields: &[Field],
+    received_at: Option<i64>,
+    rows: Rows,
+) -> Read {
+    read_judged(Own::Under(writer), source, fields, received_at, rows)
+}
+
+/// [`read`] with the message's own readings as `own` says — filed under
+/// an established writer, or refused and only counted — and the stream
+/// rows as `rows` says. `via` stays `source`.
+pub fn read_judged(
+    own: Own,
     source: [u8; 16],
     fields: &[Field],
     received_at: Option<i64>,
@@ -230,7 +253,10 @@ pub fn read_as(
                 Some(blob) => match Telemetry::decode(blob) {
                     Ok(telemetry) => {
                         if let Some(location) = telemetry.location {
-                            out.fixes.push(fix(writer, location, blob));
+                            match own {
+                                Own::Under(writer) => out.fixes.push(fix(writer, location, blob)),
+                                Own::Refused => out.refused += 1,
+                            }
                         }
                     }
                     Err(e) => out.unreadable.push(Unreadable {
@@ -307,6 +333,27 @@ pub fn dropped_rows_line(source: &[u8; 16], message_id: &[u8; 32], rows: usize) 
         "TELEMETRY_ROWS_DROPPED source={} message={} rows={rows} reason=no-chosen-collector",
         to_hex(source),
         to_hex(&message_id[..8]),
+    )
+}
+
+/// One structured event per reading the writer rule refused (Lew
+/// 2026-11-13, rule 2): nobody's position, said in the log and nowhere
+/// on screen. `t` is milliseconds unix.
+pub fn refused_line(
+    source: &[u8; 16],
+    message_id: &[u8; 32],
+    refusal: &leviculum_lxmf::lev::Refusal,
+    t_ms: i64,
+) -> String {
+    format!(
+        "POSITION_REFUSED source={} message={} writer={} reason={} t={t_ms}",
+        to_hex(source),
+        to_hex(&message_id[..8]),
+        refusal
+            .named()
+            .map(|w| to_hex(&w))
+            .unwrap_or_else(|| "none".to_string()),
+        refusal.reason(),
     )
 }
 
@@ -526,6 +573,9 @@ pub fn report_line(read: &Read) -> String {
         None if !read.unreadable.is_empty() => {
             format!("{REPORT_MARK} telemetry, unreadable (kept)")
         }
+        // The writer rule refused the reading (Lew 2026-11-13, rule 2):
+        // the bubble says only that it holds one it does not show.
+        None if read.refused > 0 => format!("{REPORT_MARK} telemetry, position withheld"),
         None => format!("{REPORT_MARK} telemetry, no position"),
     }
 }
@@ -863,8 +913,6 @@ mod tests {
             FIELD_TELEMETRY,
             report(location(43_773_100, 11_256_000, 500, NOW - 240)).encode_field_value(),
         ));
-        let claim = claimed_writer(&fields).expect("a claim");
-        assert_eq!((claim.sender, claim.epoch), (BOB, 3));
         let read = read(GROUP, &fields, Some(NOW));
         assert!(read.unreadable.is_empty());
         let who: Vec<_> = read.fixes.iter().map(|f| (f.peer, f.via)).collect();
@@ -876,7 +924,10 @@ mod tests {
             [(BOB, GROUP)],
             "the writer measured it; the group delivered the copy"
         );
-        assert_eq!(claimed_writer(&[]), None);
+        // Refused by the caller's rule: the reading is nobody's, counted.
+        let read = read_judged(Own::Refused, GROUP, &fields, Some(NOW), Rows::Dropped);
+        assert!(read.fixes.is_empty(), "{read:?}");
+        assert_eq!(read.refused, 1);
     }
 
     /// A stranger's message whose `lev` names VICTIM as a group copy's

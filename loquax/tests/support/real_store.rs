@@ -327,6 +327,8 @@ pub fn group_info() -> GroupInfo {
             admin: m == 0,
             joined: true,
             left: false,
+            since: Some(0),
+            left_from: None,
         })
         .collect();
     members.push(GroupMember {
@@ -335,6 +337,8 @@ pub fn group_info() -> GroupInfo {
         admin: false,
         joined: true,
         left: false,
+        since: Some(0),
+        left_from: None,
     });
     GroupInfo {
         address: peer(GROUP),

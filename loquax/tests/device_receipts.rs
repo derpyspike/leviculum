@@ -926,6 +926,8 @@ fn knows_the_group(model: &mut UiModel<Line>, group: [u8; 16], members: &[([u8; 
                     admin: false,
                     joined: true,
                     left: false,
+                    since: Some(0),
+                    left_from: None,
                 })
                 .collect(),
             ..GroupInfo::new(group)

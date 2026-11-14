@@ -219,12 +219,16 @@
                 android:textColor="@color/text_secondary"
                 android:textSize="11sp" />
 
+<!-- At the bottom, not over the map's middle (1799 D4): the hint covered
+     names at every zoom and swallowed a drag across the centre. -->
             <LinearLayout
                 android:id="@+id/map_empty"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_gravity="center"
-                android:layout_margin="32dp"
+                android:layout_gravity="center_horizontal|bottom"
+                android:layout_marginStart="32dp"
+                android:layout_marginEnd="32dp"
+                android:layout_marginBottom="56dp"
                 android:background="@drawable/panel_round"
                 android:elevation="4dp"
                 android:gravity="center_horizontal"

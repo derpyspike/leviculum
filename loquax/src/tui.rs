@@ -3274,6 +3274,9 @@ mod tests {
         let shown = whole_screen(&model);
         let german = whole_screen(&advanced(Lang::De));
         says(&german, "Server für öffentliche Räume: Keiner");
+        // The audit of 1808: the German content and the key hint fit the
+        // modal, as the English one does — no full-height scrollbar.
+        says(&german, "a row's key runs it · q back");
         same_text(&german_name("tui-settings-advanced.txt"), &german);
         assert!(shown.contains("Server for public rooms: None"), "{shown}");
         same_text("tui-settings-advanced.txt", &shown);

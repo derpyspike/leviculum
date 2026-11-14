@@ -641,23 +641,105 @@ impl Lev {
     }
 
     /// Who measured the `FIELD_TELEMETRY` reading of a message `source`
-    /// signed (1687, the second audit of 1757): the writer a group copy
-    /// names, `group_copy.sender`, when the map is `source`'s own word
-    /// ([`Self::from_fields_of`]) and `lists(copy)` holds, which the
-    /// reader answers from its own knowledge: `source` is a group it has
-    /// joined, and that group's membership at the copy's epoch lists the
-    /// writer as a member who has not left. `source` in every other case:
-    /// any sender can name any writer, so a name nobody vouches for is the
-    /// sender's own reading. The one rule every reader of a copy's
-    /// position goes through (Loquax, the node helper).
+    /// signed (1687, the audits of 1757 and 1808; Lew 2026-11-13, one
+    /// rule in one place). The reading is the named writer's,
+    /// [`ReadingOwner::Writer`], only when ALL hold: `verified` (the
+    /// message's signature was checked against its sender's key), the
+    /// `lev` map is `source`'s own word ([`Self::said_by`]), and
+    /// `lists(copy)` holds, which the reader answers from its own
+    /// knowledge: `source` is a group it has joined and that group's
+    /// membership at the copy's epoch lists the writer as a member who
+    /// had not left. A message that names no copy's writer is the
+    /// source's own reading, [`ReadingOwner::Source`], verified or not —
+    /// a person's word about its own position is untouched by the copy
+    /// rule. A named writer the rule does not credit is NOBODY's
+    /// reading, [`ReadingOwner::Refused`]: any sender can name any
+    /// writer, so the name is worth nothing until the rule vouches for
+    /// it. The one rule every reader of a received position goes through
+    /// (Loquax's filing, its liveness, the node helper).
     pub fn reading_writer(
         fields: &[Field],
         source: &[u8; 16],
+        verified: bool,
         lists: impl FnOnce(&GroupCopy) -> bool,
-    ) -> [u8; 16] {
-        match Self::from_fields_of(fields, source).and_then(|lev| lev.group_copy) {
-            Some(copy) if lists(&copy) => copy.sender,
-            _ => *source,
+    ) -> ReadingOwner {
+        let Some(lev) = Self::from_fields(fields) else {
+            return ReadingOwner::Source;
+        };
+        if !lev.said_by(source) {
+            return ReadingOwner::Refused(Refusal::ForeignWord);
+        }
+        let Some(copy) = lev.group_copy else {
+            return ReadingOwner::Source;
+        };
+        if !verified {
+            return ReadingOwner::Refused(Refusal::Unverified(copy));
+        }
+        match lists(&copy) {
+            true => ReadingOwner::Writer(copy),
+            false => ReadingOwner::Refused(Refusal::Unvouched(copy)),
+        }
+    }
+}
+
+/// Whose reading a message's `FIELD_TELEMETRY` is
+/// ([`Lev::reading_writer`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadingOwner {
+    /// The named writer's: a verified group copy the reader's own group
+    /// knowledge vouches for.
+    Writer(GroupCopy),
+    /// The source's own: the message names no copy's writer.
+    Source,
+    /// Nobody's (Lew 2026-11-13, rule 2): it moves no pin, no track and
+    /// no liveness, for the named writer, for the source, or for a group
+    /// address — a group is not a place.
+    Refused(Refusal),
+}
+
+impl ReadingOwner {
+    /// The address the message's own readings are filed under; `None`
+    /// for a refused one.
+    pub fn filed_under(&self, source: &[u8; 16]) -> Option<[u8; 16]> {
+        match self {
+            Self::Writer(copy) => Some(copy.sender),
+            Self::Source => Some(*source),
+            Self::Refused(_) => None,
+        }
+    }
+}
+
+/// Why a reading is nobody's ([`ReadingOwner::Refused`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// The message's signature is not verified yet: the name is not even
+    /// the source's word. Judged again when a verdict arrives (Lew
+    /// 2026-11-13, rule 3).
+    Unverified(GroupCopy),
+    /// The reader's knowledge does not vouch: the source is no group it
+    /// joined, or the membership at the copy's epoch does not list the
+    /// writer.
+    Unvouched(GroupCopy),
+    /// The `lev` map is another writer's word, not the source's (1482):
+    /// a relay's copy, or a forged one.
+    ForeignWord,
+}
+
+impl Refusal {
+    /// The stable `reason=` word of the `POSITION_REFUSED` event.
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::Unverified(_) => "unverified",
+            Self::Unvouched(_) => "unvouched",
+            Self::ForeignWord => "foreign-word",
+        }
+    }
+
+    /// The writer the refused copy named, where one was named.
+    pub fn named(&self) -> Option<[u8; 16]> {
+        match self {
+            Self::Unverified(copy) | Self::Unvouched(copy) => Some(copy.sender),
+            Self::ForeignWord => None,
         }
     }
 }
@@ -891,6 +973,111 @@ mod tests {
         msgpack::bin(&mut odd, &[0xa1; 8]);
         let odd = alloc::vec![Lev::mark().fields()[0].clone(), (FIELD_CUSTOM_DATA, odd)];
         assert_eq!(Lev::from_fields_of(&odd, &relay), Some(Lev::mark()));
+    }
+
+    /// One rule in one place (Lew 2026-11-13): who a `FIELD_TELEMETRY`
+    /// reading belongs to, every arm — the writer's only through the
+    /// source's own map with the reader's lists vouching and the
+    /// signature verified; the source's only without a named copy;
+    /// nobody's otherwise.
+    #[test]
+    fn audit2_reading_writer_vouches_only_through_the_sources_own_map_and_lists() {
+        let anna = [0xa1; 16];
+        let member = [0x4d; 16];
+        let copy = GroupCopy {
+            sender: member,
+            sent_ms: 5,
+            epoch: 2,
+        };
+        let with = |lev: Lev| {
+            let mut fields = Vec::new();
+            lev.put_into(&mut fields);
+            fields
+        };
+        // No `lev` at all: the source's own reading.
+        assert_eq!(
+            Lev::reading_writer(&[], &anna, true, |_| true),
+            ReadingOwner::Source
+        );
+        // The source's own map without a copy: the source's.
+        assert_eq!(
+            Lev::reading_writer(&with(Lev::mark()), &anna, true, |_| true),
+            ReadingOwner::Source
+        );
+        // A verified copy in the source's own word, vouched: the writer's.
+        let copied = Lev {
+            group_copy: Some(copy),
+            ..Lev::default()
+        };
+        assert_eq!(
+            Lev::reading_writer(&with(copied.clone()), &anna, true, |c| *c == copy),
+            ReadingOwner::Writer(copy)
+        );
+        assert_eq!(ReadingOwner::Writer(copy).filed_under(&anna), Some(member));
+        // A `writer` key naming the source itself is still its own word.
+        let signed = Lev {
+            writer: Some(anna),
+            group_copy: Some(copy),
+            ..Lev::default()
+        };
+        assert_eq!(
+            Lev::reading_writer(&with(signed), &anna, true, |_| true),
+            ReadingOwner::Writer(copy)
+        );
+        // Not vouched: nobody's, with the copy and its reason.
+        assert_eq!(
+            Lev::reading_writer(&with(copied), &anna, true, |_| false),
+            ReadingOwner::Refused(Refusal::Unvouched(copy))
+        );
+        assert_eq!(Refusal::Unvouched(copy).reason(), "unvouched");
+        assert_eq!(Refusal::Unvouched(copy).named(), Some(member));
+        assert_eq!(
+            ReadingOwner::Refused(Refusal::Unvouched(copy)).filed_under(&anna),
+            None
+        );
+        // A map that is another's word: nobody's, however hard the
+        // lists vouch.
+        let foreign = Lev {
+            writer: Some([0x77; 16]),
+            group_copy: Some(copy),
+            ..Lev::default()
+        };
+        assert_eq!(
+            Lev::reading_writer(&with(foreign), &anna, true, |_| true),
+            ReadingOwner::Refused(Refusal::ForeignWord)
+        );
+        assert_eq!(Refusal::ForeignWord.reason(), "foreign-word");
+        assert_eq!(Refusal::ForeignWord.named(), None);
+    }
+
+    /// Rule 1's first clause (Lew 2026-11-13): no verification, no
+    /// crediting — and the reader's lists are not even asked. A plain
+    /// unverified message stays its source's own word.
+    #[test]
+    fn audit2_an_unverified_copys_name_is_refused_before_the_lists_are_asked() {
+        let anna = [0xa1; 16];
+        let copy = GroupCopy {
+            sender: [0x4d; 16],
+            sent_ms: 5,
+            epoch: 2,
+        };
+        let mut fields = Vec::new();
+        Lev {
+            group_copy: Some(copy),
+            ..Lev::default()
+        }
+        .put_into(&mut fields);
+        assert_eq!(
+            Lev::reading_writer(&fields, &anna, false, |_| panic!("asked the lists")),
+            ReadingOwner::Refused(Refusal::Unverified(copy))
+        );
+        assert_eq!(Refusal::Unverified(copy).reason(), "unverified");
+        assert_eq!(Refusal::Unverified(copy).named(), Some(copy.sender));
+        assert_eq!(
+            Lev::reading_writer(&[], &anna, false, |_| true),
+            ReadingOwner::Source
+        );
+        assert_eq!(ReadingOwner::Source.filed_under(&anna), Some(anna));
     }
 
     #[test]
