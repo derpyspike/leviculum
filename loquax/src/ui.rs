@@ -16880,6 +16880,32 @@ pub(crate) mod tests {
         );
     }
 
+    /// The restore entry's gate (order 1834): a stored invitation whose
+    /// verdict is still owed makes no group at start — its verdict
+    /// applies it on this run exactly as live. The control: restored
+    /// verified, the group is there.
+    #[test]
+    fn a_restored_unverified_invitation_makes_no_group_at_start() {
+        let restored_with = |signature| {
+            let mut model = UiModel::<Field>::new(&[]);
+            clock(&mut model, 26, 14, 0);
+            let mut message = stored(3, false, "join us", None);
+            message.signature = signature;
+            message.fields = lev_only(invitation_to(GROUP));
+            model.restore(vec![restored(STRANGER, vec![message], 0)]);
+            model
+        };
+        // The restore entry's gate (order 1834): a message whose verdict
+        // is still owed teaches nothing at start either.
+        let model = restored_with(Signature::Unverified);
+        assert!(
+            !model.groups.contains_key(&GROUP),
+            "an unverified stored invitation made a group at start"
+        );
+        let control = restored_with(Signature::Verified);
+        assert!(control.groups.contains_key(&GROUP), "the control applies");
+    }
+
     /// A restored stored message with its signature still unverified,
     /// carrying a member-naming copy: it sets no member's `message_fix`
     /// (the second audit of 1808). The control: restored verified, it
