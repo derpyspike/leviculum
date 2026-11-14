@@ -2923,8 +2923,18 @@ impl App {
                     (x - press.from.0).abs() >= far || (y - press.from.1).abs() >= far;
                 if press.dragging {
                     let (dx, dy) = (press.last.0 - x, press.last.1 - y);
-                    // At globe zooms the drag turns the sphere (1762).
-                    loquax::mapframe::drag(&mut self.view, dx, dy);
+                    // At globe zooms the drag turns the sphere (1762),
+                    // holding the ground under the cursor through the
+                    // blend (audit of 1818, condition 2): the
+                    // finger-less drag turns it about the disk's centre
+                    // and slid an off-centre cursor 11 px off its ground.
+                    loquax::mapframe::drag_about(
+                        &mut self.view,
+                        f64::from(dx),
+                        f64::from(dy),
+                        f64::from(x),
+                        f64::from(y),
+                    );
                     self.motion.pan(f64::from(dx), f64::from(dy), self.now_ms());
                     press.last = (x, y);
                     self.hold();
@@ -4582,6 +4592,50 @@ mod tests {
             (centre, zoom),
             "the fit went to the pins"
         );
+    }
+
+    /// Audit of 1818 condition 2, the window's half (1833's wording):
+    /// a mouse drag in a view the globe draws — the disk and the
+    /// handover band — keeps the geographic point under the cursor
+    /// within 2 px of the cursor after a drag of at least 20 px. The
+    /// finger-less [`loquax::mapframe::drag`] turns the sphere about its
+    /// centre, so an off-centre cursor slid off its ground.
+    #[test]
+    fn a_window_drag_keeps_the_ground_under_the_cursor() {
+        use leviculum_map::blend::Blend;
+        let mut judged = 0usize;
+        let mut worst = 0.0f64;
+        for (lat, lon) in [(43.7752, 11.2660), (32.0, -6.0), (-30.0, 140.0)] {
+            for zm in (1_000u32..=11_000).step_by(250) {
+                let mut app = window_over_florence(Vec::new(), 12 * MILLI);
+                app.view = ExactView::new(project(LatLon::from_degrees(lat, lon)), zm, 480, 320);
+                app.hold();
+                if !loquax::mapframe::blends(&app.view) {
+                    continue;
+                }
+                let (from, to) = ((330.0f32, 210.0f32), (306.0f32, 198.0f32));
+                let Some(ground) =
+                    loquax::mapframe::ground_under(&app.view, f64::from(from.0), f64::from(from.1))
+                else {
+                    continue;
+                };
+                app.apply(Message::Pointer(Pointer::Down(Point::new(from.0, from.1))));
+                app.apply(Message::Pointer(Pointer::Move(Point::new(to.0, to.1))));
+                app.apply(Message::Pointer(Pointer::Up));
+                let v = app.view;
+                let (w, h) = v.size();
+                let (x, y) = Blend::new(v.centre, v.zoom(), w, h).to_screen(ground);
+                let off = (x - f64::from(to.0)).hypot(y - f64::from(to.1));
+                worst = worst.max(off);
+                assert!(
+                    off <= 2.0,
+                    "{lat},{lon} z{zm}: the ground under the cursor is {off:.2} px from it"
+                );
+                judged += 1;
+            }
+        }
+        assert!(judged > 20, "only {judged} blended views judged");
+        eprintln!("window drag: {judged} views, worst {worst:.3} px");
     }
 
     use leviculum_ui_iced::select::Pick;
