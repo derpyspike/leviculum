@@ -649,8 +649,47 @@ fn fit_points(points: &[World], area: Rect, setup: &MapSetup) -> (World, u8) {
             floor,
         ),
     };
+    if let Some(turned) = whole_world_fit(points, w, h, zoom) {
+        return turned;
+    }
     let view = Viewport::new(centre, zoom, w, h).one_world();
     (view.centre, view.zoom())
+}
+
+/// The fit of `points` when it needs the whole world (order 1809): the
+/// world view is the globe, which shows one hemisphere, and the Mercator
+/// box's middle can leave people on two continents behind its limb. A
+/// fit at or below the globe's floor over a `w` x `h` view (the whole
+/// disk) turns the globe to the points' centroid on the sphere, the
+/// mean of their unit vectors, at that floor; `one_world` is not asked,
+/// it would pin a turned globe's centre to the equator. `None` where the
+/// box's middle stands: one point, a fit deeper than the floor, or a
+/// centroid that is no direction (points that cancel, as two at
+/// antipodes). Points more than a quarter turn from the centroid stay
+/// on the far side; a drag turns to them.
+fn whole_world_fit(points: &[World], w: u32, h: u32, zoom: u8) -> Option<(World, u8)> {
+    let floor = world_floor_milli(w, h).div_ceil(MILLI);
+    if points.len() < 2 || u32::from(zoom) > floor {
+        return None;
+    }
+    let rad = core::f64::consts::PI / 180.0;
+    let mut sum = [0.0f64; 3];
+    for p in points {
+        let at = unproject(*p);
+        let lat = f64::from(at.lat_e7) * 1e-7 * rad;
+        let lon = f64::from(at.lon_e7) * 1e-7 * rad;
+        sum[0] += libm::cos(lat) * libm::cos(lon);
+        sum[1] += libm::cos(lat) * libm::sin(lon);
+        sum[2] += libm::sin(lat);
+    }
+    let norm = libm::sqrt(sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2]);
+    if norm < 1e-6 {
+        return None;
+    }
+    let lat = libm::asin((sum[2] / norm).clamp(-1.0, 1.0)) / rad;
+    let lon = libm::atan2(sum[1], sum[0]) / rad;
+    let zoom = u8::try_from(floor).unwrap_or(u8::MAX);
+    Some((project(LatLon::from_degrees(lat, lon)), zoom))
 }
 
 /// The pins of `pins` that land in `view` drawn over `area`, as cells,
@@ -1209,6 +1248,124 @@ mod tests {
         assert_eq!(zoom, 3);
         assert_eq!(centre.y, 1 << 31);
         assert_eq!(zoom_floor(phone, &bare), 3);
+    }
+
+    /// Fit all over people on two continents (order 1809): the world
+    /// view is the globe, which shows one hemisphere, and the Mercator
+    /// box's middle put Anchorage behind the limb with Cape Town, and Lima
+    /// with Berlin and Tokyo. A fit that needs the whole world turns the
+    /// globe to the people's centroid on the sphere, where every one of
+    /// them faces the viewer, on the phone and in the terminal; on the
+    /// phone each lies inside the picture too. The terminal's whole-zoom
+    /// floor draws the disk larger than its picture's short side (326 px
+    /// across 240 here, 1796), so a pin near the limb can lie past the
+    /// picture's edge there, in front of the viewer. The fallbacks: where the centroid is no
+    /// direction at all (two people at antipodes, whose unit vectors
+    /// cancel) the fit keeps the Mercator box's middle, and a fit that
+    /// does not need the whole world (Berlin and Paris) is the box's
+    /// middle as before.
+    #[test]
+    fn a_fit_over_two_continents_turns_the_globe_to_their_centroid() {
+        use leviculum_map::blend::Blend;
+        let pin = |lat: f64, lon: f64| MapPin {
+            peer: [1; 16],
+            at: project(LatLon::from_degrees(lat, lon)),
+            label: "bob".to_string(),
+            age: None,
+            stale: false,
+            nearby: false,
+            own: false,
+            fix_at: None,
+            battery: None,
+        };
+        let groups: [&[(f64, f64)]; 2] = [
+            &[(-33.92, 18.42), (61.2, -149.9)],
+            &[(52.52, 13.40), (35.68, 139.69), (-12.05, -77.04)],
+        ];
+        let screens = [
+            (Rect::new(0, 0, 1224, 2197), (1u16, 1u16)),
+            (Rect::new(0, 0, 200, 60), (2, 4)),
+        ];
+        for group in groups {
+            let pins: Vec<MapPin> = group.iter().map(|&(lat, lon)| pin(lat, lon)).collect();
+            // The centroid: the mean of the unit vectors, on the sphere.
+            let mut sum = [0.0f64; 3];
+            for &(lat, lon) in group {
+                let (la, lo) = (lat.to_radians(), lon.to_radians());
+                sum[0] += la.cos() * lo.cos();
+                sum[1] += la.cos() * lo.sin();
+                sum[2] += la.sin();
+            }
+            let norm = (sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2]).sqrt();
+            let centroid = [sum[0] / norm, sum[1] / norm, sum[2] / norm];
+            for (area, cell_px) in screens {
+                let setup = MapSetup {
+                    cell_px,
+                    zooms: (0, 20),
+                    ..MapSetup::default()
+                };
+                let (centre, zoom) = fit(&pins, area, &setup);
+                // The phone and the window take the fit as it is and hold
+                // a turned globe's latitude (`mapframe::hold`, 1762); the
+                // terminal shows it through `viewport`.
+                let view = match cell_px {
+                    (1, 1) => {
+                        let (w, h) = pixels(area, &setup);
+                        Viewport::new(centre, zoom, w, h)
+                    }
+                    _ => {
+                        let state = MapState {
+                            centre,
+                            zoom,
+                            selected: None,
+                        };
+                        viewport(&state, area, &setup)
+                    }
+                };
+                let (w, h) = view.size();
+                let blend = Blend::new(view.centre, f64::from(view.zoom()), w, h);
+                assert_eq!(blend.t(), 0.0, "{w}x{h}: the whole globe");
+                let at = unproject(view.centre);
+                let (la, lo) = (
+                    (f64::from(at.lat_e7) * 1e-7).to_radians(),
+                    (f64::from(at.lon_e7) * 1e-7).to_radians(),
+                );
+                let c = [la.cos() * lo.cos(), la.cos() * lo.sin(), la.sin()];
+                let dot = c[0] * centroid[0] + c[1] * centroid[1] + c[2] * centroid[2];
+                assert!(
+                    dot.clamp(-1.0, 1.0).acos().to_degrees() < 0.5,
+                    "{group:?} {w}x{h}: the view is turned {:.1} degrees off the centroid",
+                    dot.clamp(-1.0, 1.0).acos().to_degrees()
+                );
+                for p in &pins {
+                    assert!(
+                        blend.facing(p.at),
+                        "{group:?} {w}x{h}: a pin behind the limb"
+                    );
+                    if cell_px != (1, 1) {
+                        continue;
+                    }
+                    let (x, y) = blend.to_screen(p.at);
+                    assert!(
+                        (0.0..=f64::from(w)).contains(&x) && (0.0..=f64::from(h)).contains(&y),
+                        "{group:?} {w}x{h}: a pin off the picture at ({x:.0}, {y:.0})"
+                    );
+                }
+            }
+        }
+        let setup = MapSetup {
+            cell_px: (1, 1),
+            zooms: (0, 20),
+            ..MapSetup::default()
+        };
+        let area = Rect::new(0, 0, 1224, 2197);
+        for group in [[(0.0, 0.0), (0.0, 180.0)], [(52.52, 13.40), (48.86, 2.35)]] {
+            let pins: Vec<MapPin> = group.iter().map(|&(lat, lon)| pin(lat, lon)).collect();
+            let points: Vec<World> = pins.iter().map(|p| p.at).collect();
+            let boxed = Viewport::fit(&points, 1224, 2197, 0, 0..=20).expect("a box");
+            let (centre, _) = fit(&pins, area, &setup);
+            assert_eq!(centre, boxed.centre, "{group:?}: the box's middle");
+        }
     }
 
     /// The terminal's world at its smallest is as wide as its picture
