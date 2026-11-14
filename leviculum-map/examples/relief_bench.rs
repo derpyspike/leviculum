@@ -95,17 +95,36 @@ fn main() {
     bench("local_rms_s60", 1, runs, || {
         std::hint::black_box(relief::local_rms(&b, 60.0));
     });
+    // The per-tile ground (order 1851): measured once per height tile
+    // and cached by the store, so a plane costs `compute_in` and about
+    // one `measure` on a cold screen.
+    let centre: Vec<i16> = (0..relief::TILE)
+        .flat_map(|y| {
+            let row = (y + relief::APRON) * relief::SIDE + relief::APRON;
+            p.v[row..row + relief::TILE]
+                .iter()
+                .map(|&v| v as i16)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    bench("measure_tile", 1, runs, || {
+        std::hint::black_box(relief::measure(&centre, 32.7));
+    });
+    let ground = [relief::measure(&centre, 32.7); 9];
+    bench("compute_in_tile", 1, runs, || {
+        std::hint::black_box(relief::compute_in(&p, 32.7, 3000.0, &ground));
+    });
     bench("compute_tile", 1, runs, || {
         std::hint::black_box(relief::compute(&p, 32.7, 3000.0));
     });
     // The product's multicore grain: independent tiles on scoped
     // threads, as a view draws them.
-    bench("compute_tile", cores, runs, || {
+    bench("compute_in_tile", cores, runs, || {
         std::thread::scope(|s| {
             for _ in 0..cores {
-                s.spawn(|| std::hint::black_box(relief::compute(&p, 32.7, 3000.0)));
+                s.spawn(|| std::hint::black_box(relief::compute_in(&p, 32.7, 3000.0, &ground)));
             }
         });
     });
-    println!("BENCH note=compute_tile at {cores} threads runs {cores} tiles at once; divide by the thread count for per-tile throughput");
+    println!("BENCH note=compute_in_tile at {cores} threads runs {cores} tiles at once; divide by the thread count for per-tile throughput");
 }
