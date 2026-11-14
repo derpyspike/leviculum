@@ -582,8 +582,13 @@ impl Loader {
             Ok(landed) => {
                 self.offline = false;
                 self.offline_said = false;
-                // The source answers: every wait is over (1811).
-                self.backoff.clear();
+                // The source answers: every wait is over (1811). The
+                // failure counts stay (1821): a box that keeps failing
+                // retries quietly on its ladder's next rung instead of
+                // starting over — and toasting over — on every landing.
+                for backoff in &mut self.backoff {
+                    backoff.until_ms = 0;
+                }
                 for queued in &mut self.queue {
                     queued.retry_at = 0;
                 }
@@ -1639,6 +1644,80 @@ mod tests {
                 .iter()
                 .any(|st| matches!(st, Step::Started(w) if w.bounds == s.bounds)),
             "cleared and started: {steps:?}"
+        );
+    }
+
+    /// A box that keeps failing keeps its ladder when a neighbour lands
+    /// (1821, the audit of 1811): the landing makes its wait due at once
+    /// (the source answers), but its failure count stays, so the next
+    /// failure is quiet and books the ladder's next rung instead of
+    /// starting over at [`SCREEN_RETRY_FIRST_MS`] — and toasting over —
+    /// on every landing.
+    #[test]
+    fn a_box_that_keeps_failing_keeps_its_ladder_when_a_neighbour_lands() {
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        serve.fail(true);
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut loader = Loader::new(maps, Source::Url(serve.url("o.pmtiles")), 1 << 30);
+        let s = screen(1);
+        loader.schedule(vec![s.clone()], Vec::new(), 0);
+        let steps = settle(&mut loader, 0);
+        assert!(
+            matches!(steps.as_slice(), [Step::Failed { toast: Some(_), .. }]),
+            "the first failure speaks: {steps:?}"
+        );
+        // A neighbour lands while the failed box waits.
+        serve.fail(false);
+        let a = nth(30);
+        assert!(matches!(
+            loader.ask(a.clone(), 10).as_slice(),
+            [Step::Started(_)]
+        ));
+        // Wait for the neighbour's region to be whole on disk, so the
+        // serve can fail again before the landing is polled: its result
+        // is sent right after the file verifies.
+        let path = dir.path().join(auto_name(&a.bounds, a.zooms));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let whole = File::open(&path)
+                .ok()
+                .and_then(|f| Region::open(f).ok())
+                .is_some_and(|r| r.verify().is_ok());
+            if whole {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the neighbour never landed");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        serve.fail(true);
+        let steps = settle(&mut loader, 10);
+        assert!(
+            steps
+                .iter()
+                .any(|st| matches!(st, Step::Done { want, .. } if want.bounds == a.bounds)),
+            "{steps:?}"
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|st| matches!(st, Step::Started(w) if w.bounds == s.bounds)),
+            "the landing made the wait due: {steps:?}"
+        );
+        // The retried box fails again: quietly, and on the ladder's next
+        // rung, not back at the first.
+        let steps = settle(&mut loader, 10);
+        assert!(
+            matches!(steps.as_slice(), [Step::Failed { toast: None, .. }]),
+            "the second failure is quiet: {steps:?}"
+        );
+        let report = loader.report(10);
+        let LoadState::Retrying { in_ms } = report[0].2 else {
+            panic!("{:?}", report[0].2);
+        };
+        assert!(
+            in_ms > SCREEN_RETRY_FIRST_MS,
+            "the ladder continued: {in_ms} ms"
         );
     }
 
