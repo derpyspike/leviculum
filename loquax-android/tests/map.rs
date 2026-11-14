@@ -3168,3 +3168,409 @@ fn the_position_sheet_shows_a_map_with_the_own_dot_alone() {
     assert!(control.zoom >= 15, "the radar's zoom: {}", control.zoom);
     assert!(!control.marks.is_empty(), "the pins as marks");
 }
+
+// -------------------------------------------------------------------
+// The phone's load walk (1821, the audit of 1811): `just load-walk`
+// sessions on the phone's real path — the facade's `render()`, frames
+// asked only as `MapView` asks them — so the walk's rules judge both
+// frontends. Rows and pictures go beside the window's when
+// `LOQUAX_LOAD_WALK` names a directory. The bounds mirror
+// `loquax/tests/support/load_walk.rs`, which the window's walk owns.
+// -------------------------------------------------------------------
+
+/// A rest must fill within this at full speed (the window walk's
+/// `FILL_FAST_MS`).
+const PHONE_FILL_MS: u64 = 15_000;
+/// After a fault ends the view must fill, untouched, within this (the
+/// window walk's `RECOVER_MS`).
+const PHONE_RECOVER_MS: u64 = 25_000;
+/// A box started more often than this without a failure between spins
+/// (the window walk's `SPIN_STARTS`).
+const PHONE_SPIN_STARTS: usize = 2;
+/// A frame whose most common pixel covers more than this is blank (the
+/// window walk's `BLANK_SHARE`).
+const PHONE_BLANK_SHARE: f64 = 0.99;
+
+/// The share of `rgba` its most common sampled pixel covers (every
+/// fourth pixel, as the window walk samples).
+fn phone_blank_share(rgba: &[u8]) -> f64 {
+    let mut counts: std::collections::HashMap<[u8; 4], u32> = std::collections::HashMap::new();
+    let mut total = 0u32;
+    for px in rgba.chunks_exact(4).step_by(4) {
+        *counts.entry([px[0], px[1], px[2], px[3]]).or_default() += 1;
+        total += 1;
+    }
+    f64::from(counts.values().copied().max().unwrap_or(0)) / f64::from(total.max(1))
+}
+
+/// One verdict row of the phone walk, the walk's columns.
+struct PhoneVerdict {
+    session: &'static str,
+    rule: &'static str,
+    pass: bool,
+    value: String,
+    limit: String,
+    note: String,
+    image: String,
+}
+
+/// One session of the phone walk: the facade driven on the real clock,
+/// each frame asked only for a reason the last one named.
+struct PhoneWalk {
+    name: &'static str,
+    home: tempfile::TempDir,
+    serve: leviculum_mapcut::serve::Serve,
+    ask: MapRequest,
+    view: Viewport,
+    start: std::time::Instant,
+    /// Every asked frame: when, uncovered share, blank.
+    frames: Vec<(u64, f64, bool)>,
+    /// The pauses: label, filled-within, bound, took, picture.
+    checks: Vec<(String, bool, u64, u64, Vec<u8>)>,
+    /// When the fault ended and when the view filled after it.
+    cleared_at: Option<u64>,
+    filled_at: Option<u64>,
+}
+
+impl PhoneWalk {
+    fn new(name: &'static str) -> Self {
+        let serve =
+            leviculum_mapcut::serve::Serve::start(vec![("p.pmtiles".into(), first_tile_archive())])
+                .expect("serve");
+        let home = tempfile::tempdir().expect("home");
+        std::fs::create_dir_all(home.path().join("maps")).expect("maps");
+        std::fs::write(
+            home.path().join(loquax::config::CONFIG_FILE),
+            format!("map_source = \"{}\"\n", serve.url("p.pmtiles")),
+        )
+        .expect("config");
+        loquax_android::map::hold_rung(home.path(), Some(0));
+        let at = project(LatLon::from_degrees(FIRST_TILE_AT.0, FIRST_TILE_AT.1));
+        let ask = MapRequest {
+            dir: home.path().display().to_string(),
+            w: W,
+            h: H,
+            density_milli: 1000,
+            x: Some(at.x),
+            y: Some(at.y),
+            zoom: Some(15),
+            ..MapRequest::default()
+        };
+        Self {
+            name,
+            home,
+            serve,
+            ask,
+            view: Viewport::new(at, 15, W, H),
+            start: std::time::Instant::now(),
+            frames: Vec::new(),
+            checks: Vec::new(),
+            cleared_at: None,
+            filled_at: None,
+        }
+    }
+
+    fn now_ms(&self) -> u64 {
+        u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    fn uncovered_now(&self) -> f64 {
+        let maps = Maps::new(Some(self.home.path().join("maps")));
+        loquax::ui::viewload::uncovered(&self.view, &maps.headers())
+    }
+
+    /// One frame, recorded; the picture and what it said.
+    fn frame_once(&mut self) -> (MapShown, Vec<u8>) {
+        let (shown, rgba) = frame(&loquax_android::map::render(
+            &self.ask,
+            Some(Vec::new()),
+            now(),
+        ));
+        let blank = phone_blank_share(&rgba) > PHONE_BLANK_SHARE;
+        self.frames
+            .push((self.now_ms(), self.uncovered_now(), blank));
+        (shown, rgba)
+    }
+
+    /// Frames asked only as `MapView` asks them, until none is owed or
+    /// `until` returns true; whether `until` ended it. `heal` ends the
+    /// fault the first time the frames' only reason is a retry wait.
+    fn run_java(&mut self, mut until: impl FnMut(&Self, &MapShown) -> bool, heal: bool) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        loop {
+            let (shown, _) = self.frame_once();
+            if until(self, &shown) {
+                return true;
+            }
+            let dt = if shown.pending {
+                16
+            } else if shown.filling || shown.loading_here {
+                250
+            } else if shown.loading {
+                1500
+            } else if let Some(wait) = shown.retry_in_ms {
+                if heal && self.cleared_at.is_none() {
+                    self.serve.fail(false);
+                    self.cleared_at = Some(self.now_ms());
+                }
+                wait.max(1)
+            } else {
+                return false;
+            };
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{}: the frames never settled",
+                self.name
+            );
+            std::thread::sleep(std::time::Duration::from_millis(dt.min(2_000)));
+        }
+    }
+
+    /// At rest until the view fills and nothing is owed; the pause's
+    /// picture and whether it filled within `bound_ms`.
+    fn rest(&mut self, label: &str, bound_ms: u64) {
+        let from = self.now_ms();
+        let filled = self.run_java(
+            |w, s| {
+                w.frames.last().is_some_and(|f| f.1 == 0.0)
+                    && !s.loading
+                    && !s.filling
+                    && !s.pending
+                    && s.retry_in_ms.is_none()
+            },
+            false,
+        );
+        let took = self.now_ms() - from;
+        let (_, rgba) = self.frame_once();
+        self.checks.push((
+            label.to_string(),
+            filled && took <= bound_ms,
+            bound_ms,
+            took,
+            rgba,
+        ));
+    }
+
+    /// The walk's verdict rows.
+    fn rules(&self) -> Vec<PhoneVerdict> {
+        let mut out = Vec::new();
+        for (n, (label, filled, bound, took, _)) in self.checks.iter().enumerate() {
+            out.push(PhoneVerdict {
+                session: self.name,
+                rule: "view_filled_at_rest",
+                pass: *filled,
+                value: format!("filled in {took} ms"),
+                limit: format!("0 within {bound} ms"),
+                note: label.clone(),
+                image: self.image_name(n),
+            });
+        }
+        if let Some(cleared) = self.cleared_at {
+            let took = self.filled_at.map(|at| at.saturating_sub(cleared));
+            out.push(PhoneVerdict {
+                session: self.name,
+                rule: "fault_recovers",
+                pass: took.is_some_and(|ms| ms <= PHONE_RECOVER_MS),
+                value: match took {
+                    Some(ms) => format!("filled {ms} ms after the fault ended"),
+                    None => "never filled".to_string(),
+                },
+                limit: format!("within {PHONE_RECOVER_MS} ms"),
+                note: "hands off, frames only as MapView asks them".to_string(),
+                image: String::new(),
+            });
+        }
+        // frame_never_blank: every asked frame is at the same view here,
+        // so a blank frame after a picture is a lost picture.
+        let blanked: Vec<u64> = self
+            .frames
+            .windows(2)
+            .filter(|p| !p[0].2 && p[1].2)
+            .map(|p| p[1].0)
+            .collect();
+        out.push(PhoneVerdict {
+            session: self.name,
+            rule: "frame_never_blank",
+            pass: blanked.is_empty(),
+            value: format!("{} blank frames after a picture", blanked.len()),
+            limit: "0".to_string(),
+            note: blanked
+                .iter()
+                .take(3)
+                .map(|t| format!("t={t}"))
+                .collect::<Vec<_>>()
+                .join("; "),
+            image: String::new(),
+        });
+        // no_spin, from the loader's events through the facade.
+        let events = loquax_android::map::load_events(self.home.path()).unwrap_or_default();
+        let mut spins = Vec::new();
+        let mut running: Vec<leviculum_map::region::Bounds> = Vec::new();
+        let mut starts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for e in &events {
+            let b = e.want.bounds;
+            match e.step {
+                loquax::mapload::StepKind::Started => {
+                    if running.contains(&b) {
+                        spins.push(format!("t={} started while running", e.at_ms));
+                    }
+                    running.push(b);
+                    let n = starts.entry(format!("{b:?}")).or_default();
+                    *n += 1;
+                    if *n > PHONE_SPIN_STARTS {
+                        spins.push(format!("t={} start {n}", e.at_ms));
+                    }
+                }
+                loquax::mapload::StepKind::Done => running.retain(|rb| *rb != b),
+                loquax::mapload::StepKind::Failed => {
+                    running.retain(|rb| *rb != b);
+                    starts.remove(&format!("{b:?}"));
+                }
+                loquax::mapload::StepKind::Skipped => {}
+            }
+        }
+        out.push(PhoneVerdict {
+            session: self.name,
+            rule: "no_spin",
+            pass: spins.is_empty(),
+            value: format!("{} spins", spins.len()),
+            limit: "0".to_string(),
+            note: spins.into_iter().take(3).collect::<Vec<_>>().join("; "),
+            image: String::new(),
+        });
+        out
+    }
+
+    fn image_name(&self, n: usize) -> String {
+        format!(
+            "load-{}-{:02}-{}",
+            self.name,
+            n,
+            self.checks[n].0.replace(' ', "_")
+        )
+    }
+
+    /// Rows and pictures beside the window walk's, when
+    /// `LOQUAX_LOAD_WALK` names a directory.
+    fn write_out(&self, verdicts: &[PhoneVerdict], rows: &mut String) {
+        for v in verdicts {
+            rows.push_str(&format!(
+                "load\tsession\t{}\t{}x{}\t\t15\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                v.session,
+                W,
+                H,
+                v.image,
+                v.rule,
+                v.value.replace(['\t', '\n'], " "),
+                v.limit.replace(['\t', '\n'], " "),
+                if v.pass { "pass" } else { "FAIL" },
+                v.note.replace(['\t', '\n'], " "),
+            ));
+        }
+        let Some(out) = std::env::var_os("LOQUAX_LOAD_WALK").map(PathBuf::from) else {
+            return;
+        };
+        let full = out.join("full");
+        std::fs::create_dir_all(&full).expect("the pictures directory");
+        for (n, (_, _, _, _, rgba)) in self.checks.iter().enumerate() {
+            let mut data = Vec::new();
+            let mut e = png::Encoder::new(&mut data, W, H);
+            e.set_color(png::ColorType::Rgba);
+            e.set_depth(png::BitDepth::Eight);
+            let mut writer = e.write_header().expect("header");
+            writer.write_image_data(rgba).expect("data");
+            writer.finish().expect("finish");
+            std::fs::write(full.join(format!("{}.png", self.image_name(n))), data)
+                .expect("the picture");
+        }
+    }
+}
+
+/// The phone's sessions: a plain fill at rest, revisited, and the 503
+/// fault that heals hands off — the audit's scenario, judged by the
+/// walk's rules on the phone's own path.
+#[test]
+fn the_phone_load_walk_holds_its_rules() {
+    let mut rows = String::new();
+    let mut failed = Vec::new();
+
+    let mut walk = PhoneWalk::new("phone-rest");
+    walk.rest("start-z15", PHONE_FILL_MS);
+    walk.rest("again-z15", PHONE_FILL_MS);
+    let verdicts = walk.rules();
+    walk.write_out(&verdicts, &mut rows);
+    for v in verdicts {
+        eprintln!(
+            "load-walk {} {}: {} ({}; limit {})",
+            v.session,
+            v.rule,
+            if v.pass { "pass" } else { "FAIL" },
+            v.value,
+            v.limit
+        );
+        if !v.pass {
+            failed.push(format!("{} {}: {}", v.session, v.rule, v.value));
+        }
+    }
+
+    let mut walk = PhoneWalk::new("phone-fault-503");
+    walk.serve.fail(true);
+    // The fault: frames keep coming while boxes fail and wait; the
+    // source answers again the first time the only reason is a wait,
+    // and the view must fill hands off.
+    let filled = walk.run_java(
+        |w, s| {
+            w.cleared_at.is_some()
+                && w.frames.last().is_some_and(|f| f.1 == 0.0)
+                && !s.loading
+                && !s.filling
+                && !s.pending
+        },
+        true,
+    );
+    if filled {
+        walk.filled_at = Some(walk.now_ms());
+    }
+    let (_, rgba) = walk.frame_once();
+    walk.checks.push((
+        "after-fault".to_string(),
+        filled,
+        PHONE_RECOVER_MS,
+        walk.filled_at
+            .zip(walk.cleared_at)
+            .map(|(a, b)| a.saturating_sub(b))
+            .unwrap_or(PHONE_RECOVER_MS),
+        rgba,
+    ));
+    let verdicts: Vec<PhoneVerdict> = walk
+        .rules()
+        .into_iter()
+        // The fault session's pauses are the fault's own record: the
+        // fill rule there is fault_recovers'.
+        .filter(|v| v.rule != "view_filled_at_rest")
+        .collect();
+    walk.write_out(&verdicts, &mut rows);
+    for v in verdicts {
+        eprintln!(
+            "load-walk {} {}: {} ({}; limit {})",
+            v.session,
+            v.rule,
+            if v.pass { "pass" } else { "FAIL" },
+            v.value,
+            v.limit
+        );
+        if !v.pass {
+            failed.push(format!("{} {}: {}", v.session, v.rule, v.value));
+        }
+    }
+
+    if let Some(out) = std::env::var_os("LOQUAX_LOAD_WALK").map(PathBuf::from) {
+        std::fs::create_dir_all(&out).expect("the out directory");
+        std::fs::write(out.join("rows-load-phone.tsv"), &rows).expect("the rows");
+    }
+    assert!(
+        failed.is_empty(),
+        "the phone load walk's rules failed:\n{}",
+        failed.join("\n")
+    );
+}

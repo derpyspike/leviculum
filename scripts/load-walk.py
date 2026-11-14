@@ -67,6 +67,20 @@ def run_walk(out, log, mode):
         raise RuntimeError(f"{' '.join(cmd)} did not run")
 
 
+def run_phone(out, log):
+    """The phone's sessions (1821): the same rules on the facade's path,
+    frames asked only as MapView asks them; rows and pictures beside the
+    window's."""
+    env = dict(os.environ, LOQUAX_LOAD_WALK=os.path.abspath(out))
+    cmd = ["cargo", "test", "--release", "-p", "loquax-android", "--test", "map",
+           "the_phone_load_walk", "--", "--nocapture"]
+    done = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True)
+    log.write(done.stdout + done.stderr)
+    if done.returncode != 0 and "load-walk" not in done.stdout + done.stderr:
+        sys.stderr.write(done.stderr[-4000:])
+        raise RuntimeError(f"{' '.join(cmd)} did not run")
+
+
 def read_rows(out):
     rows = []
     for name in sorted(os.listdir(out)):
@@ -153,6 +167,8 @@ def main():
     start = time.time()
     with open(os.path.join(out, "walk.log"), "w") as log:
         run_walk(out, log, mode)
+        if mode != "selftest":
+            run_phone(out, log)
     rows = read_rows(out)
     write_summary(out, rows)
     write_sheet(out, rows, f"load walk ({mode})", time.time() - start)

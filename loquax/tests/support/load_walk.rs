@@ -580,18 +580,15 @@ impl Walk {
         }
         let crop = crop_screen(&shown, &self.app);
         let mut crop = crop;
-        match self.inject {
-            Inject::PerturbPicture => {
-                let seen_before = self.checks.iter().any(|c| {
-                    c.centre == self.app.view.centre && c.zoom_milli == self.app.view.zoom_milli()
-                });
-                if seen_before {
-                    for px in crop.iter_mut().take(4096) {
-                        *px ^= 0x55;
-                    }
+        if self.inject == Inject::PerturbPicture {
+            let seen_before = self.checks.iter().any(|c| {
+                c.centre == self.app.view.centre && c.zoom_milli == self.app.view.zoom_milli()
+            });
+            if seen_before {
+                for px in crop.iter_mut().take(4096) {
+                    *px ^= 0x55;
                 }
             }
-            _ => {}
         }
         let blank = blank_share(&crop) > BLANK_SHARE;
         let inside = inside_archive(&self.view_now().bounds());
