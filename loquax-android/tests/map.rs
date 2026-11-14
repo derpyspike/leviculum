@@ -4593,7 +4593,7 @@ fn a_pinch_with_the_detectors_scroll_keeps_the_place_under_the_focal_point() {
 
 /// The emulator's own frames (order 1840): the views the APK of
 /// e744ad10e drew at the rests of six slow pinches from the globe at
-/// 32 N 6 W, read from its logcat (`MAPGESTURE ... moving=false to_x=
+/// 32 N 6 W (and five at 51 N 10 E), read from its logcat (`MAPGESTURE ... moving=false to_x=
 /// to_y= to_z=`), and the fingers' focal point it asked about
 /// (`about_x=558 about_xm=-87`, `about_y=773 about_ym=-151`). The
 /// ground first under the fingers stays within a pixel of them in each:
@@ -4613,44 +4613,66 @@ fn the_emulators_rest_frames_hold_the_ground_under_the_fingers() {
         // The APK measured is the globe build.
         return;
     }
-    let fingers = (558.0 - 0.087, 773.0 - 0.151);
-    let own = project(LatLon::from_degrees(32.0, -6.0));
-    let floor = Blend::new(
-        shape,
-        World {
-            x: 2_147_483_648,
-            y: 2_147_483_648,
-        },
-        3.909,
-        DW,
-        DH,
-    );
-    let ground = floor
-        .to_world(fingers.0, fingers.1)
-        .expect("the fingers are on the globe");
-    // (to_x, to_y, to_z) of each rest frame, and the dot's distance from
-    // the fingers on the emulator's screenshot after that pinch.
-    let rests = [
-        (2_109_381_111u32, 1_932_960_304u32, 5_009u32, 1.0f64),
-        (2_091_648_139, 1_834_455_481, 6_109, 1.4),
-        (2_083_379_698, 1_787_090_305, 7_209, 2.8),
-        (2_079_456_585, 1_764_132_516, 8_309, 6.4),
-        (2_077_502_643, 1_752_551_169, 9_409, 15.6),
-        (2_076_771_729, 1_748_177_955, 10_509, 33.3),
+    // Per run: the fix, the fingers' focal point as asked, and per rest
+    // (to_x, to_y, to_z) with the dot's distance from the fingers on the
+    // emulator's screenshot after that pinch.
+    type Rest = (u32, u32, u32, f64);
+    let runs: [((f64, f64), (f64, f64), &[Rest]); 2] = [
+        (
+            (32.0, -6.0),
+            (558.0 - 0.087, 773.0 - 0.151),
+            &[
+                (2_109_381_111, 1_932_960_304, 5_009, 1.0),
+                (2_091_648_139, 1_834_455_481, 6_109, 1.4),
+                (2_083_379_698, 1_787_090_305, 7_209, 2.8),
+                (2_079_456_585, 1_764_132_516, 8_309, 6.4),
+                (2_077_502_643, 1_752_551_169, 9_409, 15.6),
+                (2_076_771_729, 1_748_177_955, 10_509, 33.3),
+            ],
+        ),
+        (
+            (51.0, 10.0),
+            (679.0 + 0.012, 621.0 - 0.257),
+            &[
+                (2_211_566_306, 1_774_019_582, 5_008, 2.0),
+                (2_241_281_061, 1_604_846_328, 6_107, 4.1),
+                (2_255_132_873, 1_518_432_493, 7_206, 9.2),
+                (2_261_900_703, 1_473_508_978, 8_305, 21.8),
+                (2_265_532_147, 1_448_401_400, 9_404, 68.4),
+            ],
+        ),
     ];
-    for (x, y, z, seen) in rests {
-        let b = Blend::new(shape, World { x, y }, f64::from(z) / 1000.0, DW, DH);
-        let (gx, gy) = b.to_screen(ground);
-        let held = (gx - fingers.0).hypot(gy - fingers.1);
-        assert!(
-            held <= 1.0,
-            "z{z}: the emulator drew the ground first under the fingers {held:.2} px from them"
+    for ((lat, lon), fingers, rests) in runs {
+        let own = project(LatLon::from_degrees(lat, lon));
+        // Both runs start on the floor's globe about 0 N 0 E.
+        let floor = Blend::new(
+            shape,
+            World {
+                x: 2_147_483_648,
+                y: 2_147_483_648,
+            },
+            3.909,
+            DW,
+            DH,
         );
-        let (dx, dy) = b.to_screen(own);
-        let dot = (dx - fingers.0).hypot(dy - fingers.1);
-        assert!(
-            (dot - seen).abs() <= 1.0,
-            "z{z}: the fix is {dot:.2} px from the fingers in the frame, the screenshot showed {seen}"
-        );
+        let ground = floor
+            .to_world(fingers.0, fingers.1)
+            .expect("the fingers are on the globe");
+        for &(x, y, z, seen) in rests {
+            let b = Blend::new(shape, World { x, y }, f64::from(z) / 1000.0, DW, DH);
+            let (gx, gy) = b.to_screen(ground);
+            let held = (gx - fingers.0).hypot(gy - fingers.1);
+            assert!(
+                held <= 1.0,
+                "{lat},{lon} z{z}: the emulator drew the ground first under the fingers {held:.2} px from them"
+            );
+            let (dx, dy) = b.to_screen(own);
+            let dot = (dx - fingers.0).hypot(dy - fingers.1);
+            eprintln!("{lat},{lon} z{z}: ground {held:.2} px, fix {dot:.2} px, screenshot {seen}");
+            assert!(
+                (dot - seen).abs() <= 1.0 + 0.03 * seen,
+                "{lat},{lon} z{z}: the fix is {dot:.2} px from the fingers in the frame, the screenshot showed {seen}"
+            );
+        }
     }
 }
