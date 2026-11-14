@@ -90,6 +90,11 @@ pub const RELEASE_INTERVAL: Duration = Duration::from_secs(1);
 /// The release thread's name, as `/proc/<pid>/task/*/comm` shows it.
 pub const RELEASE_THREAD: &str = "alloc-release";
 
+/// The environment variable under which [`start`] says on stderr that it
+/// ran, for a test that spawns a binary and has no other way to see it
+/// (1850). Unset, `start` prints nothing.
+pub const SAY: &str = "LEVICULUM_ALLOC_SAY";
+
 static STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Start the allocator's housekeeping: huge pages off for this process, and
@@ -104,6 +109,9 @@ pub fn start() {
         return;
     }
     decline_huge_pages();
+    if std::env::var_os(SAY).is_some() {
+        eprintln!("leviculum-alloc: started ({NAME})");
+    }
     if !cfg!(target_os = "android") {
         let spawned = std::thread::Builder::new()
             .name(RELEASE_THREAD.into())
