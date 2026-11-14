@@ -236,13 +236,20 @@ fn erg_chebbi_reads_and_stays_light() {
 /// ground the plain one, smoothly.
 #[test]
 fn sky_exaggeration_follows_the_fine_band() {
-    let dune_like = sky_exaggeration(0.02, 0.004);
-    let alp_like = sky_exaggeration(0.01, 0.12);
-    assert!(dune_like > 2.2, "fine-banded ground, got {dune_like}");
+    let dune_like = sky_exaggeration(0.02, 0.004, 0.002);
+    let alp_like = sky_exaggeration(0.01, 0.12, 0.015);
+    assert!(dune_like > 2.2, "fine-banded clean ground, got {dune_like}");
     assert!(alp_like < 1.1, "form-banded ground, got {alp_like}");
     assert!(
-        sky_exaggeration(0.01, 0.012) > alp_like,
+        sky_exaggeration(0.01, 0.012, 0.002) > alp_like,
         "the step between is smooth"
+    );
+    // A vegetated surface model is fine-band-loud too — canopy, not
+    // dunes: the noise floor keeps the exaggeration plain (Uckermark).
+    let canopy = sky_exaggeration(0.06, 0.005, 0.013);
+    assert!(
+        canopy < 1.1,
+        "canopy must not wear the dune sky, got {canopy}"
     );
 }
 

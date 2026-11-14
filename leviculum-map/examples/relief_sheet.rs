@@ -196,6 +196,12 @@ fn main() {
         .collect();
     let (p5, med, p95) = percentiles(&plain_px);
     println!("PLAIN p5={p5:.0} median={med:.0} p95={p95:.0}");
+    // The sky exaggeration and its measured inputs on the window's
+    // centre tile (the README's open ZF point, now data-driven).
+    let (csx, csy) = (cx / step / 256.0, cy / step / 256.0);
+    let dem = pack.plane(rz, csx as u32, csy as u32);
+    let (fine, form, floor, zf) = relief::sky_zf(&dem, res);
+    println!("ZF fine_rms={fine:.4} form_rms={form:.4} floor={floor:.4} zf={zf:.2}");
     tile_ms.sort_by(f64::total_cmp);
     if !tile_ms.is_empty() {
         println!(

@@ -444,15 +444,41 @@ fn percentile(p: &Plane, q: f32) -> f32 {
     s[((q / 100.0 * (s.len() - 1) as f32) + 0.5) as usize]
 }
 
-/// How the sky-view term is exaggerated, from a measurable property of
-/// the window: the share of slope energy in the fine band against the
-/// form band. Dune fields put their relief into the fine chains (the
+/// How the sky-view term is exaggerated, from two measurable
+/// properties of the window and none of its name: the share of slope
+/// energy in the fine band against the form band, and the DEM's own
+/// noise floor. Dune fields put their relief into the fine chains (the
 /// study's ZF 2.0 Chebbi, 2.5 Chegaga), mountain and lowland windows
-/// into the form band (its 1.0 everywhere else); the step between is
-/// smooth, so no region is keyed.
-pub fn sky_exaggeration(fine_rms_med: f32, form_rms_med: f32) -> f32 {
+/// into the form band (its 1.0 everywhere else) — but on a vegetated
+/// surface model the fine band measures canopy, not dunes (Uckermark's
+/// fine rms is louder than Chegaga's), so the exaggeration only comes
+/// where the floor says the DEM is clean bare ground (0.002 to 0.003,
+/// against 0.012 and up on canopy). Both steps are smooth.
+pub fn sky_exaggeration(fine_rms_med: f32, form_rms_med: f32, noise_floor: f32) -> f32 {
     let ff = fine_rms_med / (fine_rms_med + form_rms_med + 1e-6);
-    1.0 + 1.5 * smoothstep((ff - 0.35) / 0.3)
+    let clean = smoothstep((0.008 - noise_floor) / 0.004);
+    1.0 + 1.5 * smoothstep((ff - 0.35) / 0.3) * clean
+}
+
+/// The sky exaggeration [`compute`] chooses for this plane, stated on
+/// its own: the diagnostic the order's sheets print per window, with
+/// the measured inputs it came from — (fine band rms, form band rms,
+/// noise floor, zf).
+pub fn sky_zf(dem: &Plane, res: f32) -> (f32, f32, f32, f32) {
+    let dem = gblur(dem, PRE_SIGMA);
+    let scale = REF_METRES / res;
+    let field = |s: f32| {
+        let b = gblur(&dem, s * scale);
+        let (gx, gy) = sobel(&b, res, ZF);
+        multilight(&gx, &gy)
+    };
+    let b0 = diff(&field(SIGMAS[0]), &field(SIGMAS[1]));
+    let b3 = field(SIGMAS[3]);
+    let rms0 = local_rms(&b0, RMS_SIGMA[0] * scale);
+    let fine = percentile(&rms0, 50.0);
+    let form = percentile(&local_rms(&b3, RMS_SIGMA[3] * scale), 50.0);
+    let floor = percentile(&rms0, ADAPT_Q).min(ADAPT_CAP);
+    (fine, form, floor, sky_exaggeration(fine, form, floor))
 }
 
 /// The per-sample tone and sky-view of one relief tile, quantized:
@@ -550,7 +576,7 @@ pub fn compute_on(
     stage("unsharp", &v);
     // Sky-view: normalised openness over the zoom's radius, its
     // exaggeration from the window's slope-energy split.
-    let zf_sky = sky_exaggeration(percentile(&rms[0], 50.0), percentile(&rms[3], 50.0));
+    let zf_sky = sky_exaggeration(percentile(&rms[0], 50.0), percentile(&rms[3], 50.0), floor);
     let sigma = (sky_m / res / 3.0).max(2.0);
     let wide = gblur(&dem, sigma);
     let mut delta = diff(&dem, &wide);
