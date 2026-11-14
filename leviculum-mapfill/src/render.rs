@@ -107,16 +107,26 @@ pub struct Placement {
     pub origin: Point,
 }
 
-/// A bending of placed sub-pixel points into their drawn place: how the
-/// map core projects a tile's Mercator-linear geometry through a curved
-/// world projection (the globe's handover) without this crate knowing
-/// any float or projection. `None` everywhere else: the placed point is
-/// the drawn point.
-pub type Warp<'w> = dyn Fn(Point) -> Point + 'w;
+/// A bending of a placed ring into its drawn place: how the map core
+/// projects a tile's Mercator-linear geometry through a curved world
+/// projection (the globe's handover) without this crate knowing any
+/// float or projection. `None` everywhere else: the placed point is the
+/// drawn point.
+///
+/// It is handed one ring's placed sub-pixel points (an area's ring, or a
+/// line's run) and the feature's kind, and hands `out` each drawn ring
+/// or run, none or several: a curved projection cuts what lies past its
+/// horizon (the globe's limb, closed along the limb for an area, broken
+/// there for a line; audit of 1818, condition 5), which a bending of
+/// single points cannot. `out` answers `false` when the work storage is
+/// full; the bending then answers `false` too, and the feature is
+/// skipped as one too large.
+pub type Warp<'w> = dyn Fn(&[Point], Kind, &mut dyn FnMut(&[Point]) -> bool) -> bool + 'w;
 
-/// Project `f` into `w`, each placed point through `warp` where one is
-/// given: the number of rings, the bounding box and the number of
-/// vertices, or `None` when it does not fit.
+/// Project `f` into `w`, each ring through `warp` where one is given:
+/// the number of rings, the bounding box and the number of vertices, or
+/// `None` when it does not fit. A ring a warp bends is placed first at
+/// the far end of `w.points` and its drawn rings written before it.
 fn project_feature(
     f: &Feature<'_>,
     at: Placement,
@@ -125,27 +135,55 @@ fn project_feature(
 ) -> Option<(usize, Bbox, usize)> {
     let (mut n, mut nr) = (0usize, 0usize);
     let (mut x0, mut y0, mut x1, mut y1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+    let place = |x: i16, y: i16| {
+        Point::new(
+            project(f.offset.x + i32::from(x), at.shift) + at.origin.x,
+            project(f.offset.y + i32::from(y), at.shift) + at.origin.y,
+        )
+    };
     for ring in f.rings() {
         if n + ring.len() > w.points.len() || nr >= w.ring_ends.len() {
             return None;
         }
-        for (x, y) in ring.points() {
-            let mut p = Point::new(
-                project(f.offset.x + i32::from(x), at.shift) + at.origin.x,
-                project(f.offset.y + i32::from(y), at.shift) + at.origin.y,
-            );
-            if let Some(warp) = warp {
-                p = warp(p);
+        let Some(warp) = warp else {
+            for (x, y) in ring.points() {
+                let p = place(x, y);
+                x0 = x0.min(p.x);
+                y0 = y0.min(p.y);
+                x1 = x1.max(p.x);
+                y1 = y1.max(p.y);
+                w.points[n] = p;
+                n += 1;
             }
-            x0 = x0.min(p.x);
-            y0 = y0.min(p.y);
-            x1 = x1.max(p.x);
-            y1 = y1.max(p.y);
-            w.points[n] = p;
-            n += 1;
+            w.ring_ends[nr] = n as u16;
+            nr += 1;
+            continue;
+        };
+        let cap = w.points.len();
+        let (head, placed) = w.points.split_at_mut(cap - ring.len());
+        for (k, (x, y)) in ring.points().enumerate() {
+            placed[k] = place(x, y);
         }
-        w.ring_ends[nr] = n as u16;
-        nr += 1;
+        let ends = &mut *w.ring_ends;
+        let mut out = |drawn: &[Point]| {
+            if n + drawn.len() > head.len() || nr >= ends.len() {
+                return false;
+            }
+            for &p in drawn {
+                x0 = x0.min(p.x);
+                y0 = y0.min(p.y);
+                x1 = x1.max(p.x);
+                y1 = y1.max(p.y);
+                head[n] = p;
+                n += 1;
+            }
+            ends[nr] = n as u16;
+            nr += 1;
+            true
+        };
+        if !warp(placed, f.kind, &mut out) {
+            return None;
+        }
     }
     Some((nr, (x0, y0, x1, y1), n))
 }
