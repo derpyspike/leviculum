@@ -354,8 +354,10 @@ impl Loader {
     }
 
     /// Milliseconds until the loader's next own move (1821, the audit of
-    /// 1811): the earliest wait of a queued box that failed or found no
-    /// internet, 0 when one is due now, `None` when none waits.
+    /// 1811; 1835, the audit of 1821): the earliest instant at which
+    /// `start_next` could start a queued box — the one scan, `due_at`,
+    /// judges both — 0 when one may start now, `None` when no waiting
+    /// box has such an instant ahead.
     ///
     /// The loader owes the view something while [`busy`](Self::busy),
     /// [`loading_here`](Self::loading_here) or this says so — the one
@@ -363,17 +365,24 @@ impl Loader {
     /// own tick anyway; a frame-driven frontend (the phone) runs the
     /// loader only inside a frame, so it asks for its next frame at this
     /// instant (the phone's `MapShown.retry_in_ms`), and a box that
-    /// failed at rest retries with no touch. An
-    /// off-screen box queued behind an on-screen box waiting to retry is
-    /// covered by the same wake: the retry due first is the screen's,
-    /// its start makes the loader busy again, and the boxes behind it
-    /// follow in order.
+    /// failed at rest retries with no touch. An off-screen box that is
+    /// due but held back — `start_next` starts nothing behind an
+    /// on-screen box still waiting to retry — names no wake of its own:
+    /// nothing could start at it, and a phone woken then would redraw
+    /// every 50 ms for nothing until the screen box's retry (the audit
+    /// of 1821, finding 1). The wake named is the screen box's instead,
+    /// and the held box starts, in order, once the screen is served.
     pub fn next_due_ms(&self, now_ms: u64) -> Option<u64> {
+        if self.due_at(now_ms).is_some() {
+            return Some(0);
+        }
         self.queue
             .iter()
-            .filter(|q| q.retry_at > 0)
-            .map(|q| q.retry_at.saturating_sub(now_ms))
+            .filter(|q| q.retry_at > now_ms)
+            .map(|q| q.retry_at)
+            .filter(|&at| self.due_at(at).is_some())
             .min()
+            .map(|at| at - now_ms)
     }
 
     /// Whether the last load that ended found no internet and none started
@@ -696,38 +705,43 @@ impl Loader {
         (until_ms, failures)
     }
 
-    /// Start the queue's first boxes: one when nothing runs, one for the
-    /// screen beside loads for areas the view left, and the screen's own
-    /// box (1527) beside any load but another for the screen itself. A
-    /// box waiting to retry is passed over when the reader does not look
-    /// at it; one the reader looks at blocks what is behind it (1811):
-    /// the link is not spent next to a screen that lacks its data.
+    /// The queue's next box at `now_ms`, apart from what already runs:
+    /// the first box due, unless it is off-screen behind an on-screen
+    /// box still waiting to retry — then nothing, the link is not spent
+    /// next to a screen that lacks its data (1811). The one scan
+    /// [`start_next`](Self::start_next) starts by and [`next_due_ms`](Self::next_due_ms)
+    /// names wakes by (1835, the audit of 1821): an instant this scan
+    /// refuses is no wake, because nothing could start at it.
+    fn due_at(&self, now_ms: u64) -> Option<usize> {
+        let mut screen_waits = false;
+        for (n, queued) in self.queue.iter().enumerate() {
+            if queued.retry_at > now_ms {
+                screen_waits |= queued.rank.on_screen();
+                continue;
+            }
+            if screen_waits && !queued.rank.on_screen() {
+                return None;
+            }
+            return Some(n);
+        }
+        None
+    }
+
+    /// Start the queue's first boxes ([`due_at`](Self::due_at)): one
+    /// when nothing runs, one for the screen beside loads for areas the
+    /// view left, and the screen's own box (1527) beside any load but
+    /// another for the screen itself.
     fn start_next(&mut self, now_ms: u64) -> Vec<Step> {
         let mut steps = Vec::new();
-        loop {
-            let mut candidate = None;
-            let mut screen_waits = false;
-            for (n, queued) in self.queue.iter().enumerate() {
-                if queued.retry_at > now_ms {
-                    screen_waits |= queued.rank.on_screen();
-                    continue;
-                }
-                if screen_waits && !queued.rank.on_screen() {
-                    break;
-                }
-                let beside = match queued.rank {
-                    Rank::Screen => !self.running.iter().any(|r| r.rank <= Rank::Screen),
-                    rank if rank.on_screen() => !self.running.iter().any(|r| r.rank.on_screen()),
-                    _ => false,
-                };
-                if self.running.is_empty() || self.running.len() < MAX_RUNNING && beside {
-                    candidate = Some(n);
-                }
+        while let Some(n) = self.due_at(now_ms) {
+            let beside = match self.queue[n].rank {
+                Rank::Screen => !self.running.iter().any(|r| r.rank <= Rank::Screen),
+                rank if rank.on_screen() => !self.running.iter().any(|r| r.rank.on_screen()),
+                _ => false,
+            };
+            if !(self.running.is_empty() || self.running.len() < MAX_RUNNING && beside) {
                 break;
             }
-            let Some(n) = candidate else {
-                break;
-            };
             let queued = self.queue.remove(n);
             steps.extend(self.start(queued));
         }
@@ -1886,6 +1900,78 @@ mod tests {
         assert!(
             matches!(report[1].2, LoadState::Waiting { place: 0 }),
             "{report:?}"
+        );
+    }
+
+    /// Audit 1821: the phone wakes at `next_due_ms` (MapView.java:1145-1156,
+    /// at least 50 ms). When the earliest due box is an off-screen one that
+    /// cannot start because an on-screen box ahead of it still waits
+    /// (start_next's screen_waits), a wake of 0 makes the phone redraw
+    /// every 50 ms until the screen box's retry. Safe outcome: at the
+    /// named wake something starts, or the named wake is later.
+    #[test]
+    fn audit_a_named_wake_always_lets_something_start() {
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        serve.fail(true);
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut loader = Loader::new(maps, Source::Url(serve.url("o.pmtiles")), 1 << 30);
+        let (s, a) = (screen(1), nth(5));
+        // The neighbour loads first and fails: the off-screen ladder.
+        loader.schedule(Vec::new(), vec![a.clone()], 0);
+        let steps = settle(&mut loader, 0);
+        assert!(
+            steps.iter().any(|st| matches!(st, Step::Failed { .. })),
+            "{steps:?}"
+        );
+        let ahead_due = loader.next_due_ms(0).expect("the neighbour waits");
+        // The view moves onto the screen box; it fails until its wait
+        // outlasts the neighbour's.
+        let mut now: u64 = 1_000;
+        loader.schedule(vec![s.clone()], vec![a.clone()], now);
+        loop {
+            let steps = settle(&mut loader, now);
+            assert!(
+                steps
+                    .iter()
+                    .any(|st| matches!(st, Step::Failed { want, .. } if want.bounds == s.bounds)),
+                "{steps:?}"
+            );
+            let state = loader
+                .report(now)
+                .into_iter()
+                .find(|(b, _, _)| *b == s.bounds)
+                .map(|(_, _, st)| st);
+            let Some(LoadState::Retrying { in_ms }) = state else {
+                panic!("{state:?}");
+            };
+            if now + in_ms > ahead_due + 1_000 {
+                break;
+            }
+            now += in_ms;
+            let started = loader.poll(now);
+            assert!(
+                started
+                    .iter()
+                    .any(|st| matches!(st, Step::Started(w) if w.bounds == s.bounds)),
+                "{started:?}"
+            );
+        }
+        // The neighbour's wait is over, the screen box's is not.
+        let t = ahead_due + 500;
+        assert!(
+            !loader.busy() && !loader.loading_here(),
+            "{:?}",
+            loader.report(t)
+        );
+        let wake = loader.next_due_ms(t).expect("boxes wait");
+        let report = loader.report(t);
+        let steps = loader.poll(t + wake);
+        assert!(
+            !steps.is_empty() || loader.busy(),
+            "the loader named a wake in {wake} ms, yet nothing can start then \
+             (an on-screen box still waits): the phone redraws every 50 ms \
+             until it does: {report:?}"
         );
     }
 }
