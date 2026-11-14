@@ -350,10 +350,15 @@ pub struct Style {
     /// terminal, whose cells would only paint city blocks grey.
     pub buildings: bool,
     /// The ground relief under the view (leviculum-map 1741), where
-    /// height pieces cover it: on for the phone, the window and the
-    /// terminal's pictures, off on the M9, whose heap holds no shade
-    /// plane. Part of the style, so a tile cache keyed by it drops its
-    /// tiles when the relief is switched.
+    /// height pieces cover it: on in [`Style::SCREEN`] for the phone, the
+    /// window and the terminal's pictures, and only in the light table
+    /// (the frontends draw no relief in the dark one: R′'s highlight
+    /// lifts toward warm white and its floor is tuned against light
+    /// paper). Off in [`Style::M9`] and in the M9's own style
+    /// (`loquax_m9::map::style`): one shade plane's computation holds
+    /// 16 MB of working planes, twice the board's PSRAM. Part of the
+    /// style, so a tile cache keyed by it drops its tiles when the relief
+    /// is switched.
     pub relief: bool,
 }
 

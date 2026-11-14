@@ -266,6 +266,9 @@ pub struct TileCache {
     /// screen, or prefetched since.
     shown_from: u64,
     painters: Vec<Painter>,
+    /// The relief store every painter of this cache shares (1741's
+    /// audit): one set of height tiles and shade planes for all workers.
+    relief: crate::relief::ReliefStore,
     workers: usize,
     /// Blend world views through this projection (1710), `None` for
     /// Mercator throughout: a frame the blend holds is drawn whole by a
@@ -302,6 +305,7 @@ impl TileCache {
             tick: 0,
             shown_from: 0,
             painters: Vec::new(),
+            relief: crate::relief::ReliefStore::default(),
             workers,
             world_shape: None,
             screen: None,
@@ -355,7 +359,8 @@ impl TileCache {
             return None;
         }
         if self.painters.is_empty() {
-            self.painters.push(Painter::new(self.maps.clone()));
+            self.painters
+                .push(Painter::with_relief(self.maps.clone(), self.relief.clone()));
         }
         // Since 1799 a region that reaches into a blended view draws
         // through the blend inside the whole-frame painter, so the blend
@@ -877,7 +882,8 @@ impl TileCache {
         }
         let n = self.workers.min(keys.len());
         while self.painters.len() < n {
-            self.painters.push(Painter::new(self.maps.clone()));
+            self.painters
+                .push(Painter::with_relief(self.maps.clone(), self.relief.clone()));
         }
         // Each worker's own time drawing: its share of the CPU.
         let timed = |painter: &mut Painter, chunk: &[TileKey]| {
@@ -2287,6 +2293,32 @@ mod tests {
             let again = draw_tile(&mut kept, key, true);
             let fresh = draw_tile(&mut Painter::new(maps.clone()), key, true);
             assert!(again == fresh, "tile {key:?} differs");
+        }
+    }
+
+    /// 1741's audit: every worker of a tile cache paints from one relief
+    /// store, so a shade plane is computed once for the cache, not once
+    /// per worker.
+    #[test]
+    fn the_workers_share_one_relief_store() {
+        let (_dir, maps) = maps();
+        let mut cache = TileCache::new(maps, 1 << 24);
+        cache.workers = 3;
+        let view = ExactView::new(duomo(), 15 * MILLI, 700, 700);
+        let keys: Vec<TileKey> = Grid::of(&view, 15)
+            .keys(Style::PC, 100)
+            .into_iter()
+            .flatten()
+            .take(3)
+            .collect();
+        assert_eq!(keys.len(), 3);
+        let _ = cache.render(&keys, true);
+        assert_eq!(cache.painters.len(), 3);
+        for p in &cache.painters {
+            assert!(
+                p.relief().same_as(&cache.relief),
+                "a painter with a store of its own"
+            );
         }
     }
 }

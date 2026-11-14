@@ -109,8 +109,17 @@ pub const OVERZOOM: u8 = 2;
 /// board as grey-brown and far too dark), the edges smoothed by the
 /// panel's frame ([`Coverage`]). The UI around it keeps its dark tokens
 /// until the house page's theme switch.
+///
+/// Without the ground relief (1741): one shade plane's computation
+/// holds 16.1 MB of working planes at its peak (measured on the host,
+/// 2026-11-14), twice the board's 8 MiB of PSRAM, of which the UI heap
+/// is 2 MiB; and the M9 draws no height packs. The flag is off so the
+/// style says what the board draws.
 pub fn style() -> Style {
-    Style::SCREEN
+    Style {
+        relief: false,
+        ..Style::SCREEN
+    }
 }
 
 /// What the board tells the model it draws the map with: a cell of the
@@ -1439,6 +1448,20 @@ pub fn mix(under: u16, color: Rgb565, alpha: u8) -> u16 {
 #[cfg(test)]
 mod words_1531 {
     use super::*;
+
+    /// 1741's audit: the M9's style says it draws no relief, the rest
+    /// of its finish is the screens'.
+    #[test]
+    fn the_m9_draws_no_relief() {
+        assert!(!style().relief);
+        assert_eq!(
+            style(),
+            Style {
+                relief: false,
+                ..Style::SCREEN
+            }
+        );
+    }
 
     /// 1447, 1531: both pages of the key hint fit the bottom row in
     /// either language (the German one with its double spaces single),

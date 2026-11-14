@@ -5,7 +5,8 @@
 
 use leviculum_map::elevation::{
     heights_to_planes, planes_to_heights, split, write_block, write_directory, Block, Directory,
-    DirectoryInfo, ElevationError, TileDecoder, TileFault, TILE_BYTES, TILE_CELLS, TILE_EDGE,
+    DirectoryInfo, ElevationError, PackIndex, TileDecoder, TileFault, TILE_BYTES, TILE_CELLS,
+    TILE_EDGE,
 };
 use ruzstd::encoding::{compress_to_vec, CompressionLevel};
 
@@ -391,4 +392,61 @@ fn directory_side_refusals_hold() {
     }
     assert!(Directory::parse(&directory[..39]).is_err());
     assert!(Block::parse(&block[..23]).is_err());
+}
+
+/// The pack index (order 1741's audit: no pack read whole) finds the
+/// same block ranges as `split` over the whole file, reading only the
+/// directory piece and each block's header and length table, and its
+/// decode gives the same heights as the block's own.
+#[test]
+fn a_pack_indexes_with_bounded_reads() {
+    let mut read = 0usize;
+    let index = PackIndex::read(CHEBBI.len() as u64, |at, buf| {
+        read += buf.len();
+        let at = at as usize;
+        buf.copy_from_slice(&CHEBBI[at..at + buf.len()]);
+        true
+    })
+    .expect("the index");
+    let (dir, ranges) = split(CHEBBI).expect("split");
+    // The directory piece once in full plus its 40-byte head, and one
+    // block's 24-byte header with its 4-tile table twice over.
+    assert_eq!(read, 40 + ranges[0].len() + 24 + (24 + 4 * 4));
+    assert!(read * 50 < CHEBBI.len(), "{read} of {} bytes", CHEBBI.len());
+    assert_eq!(index.zooms(), dir.block_zoom()..=dir.tile_zoom());
+    assert_eq!(index.block_for(12, 2002, 1674), Some(ranges[1].clone()));
+    assert_eq!(index.block_for(12, 0, 0), None);
+    assert_eq!(index.block_for(10, 500, 418), None);
+    assert_eq!(index.tiles(12).len(), 4);
+    assert_eq!(index.tiles(11), vec![(1001, 837)]);
+    let mut via_index = vec![0i16; TILE_CELLS];
+    let mut direct = vec![0i16; TILE_CELLS];
+    let mut scratch = vec![0i16; TILE_CELLS];
+    let mut dec = TileDecoder::new();
+    let range = index.block_for(12, 2003, 1675).expect("held");
+    index
+        .decode(
+            &CHEBBI[range],
+            (12, 2003, 1675),
+            &mut dec,
+            &mut via_index,
+            &mut scratch,
+        )
+        .expect("decode");
+    Block::parse(&CHEBBI[ranges[1].clone()])
+        .expect("block")
+        .heights(&mut dec, 12, 2003, 1675, &mut direct, &mut scratch)
+        .expect("heights");
+    assert_eq!(via_index, direct);
+    // A file shorter or longer than its pieces is refused, as `split`
+    // refuses it, and so is a read that fails.
+    assert_eq!(
+        PackIndex::of(&CHEBBI[..CHEBBI.len() - 1]).err(),
+        Some(ElevationError::Length)
+    );
+    let mut longer = CHEBBI.to_vec();
+    longer.push(0);
+    assert_eq!(PackIndex::of(&longer).err(), Some(ElevationError::Length));
+    assert!(PackIndex::read(CHEBBI.len() as u64, |_, _| false).is_err());
+    assert_eq!(PackIndex::of(b"LMHB").err(), Some(ElevationError::TooShort));
 }

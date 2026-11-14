@@ -765,6 +765,28 @@ runs of 58 to 78 ms on 8 workers are in both columns, the other work on
 the host, so the medians decide. Nothing was tuned in this pass: no row
 missed.
 
+**Drawing the relief** (1741, its audit 1851). `Style::relief` asks for
+the ground relief under the vector map where height packs (`*.lmh`,
+`leviculum_map::elevation`) lie beside the regions in the maps
+directory: set in `Style::PC` and so in `Style::SCREEN`, the finish of
+the window, the phone and the terminal's sixel and kitty pictures; off
+in `Style::M9` and in the M9's own style (`loquax-m9/src/map.rs`
+`style()`), since one shade plane's computation holds 16 MB of working
+planes and the board has 8 MiB of PSRAM. The frontends shade only in
+the light table and only in colour (`Painter::draw_into`,
+`loquax/src/picture.rs`): style R′ lifts lit faces toward warm white and
+holds its floor against light paper, which a dark ground would wear as
+a glow; the dark table draws as without the flag. The relief goes
+after the area fills and before the buildings and every line
+(`leviculum_map::draw::draw_in_relief`), so it shades the ground
+colours and never a road, a footprint or a name. The style is part of
+the tile cache's key, so switching the flag drops the cached tiles.
+The packs are found and indexed by `loquax/src/relief.rs` (bounded
+reads, indexed again only when the set of pack files changes, one store
+shared by all of a tile cache's workers); the method and its parameters
+are `leviculum-map/src/relief.rs`'s module comment, the goldens
+`leviculum-map/tests/golden/relief/`.
+
 **Region sizes with buildings** (1193), cut 2026-11-01 from the Protomaps
 build of 2026-10-28 with `--locale de`, with and without `--buildings`.
 The autoload's places are its 12 by 12 km boxes at z10 to z15 (the three

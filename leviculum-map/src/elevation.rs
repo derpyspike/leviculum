@@ -308,20 +308,23 @@ impl<'a> Directory<'a> {
     }
 }
 
-/// A parsed block piece, its tiles still compressed.
+/// What a block piece's header and length table say, read without its
+/// frames: enough to index a pack with bounded reads ([`PackIndex`]).
 #[derive(Clone, Copy, Debug)]
-pub struct Block<'a> {
-    bytes: &'a [u8],
+struct BlockHead {
     tile_zoom: u8,
     block_zoom: u8,
+    side: u32,
     x: u32,
     y: u32,
-    side: u32,
+    /// The whole piece's length.
+    len: usize,
 }
 
-impl<'a> Block<'a> {
-    /// Parse the block at the start of `bytes`, returning it and its length.
-    pub fn parse_prefix(bytes: &'a [u8]) -> Result<(Self, usize), ElevationError> {
+impl BlockHead {
+    /// Read the head from `bytes`, which must hold at least the header
+    /// and the length table ([`BlockHead::table_len`]).
+    fn parse(bytes: &[u8]) -> Result<Self, ElevationError> {
         check_header(bytes, BLOCK_MAGIC, BLOCK_HEADER)?;
         let tile_zoom = bytes[8];
         let block_zoom = bytes[9];
@@ -344,20 +347,210 @@ impl<'a> Block<'a> {
         for n in 0..count {
             len += u64::from(u32le(bytes, BLOCK_HEADER + 4 * n));
         }
-        if len > bytes.len() as u64 {
+        let len = usize::try_from(len).map_err(|_| ElevationError::Length)?;
+        Ok(Self {
+            tile_zoom,
+            block_zoom,
+            side,
+            x,
+            y,
+            len,
+        })
+    }
+
+    /// How many bytes of a block piece [`BlockHead::parse`] needs, from
+    /// its fixed header: the header and the length table.
+    fn table_len(header: &[u8]) -> Result<usize, ElevationError> {
+        check_header(header, BLOCK_MAGIC, BLOCK_HEADER)?;
+        Ok(BLOCK_HEADER + 4 * usize::from(u16le(header, 20)))
+    }
+}
+
+/// A height pack's index: its zooms and each block's position and byte
+/// range in the file, read through bounded reads — the directory piece
+/// and each block's header and length table, never a tile frame — so a
+/// device keeps a 37 MB pack on disk and reads one block when a tile
+/// needs it. The one place a pack's tiles are found and decoded: the
+/// phone's facade and the desktop's relief store both go through it.
+#[derive(Clone, Debug)]
+pub struct PackIndex {
+    tile_zoom: u8,
+    block_zoom: u8,
+    blocks: Vec<((u32, u32), core::ops::Range<usize>)>,
+}
+
+impl PackIndex {
+    /// Index the pack of `len` bytes that `read_at(offset, buf)` reads
+    /// from: it fills `buf` from `offset` and says whether it could. A
+    /// read that fails or a piece that does not add up to `len` is
+    /// refused as [`ElevationError::Length`]; the pieces' own checks
+    /// are [`Directory::parse`]'s and [`Block::parse_prefix`]'s.
+    pub fn read(
+        len: u64,
+        mut read_at: impl FnMut(u64, &mut [u8]) -> bool,
+    ) -> Result<Self, ElevationError> {
+        let mut head = [0u8; DIRECTORY_HEADER];
+        if len < DIRECTORY_HEADER as u64 || !read_at(0, &mut head) {
+            return Err(ElevationError::TooShort);
+        }
+        check_header(&head, DIRECTORY_MAGIC, DIRECTORY_HEADER)?;
+        let dir_len = DIRECTORY_HEADER as u64
+            + u64::from(u32le(&head, 32))
+            + u64::from(u32le(&head, 36))
+            + u64::from(u32le(&head, 12)) * DIRECTORY_ENTRY as u64;
+        if dir_len > len {
             return Err(ElevationError::Length);
         }
-        let len = len as usize;
+        let mut dir_bytes = vec![0u8; dir_len as usize];
+        if !read_at(0, &mut dir_bytes) {
+            return Err(ElevationError::Length);
+        }
+        let dir = Directory::parse(&dir_bytes)?;
+        let mut blocks = Vec::with_capacity(dir.len());
+        let mut at = dir_len;
+        let mut fixed = [0u8; BLOCK_HEADER];
+        let mut table = Vec::new();
+        for n in 0..dir.len() {
+            if at + BLOCK_HEADER as u64 > len || !read_at(at, &mut fixed) {
+                return Err(ElevationError::Length);
+            }
+            let need = BlockHead::table_len(&fixed)?;
+            if at + need as u64 > len {
+                return Err(ElevationError::Length);
+            }
+            table.resize(need, 0);
+            if !read_at(at, &mut table) {
+                return Err(ElevationError::Length);
+            }
+            let block = BlockHead::parse(&table)?;
+            if Some((block.x, block.y)) != dir.block(n)
+                || block.tile_zoom != dir.tile_zoom()
+                || block.block_zoom != dir.block_zoom()
+            {
+                return Err(ElevationError::Coordinates);
+            }
+            let end = at + block.len as u64;
+            if end > len {
+                return Err(ElevationError::Length);
+            }
+            blocks.push(((block.x, block.y), at as usize..end as usize));
+            at = end;
+        }
+        if at != len {
+            return Err(ElevationError::Length);
+        }
+        Ok(Self {
+            tile_zoom: dir.tile_zoom(),
+            block_zoom: dir.block_zoom(),
+            blocks,
+        })
+    }
+
+    /// Index a pack held whole in memory.
+    pub fn of(bytes: &[u8]) -> Result<Self, ElevationError> {
+        Self::read(bytes.len() as u64, |at, buf| {
+            let Ok(at) = usize::try_from(at) else {
+                return false;
+            };
+            match bytes.get(at..at + buf.len()) {
+                Some(src) => {
+                    buf.copy_from_slice(src);
+                    true
+                }
+                None => false,
+            }
+        })
+    }
+
+    /// The zoom the tiles are stored at.
+    pub fn tile_zoom(&self) -> u8 {
+        self.tile_zoom
+    }
+
+    /// The shallowest zoom a tile can be derived at.
+    pub fn block_zoom(&self) -> u8 {
+        self.block_zoom
+    }
+
+    /// The zooms a tile can be asked for: the block zoom to the tile zoom.
+    pub fn zooms(&self) -> core::ops::RangeInclusive<u8> {
+        self.block_zoom..=self.tile_zoom
+    }
+
+    /// The byte range of the block piece holding tile (x, y) at `zoom`,
+    /// `None` where the pack does not hold it or `zoom` is outside
+    /// [`zooms`](Self::zooms).
+    pub fn block_for(&self, zoom: u8, x: u32, y: u32) -> Option<core::ops::Range<usize>> {
+        if !self.zooms().contains(&zoom) {
+            return None;
+        }
+        let shift = zoom - self.block_zoom;
+        let at = (x >> shift, y >> shift);
+        self.blocks
+            .iter()
+            .find(|(p, _)| *p == at)
+            .map(|(_, r)| r.clone())
+    }
+
+    /// Every tile the pack covers at `zoom`, block by block.
+    pub fn tiles(&self, zoom: u8) -> Vec<(u32, u32)> {
+        if !self.zooms().contains(&zoom) {
+            return Vec::new();
+        }
+        let per = 1u32 << (zoom - self.block_zoom);
+        let mut out = Vec::new();
+        for &((bx, by), _) in &self.blocks {
+            for y in by * per..(by + 1) * per {
+                for x in bx * per..(bx + 1) * per {
+                    out.push((x, y));
+                }
+            }
+        }
+        out
+    }
+
+    /// The heights of tile `(zoom, x, y)` into `out`, from `piece`, the
+    /// bytes of [`block_for`](Self::block_for)'s range.
+    pub fn decode(
+        &self,
+        piece: &[u8],
+        (zoom, x, y): (u8, u32, u32),
+        decoder: &mut TileDecoder,
+        out: &mut [i16],
+        scratch: &mut [i16],
+    ) -> Result<(), ElevationError> {
+        Block::parse(piece)?.heights(decoder, zoom, x, y, out, scratch)
+    }
+}
+
+/// A parsed block piece, its tiles still compressed.
+#[derive(Clone, Copy, Debug)]
+pub struct Block<'a> {
+    bytes: &'a [u8],
+    tile_zoom: u8,
+    block_zoom: u8,
+    x: u32,
+    y: u32,
+    side: u32,
+}
+
+impl<'a> Block<'a> {
+    /// Parse the block at the start of `bytes`, returning it and its length.
+    pub fn parse_prefix(bytes: &'a [u8]) -> Result<(Self, usize), ElevationError> {
+        let head = BlockHead::parse(bytes)?;
+        if head.len > bytes.len() {
+            return Err(ElevationError::Length);
+        }
         Ok((
             Block {
-                bytes: &bytes[..len],
-                tile_zoom,
-                block_zoom,
-                x,
-                y,
-                side,
+                bytes: &bytes[..head.len],
+                tile_zoom: head.tile_zoom,
+                block_zoom: head.block_zoom,
+                x: head.x,
+                y: head.y,
+                side: head.side,
             },
-            len,
+            head.len,
         ))
     }
 
