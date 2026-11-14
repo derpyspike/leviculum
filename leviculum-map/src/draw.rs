@@ -25,6 +25,7 @@
 use alloc::vec::Vec;
 use core::iter::Peekable;
 
+use embedded_graphics::geometry::Dimensions;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::primitives::Rectangle;
 use leviculum_mapfill::coverage::{Clip, Coverage};
@@ -183,6 +184,36 @@ where
     D: Coverage<Color = Rgb565>,
     C: Clock,
 {
+    draw_in_relief(
+        tiles, area, profile, ink, style, percent, warp, None, target, scratch, work, clock,
+    )
+}
+
+/// [`draw_in_warped`] with the ground relief laid under the view when
+/// `shade` is given (1741): after the area fills and before the
+/// buildings and lines, [`crate::relief::apply`] reads the ground
+/// back through the target's rows and shades it, so the relief sits
+/// under every road, name and footprint. A target that cannot read
+/// its pixels, or a view without height data, is drawn as without it.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_in_relief<D, C>(
+    tiles: &[DrawTile<'_>],
+    area: Rectangle,
+    profile: Profile,
+    ink: Ink,
+    style: Style,
+    percent: u32,
+    warp: Option<&Warp<'_>>,
+    mut shade: Option<&mut dyn crate::relief::Shade>,
+    target: &mut D,
+    scratch: &mut Scratch<'_>,
+    work: &mut Work<'_>,
+    clock: &mut C,
+) -> Result<RenderStats, D::Error>
+where
+    D: Coverage<Color = Rgb565>,
+    C: Clock,
+{
     let target = &mut Clip::new(target, &area);
     // Every tile of one view is at the view's zoom less its overzoom.
     let zoom = tiles
@@ -211,6 +242,9 @@ where
                 pass.feature_warped(&f, *at, warp, profile, target, work, clock)?;
             }
         }
+    }
+    if let Some(shade) = shade.take() {
+        crate::relief::apply(target, target.bounding_box(), shade)?;
     }
     if draws_buildings(style, ink, zoom) {
         for t in tiles {
