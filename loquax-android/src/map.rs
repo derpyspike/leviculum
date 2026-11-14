@@ -534,15 +534,22 @@ impl Renderer {
         // last frame, the about point's ground after the pan. A turning
         // answer says where this ground sits in ITS view (held_x_milli),
         // the anchor for the app's leftover transform (order 1833).
-        let gesture_held = match pans || by != 0 {
-            true => loquax::mapframe::ground_under_as(
-                loquax::picture::world_shape(),
-                &view,
-                about(request.about_x, area.width) + pan.0,
-                about(request.about_y, area.height) + pan.1,
-            ),
-            false => None,
-        };
+        // Said for EVERY frame, a frame that asks neither pan nor zoom
+        // too (order 1840): a pending answer makes Java ask again at
+        // once, the zoom's remainder of scale (a thousandth of a step
+        // rounded away) rides along as a pan of (1/s - 1) * about, and
+        // the ask after that has neither. Answered without the anchor,
+        // Java's fallback dropped the offset the pan had left, the next
+        // ask panned again, and the ground walked 0.05 px every two
+        // frames towards the view's corner: 48 km at 32 N on the
+        // emulator after two slow pinches (the reviewer's run on
+        // b74eb7e34), at 60 frames a second.
+        let gesture_held = loquax::mapframe::ground_under_as(
+            loquax::picture::world_shape(),
+            &view,
+            about(request.about_x, area.width) + pan.0,
+            about(request.about_y, area.height) + pan.1,
+        );
         if pans {
             self.frames.pan(pan.0, pan.1, now);
             // At globe zooms the drag turns the sphere about its centre

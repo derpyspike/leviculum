@@ -4131,6 +4131,13 @@ fn a_phone_pinch_as_java_sends_it_keeps_the_place() {
             if e % 5 == 4 {
                 let shown = render(&mut java, true, false);
                 judge(&java, &shown, 2.0, "slow in");
+                // A pending answer asks again at once, with no new event
+                // (MapView.drawFrames): the zoom's remainder of scale must
+                // not walk the ground (order 1840, the emulator's logcat).
+                let shown = render(&mut java, true, false);
+                judge(&java, &shown, 2.0, "slow in, asked again");
+                let shown = render(&mut java, true, false);
+                judge(&java, &shown, 2.0, "slow in, asked again");
             }
         }
         let shown = render(&mut java, false, false);
@@ -4149,6 +4156,10 @@ fn a_phone_pinch_as_java_sends_it_keeps_the_place() {
                 if e % 6 == 5 {
                     let shown = render(&mut java, true, false);
                     judge(&java, &shown, 2.0, "quick");
+                    let shown = render(&mut java, true, false);
+                    judge(&java, &shown, 2.0, "quick, asked again");
+                    let shown = render(&mut java, true, false);
+                    judge(&java, &shown, 2.0, "quick, asked again");
                 }
             }
             let shown = render(&mut java, false, false);
@@ -4160,4 +4171,205 @@ fn a_phone_pinch_as_java_sends_it_keeps_the_place() {
         end >= deep,
         "seventeen out and in should end deep again, not z{end}"
     );
+}
+
+/// The reviewer's emulator finding of 2026-11-14 on b74eb7e34
+/// (`attachments/2026-11-14-pinch-b74eb7e3`): slow pinches from the
+/// globe with the fingers on the own dot, off the screen's centre, lose
+/// the place by a fixed distance on the ground (48 km at 32 N, 53 km at
+/// 51 N, 150 km at 60 S), made in the first two pinches and then carried.
+/// The device's logcat (order 1840, MAPGESTURE and Java's own lines)
+/// shows the mechanism: a frame that is `pending` makes Java ask again at
+/// once, with no new event, 7 to 15 frames between two scale events. The
+/// zoom's thousandths leave a remainder of scale (1.0000844 after a step
+/// of 45 millizooms) that Java encodes as a pan about the about point,
+/// (1/s - 1) * about = -0.047 px at (558, 773); the next ask has neither
+/// pan nor zoom, the library answered it with no held ground, and Java's
+/// fallback (`off -= sigma * asked`) dropped the offset the first frame
+/// had left. Every two frames the ground slid 0.05 px towards the view's
+/// top left corner, about a hundred times a pinch. This drives
+/// `loquax_android::map::render` through the mirror of MapView.java with
+/// the device's size and density, the reviewer's slow pinch (fingers
+/// 60 to 540 px from the focus, the scale detector silent under a span
+/// of 490 px) and `ASKS_BETWEEN` frames asked between two events, at the
+/// reviewer's three places.
+#[test]
+fn a_pinch_whose_frames_ask_again_between_events_keeps_the_place() {
+    use leviculum_map::blend::Blend;
+    // The emulator's map view and density (lev-apk's `levapk-phone`).
+    const DW: u32 = 1224;
+    const DH: u32 = 2194;
+    const ASKS_BETWEEN: usize = 2;
+    let shape = loquax::picture::world_shape();
+    let blend = |s: &MapShown| {
+        Blend::new(
+            shape,
+            World { x: s.x, y: s.y },
+            f64::from(s.zoom_milli) / 1000.0,
+            DW,
+            DH,
+        )
+    };
+    // The places and where the reviewer's fresh globe showed the dot,
+    // in the view's pixels (screen y less the view's top, 253).
+    for (lat, lon, dot) in [
+        (32.0, -6.0, (558.0, 773.0)),
+        (51.0, 10.0, (678.0, 620.0)),
+        (-60.0, 179.9, (564.0, 840.0)),
+    ] {
+        let home = home();
+        // Moving frames at the cheapest rung: the geometry is the same at
+        // every rung, and a device-sized frame at the full one costs a
+        // fifth of a second in a debug build.
+        loquax_android::map::hold_rung(home.path(), Some(2));
+        let own = project(LatLon::from_degrees(lat, lon));
+        let mut java = loquax_android::gesture::Gesture::new(DW, DH);
+        let base = MapRequest {
+            dir: home.path().display().to_string(),
+            density_milli: 2875,
+            avatars: true,
+            own_lat_e6: Some((lat * 1e6).round() as i32),
+            own_lon_e6: Some((lon * 1e6).round() as i32),
+            ..MapRequest::default()
+        };
+        let ask = |java: &mut loquax_android::gesture::Gesture| MapRequest {
+            dir: base.dir.clone(),
+            density_milli: base.density_milli,
+            avatars: true,
+            own_lat_e6: base.own_lat_e6,
+            own_lon_e6: base.own_lon_e6,
+            ..java.ask()
+        };
+        let land =
+            |java: &mut loquax_android::gesture::Gesture, mut ask: MapRequest, moving: bool| {
+                ask.moving = moving;
+                let (shown, _) = frame(&loquax_android::map::render(&ask, Some(Vec::new()), now()));
+                java.place(&shown, moving);
+                shown
+            };
+        // The globe at its floor, turned so the dot sits where the
+        // reviewer's fresh start showed it.
+        let floor = {
+            let mut first = ask(&mut java);
+            first.x = Some(own.x);
+            first.y = Some(own.y);
+            first.zoom_milli = Some(1_000);
+            land(&mut java, first, false).min_zoom_milli
+        };
+        let mut centre = own;
+        for _ in 0..60 {
+            let (ox, oy) =
+                Blend::new(shape, centre, f64::from(floor) / 1000.0, DW, DH).to_screen(own);
+            let (ex, ey) = (dot.0 - ox, dot.1 - oy);
+            if ex.hypot(ey) < 0.01 {
+                break;
+            }
+            // Half the error a step, less where that leaves the world.
+            let Some(next) = [0.5, 0.25, 0.1].into_iter().find_map(|f| {
+                loquax::mapframe::ground_under_as(
+                    shape,
+                    &ExactView::new(centre, floor, DW, DH),
+                    f64::from(DW) / 2.0 - f * ex,
+                    f64::from(DH) / 2.0 - f * ey,
+                )
+            }) else {
+                break;
+            };
+            centre = next;
+        }
+        let mut java = loquax_android::gesture::Gesture::new(DW, DH);
+        let mut start = ask(&mut java);
+        start.x = Some(centre.x);
+        start.y = Some(centre.y);
+        start.zoom_milli = Some(floor);
+        let first = land(&mut java, start, false);
+        // At 60 S the never-flip clamp keeps the centre on Mercator's
+        // edge short of the reviewer's spot: the dot sits where it can.
+        let (Some(ox), Some(oy)) = (first.own_x, first.own_y) else {
+            panic!("{lat},{lon}: the fresh globe shows no dot");
+        };
+        let (ox, oy) = (f64::from(ox), f64::from(oy));
+        assert!(
+            (ox - f64::from(DW) / 2.0).hypot(oy - f64::from(DH) / 2.0) >= 150.0,
+            "{lat},{lon}: the dot at ({ox}, {oy}) is too near the centre to tell a pinch about it from one about the centre"
+        );
+        // The scale detector's focal point on the emulator (MAPTOUCH,
+        // fingers at the dot's centroid 557.5 px): a fraction off the
+        // dot's pixel.
+        let (fx, fy) = (ox - 0.07, oy - 0.15);
+        let ground = loquax::mapframe::ground_under_as(
+            shape,
+            &ExactView::new(
+                World {
+                    x: first.x,
+                    y: first.y,
+                },
+                first.zoom_milli,
+                DW,
+                DH,
+            ),
+            fx,
+            fy,
+        )
+        .expect("the fingers are on the world");
+        let off = |java: &loquax_android::gesture::Gesture, shown: &MapShown| {
+            let (px, py) = blend(shown).to_screen(ground);
+            let (sx, sy) = java.drawn(px, py);
+            (sx - fx).hypot(sy - fy)
+        };
+        let mut worst_moving = 0.0f64;
+        let mut at_rest = Vec::new();
+        let mut last = first.clone();
+        for _ in 0..1 {
+            let mut prev: Option<f64> = None;
+            for step in 0..=60 {
+                let span = 120.0 + 960.0 * f64::from(step) / 60.0;
+                if span < 490.0 {
+                    continue;
+                }
+                if let Some(p) = prev {
+                    java.on_scale(span / p, fx, fy);
+                }
+                prev = Some(span);
+                // The event's frame, then the frames a pending answer
+                // asks again before the next event.
+                for _ in 0..=ASKS_BETWEEN {
+                    let a = ask(&mut java);
+                    let shown = land(&mut java, a, true);
+                    worst_moving = worst_moving.max(off(&java, &shown));
+                }
+            }
+            let a = ask(&mut java);
+            let shown = land(&mut java, a, false);
+            at_rest.push((shown.zoom_milli, off(&java, &shown)));
+            last = shown;
+        }
+        // The ground under the fingers at the end against the ground
+        // they were put on, on the sphere: the emulator's kilometres.
+        let km = blend(&last).to_world(fx, fy).map_or(f64::INFINITY, |end| {
+            let rad = |e7: i32| f64::from(e7) * 1e-7_f64.to_radians();
+            let (a, b) = (
+                leviculum_map::mercator::unproject(ground),
+                leviculum_map::mercator::unproject(end),
+            );
+            let h = ((rad(b.lat_e7) - rad(a.lat_e7)) / 2.0).sin().powi(2)
+                + rad(a.lat_e7).cos()
+                    * rad(b.lat_e7).cos()
+                    * ((rad(b.lon_e7) - rad(a.lon_e7)) / 2.0).sin().powi(2);
+            2.0 * 6371.0 * h.sqrt().asin()
+        });
+        let rests: Vec<String> = at_rest
+            .iter()
+            .map(|(z, d)| format!("z{z}:{d:.1}"))
+            .collect();
+        eprintln!(
+            "{lat},{lon}: moving worst {worst_moving:.2} px, at rest {}, {km:.2} km at the end",
+            rests.join(" ")
+        );
+        assert!(
+            worst_moving <= 2.0 && at_rest.iter().all(|(_, d)| *d <= 1.0),
+            "{lat},{lon}: the ground under the fingers left them: moving worst {worst_moving:.1} px, at rest {}, {km:.1} km at the end",
+            rests.join(" ")
+        );
+    }
 }
