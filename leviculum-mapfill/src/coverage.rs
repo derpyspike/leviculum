@@ -27,6 +27,24 @@ pub trait Coverage: DrawTarget {
         let _ = (x, y, color, alpha);
         Ok(())
     }
+
+    /// The row of `out.len()` pixels from `(x, y)` as 8-bit RGB, where
+    /// the target can read its pixels back; `false` where it cannot
+    /// (the default). The relief pass (leviculum-map 1741) reads the
+    /// ground it is to shade through this; a target without it is left
+    /// unshaded. Pixels outside the target read as black.
+    fn row_rgb(&self, x: i32, y: i32, out: &mut [[u8; 3]]) -> bool {
+        let _ = (x, y, out);
+        false
+    }
+
+    /// Write the row [`row_rgb`](Self::row_rgb) read, shaded; pixels
+    /// outside the target are dropped. A target that reads must also
+    /// write, or the shade is lost.
+    fn set_row_rgb(&mut self, x: i32, y: i32, px: &[[u8; 3]]) -> Result<(), Self::Error> {
+        let _ = (x, y, px);
+        Ok(())
+    }
 }
 
 impl<T: DrawTarget> Coverage for Cropped<'_, T> {}
@@ -89,6 +107,16 @@ impl<D: Coverage> Coverage for Clip<'_, D> {
             true => self.target.blend(x, y, color, alpha),
             false => Ok(()),
         }
+    }
+
+    // The rows pass through unclipped: the relief pass asks for its
+    // area, which `Clip::new` already cut to the target.
+    fn row_rgb(&self, x: i32, y: i32, out: &mut [[u8; 3]]) -> bool {
+        self.target.row_rgb(x, y, out)
+    }
+
+    fn set_row_rgb(&mut self, x: i32, y: i32, px: &[[u8; 3]]) -> Result<(), D::Error> {
+        self.target.set_row_rgb(x, y, px)
     }
 }
 

@@ -228,7 +228,40 @@ impl DrawTarget for RgbaFrame<'_> {
     }
 }
 
-impl Coverage for Frame<'_> {}
+impl Coverage for Frame<'_> {
+    fn row_rgb(&self, x: i32, y: i32, out: &mut [[u8; 3]]) -> bool {
+        if y < 0 || y as u32 >= self.height {
+            out.fill([0; 3]);
+            return true;
+        }
+        let row = (y as u32 * self.width) as usize;
+        for (i, o) in out.iter_mut().enumerate() {
+            let xi = x + i as i32;
+            *o = if xi < 0 || xi as u32 >= self.width {
+                [0; 3]
+            } else {
+                let v = u16::from_be(self.px[row + xi as usize]);
+                rgb888(Rgb565::from(RawU16::new(v)))
+            };
+        }
+        true
+    }
+
+    fn set_row_rgb(&mut self, x: i32, y: i32, px: &[[u8; 3]]) -> Result<(), Self::Error> {
+        if y < 0 || y as u32 >= self.height {
+            return Ok(());
+        }
+        let row = (y as u32 * self.width) as usize;
+        for (i, &[r, g, b]) in px.iter().enumerate() {
+            let xi = x + i as i32;
+            if xi >= 0 && (xi as u32) < self.width {
+                let c = Rgb565::new(r >> 3, g >> 2, b >> 3);
+                self.px[row + xi as usize] = RawU16::from(c).into_inner().to_be();
+            }
+        }
+        Ok(())
+    }
+}
 
 impl Coverage for RgbaFrame<'_> {
     fn smooth(&self) -> bool {
@@ -244,6 +277,39 @@ impl Coverage for RgbaFrame<'_> {
         let src = rgba(color);
         for (d, s) in self.px[at..at + 3].iter_mut().zip(src) {
             *d = ((u16::from(s) * a + u16::from(*d) * keep) >> 8) as u8;
+        }
+        Ok(())
+    }
+
+    fn row_rgb(&self, x: i32, y: i32, out: &mut [[u8; 3]]) -> bool {
+        if y < 0 || y as u32 >= self.height {
+            out.fill([0; 3]);
+            return true;
+        }
+        let row = (y as u32 * self.width) as usize * 4;
+        for (i, o) in out.iter_mut().enumerate() {
+            let xi = x + i as i32;
+            *o = if xi < 0 || xi as u32 >= self.width {
+                [0; 3]
+            } else {
+                let at = row + xi as usize * 4;
+                [self.px[at], self.px[at + 1], self.px[at + 2]]
+            };
+        }
+        true
+    }
+
+    fn set_row_rgb(&mut self, x: i32, y: i32, px: &[[u8; 3]]) -> Result<(), Self::Error> {
+        if y < 0 || y as u32 >= self.height {
+            return Ok(());
+        }
+        let row = (y as u32 * self.width) as usize * 4;
+        for (i, p) in px.iter().enumerate() {
+            let xi = x + i as i32;
+            if xi >= 0 && (xi as u32) < self.width {
+                let at = row + xi as usize * 4;
+                self.px[at..at + 3].copy_from_slice(p);
+            }
         }
         Ok(())
     }

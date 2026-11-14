@@ -349,6 +349,12 @@ pub struct Style {
     /// and the window ([`Style::SCREEN`]), off on the M9 and in the
     /// terminal, whose cells would only paint city blocks grey.
     pub buildings: bool,
+    /// The ground relief under the view (leviculum-map 1741), where
+    /// height pieces cover it: on for the phone, the window and the
+    /// terminal's pictures, off on the M9, whose heap holds no shade
+    /// plane. Part of the style, so a tile cache keyed by it drops its
+    /// tiles when the relief is switched.
+    pub relief: bool,
 }
 
 impl Style {
@@ -357,6 +363,7 @@ impl Style {
         theme: MapTheme::Light,
         cased: false,
         buildings: false,
+        relief: false,
     };
     /// The PC's finish in the light table: casings and round joins, no
     /// buildings; what the terminal's sixel and kitty pictures draw.
@@ -364,6 +371,7 @@ impl Style {
         theme: MapTheme::Light,
         cased: true,
         buildings: false,
+        relief: true,
     };
     /// The finish of the phone and the window: the PC's with buildings.
     pub const SCREEN: Self = Self {
