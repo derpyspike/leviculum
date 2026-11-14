@@ -4638,6 +4638,64 @@ mod tests {
         eprintln!("window drag: {judged} views, worst {worst:.3} px");
     }
 
+    /// Audit of 1818 condition 9: the wheel's glide over a blended view
+    /// holds the geographic point under the wheel's focus on every step
+    /// between the notch and the goal, within 2 px. Mercator's fixed
+    /// point (`onto`'s) is not the drawn one there, so a glide whose
+    /// blended branch fell back to it walked the view off its place
+    /// while the zoom moved.
+    #[test]
+    fn a_wheel_glide_over_the_blend_keeps_the_place_under_the_pointer_every_step() {
+        use leviculum_map::blend::Blend;
+        let mut judged = 0usize;
+        for (lat, lon) in [(43.7752, 11.2660), (32.0, -6.0), (-30.0, 140.0)] {
+            for zm in (2_000u32..=8_000).step_by(500) {
+                let mut app = window_over_florence(Vec::new(), 12 * MILLI);
+                app.view = ExactView::new(project(LatLon::from_degrees(lat, lon)), zm, 480, 320);
+                app.hold();
+                let focus = (360.0f32, 230.0f32);
+                let from = app.view;
+                let Some(ground) =
+                    loquax::mapframe::ground_under(&from, f64::from(focus.0), f64::from(focus.1))
+                else {
+                    continue;
+                };
+                app.apply(Message::Pointer(Pointer::Wheel(
+                    Point::new(focus.0, focus.1),
+                    700,
+                )));
+                let glide = app.glide.expect("the notch starts a glide");
+                // Judged by the blend's own `t`, not by `blends`, whose
+                // answer the glide's branch is.
+                let t = |v: &ExactView| {
+                    let (w, h) = v.size();
+                    Blend::new(v.centre, v.zoom(), w, h).t()
+                };
+                if t(&glide.from) >= 1.0 && t(&glide.to) >= 1.0 {
+                    continue;
+                }
+                let mut steps = 0;
+                for i in 1..=6u64 {
+                    let now = glide.start + Duration::from_millis(GLIDE_MS * i / 7);
+                    let (v, over) = glide.at(now);
+                    assert!(!over, "step {i} is before the glide's end");
+                    let (w, h) = v.size();
+                    let (x, y) = Blend::new(v.centre, v.zoom(), w, h).to_screen(ground);
+                    let off = (x - f64::from(focus.0)).hypot(y - f64::from(focus.1));
+                    assert!(
+                        off <= 2.0,
+                        "{lat},{lon} z{zm} step {i} z{}: the ground under the wheel is {off:.2} px from it",
+                        v.zoom_milli()
+                    );
+                    steps += 1;
+                }
+                assert!(steps >= 5);
+                judged += 1;
+            }
+        }
+        assert!(judged >= 6, "only {judged} blended glides judged");
+    }
+
     use leviculum_ui_iced::select::Pick;
     use loquax::outbox::OutboxEvent;
     use loquax::ui::selection::{Part, RunKey};
