@@ -737,6 +737,10 @@ impl Renderer {
             loading: self.loader.busy(),
             loading_here: self.loader.loading_here(),
             filling: shot.filling > 0,
+            // A box waits to retry (1821): the instant of the loader's
+            // next own move, so Java posts a frame for it and a box that
+            // failed at rest is retried with no touch.
+            retry_in_ms: self.loader.next_due_ms(now),
             notice,
             ms: u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX),
             dark: table == MapTheme::Dark,

@@ -353,6 +353,29 @@ impl Loader {
                 .any(|q| q.rank.on_screen() && q.retry_at == 0)
     }
 
+    /// Milliseconds until the loader's next own move (1821, the audit of
+    /// 1811): the earliest wait of a queued box that failed or found no
+    /// internet, 0 when one is due now, `None` when none waits.
+    ///
+    /// The loader owes the view something while [`busy`](Self::busy),
+    /// [`loading_here`](Self::loading_here) or this says so — the one
+    /// definition every frontend reads. The window's pump polls on its
+    /// own tick anyway; a frame-driven frontend (the phone) runs the
+    /// loader only inside a frame, so it asks for its next frame at this
+    /// instant (the phone's `MapShown.retry_in_ms`), and a box that
+    /// failed at rest retries with no touch. An
+    /// off-screen box queued behind an on-screen box waiting to retry is
+    /// covered by the same wake: the retry due first is the screen's,
+    /// its start makes the loader busy again, and the boxes behind it
+    /// follow in order.
+    pub fn next_due_ms(&self, now_ms: u64) -> Option<u64> {
+        self.queue
+            .iter()
+            .filter(|q| q.retry_at > 0)
+            .map(|q| q.retry_at.saturating_sub(now_ms))
+            .min()
+    }
+
     /// Whether the last load that ended found no internet and none started
     /// since: the phone's map says "Offline" while it holds (1200), and
     /// the next load asked tests it again (1292).
@@ -1753,6 +1776,55 @@ mod tests {
             matches!(steps.as_slice(), [Step::Started(w)] if w.bounds == s.bounds),
             "{steps:?}"
         );
+    }
+
+    /// A frame-driven frontend runs the loader only inside a frame, and
+    /// draws a frame only when the last one told it to ask again (1821,
+    /// the audit of 1811): while a box waits to retry — when neither
+    /// [`Loader::busy`] nor [`Loader::loading_here`] claims activity —
+    /// [`Loader::next_due_ms`] names the instant of the loader's next
+    /// own move, so a screen box that failed at rest is retried with no
+    /// touch and fills once the source answers.
+    #[test]
+    fn audit_a_box_waiting_to_retry_keeps_a_frame_driven_platform_asking() {
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        serve.fail(true);
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut loader = Loader::new(maps.clone(), Source::Url(serve.url("o.pmtiles")), 1 << 30);
+        let s = screen(1);
+        loader.schedule(vec![s.clone()], Vec::new(), 0);
+        let steps = settle(&mut loader, 0);
+        assert!(
+            matches!(steps.as_slice(), [Step::Failed { .. }]),
+            "{steps:?}"
+        );
+        // The source answers again; nobody touches the map. The platform
+        // asks for frames only the way the phone does: at once while a
+        // load runs, at the named instant while a box waits, never else.
+        serve.fail(false);
+        let mut now: u64 = 100;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while maps.epoch() == 0 {
+            assert!(Instant::now() < deadline, "the region never landed");
+            if loader.busy() || loader.loading_here() {
+                loader.poll(now);
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            let Some(in_ms) = loader.next_due_ms(now) else {
+                panic!("nothing waits and nothing runs: the platform would stop asking");
+            };
+            now += in_ms;
+            let steps = loader.poll(now);
+            assert!(
+                steps
+                    .iter()
+                    .any(|st| matches!(st, Step::Started(w) if w.bounds == s.bounds)),
+                "due at the named instant: {steps:?}"
+            );
+        }
+        assert_eq!(maps.epoch(), 1, "the screen box landed hands off");
     }
 
     /// A box the source holds no tiles for fails for good (1811, the

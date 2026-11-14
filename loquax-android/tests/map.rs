@@ -2684,6 +2684,110 @@ fn a_region_fills_the_frame_in_while_it_downloads() {
 /// same on one CPU and on ten (1610).
 const REGION_HOLD: u64 = 75_000;
 
+/// A fault at rest heals with frames asked only as Java asks them
+/// (1821, the audit of 1811). The source answers 503 while the map
+/// opens; every box of the view fails in turn and waits to retry. The
+/// test asks for a frame only when the last one named a reason, in
+/// `MapView`'s order: at once while `pending`, a quarter second after
+/// `filling` or `loading_here`, 1.5 s after `loading`, and — the piece
+/// the audit returned 1811 for — at `retry_in_ms`, the loader's next
+/// own move, while a box waits to retry. The moment the frames' only
+/// reason is that wait, the source answers again: the screen box
+/// retries and fills the view with no touch, and the off-screen boxes
+/// queued behind it (the Ahead cell) land after it, in order.
+#[test]
+fn a_fault_at_rest_heals_with_frames_asked_only_as_java_asks() {
+    use leviculum_map::region::Bounds;
+    use leviculum_mapcut::serve::Serve;
+    use loquax::mapload::StepKind;
+    use loquax::ui::map::LoadReason;
+    use std::time::{Duration, Instant};
+    let serve = Serve::start(vec![("p.pmtiles".into(), first_tile_archive())]).expect("serve");
+    serve.fail(true);
+    let home = tempfile::tempdir().expect("home");
+    let maps_dir = home.path().join("maps");
+    std::fs::create_dir_all(&maps_dir).expect("maps");
+    std::fs::write(
+        home.path().join(loquax::config::CONFIG_FILE),
+        format!("map_source = \"{}\"\n", serve.url("p.pmtiles")),
+    )
+    .expect("config");
+    loquax_android::map::hold_rung(home.path(), Some(0));
+    let at = project(LatLon::from_degrees(FIRST_TILE_AT.0, FIRST_TILE_AT.1));
+    let ask = MapRequest {
+        dir: home.path().display().to_string(),
+        w: W,
+        h: H,
+        density_milli: 1000,
+        x: Some(at.x),
+        y: Some(at.y),
+        zoom: Some(15),
+        ..MapRequest::default()
+    };
+    let view = Viewport::new(at, 15, W, H);
+    let deadline = Instant::now() + Duration::from_secs(180);
+    let mut t: u64 = 0;
+    let mut healed = false;
+    loop {
+        loquax_android::map::tune_clock(home.path(), Some(t));
+        let (shown, _) = frame(&loquax_android::map::render(&ask, Some(Vec::new()), now()));
+        // Java's reasons to ask for the next frame; none ends the loop.
+        let dt = if shown.pending {
+            16
+        } else if shown.filling || shown.loading_here {
+            250
+        } else if shown.loading {
+            1500
+        } else if let Some(wait) = shown.retry_in_ms {
+            // Every box of the view sat failed and the frames kept
+            // coming on the loader's word alone: the fault has shown
+            // what it had to; the source answers from here on.
+            if !healed {
+                serve.fail(false);
+                healed = true;
+            }
+            wait.max(1)
+        } else {
+            break;
+        };
+        t += dt;
+        assert!(
+            Instant::now() < deadline,
+            "the frames never settled (healed: {healed})"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        healed,
+        "no frame named the loader's wait while every box sat failed: \
+         the frames stopped and the fault never healed"
+    );
+    // The view filled by itself once the source answered.
+    let maps = Maps::new(Some(maps_dir));
+    assert_eq!(
+        loquax::ui::viewload::uncovered(&view, &maps.headers()),
+        0.0,
+        "the view filled at rest, hands off"
+    );
+    // The screen's box landed first, and an off-screen (Ahead) box
+    // queued behind its wait landed after it.
+    let events = loquax_android::map::load_events(home.path()).expect("events");
+    let dones: Vec<_> = events.iter().filter(|e| e.step == StepKind::Done).collect();
+    assert!(
+        dones
+            .first()
+            .is_some_and(|e| e.want.reason == LoadReason::Screen),
+        "the screen's own box landed first: {dones:?}"
+    );
+    let v = view.bounds();
+    let outside =
+        |b: &Bounds| b.east < v.west || v.east < b.west || b.north < v.south || v.north < b.south;
+    assert!(
+        dones.iter().skip(1).any(|e| outside(&e.want.bounds)),
+        "an off-screen box landed after the screen's: {dones:?}"
+    );
+}
+
 /// The first-tile walk of 1527: the Grunewald, a synthetic archive of it
 /// ([`leviculum_mapcut::pmtiles::padded`]: a real z15 tile in every slot,
 /// each padded with [`FIRST_TILE_PAD`] bytes of its own, so a box's
