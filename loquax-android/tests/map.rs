@@ -4373,3 +4373,79 @@ fn a_pinch_whose_frames_ask_again_between_events_keeps_the_place() {
         );
     }
 }
+
+/// The first auditor's test of order 1833's round 2 (finding 3): the own
+/// dot through the frame's own blend, view centred 150 px and more away.
+/// Equal Earth is removed by order 1809; this judges the globe build.
+#[test]
+fn the_own_dot_sits_on_its_ground_in_every_blended_frame() {
+    use leviculum_map::blend::Blend;
+    let home = home();
+    let shape = loquax::picture::world_shape();
+    if shape != leviculum_map::blend::Shape::Globe {
+        // Equal Earth is removed by order 1809.
+        return;
+    }
+    let at = project(LatLon::from_degrees(32.0, -6.0));
+    let mut judged = 0usize;
+    let mut blended = 0usize;
+    for zm in (2_000u32..=8_000).step_by(250) {
+        // The view's centre 160 px from the dot (order 1840): a dot in
+        // the middle sits right through any projection. East where the
+        // disk reaches that far, else south-east.
+        let centre = [(160.0, 0.0), (113.0, 113.0)]
+            .into_iter()
+            .find_map(|(dx, dy)| {
+                loquax::mapframe::ground_under_as(
+                    shape,
+                    &ExactView::new(at, zm, W, H),
+                    f64::from(W) / 2.0 + dx,
+                    f64::from(H) / 2.0 + dy,
+                )
+            })
+            .expect("a centre 160 px from the dot on the world");
+        let ask = MapRequest {
+            x: Some(centre.x),
+            y: Some(centre.y),
+            zoom: None,
+            zoom_milli: Some(zm),
+            own_lat_e6: Some(32_000_000),
+            own_lon_e6: Some(-6_000_000),
+            ..request(home.path(), false)
+        };
+        let (shown, _) = frame(&loquax_android::map::render(&ask, Some(Vec::new()), now()));
+        let b = Blend::new(
+            shape,
+            World {
+                x: shown.x,
+                y: shown.y,
+            },
+            f64::from(shown.zoom_milli) / 1000.0,
+            W,
+            H,
+        );
+        if b.t() > 0.0 && b.t() < 1.0 {
+            blended += 1;
+        }
+        let (gx, gy) = b.to_screen(at);
+        let (Some(ox), Some(oy)) = (shown.own_x, shown.own_y) else {
+            panic!("z{}: the own dot is not drawn", shown.zoom_milli);
+        };
+        let off = (ox as f64 - gx).hypot(oy as f64 - gy);
+        let from_centre = (gx - f64::from(W) / 2.0).hypot(gy - f64::from(H) / 2.0);
+        assert!(
+            from_centre >= 150.0,
+            "z{}: the dot is only {from_centre:.0} px from the view's centre",
+            shown.zoom_milli
+        );
+        assert!(
+            off <= 1.5,
+            "z{} t={:.2}: the own dot is {off:.1} px from its ground as the frame draws it",
+            shown.zoom_milli,
+            b.t()
+        );
+        judged += 1;
+    }
+    assert!(judged > 10, "only {judged} frames judged");
+    assert!(blended > 2, "only {blended} blended frames judged");
+}
