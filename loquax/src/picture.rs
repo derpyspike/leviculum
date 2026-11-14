@@ -44,7 +44,7 @@ use embedded_graphics::primitives::Rectangle;
 use leviculum_map::blend::{Blend, Shape};
 use leviculum_map::choice::{drawn, view_zooms};
 use leviculum_map::draw::{
-    attach_buildings, draw_in_scaled, draw_in_warped, draw_tiles, draws_buildings, Ink,
+    attach_buildings, draw_in_relief, draw_in_warped, draw_tiles, draws_buildings, Ink,
 };
 use leviculum_map::labels::ViewLabel;
 use leviculum_map::outline;
@@ -327,6 +327,10 @@ pub struct Painter {
     /// whatever its zoom. The whole-view frontends set the shipped
     /// [`world_shape`].
     world_shape: Option<Shape>,
+    /// The relief side (1741): the `*.lmh` height packs beside the
+    /// regions and their shade planes, laid under the ground where the
+    /// style asks for it.
+    relief: crate::relief::ReliefStore,
 }
 
 /// The filler's storage for one region drawn ([`region_into`]). The filler
@@ -358,6 +362,8 @@ impl Painter {
         let epoch = maps.epoch();
         let progress = maps.progress();
         let (regions, _) = maps.load();
+        let mut relief = crate::relief::ReliefStore::default();
+        relief.refresh(maps.dir());
         Self {
             maps,
             epoch,
@@ -370,6 +376,7 @@ impl Painter {
             names_off: false,
             time_zones: None,
             world_shape: None,
+            relief,
         }
     }
 
@@ -383,6 +390,7 @@ impl Painter {
         self.epoch = epoch;
         self.progress = progress;
         self.regions = self.maps.load().0;
+        self.relief.refresh(self.maps.dir());
         true
     }
 
@@ -689,6 +697,13 @@ impl Painter {
             let Ok(_) =
                 outline::draw_world(&outline::WORLD, view, ink, style.theme, &mut Hard(frame));
         }
+        // The relief shades the ground only where the style carries it,
+        // in colour and in the light table — a dark ground lifted
+        // toward warm white would glow (1741).
+        let shaded = style.relief
+            && ink == Ink::Colour
+            && style.theme == MapTheme::Light
+            && self.relief.any();
         for &i in &order {
             let installed = &self.regions[i];
             let area = installed.region.area(view);
@@ -699,6 +714,7 @@ impl Painter {
                 ink,
                 style,
                 percent,
+                shaded.then_some(&mut self.relief),
                 &mut self.read,
                 &mut self.buildings,
                 &mut self.scratch,
@@ -1002,6 +1018,7 @@ fn region_into<D>(
     ink: Ink,
     style: Style,
     percent: u32,
+    relief: Option<&mut crate::relief::ReliefStore>,
     read: &mut Vec<(ViewTile, Vec<u8>)>,
     buildings: &mut Vec<(TileId, Vec<u8>)>,
     fill: &mut FillScratch,
@@ -1038,13 +1055,19 @@ where
         points: &mut fill.points,
         ring_ends: &mut fill.ring_ends,
     };
-    let Ok(_) = draw_in_scaled(
+    let mut sampler = relief.and_then(|r| r.sampler(view));
+    let shade = sampler
+        .as_mut()
+        .map(|s| s as &mut dyn leviculum_map::relief::Shade);
+    let Ok(_) = draw_in_relief(
         &tiles,
         area,
         Profile::Full,
         ink,
         style,
         percent,
+        None,
+        shade,
         frame,
         &mut scratch,
         &mut work,
@@ -1118,6 +1141,136 @@ mod tests {
             held * 10 >= probes * 8,
             "{held} of {probes} probes kept their colour at the blend's place"
         );
+    }
+
+    /// 1741: a height pack beside the region lays the relief under the
+    /// drawn ground — the same view shades with it and not without,
+    /// through the whole painter path every screen frontend draws by.
+    #[test]
+    fn the_relief_lies_under_the_ground() {
+        use leviculum_map::elevation::{
+            heights_to_planes, write_block, write_directory, DirectoryInfo, TILE_BYTES, TILE_CELLS,
+            TILE_EDGE,
+        };
+        use leviculum_map::mercator::{project, LatLon};
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../leviculum-map/fixtures/firenze.lmr");
+        let dir = tempfile::tempdir().expect("tmp");
+        std::fs::copy(&fixture, dir.path().join("firenze.lmr")).expect("copy the region");
+        let at = project(LatLon::from_degrees(43.7714, 11.2542));
+        // A dune field under Florence: one z12 tile of 40 m sine
+        // chains, blocks of one tile each, the centre tile and its
+        // eastern neighbour.
+        let (tx, ty) = (at.x >> 20, at.y >> 20);
+        let mut frames = Vec::new();
+        for dx in 0..2u32 {
+            let mut h = vec![0i16; TILE_CELLS];
+            for r in 0..TILE_EDGE {
+                for c in 0..TILE_EDGE {
+                    let g = (dx as usize * TILE_EDGE + c + r) as f32;
+                    h[r * TILE_EDGE + c] =
+                        (300.0 + 40.0 * (g * core::f32::consts::TAU / 12.0).sin()) as i16;
+                }
+            }
+            let mut planes = vec![0u8; TILE_BYTES];
+            heights_to_planes(&h, &mut planes);
+            frames.push(ruzstd::encoding::compress_to_vec(
+                &planes[..],
+                ruzstd::encoding::CompressionLevel::Fastest,
+            ));
+        }
+        let mut pack = write_directory(
+            &DirectoryInfo {
+                tile_zoom: 12,
+                block_zoom: 12,
+                bounds: [0, 0, 1, 1],
+                attribution: "test dunes",
+                notice: "no licence: synthetic",
+            },
+            &[(tx, ty), (tx + 1, ty)],
+        )
+        .expect("the directory");
+        for (i, f) in frames.iter().enumerate() {
+            pack.extend_from_slice(
+                &write_block(12, 12, tx + i as u32, ty, std::slice::from_ref(f)).expect("a block"),
+            );
+        }
+        std::fs::write(dir.path().join("dunes.lmh"), &pack).expect("write the pack");
+        let mut painter = Painter::new(Maps::new(Some(dir.path().to_path_buf())));
+        let view = Viewport::new(at, 13, 480, 320);
+        let with = painter.draw_with(&view, None, Ink::Colour, Style::SCREEN, 100);
+        let without = painter.draw_with(
+            &view,
+            None,
+            Ink::Colour,
+            Style {
+                relief: false,
+                ..Style::SCREEN
+            },
+            100,
+        );
+        if let Ok(dump) = std::env::var("LOQUAX_DUMP_RELIEF") {
+            for (name, fb) in [("with", &with.fb), ("without", &without.fb)] {
+                let mut rgb = Vec::new();
+                Frame::new(&mut fb.clone(), 480, 320)
+                    .expect("frame")
+                    .rgb888_into(&mut rgb);
+                let f = std::fs::File::create(format!("{dump}/{name}.png")).expect("png");
+                let mut enc = png::Encoder::new(std::io::BufWriter::new(f), 480, 320);
+                enc.set_color(png::ColorType::Rgb);
+                enc.write_header()
+                    .expect("hdr")
+                    .write_image_data(&rgb)
+                    .expect("data");
+            }
+        }
+        // The relief lies under the vector map alone: count inside the
+        // region's box, the only ground a region draws.
+        let area = painter.regions()[0].region.area(&view);
+        let mut differ = 0usize;
+        let mut inside = 0usize;
+        for y in 0..320u32 {
+            for x in 0..480u32 {
+                if !area.contains(Point::new(x as i32, y as i32)) {
+                    continue;
+                }
+                inside += 1;
+                if with.fb[(y * 480 + x) as usize] != without.fb[(y * 480 + x) as usize] {
+                    differ += 1;
+                }
+            }
+        }
+        assert!(inside > 1000, "the fixture region must cover some view");
+        assert!(
+            differ * 3 > inside,
+            "the dunes must shade the region's ground: {differ} of {inside} pixels moved"
+        );
+        // And nothing outside the vector map moved.
+        let outside_moved = with
+            .fb
+            .iter()
+            .zip(&without.fb)
+            .enumerate()
+            .filter(|(i, (a, b))| {
+                let p = Point::new((i % 480) as i32, (i / 480) as i32);
+                !area.contains(p) && a != b
+            })
+            .count();
+        assert_eq!(outside_moved, 0, "bare outline ground stays unshaded");
+        // The dark table keeps its ground as it is.
+        let dark = Style::SCREEN.in_theme(MapTheme::Dark);
+        let a = painter.draw_with(&view, None, Ink::Colour, dark, 100);
+        let b = painter.draw_with(
+            &view,
+            None,
+            Ink::Colour,
+            Style {
+                relief: false,
+                ..dark
+            },
+            100,
+        );
+        assert_eq!(a.fb, b.fb, "no relief in the dark table yet (1741)");
     }
 
     /// 1683: where no region fills the view the world view's own names

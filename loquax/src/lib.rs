@@ -110,6 +110,8 @@ pub mod photo;
 #[cfg(feature = "picture")]
 pub mod picture;
 pub mod pn_status;
+#[cfg(feature = "picture")]
+pub mod relief;
 #[cfg(feature = "std")]
 pub mod rooms_link;
 #[cfg(feature = "scan")]
