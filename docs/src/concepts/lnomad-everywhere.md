@@ -105,7 +105,7 @@ means only the browser has it. Catalogue keys named `browser_*` are new.
 | lnomad concept, today | Scene node | Intent | Catalogue | Status |
 |---|---|---|---|---|
 | Top bar: title, address, star, identity, cache bolt, hops (`topbar_layout`, `lnomad/src/app/chrome.rs:101`) | `TopBar` (`leviculum-ui/src/scene.rs:206`) with `Lead::Back` while history has a past, title, and `actions` (star, identify, reload) | `Back`, `Bookmark{on}`, `Identify{on}`, `Reload` | `browser_bookmark`, `browser_identify`, `browser_reload`, `browser_hops` | shared, moved; the actions browser |
-| Address field (the `Address` arm of `Mode`, `lnomad/src/app/model.rs:102`) | a field node: the platform's text field, the scene names its hint and its go, as `Compose` does (`loquax/src/ui/scene.rs:658`) | `Go` (the URL is the platform's text, as Loquax's `Search` is) | `browser_address_hint` | browser node, shared shape |
+| Address field (the `Address` arm of `Mode`, `lnomad/src/app/model.rs:102`) | a field node: the platform's text field, the scene names its hint and its go, as `Compose` does (`loquax/src/ui/scene.rs:673`) | `Go` (the URL is the platform's text, as Loquax's `Search` is) | `browser_address_hint` | browser node, shared shape |
 | Page view (`model.page`, laid out by `layout`, `lnomad/src/render.rs:187`) | `Page`: a window of `PageLine`s, each a list of runs (see 2.2) | `Scroll(ScrollCmd)` (exists) | none: page text is `Text::Raw` | browser |
 | Link focus, hint labels, follow (`focus`, `visible_links`, `lnomad/src/app/model.rs:958`) | a run carries its link index; `Page.focus` names the focused link | `FocusNext(dir)`, `Activate(NodeId::Link(n))`, `Hint` | `browser_hint` | `Activate` exists (`Intent`, `loquax/src/ui/intent.rs:168`); the link node browser |
 | Form fields (`RenderedField`, `lnomad/src/render.rs:114`) | a run carries its field index; the edited field is a platform text field like the address | `Edit`, `Toggle(field)`, `Submit` | `browser_submit` | browser |
@@ -192,7 +192,7 @@ stores runs instead of cells; the M9 slice measures and picks (slice 4).
 
 | Control | Where it is | lnomad |
 |---|---|---|
-| List row | `ListItem` (`leviculum-ui/src/scene.rs:273`, since 1240); Loquax's `Row` (`loquax/src/ui/scene.rs:409`) is a `ListItem` with a conversation's `ListRow` beside it; iced `list_row` (`loquax/src/gui/chat.rs:2972`) | **parametrised**: the generic part moved to `leviculum-ui` as `ListItem` in slice 0 (id, `selected`, `activate`, `menu`, `A11y`); Loquax's `Row` keeps its `ListRow` beside it. Title, subtitle and trailing words join the item in slice 1, with the first list whose words are the item's own (Loquax's are its `ListRow`'s). Places, history and name results are list items |
+| List row | `ListItem` (`leviculum-ui/src/scene.rs:273`, since 1240); Loquax's `Row` (`loquax/src/ui/scene.rs:424`) is a `ListItem` with a conversation's `ListRow` beside it; iced `list_row` (`loquax/src/gui/chat.rs:2972`) | **parametrised**: the generic part moved to `leviculum-ui` as `ListItem` in slice 0 (id, `selected`, `activate`, `menu`, `A11y`); Loquax's `Row` keeps its `ListRow` beside it. Title, subtitle and trailing words join the item in slice 1, with the first list whose words are the item's own (Loquax's are its `ListRow`'s). Places, history and name results are list items |
 | Top bar | `TopBar`, `Lead` (`leviculum-ui/src/scene.rs:187`) | **reused**, moved to `leviculum-ui` in slice 0; `Lead::Back` for history; the address is a field node below or inside it per renderer |
 | Tab bar | `Tabs` (`leviculum-ui/src/scene.rs:251`), `TabId` (`loquax/src/ui/scene.rs:78`), Chats and Map | **parametrised** where the browser is hosted: `TabId::Browse` beside Chats and Map ("Calls later" in [Loquax on Android: navigation and views](loquax-android-navigation.md) already plans a third). The standalone lnomad has no tab bar |
 | Sheet | `Sheet` (`leviculum-ui/src/scene.rs:293`) | **reused** unchanged: places, history, a link's long press |
@@ -670,8 +670,8 @@ terminal and window get no tab (the second question, answered no for now).
   says off, at `loquax-android/src/session.rs:2332`), whether it is in front, and
   lnomad's `Model`, marked `hosted`. `TabId::Browse`
   (`loquax/src/ui/scene.rs:82`) joins Chats and Map where enabled, and the
-  scene carries lnomad's scene as `browse` (`loquax/src/ui/scene.rs:1066`;
-  `browse_scene`, `loquax/src/ui/scene.rs:1195`). Loquax's `Intent` gains
+  scene carries lnomad's scene as `browse` (`loquax/src/ui/scene.rs:1081`;
+  `browse_scene`, `loquax/src/ui/scene.rs:1210`). Loquax's `Intent` gains
   one arm, `Browse(lnomad::Intent)`, carried, never a browser verb of its
   own; the model folds `UiEvent::Tab` and `UiEvent::Browse`
   (`BrowseEvent`, `loquax/src/ui/browse.rs:271`): a verb, the page a fetch

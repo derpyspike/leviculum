@@ -1161,15 +1161,24 @@ fn marks() -> impl Strategy<Value = Vec<MapMark>> {
             prop::option::of(u32s()),
             opt_text(),
             any::<bool>(),
+            (text(), text(), text(), text()),
         )
-            .prop_map(|(x, y, peers, split_milli, way, low_battery)| MapMark {
-                x,
-                y,
-                peers,
-                split_milli,
-                way,
-                low_battery,
-            }),
+            .prop_map(
+                |(x, y, peers, split_milli, way, low_battery, (hue, hue_dark, ink, ink_dark))| {
+                    MapMark {
+                        x,
+                        y,
+                        peers,
+                        split_milli,
+                        way,
+                        low_battery,
+                        hue,
+                        hue_dark,
+                        ink,
+                        ink_dark,
+                    }
+                },
+            ),
         0..4,
     )
 }
@@ -1182,6 +1191,7 @@ fn friend_row() -> BoxedStrategy<FriendRow> {
         live(),
         (text(), text(), text()),
         (any::<bool>(), text()),
+        (text(), text()),
     )
         .prop_map(
             |(
@@ -1191,12 +1201,15 @@ fn friend_row() -> BoxedStrategy<FriendRow> {
                 (liveness, cadence_s, last_fix_at),
                 (live, age, ring),
                 (nearby, announced),
+                (hue, ink),
             )| FriendRow {
                 peer,
                 name,
                 initials,
                 icon_fg,
                 icon_bg,
+                hue,
+                ink,
                 photo,
                 at,
                 lat_e6,

@@ -911,16 +911,7 @@ impl Frames {
             at = self.passed(Pass::Tracks, at);
         }
         if ask.draw_pins && layers.has(Pass::Pins) {
-            screenmap::draw_pins(
-                rgba,
-                w,
-                h,
-                &placed,
-                ask.tracks,
-                scale,
-                theme,
-                &mut self.type_,
-            );
+            screenmap::draw_pins(rgba, w, h, &placed, scale, theme, &mut self.type_);
             self.passed(Pass::Pins, at);
         }
         self.placed = placed;

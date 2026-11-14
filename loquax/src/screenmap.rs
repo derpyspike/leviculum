@@ -340,52 +340,60 @@ pub fn hit(placed: &[Placed], x: f32, y: f32, scale: f32) -> Option<[u8; 16]> {
         .map(|p| p.peer)
 }
 
-/// The colours of a pin and its label, RGB and opacity.
+/// The colours of a pin and its label, RGB and opacity, and its ring's
+/// width in pixels at scale 1.
 struct PinInk {
     marker: ([u8; 3], f64),
     ring: [u8; 3],
+    ring_width: f32,
     ground: ([u8; 3], f64),
     text: ([u8; 3], f64),
 }
 
-/// The hue of `peer`'s track in `tracks` (1385, rule 6), for its pin's
-/// marker and name; `None` for our own, grey track, and for a peer without
-/// one: its pin keeps the pins' blue.
-pub fn pin_hue(
-    tracks: &[crate::ui::tracks::Track],
-    peer: &[u8; 16],
-    dark: bool,
-) -> Option<[u8; 3]> {
-    let hue = tracks.iter().find(|t| t.peer == *peer)?.hue?;
-    Some(crate::ui::tracks::colour(Some(hue), dark))
+/// The colour of `peer`'s pin marker and name on a light or a dark map:
+/// the peer's hue ([`crate::ui::tracks::peer_colour`]), the one its track
+/// is drawn in, whether it has a track or not (1693).
+pub fn pin_hue(peer: &[u8; 16], dark: bool) -> [u8; 3] {
+    crate::ui::tracks::peer_colour(peer, dark)
 }
 
+/// The ring of the chosen pin (1693): the label's text colour, wider than
+/// the white ring of the others, so the choice is told by the ring and the
+/// pin keeps its peer's hue. Light and dark map.
+pub const CHOSEN_RING: [[u8; 3]; 2] = [[0x10, 0x10, 0x10], [0xe6, 0xe6, 0xe6]];
+/// The chosen pin's ring width and the others', in pixels at scale 1.
+pub const RING_WIDTHS: (f32, f32) = (2.5, 1.5);
+
 /// The window's pin colours (`gui::Map::draw`), the label's ground and
-/// text turned for the dark table; a peer with a track in its hue, the
-/// name too.
-fn pin_ink(pin: &Placed, theme: MapTheme, hue: Option<[u8; 3]>) -> PinInk {
-    let ground = match (pin.nearby, hue) {
-        (true, _) => [0x80, 0x80, 0x80],
-        (false, Some(hue)) => hue,
-        (false, None) => [0x20, 0x50, 0xc0],
+/// text turned for the dark table; a peer's marker and name in its `hue`
+/// ([`pin_hue`]), a node nearby grey, our own position the blue dot.
+fn pin_ink(pin: &Placed, theme: MapTheme, hue: [u8; 3]) -> PinInk {
+    let dark = theme == MapTheme::Dark;
+    let colour = match pin.nearby {
+        true => [0x80, 0x80, 0x80],
+        false => hue,
     };
-    let marker = match (pin.selected, pin.stale) {
-        (true, _) => ([0xd0, 0x30, 0x30], 1.0),
-        (false, stale) if pin.own => (OWN_DOT, if stale { 0.45 } else { 1.0 }),
-        (false, false) => (ground, 1.0),
-        (false, true) => (ground, 0.45),
+    let marker = match pin.stale {
+        _ if pin.own => (OWN_DOT, if pin.stale { 0.45 } else { 1.0 }),
+        false => (colour, 1.0),
+        true => (colour, 0.45),
     };
-    let (ground, text) = match theme {
-        MapTheme::Dark => ([0x18, 0x18, 0x18], [0xe6, 0xe6, 0xe6]),
-        _ => ([0xff, 0xff, 0xff], [0x10, 0x10, 0x10]),
+    let (ground, text) = match dark {
+        true => ([0x18, 0x18, 0x18], [0xe6, 0xe6, 0xe6]),
+        false => ([0xff, 0xff, 0xff], [0x10, 0x10, 0x10]),
     };
-    let text = match (pin.nearby, hue) {
-        (false, Some(hue)) => hue,
-        _ => text,
+    let text = match pin.nearby {
+        false => hue,
+        true => text,
+    };
+    let (ring, ring_width) = match pin.selected {
+        true => (CHOSEN_RING[usize::from(dark)], RING_WIDTHS.0),
+        false => ([0xff, 0xff, 0xff], RING_WIDTHS.1),
     };
     PinInk {
         marker,
-        ring: [0xff, 0xff, 0xff],
+        ring,
+        ring_width,
         ground: (ground, 0.75),
         text: (text, if pin.stale { 0.55 } else { 1.0 }),
     }
@@ -429,16 +437,16 @@ fn disc(
 
 /// Draw the pins of `placed` into `rgba`, `w` by `h` pixels, as the window
 /// draws them over its picture: a marker with a white ring, and beside it
-/// the label on a light ground, dimmed when the fix is stale; a peer with
-/// a track in `tracks` in its hue ([`pin_hue`]). In order, so the selected
-/// pin, which [`place`] puts last, comes out on top.
+/// the label on a light ground, dimmed when the fix is stale; a peer's
+/// marker and name in its hue ([`pin_hue`]), the chosen one in a wider
+/// ring of the text colour. In order, so the selected pin, which [`place`]
+/// puts last, comes out on top.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_pins(
     rgba: &mut [u8],
     w: u32,
     h: u32,
     placed: &[Placed],
-    tracks: &[crate::ui::tracks::Track],
     scale: f32,
     theme: MapTheme,
     type_: &mut Typesetter,
@@ -446,7 +454,7 @@ pub fn draw_pins(
     let radius = MARKER * scale / 2.0;
     let line = LABEL * LINE * scale;
     for pin in placed {
-        let hue = pin_hue(tracks, &pin.peer, theme == MapTheme::Dark);
+        let hue = pin_hue(&pin.peer, theme == MapTheme::Dark);
         let ink = pin_ink(pin, theme, hue);
         disc(
             rgba,
@@ -454,7 +462,7 @@ pub fn draw_pins(
             h,
             pin.x,
             pin.y,
-            radius + 1.5 * scale,
+            radius + ink.ring_width * scale,
             ink.ring,
             1.0,
         );
@@ -1005,15 +1013,60 @@ pub fn render(
         style.theme,
         type_,
     );
-    draw_pins(
-        &mut picture.rgba,
-        w,
-        h,
-        &placed,
-        tracks,
-        scale,
-        style.theme,
-        type_,
-    );
+    draw_pins(&mut picture.rgba, w, h, &placed, scale, style.theme, type_);
     Rendered { picture, placed }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::tracks::{HUE_DARK, HUE_LIGHT};
+
+    fn placed(peer: u8, selected: bool) -> Placed {
+        Placed {
+            peer: [peer; 16],
+            x: 10.0,
+            y: 10.0,
+            label: None,
+            width: 0.0,
+            stale: false,
+            nearby: false,
+            selected,
+            low_battery: false,
+            own: false,
+        }
+    }
+
+    /// 1693: a peer's pin and its name are in the peer's hue, the one its
+    /// track is drawn in, whether it has a track or not and whether it is
+    /// chosen or not; no pin is red for being chosen.
+    #[test]
+    fn a_pin_is_in_its_peers_hue_chosen_or_not() {
+        for (theme, dark, set) in [
+            (MapTheme::Light, false, HUE_LIGHT),
+            (MapTheme::Dark, true, HUE_DARK),
+        ] {
+            for peer in [1u8, 3, 0x5a] {
+                let want = set[usize::from(peer % 8)];
+                for selected in [false, true] {
+                    let pin = placed(peer, selected);
+                    let ink = pin_ink(&pin, theme, pin_hue(&pin.peer, dark));
+                    assert_eq!(
+                        ink.marker.0, want,
+                        "peer {peer} selected {selected} {theme:?}"
+                    );
+                    assert_eq!(ink.text.0, want, "the name, peer {peer}");
+                }
+            }
+        }
+    }
+
+    /// 1693: the chosen pin is told apart by its ring, not its colour.
+    #[test]
+    fn the_chosen_pin_has_a_ring_of_its_own() {
+        let plain = pin_ink(&placed(3, false), MapTheme::Light, pin_hue(&[3; 16], false));
+        let chosen = pin_ink(&placed(3, true), MapTheme::Light, pin_hue(&[3; 16], false));
+        assert_ne!(plain.ring, chosen.ring);
+        assert!(chosen.ring_width > plain.ring_width);
+    }
 }

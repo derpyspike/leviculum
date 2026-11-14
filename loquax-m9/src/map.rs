@@ -1036,8 +1036,9 @@ impl Painter {
 pub const ZONE_LINE: Rgb565 = Rgb565::new(0x8e >> 3, 0x44 >> 2, 0xad >> 3);
 
 /// The pins over the picture: each pin's text where the model placed it,
-/// in the atlas, on the bar's colours; the chosen one reversed, an old
-/// one's and a node's nearby muted.
+/// in the atlas, on the bar's ground; a friend's in its hue ([`peer_rgb`],
+/// 1693), old or not; the chosen one reversed, a node's nearby and our own
+/// old one muted.
 pub fn pins<D>(
     pins: &[PinCell],
     look: &Look,
@@ -1068,10 +1069,17 @@ where
         usize::from(next.min(crate::screen::COLS as u16).saturating_sub(col))
     };
     for pin in pins {
-        let (fg, bg) = match (pin.selected, pin.stale || pin.nearby) {
-            (true, _) => (bg, fg),
-            (false, true) => (dim, bg),
-            (false, false) => (fg, bg),
+        // A friend in its hue, the lighter set of the dark map the M9's
+        // panel is (1693): the colour its pin and track take on every other
+        // target. Our own and a node nearby keep the bar's ink.
+        let ink = match pin.own || pin.nearby {
+            true => fg,
+            false => peer_rgb(&pin.peer).into(),
+        };
+        let (fg, bg) = match (pin.selected, pin.nearby, pin.stale && pin.own) {
+            (true, ..) => (bg, ink),
+            (false, true, _) | (false, _, true) => (dim, bg),
+            (false, false, false) => (ink, bg),
         };
         let style = MonoTextStyleBuilder::new()
             .font(font)
@@ -1095,6 +1103,12 @@ where
         }
     }
     Ok(())
+}
+
+/// A peer's colour on the M9's dark panel ([`loquax::ui::tracks::peer_colour`]).
+pub fn peer_rgb(peer: &[u8; 16]) -> Rgb888 {
+    let [r, g, b] = loquax::ui::tracks::peer_colour(peer, true);
+    Rgb888::new(r, g, b)
 }
 
 /// `words` cut to `cols` cells with an ellipsis where they do not fit; a

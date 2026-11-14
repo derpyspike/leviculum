@@ -1263,6 +1263,15 @@ pub struct FriendRow {
     pub icon_fg: Option<String>,
     #[serde(default)]
     pub icon_bg: Option<String>,
+    /// The peer's hue, `rrggbb` (1693, `loquax::ui::tracks::peer_colour`
+    /// on the light map): the colour its pin and its track are drawn in.
+    /// The sheet's entry and the card's avatar fill their circle with it,
+    /// not with `icon_bg`, so a peer has one colour wherever the map shows
+    /// it; `ink` is its initials' colour on it.
+    #[serde(default)]
+    pub hue: String,
+    #[serde(default)]
+    pub ink: String,
     #[serde(default)]
     pub photo: Option<String>,
     /// When the fix was taken, unix seconds: its claim, or when it came
@@ -3036,6 +3045,20 @@ pub struct MapMark {
     /// The pin's battery is below a fifth (1386): a battery beside it.
     #[serde(default)]
     pub low_battery: bool,
+    /// The pin's peer's hue, `rrggbb`, on the light map and on the dark
+    /// one (1693, `loquax::ui::tracks::peer_colour`): the avatar pin is
+    /// filled with the one of the map's table, the colour the peer's
+    /// track is drawn in there, its initials in `ink` or `ink_dark` (white
+    /// or near black by the hue's luminance). The first peer's on a
+    /// cluster.
+    #[serde(default)]
+    pub hue: String,
+    #[serde(default)]
+    pub hue_dark: String,
+    #[serde(default)]
+    pub ink: String,
+    #[serde(default)]
+    pub ink_dark: String,
 }
 
 /// The map frame's description; its pixels follow it (see the table

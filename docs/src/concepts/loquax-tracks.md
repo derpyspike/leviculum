@@ -97,9 +97,24 @@ them all and added three refinements, marked *settled by the pictures*.
 
 6. **Colours.** Eight hues from the peer's address, the first byte
    modulo 8, the same on every device: blue, orange, green, red, violet,
-   teal, magenta, brown, with a lighter set for the dark map so each
-   holds against its ground. The pin's marker and its name take the hue;
-   our own track is neutral grey. More than eight peers share hues; the
+   teal, magenta, ochre, with a lighter set for the dark map so each
+   holds against its ground. One function is the source of a peer's
+   colour, `loquax::ui::tracks::peer_colour` (1693): the pin's marker,
+   its name, its track, its entry in the locations list and the card's
+   avatar take it on every target, with a track or without, chosen or
+   not. The pin's shape differs per target (a small dot with the name in
+   the window, a big dot with the initials on the phone, text cells in
+   the terminal and on the M9), the colour does not. A chosen pin is told
+   by a wider ring of the text colour, never by a colour of its own (it
+   was red until 1693). Measured (WCAG ratio): the light set holds 3.3:1
+   (orange) to 5.4:1 (violet) against the light land `#f2efe9`, the
+   lighter set 6.5:1 (red) to 10.0:1 (teal) against the dark `#161616`;
+   no two share a 30 degree hue bucket (1693 turned the brown, which
+   shared orange's, to ochre, and darkened orange from 2.8:1). The
+   initials inside a phone's pin are white or near black by the hue's
+   luminance, whichever reads better (`ink_on`), at least 4.5:1 on all
+   sixteen. Our own track is neutral grey; our own position stays the
+   blue dot of 1449. More than eight peers share hues; the
    label tells them apart. In the terminal: the hue blended into the
    map's ground by level on a colour terminal, the nearest of the sixteen
    ANSI colours (dim below the top two levels) at sixteen, and plain

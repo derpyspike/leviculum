@@ -6,7 +6,8 @@
 //! ([`measure`]), as iced sets the label on the canvas.
 
 pub use loquax::screenmap::{
-    area, battery_at, hit, pin_hue, Placed, BATTERY, DRAG, LABEL, LINE, MARKER, OWN_DOT,
+    area, battery_at, hit, pin_hue, Placed, BATTERY, CHOSEN_RING, DRAG, LABEL, LINE, MARKER,
+    OWN_DOT, RING_WIDTHS,
 };
 
 /// What the model's map functions are told in the window

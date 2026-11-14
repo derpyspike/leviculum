@@ -401,6 +401,21 @@ impl Avatar {
             ring,
         }
     }
+
+    /// The avatar of a peer on the map (1693): its ground the peer's hue
+    /// ([`crate::ui::tracks::peer_colour`], the light set), the colour its
+    /// pin and track are drawn in, not the icon it chose; the letters in
+    /// the ink [`crate::ui::tracks::ink_on`] picks for it.
+    pub(super) fn hued(initials: String, peer: &[u8; 16], ring: Option<Ring>) -> Self {
+        let hue = crate::ui::tracks::peer_colour(peer, false);
+        let rgb = |[r, g, b]: [u8; 3]| u32::from_be_bytes([0, r, g, b]);
+        Self {
+            initials,
+            fg: rgb(crate::ui::tracks::ink_on(hue)),
+            bg: rgb(hue),
+            ring,
+        }
+    }
 }
 
 /// A conversation's row: the shared [`ListItem`] (id, selected, tap,

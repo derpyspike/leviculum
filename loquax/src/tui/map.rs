@@ -1421,7 +1421,12 @@ impl MapPainter {
         let behind = fits && painted.view != ask.view && self.labels_view == Some(painted.view);
         let pins = match behind {
             true => self.labels.iter().filter(|l| !l.name).cloned().collect(),
-            false => labels_of(shown, muted),
+            false => labels_of(
+                shown,
+                muted,
+                self.tier,
+                matches!(painted.style.theme, MapTheme::Dark),
+            ),
         };
         // The map's names go where no pin and no pin's name is, placed for
         // the picture's own view so they never stand off its streets.
@@ -1580,18 +1585,26 @@ fn track_style(tier: Tier, dark: bool, hue: Option<u8>, level: u8) -> Style {
     }
 }
 
-/// The labels of `shown`'s pins, styled.
-fn labels_of(shown: &MapView, muted: Style) -> Vec<Label> {
+/// The labels of `shown`'s pins, styled: a friend's in its hue at full
+/// strength, the colour its track takes on this `tier` and map (1693).
+fn labels_of(shown: &MapView, muted: Style, tier: Tier, dark: bool) -> Vec<Label> {
     let mut labels = Vec::new();
     for pin in &shown.pins {
-        let mut style = Style::default();
+        let mut style = match pin.own || pin.nearby {
+            true => Style::default(),
+            false => track_style(tier, dark, loquax::ui::tracks::hue(&pin.peer, false), 3),
+        };
         // A node nearby that is no contact (1302): a neutral pin, in the
         // muted grey, its announced name beside it.
         if pin.nearby {
             style = style.patch(muted);
         }
+        // An old fix dims; a friend keeps its hue.
         if pin.stale {
-            style = style.patch(muted).add_modifier(Modifier::DIM);
+            if pin.nearby || pin.own {
+                style = style.patch(muted);
+            }
+            style = style.add_modifier(Modifier::DIM);
         }
         if pin.selected {
             style = style.add_modifier(Modifier::REVERSED);
@@ -2459,7 +2472,69 @@ mod tests {
         }
     }
 
-    const PINNED_NAMES: &str = "\n  ● bob · 4 min  Giardino del Borgo\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n                           Piazza D'Azeglio\n";
+    /// 1693: a friend's pin is drawn in the peer's hue, the colour its
+    /// track takes at full strength (`track_style` at level 3), on a
+    /// truecolor terminal and at sixteen colours, chosen or not; a node
+    /// nearby stays grey.
+    #[test]
+    fn a_friends_pin_is_in_its_tracks_hue() {
+        use loquax::ui::tracks;
+        let dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../leviculum-map/fixtures");
+        for tier in [Tier::Truecolor, Tier::Ansi16] {
+            let mut painter =
+                MapPainter::new(Maps::new(Some(dir.clone())), Graphics::Braille, None);
+            painter.set_tier(tier);
+            let cell_px = painter.setup().cell_px;
+            let (cols, rows) = (60u16, 20u16);
+            let area = leviculum_ui::Rect::new(0, 0, cols, rows);
+            let at = project(LatLon::from_degrees(43.7755, 11.2672));
+            let pin = |peer: u8, row: u16, text: &str, selected: bool| PinCell {
+                peer: [peer; 16],
+                col: 2,
+                row,
+                text: text.to_string(),
+                apart: None,
+                stale: false,
+                nearby: false,
+                selected,
+                own: false,
+            };
+            let shown = MapView {
+                tracks: Vec::new(),
+                radar: None,
+                window_word: None,
+                moving: false,
+                area,
+                viewport: Viewport::new(
+                    at,
+                    15,
+                    u32::from(cols) * u32::from(cell_px.0),
+                    u32::from(rows) * u32::from(cell_px.1),
+                ),
+                cell_px,
+                pins: vec![
+                    pin(1, 1, "● bob · 4 min", false),
+                    pin(3, 4, "● ann · 2 min", true),
+                ],
+            };
+            let muted = Style::default().fg(Color::Rgb(0x80, 0x80, 0x80));
+            let mut terminal = Terminal::new(TestBackend::new(cols, rows + 1)).expect("terminal");
+            let Ok(_) = terminal.draw(|f| painter.render(f, &shown, muted));
+            let buffer = terminal.backend().buffer().clone();
+            let fg = |x: u16, y: u16| buffer.cell((x, y)).expect("cell").fg;
+            for (peer, row) in [(1u8, 1u16), (3, 4)] {
+                let want = track_style(tier, false, tracks::hue(&[peer; 16], false), 3)
+                    .fg
+                    .expect("a hue");
+                for x in 2..8 {
+                    assert_eq!(fg(x, row), want, "{tier:?} peer {peer} column {x}");
+                }
+            }
+        }
+    }
+
+    const PINNED_NAMES: &str ="\n  ● bob · 4 min  Giardino del Borgo\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n                           Piazza D'Azeglio\n";
 
     /// The streets of the Florence fixture named in cells (1126): at z16
     /// by the Duomo over its picture in braille, each name on a level run of its street
