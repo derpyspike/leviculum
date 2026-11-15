@@ -800,6 +800,11 @@ after the area fills and before the buildings and every line
 (`leviculum_map::draw::draw_in_relief`), so it shades the ground
 colours and never a road, a footprint or a name. The style is part of
 the tile cache's key, so switching the flag drops the cached tiles.
+The config's `map_relief` (1863, on by default; the phone's Advanced
+page has the switch) turns it off. The packs come with the regions:
+the autoload fetches the height pack blocks under every region that
+lands from the server's catalogue and evicts them with it
+([map server](map-server.md), "Height packs on the device").
 The packs are found and indexed by `loquax/src/relief.rs` (bounded
 reads, indexed again only when the set of pack files changes, one store
 shared by all of a tile cache's workers); the method and its parameters

@@ -1245,6 +1245,9 @@ any other word that promises a vehicle gets through.
   longer the dark brown of steep rock (Lew, 2026-11-12, on the pilot's
   images). Whether the pastel or the strong style becomes the default
   is open.
+- Stage A landed with order 1743: ground packs, their cut and its
+  validation, and both styles on the shared painter
+  ([the map server, "Ground packs"](map-server.md#ground-packs)).
 - Why imagery cannot lead (the imagery survey): none of the sharp
   imagery in the OpenStreetMap editors may be shipped by our server
   (Bing, Esri, Mapbox, Maxar), and nothing sharper than 10 m is openly

@@ -65,6 +65,7 @@ run   leviculum-std   doc_build_paths            # reads .cargo/config.toml and 
 run   leviculum-std   doc_radio_policy           # reads docs/src/**/*.md; no page may describe a radio-regulatory refusal
 run   leviculum-std   doc_security_policy        # reads SECURITY.md and the commit-trailer baseline the addresses come from
 run   leviculum-std   doc_self_hosted_infra      # reads the design record against the artifacts of it that now exist in the tree
+run   leviculum-std   audit1876_merge_kept_both_sides # reads the four concept pages the 1876 merges took whole; lane4's rows 48/49 and passages must stay
 run   leviculum-std   lnode_debug_log_format     # reads the firmware sources for the debug-line shapes and the RX-defer sites
 run   leviculum-std   msgpack_single_decoder     # reads leviculum-core's sources; exactly one hand-rolled msgpack reader may exist
 run   leviculum-std   nrf_boot_no_spin           # reads leviculum-nrf/src/bin/*.rs; no nop spin above 10 000 may hold the executor at boot
