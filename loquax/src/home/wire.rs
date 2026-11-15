@@ -1623,4 +1623,74 @@ mod tests {
             Ok(Status::Behind)
         );
     }
+
+    /// Order 1871 (the second auditor): whatever a later or hostile board
+    /// puts as the fourth `/sync` element, the home asks nothing for it
+    /// (the fold stays the board's, never [`Fold::BoardVouched`]) and
+    /// panics nowhere: not on the whole request, and not on any prefix of
+    /// it, which a cut packet would be.
+    #[test]
+    fn audit1871_a_hostile_fourth_sync_element_asks_nothing_and_panics_nowhere() {
+        let fourths: Vec<Vec<u8>> = {
+            let mut list = Vec::new();
+            let mut put = |f: &dyn Fn(&mut Vec<u8>)| {
+                let mut out = Vec::new();
+                f(&mut out);
+                list.push(out);
+            };
+            put(&|o| msgpack::uint(o, 7));
+            put(&|o| msgpack::uint(o, u64::MAX));
+            put(&|o| msgpack::int(o, -1));
+            put(&|o| msgpack::nil(o));
+            put(&|o| msgpack::bool(o, true));
+            put(&|o| msgpack::bin(o, VOUCHED_WORD.as_bytes()));
+            put(&|o| msgpack::string(o, "vouche"));
+            put(&|o| msgpack::string(o, "vouchedx"));
+            put(&|o| msgpack::string(o, "VOUCHED"));
+            put(&|o| msgpack::array(o, 1));
+            put(&|o| {
+                msgpack::array(o, 1);
+                msgpack::string(o, VOUCHED_WORD);
+            });
+            put(&|o| msgpack::map(o, 1));
+            // A string header claiming far more bytes than follow.
+            put(&|o| o.extend_from_slice(&[0xdb, 0xff, 0xff, 0xff, 0xff, b'v']));
+            // An array header claiming four billion elements.
+            put(&|o| o.extend_from_slice(&[0xdd, 0xff, 0xff, 0xff, 0xff]));
+            // Bytes that are no msgpack type at all.
+            put(&|o| o.push(0xc1));
+            // Not valid UTF-8 inside a string.
+            put(&|o| o.extend_from_slice(&[0xa2, 0xff, 0xfe]));
+            // Nothing: the array promises a fourth element that never comes.
+            put(&|_| {});
+            list
+        };
+        for (n, fourth) in fourths.iter().enumerate() {
+            for len in [4usize, 5, 0xffff, u32::MAX as usize] {
+                let mut data = Vec::new();
+                msgpack::array(&mut data, len);
+                msgpack::uint(&mut data, 5);
+                msgpack::uint(&mut data, 412);
+                msgpack::string(&mut data, "board");
+                data.extend_from_slice(fourth);
+                let read = read_sync_asked(&data);
+                assert_eq!(
+                    read,
+                    Ok((5, Some(412), Fold::Board)),
+                    "element {n}, len {len}"
+                );
+                for cut in 0..data.len() {
+                    if let Ok((_, _, fold)) = read_sync_asked(&data[..cut]) {
+                        assert_ne!(fold, Fold::BoardVouched, "element {n}, cut {cut}");
+                    }
+                }
+            }
+        }
+        // The positive control: the word itself asks the verdicts.
+        let asked = sync_request_folded(5, 412, Fold::BoardVouched);
+        assert_eq!(
+            read_sync_asked(&asked),
+            Ok((5, Some(412), Fold::BoardVouched))
+        );
+    }
 }
