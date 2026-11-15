@@ -115,7 +115,7 @@ Rows marked (1341) or (1371) were MISSING before that pass and are closed by it.
 | 45 | Icon and application id | `LoquaxApp` (`loquax-android/android/AndroidManifest.xml:70`) | `application_id` (`loquax/src/gui.rs:602`) (1341) | n/a |
 | 46 | Rooms tab (RRC), a room as a chat (1450) | `Core.rooms` (`RoomsPane.java:261`), behind `rooms_hub` (1384) | `rooms_pane` (`loquax/src/gui/chat.rs:751`), behind `rooms_hub` (1379) | `draw_rooms` (`loquax/src/tui.rs:1744`), behind `rooms_hub` (1379) |
 | 47 | Explore: pages and public rooms under one button, the bar's third (1578) | `Core.explore` (`ExplorePane.java:681`), `loquax-android/src/explore.rs` | `explore_pane` (`loquax/src/gui/chat.rs:913`) | `draw_explore` (`loquax/src/tui.rs:1895`) (`E`, palette `explore`) |
-| 48 | Relief under the light map on/off, `map_relief` (1863, 1868) | `mapRelief` (`SettingsActivity.java:1070`) (the Advanced page's switch, stored as the config's `map_relief`) | `map_relief` (`loquax/src/gui.rs:234`) (config file `map_relief`) | `set_relief` (`loquax/src/tui/map.rs:1163`), `painter.set_relief` (`loquax/src/tui.rs:2360`) (config file `map_relief`; sixel, kitty and octant draw it) |
+| 48 | Relief under the light map on/off, `map_relief` (1863, 1868) | `mapRelief` (`SettingsActivity.java:1070`) (the Advanced page's switch, stored as the config's `map_relief`) | `map_relief` (`loquax/src/gui.rs:239`) (config file `map_relief`) | `set_relief` (`loquax/src/tui/map.rs:1163`), `painter.set_relief` (`loquax/src/tui.rs:2360`) (config file `map_relief`; sixel, kitty and octant draw it) |
 
 ## Counts
 
