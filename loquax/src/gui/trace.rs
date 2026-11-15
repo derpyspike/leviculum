@@ -7,7 +7,8 @@
 //! `scripts/map-trace-summary.py /tmp/map.trace`.
 //!
 //! A line is `<ms since the window opened> <what> <detail>`: `event down|move|up|wheel`,
-//! `ask <zoom in thousandths> moving|rest`, `painted <worker ms> <missing tiles>`.
+//! `ask <zoom in thousandths> moving|rest`, `painted <worker ms> <missing tiles> treat <ms> <pixels>` (the loads'
+//! treatment, 1812).
 
 use std::io::Write;
 use std::time::Instant;
@@ -81,6 +82,11 @@ impl Trace {
 
     pub fn painted(&mut self, shown: &super::Shown) {
         self.painted += 1;
-        self.line(format_args!("painted {:.2} {}", shown.ms, shown.missing));
+        // The loads' treatment (1812): its share of the frame's time and
+        // the pixels it carries, after the frame's own two fields.
+        self.line(format_args!(
+            "painted {:.2} {} treat {:.3} {}",
+            shown.ms, shown.missing, shown.treat_ms, shown.painted.pixels
+        ));
     }
 }

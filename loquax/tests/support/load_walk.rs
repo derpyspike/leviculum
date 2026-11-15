@@ -58,6 +58,21 @@
 //!   the rested view with the relief on differs from the same view drawn
 //!   with it off on at least [`RELIEF_SHARE`] of the screen.
 //!
+//! - `loading_is_visible` (1812): at rest (no input for [`SETTLE_MS`]),
+//!   every point of the view the sampling of
+//!   [`loquax::ui::viewload::uncovered`] finds without its zoom's data
+//!   lies in a piece of the frame the loads' treatment
+//!   ([`loquax::ui::maploading::paint`]) was drawn over.
+//! - `progress_moves_with_bytes` (1812): a running area's bar is the
+//!   loader's bytes done of bytes planned at that instant, never another
+//!   number; it shows loading while bytes moved within the treatment's
+//!   stall time ([`TREAT_STALL_MS`]) and says it stands still once none
+//!   came for longer.
+//! - `no_treatment_when_complete` (1812): a pause that filled shows no
+//!   treatment on the screen.
+//! - `idle_draws_nothing` (1812): no frame is drawn only because the
+//!   stripes' step moved unless the frame carries a moving treatment.
+//!
 //! With `LOQUAX_LOAD_WALK=DIR` the pictures go to `DIR/full/`, the
 //! verdicts to `DIR/rows-load.tsv` and the per-frame traces to
 //! `DIR/trace-<session>.tsv`, for `just load-walk`'s contact sheet.
@@ -77,13 +92,16 @@ use leviculum_map::mercator::{project, LatLon, World};
 use leviculum_map::region::Bounds;
 use leviculum_map::viewport::{ExactView, MILLI};
 use leviculum_mapcut::serve::Serve;
-use loquax::mapload::{Held, LoadState, Loader, Rank, Source, Step, MAX_AWAY, SCREEN_RETRY_MAX_MS};
+use loquax::mapload::{
+    Held, LoadState, Loader, Rank, Source, Step, Watch, MAX_AWAY, SCREEN_RETRY_MAX_MS,
+};
 use loquax::picture::Maps;
 use loquax::ui::map::MapWant;
-use loquax::ui::viewload::{uncovered, GAP_SHARE, MIN_ZOOM};
+use loquax::ui::maploading::{milli_of, Area, Kind, Loads, STALL_MS as TREAT_STALL_MS};
+use loquax::ui::viewload::{gaps, uncovered, GAP_SHARE, MIN_ZOOM};
 
 use super::first_tile;
-use super::{draw, prefetch, App, Frames, Job, Message, Pointer, Screen, Want};
+use super::{draw, prefetch, App, Frames, Job, Message, Order, Pointer, Screen, Want};
 
 /// The window's map pane the walk drives, in pixels.
 pub const WALK_SIZE: (u32, u32) = (1120, 700);
@@ -123,6 +141,10 @@ pub const BLANK_SHARE: f64 = 0.99;
 /// under most of a z13 view at the place, and a relief that shades less
 /// than a fifth of it was not drawn.
 pub const RELIEF_SHARE: f64 = 0.2;
+/// The view rests this long after the last input before
+/// `loading_is_visible` judges its frames (1812): the scheduler's next
+/// decision ([`loquax::ui::viewload::DECIDE_MS`]) and two frames.
+pub const SETTLE_MS: u64 = 300;
 
 /// Where a walk starts and what its maps directory holds.
 struct Ground {
@@ -211,6 +233,18 @@ pub struct FrameRec {
     /// a frame-driven frontend woken at it would start nothing and
     /// redraw for nothing until the next real retry.
     pub busy_wake: bool,
+    /// What of the view is still to come as the window is told it after
+    /// this interval (1812).
+    pub loads: Loads,
+    /// The loader's running boxes for the view at the same instant: their
+    /// bytes done and planned.
+    pub raw: Vec<(Bounds, u64, u64)>,
+    /// The drawn frame's points without data and how many of them carry
+    /// no treatment, when judged ([`SETTLE_MS`], the view at rest).
+    pub treat: Option<(usize, usize)>,
+    /// The drawn frame differs from the one before only in the stripes'
+    /// step, and shows no moving treatment.
+    pub idle_phase_draw: bool,
 }
 
 /// A loader event on the walk's clock.
@@ -243,6 +277,9 @@ pub struct Check {
     /// The screen's pixels, margins cut, RGBA.
     pub crop: Vec<u8>,
     pub blank: bool,
+    /// Pixels of the screen (margins cut) the pause's frame carries a
+    /// treatment on (1812).
+    pub treated_px: u64,
 }
 
 /// What a fault session did: when the fault ended on the walk's clock,
@@ -287,6 +324,17 @@ pub enum Inject {
     /// A desert session's loader fetches no height packs (1868):
     /// `pack_after_region` and `relief_drawn`'s positive control.
     NoHeights,
+    /// The window is never told the loads (1812): `loading_is_visible`.
+    HideTreatment,
+    /// A loading area's bar shows the clock, not the bytes (1812):
+    /// `progress_moves_with_bytes`.
+    FakeProgress,
+    /// The last loads are kept once the loader has none (1812):
+    /// `no_treatment_when_complete`.
+    StaleTreatment,
+    /// After the first filled pause the window is told a load moves
+    /// far off the view (1812): `idle_draws_nothing`.
+    IdleTicks,
 }
 
 /// One verdict row, the render walk's columns.
@@ -338,6 +386,12 @@ pub struct Walk {
     pub heights: Vec<(u64, Bounds, Result<Vec<String>, String>)>,
     /// The share of the rested view the relief moved ([`Walk::relief`]).
     pub relief: Option<f64>,
+    /// The loader's report as the map shows it (1812), as the shell's.
+    watch: Watch,
+    /// The walk's clock at the last input (1812, [`SETTLE_MS`]).
+    last_input_ms: u64,
+    /// [`Inject::StaleTreatment`]'s kept loads.
+    stale: Option<Loads>,
 }
 
 impl Walk {
@@ -484,6 +538,9 @@ impl Walk {
             desert: None,
             heights: Vec::new(),
             relief: None,
+            watch: Watch::default(),
+            last_input_ms: 0,
+            stale: None,
         }
     }
 
@@ -516,9 +573,27 @@ impl Walk {
         let mut drew = false;
         let mut blank = None;
         let mut missing = self.frames.last().map_or(0, |f| f.missing);
+        let mut treat = None;
+        let mut idle_phase_draw = false;
         match self.app.next_job() {
             Some(Job::Draw(order)) => {
+                let before = self.app.shown.as_ref().map(|s| s.order.clone());
                 let shown = draw(&self.app.frames, *order);
+                // 1812: a frame drawn only for the stripes' next step must
+                // show stripes that move.
+                let phase_only = before.is_some_and(|b| {
+                    b.phase != shown.order.phase
+                        && Order {
+                            phase: shown.order.phase,
+                            ..b
+                        } == shown.order
+                });
+                let moving_treatment = shown
+                    .painted
+                    .pieces
+                    .iter()
+                    .any(|p| matches!(p.kind, Kind::Loading { .. }));
+                idle_phase_draw = phase_only && !moving_treatment;
                 drew = true;
                 missing = shown.missing;
                 self.last_fading = shown.fading;
@@ -610,6 +685,78 @@ impl Walk {
             seen.maps = self.maps.epoch();
             self.app.apply(Message::Seen(Box::new(seen)));
         }
+        // What of the view is still to come (1812), as the shell tells
+        // the window: one report, so the bar and the bytes are the same
+        // instant's.
+        let report = self.loader.report(t);
+        let mut loads = self.watch.of(&report, self.loader.offline(), t);
+        let raw: Vec<(Bounds, u64, u64)> = report
+            .iter()
+            .filter_map(|(b, rank, state)| match state {
+                LoadState::Running {
+                    bytes_done, bytes, ..
+                } if rank.on_screen() => Some((*b, *bytes_done, *bytes)),
+                _ => None,
+            })
+            .collect();
+        match self.inject {
+            Inject::HideTreatment => loads = Loads::default(),
+            Inject::FakeProgress => {
+                for a in &mut loads.areas {
+                    if let Kind::Loading { milli } = &mut a.kind {
+                        *milli = ((t / 7) % 1000) as u16;
+                    }
+                }
+            }
+            Inject::StaleTreatment => match loads.areas.is_empty() {
+                true => loads = self.stale.clone().unwrap_or(loads),
+                false => self.stale = Some(loads.clone()),
+            },
+            Inject::IdleTicks if self.checks.iter().any(|c| c.filled) => {
+                loads.areas.push(Area {
+                    bounds: Bounds {
+                        west: -1_700_000_000,
+                        south: -800_000_000,
+                        east: -1_690_000_000,
+                        north: -790_000_000,
+                    },
+                    kind: Kind::Loading { milli: 0 },
+                    bytes_done: 0,
+                    bytes: 0,
+                });
+            }
+            _ => {}
+        }
+        if loads != self.app.seen.loads {
+            let mut seen = self.app.seen.clone();
+            seen.loads = loads.clone();
+            self.app.apply(Message::Seen(Box::new(seen)));
+        }
+        // 1812: at rest, every point without data carries the treatment
+        // in the frame on screen, once that frame is the one for what the
+        // window knows (its loads, its regions, its view): a change is
+        // drawn in the next interval, and judged then.
+        if let Some(shown) = self.app.shown.as_ref() {
+            let current = shown.order.loads == self.app.seen.loads
+                && shown.order.epoch == self.app.seen.maps
+                && shown.order.view == self.app.view;
+            let settled = t.saturating_sub(self.last_input_ms) >= SETTLE_MS && !self.app.moving();
+            if current
+                && settled
+                && self.app.view.tile_zoom() >= MIN_ZOOM
+                && inside_archive(&self.area, &self.view_now().bounds())
+            {
+                let lack = gaps(&self.view_now(), &self.maps.headers());
+                let bare = lack
+                    .iter()
+                    .filter(|&&p| {
+                        let (x, y) = shown.view.to_screen(p);
+                        !shown.painted.pieces.iter().any(|q| q.contains(x, y))
+                    })
+                    .count();
+                treat = Some((lack.len(), bare));
+            }
+        }
         // The wake the loader would name a frame-driven frontend now,
         // right after its own poll: 0 while idle means a wake at which
         // nothing starts (1835) — the phone would redraw every 50 ms.
@@ -634,6 +781,10 @@ impl Walk {
             blank,
             inside: inside_archive(&self.area, &self.view_now().bounds()),
             busy_wake,
+            loads,
+            raw,
+            treat,
+            idle_phase_draw,
         });
         let next = t + 16;
         let now = self.now_ms();
@@ -672,6 +823,7 @@ impl Walk {
     /// One wheel notch of `milli` thousandths of a step at the middle,
     /// then the glide's frames.
     pub fn wheel(&mut self, milli: i32, settle_frames: u32) {
+        self.last_input_ms = self.now_ms();
         let (w, h) = WALK_SIZE;
         self.app.apply(Message::Pointer(Pointer::Wheel(
             Point::new(w as f32 / 2.0, h as f32 / 2.0),
@@ -688,6 +840,7 @@ impl Walk {
         self.app
             .apply(Message::Pointer(Pointer::Down(Point::new(x, y))));
         for k in 0..frames {
+            self.last_input_ms = self.now_ms();
             x += dx;
             y += dy;
             self.app
@@ -708,6 +861,7 @@ impl Walk {
     /// The view jumped to `(lat, lon)` at `zoom`, as "show where I am"
     /// moves it.
     pub fn jump(&mut self, to: (f64, f64), zoom: u8) {
+        self.last_input_ms = self.now_ms();
         self.app.settle();
         let at = project(LatLon::from_degrees(to.0, to.1));
         let (w, h) = WALK_SIZE;
@@ -782,6 +936,7 @@ impl Walk {
             shown = draw(&self.app.frames, order);
         }
         let crop = crop_screen(&shown, &self.app);
+        let treated_px = treated_on_screen(&shown);
         let mut crop = crop;
         if self.inject == Inject::PerturbPicture {
             let seen_before = self.checks.iter().any(|c| {
@@ -808,6 +963,7 @@ impl Walk {
             fill_took_ms: fill_took.unwrap_or(bound_ms),
             crop,
             blank,
+            treated_px,
         });
         if self.inject == Inject::DeleteRegion && !self.deleted && fill_took.is_some() {
             if let Some(dir) = self.maps.dir() {
@@ -1025,6 +1181,25 @@ fn prefill_cache(maps: &std::path::Path, url: &str, copies: usize) {
 }
 
 /// The screen's pixels of `shown`, margins cut, RGBA.
+/// Pixels of `shown`'s screen, its margins cut, its treatment's pieces
+/// cover (1812).
+fn treated_on_screen(shown: &super::Shown) -> u64 {
+    let (mx, my) = shown.order.margin;
+    let (w, h) = shown.view.size();
+    let (x0, y0) = (mx as i32, my as i32);
+    let (x1, y1) = (w as i32 - mx as i32, h as i32 - my as i32);
+    shown
+        .painted
+        .pieces
+        .iter()
+        .map(|p| {
+            let cw = (p.x1.min(x1) - p.x0.max(x0)).max(0);
+            let ch = (p.y1.min(y1) - p.y0.max(y0)).max(0);
+            (cw as u64) * (ch as u64)
+        })
+        .sum()
+}
+
 fn crop_screen(shown: &super::Shown, app: &App) -> Vec<u8> {
     let (fw, fh) = shown.view.size();
     let pixels: Vec<u8> = match &shown.handle {
@@ -1526,6 +1701,152 @@ pub fn rules(walk: &Walk) -> Vec<Verdict> {
             .unwrap_or_default(),
         String::new(),
     ));
+    // loading_is_visible (1812): at rest, every point without data
+    // carries the treatment in the drawn frame.
+    let judged: Vec<&FrameRec> = walk.frames.iter().filter(|f| f.treat.is_some()).collect();
+    let lacking: Vec<&FrameRec> = judged
+        .iter()
+        .copied()
+        .filter(|f| f.treat.is_some_and(|(n, _)| n > 0))
+        .collect();
+    let bare: Vec<&FrameRec> = lacking
+        .iter()
+        .copied()
+        .filter(|f| f.treat.is_some_and(|(_, b)| b > 0))
+        .collect();
+    out.push(v(
+        "loading_is_visible",
+        bare.is_empty(),
+        format!(
+            "{} of {} rested frames lacking data show a point without treatment ({} rested frames)",
+            bare.len(),
+            lacking.len(),
+            judged.len()
+        ),
+        "0".to_string(),
+        bare.iter()
+            .take(3)
+            .map(|f| {
+                let (n, b) = f.treat.unwrap_or_default();
+                format!("t={} {b} of {n} bare", f.t)
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
+        String::new(),
+        String::new(),
+    ));
+
+    // progress_moves_with_bytes (1812): the bar is the bytes, it says
+    // loading while they move and stands still once they stop.
+    let mut wrong = Vec::new();
+    let mut moved_at: HashMap<(i32, i32, i32, i32), (u64, u64)> = HashMap::new();
+    let mut shown_running = 0usize;
+    for f in &walk.frames {
+        for &(b, done, bytes) in &f.raw {
+            let key = (b.west, b.south, b.east, b.north);
+            let since = match moved_at.get(&key) {
+                Some(&(was, since)) if was == done => since,
+                _ => f.t,
+            };
+            moved_at.insert(key, (done, since));
+            let Some(area) = f.loads.areas.iter().find(|a| a.bounds == b) else {
+                continue;
+            };
+            shown_running += 1;
+            let want = milli_of(done, bytes);
+            let quiet = f.t - since;
+            let ok = match area.kind {
+                Kind::Loading { milli } => milli == want && quiet < TREAT_STALL_MS + 1_000,
+                Kind::Stalled { milli, .. } => milli == want && quiet + 1_000 >= TREAT_STALL_MS,
+                _ => false,
+            };
+            if !ok {
+                wrong.push(format!(
+                    "t={} {:?} for {done} of {bytes} bytes, quiet {quiet} ms",
+                    f.t, area.kind
+                ));
+            }
+        }
+        moved_at.retain(|k, _| {
+            f.raw
+                .iter()
+                .any(|(b, ..)| (b.west, b.south, b.east, b.north) == *k)
+        });
+    }
+    out.push(v(
+        "progress_moves_with_bytes",
+        wrong.is_empty(),
+        format!(
+            "{} of {} running areas shown otherwise than their bytes",
+            wrong.len(),
+            shown_running
+        ),
+        format!("0; stalled after {TREAT_STALL_MS} ms without a byte"),
+        wrong.iter().take(3).cloned().collect::<Vec<_>>().join("; "),
+        String::new(),
+        String::new(),
+    ));
+
+    // no_treatment_when_complete (1812): a filled pause shows none.
+    let stale: Vec<usize> = walk
+        .checks
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.filled && c.treated_px > 0)
+        .map(|(n, _)| n)
+        .collect();
+    out.push(v(
+        "no_treatment_when_complete",
+        stale.is_empty(),
+        format!(
+            "{} of {} filled pauses carry a treatment",
+            stale.len(),
+            walk.checks.iter().filter(|c| c.filled).count()
+        ),
+        "0".to_string(),
+        stale
+            .iter()
+            .take(3)
+            .map(|n| {
+                format!(
+                    "{} ({} px)",
+                    walk.checks[*n].label, walk.checks[*n].treated_px
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
+        stale
+            .first()
+            .map(|n| image_name(walk, *n))
+            .unwrap_or_default(),
+        String::new(),
+    ));
+
+    // idle_draws_nothing (1812): no frame for the stripes' step without
+    // stripes that move in it.
+    let idle: Vec<u64> = walk
+        .frames
+        .iter()
+        .filter(|f| f.idle_phase_draw)
+        .map(|f| f.t)
+        .collect();
+    out.push(v(
+        "idle_draws_nothing",
+        idle.is_empty(),
+        format!(
+            "{} frames drawn for the stripes' step with none moving",
+            idle.len()
+        ),
+        "0".to_string(),
+        idle.iter()
+            .take(3)
+            .map(|t| format!("t={t}"))
+            .collect::<Vec<_>>()
+            .join("; "),
+        String::new(),
+        String::new(),
+    ));
+
     // pack_after_region, relief_drawn: the desert sessions (1868).
     if let Some((pack, block)) = &walk.desert {
         let landed = walk.heights.iter().find_map(|(t, _, r)| match r {
@@ -1983,6 +2304,22 @@ pub fn selftest_cases() -> Vec<(&'static str, Inject, &'static str)> {
         ("busy-wake", Inject::BusyWake, "no_busy_wake"),
         ("no-heights", Inject::NoHeights, "pack_after_region"),
         ("no-heights", Inject::NoHeights, "relief_drawn"),
+        (
+            "hide-treatment",
+            Inject::HideTreatment,
+            "loading_is_visible",
+        ),
+        (
+            "fake-progress",
+            Inject::FakeProgress,
+            "progress_moves_with_bytes",
+        ),
+        (
+            "stale-treatment",
+            Inject::StaleTreatment,
+            "no_treatment_when_complete",
+        ),
+        ("idle-ticks", Inject::IdleTicks, "idle_draws_nothing"),
     ]
 }
 
@@ -1999,6 +2336,21 @@ pub fn selftest_walk(inject: Inject) -> Walk {
             walk
         }
         Inject::NeverRecovers => recovers_503(0, 0, false),
+        // 1812: a slow source, so the view rests while it lacks data and
+        // the treatment's rules have frames to judge.
+        Inject::HideTreatment
+        | Inject::FakeProgress
+        | Inject::StaleTreatment
+        | Inject::IdleTicks => {
+            let mut walk = Walk::new("selftest-treat", SLOW_RATE, 40, 12, inject);
+            let bound = walk.fill_bound();
+            walk.wheel(1000, 14);
+            walk.rest_bounded("z13", bound, true);
+            walk.run(40);
+            walk.wheel(1000, 14);
+            walk.rest_bounded("z14", bound, true);
+            walk
+        }
         Inject::NoHeights => desert_rest(&ERG_CHEBBI, 0, 0, Inject::NoHeights),
         Inject::DeleteRegion | Inject::PerturbPicture => {
             let mut walk = Walk::new(

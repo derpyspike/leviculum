@@ -74,6 +74,7 @@ use iced::{
 use tokio::sync::oneshot;
 
 use leviculum_map::viewport::{ExactView, MILLI};
+use leviculum_mapfill::style::MapTheme;
 use leviculum_mapfill::style::Style;
 use leviculum_ui::input::KeyCode;
 use leviculum_ui::keymap::Ctx;
@@ -85,6 +86,7 @@ use loquax::ui::browse::BrowseEvent;
 use loquax::ui::compose::Sheet;
 use loquax::ui::intent::{Intent, Messages, Target};
 use loquax::ui::map::{fit, want_pins, want_view, zoom_floor, MapPin, MapSetup, MapWant};
+use loquax::ui::maploading::{paint, Loads, Look, Painted};
 use loquax::ui::scene::{LayoutClass, NodeId, Scene, TabId};
 use loquax::ui::strings::{Lang, StrId};
 use loquax::ui::viewload::{ViewLoads, ViewWants};
@@ -121,6 +123,9 @@ pub struct Seen {
     pub notice: Option<String>,
     /// The word while a map region loads.
     pub loading: Option<String>,
+    /// What of the map's view is still to come, area by area (1812):
+    /// drawn over the map in place ([`loquax::ui::maploading::paint`]).
+    pub loads: Loads,
     /// The maps directory's epoch: a new one means a region landed or left.
     pub maps: u64,
     /// Whether going to a place loads its region (`map_autoload`).
@@ -226,11 +231,15 @@ impl Seen {
             tracks: model.track_input(),
             track_window: model.track_window,
             notice: model.toasts.last().map(|t| t.text.clone()),
-            // The screen's own load in the phone chip's words (1527).
-            loading: match model.map_here {
-                true => Some(MAP_LOADING_HERE_WORDS.to_string()),
-                false => model.map_loading.clone(),
+            // The loads' one line (1812): how far, stalled, failed and
+            // when it retries, offline; before it the screen's own load in
+            // the phone chip's words (1527).
+            loading: match (model.map_loads.line(model.lang), model.map_here) {
+                (Some(line), _) => Some(line),
+                (None, true) => Some(MAP_LOADING_HERE_WORDS.to_string()),
+                (None, false) => model.map_loading.clone(),
             },
+            loads: model.map_loads.clone(),
             maps,
             autoload: model.map_autoload,
             // The relief is the config's `map_relief` (1863); the dark
@@ -341,6 +350,8 @@ pub enum Want {
     /// A link for the system's handler (1430): the card's Navigate, the
     /// directions on OpenStreetMap's site in the browser.
     Open(String),
+    /// "Try now" on the map's failed areas (1812).
+    MapRetry,
 }
 
 /// `loquax gui`: the shell started as the terminal starts it, driven on
@@ -473,6 +484,7 @@ async fn drive(
             Some(want) = asks.recv() => match want {
                 Want::Map(want) => shell.map_ask(want),
                 Want::MapView(wants) => shell.map_schedule(wants),
+                Want::MapRetry => shell.map_retry_now(),
                 Want::Ui(event) => shell.apply(event),
                 Want::Record { peer, input } => shell.record(peer, input),
                 Want::Attach { peer, path, photo } => shell.attach(peer, &path, photo),
@@ -623,6 +635,8 @@ pub enum Pointer {
 #[derive(Clone, Debug)]
 pub enum Message {
     Seen(Box<Seen>),
+    /// "Try now" beside the map's line while an area failed (1812).
+    MapRetry,
     /// The map's canvas has this logical size.
     MapSize(Size),
     Scale(f32),
@@ -749,6 +763,7 @@ impl Message {
         !matches!(
             self,
             Message::Seen(_)
+                | Message::MapRetry
                 | Message::MapSize(_)
                 | Message::Scale(_)
                 | Message::Window(_)
@@ -835,6 +850,11 @@ pub struct Order {
     /// The time zone view at this minute, in seconds since the epoch
     /// (1684); `None` without it.
     pub time_zones: Option<i64>,
+    /// What of the view is still to come (1812), drawn over the frame.
+    pub loads: Loads,
+    /// The loads' stripes' step ([`Loads::phase`]): 0 while nothing
+    /// moves, so an idle map asks the same frame again and draws none.
+    pub phase: u32,
 }
 
 /// A frame drawn for the window.
@@ -853,6 +873,10 @@ pub struct Shown {
     pub fading: bool,
     /// What drawing it took on the worker, in milliseconds (1431).
     pub ms: f64,
+    /// Where the loads' treatment lies in it (1812), in its pixels.
+    pub painted: Painted,
+    /// What the treatment took of [`ms`](Self::ms), in milliseconds.
+    pub treat_ms: f64,
 }
 
 /// What the worker does next.
@@ -893,14 +917,29 @@ pub fn draw(frames: &Mutex<Frames>, order: Order) -> Arc<Shown> {
         time_zones: order.time_zones,
     });
     let (w, h) = shot.view.size();
+    let mut rgba = shot.rgba;
+    // What of the view is still to come, in place (1812).
+    let treat = Instant::now();
+    let painted = paint(
+        &mut rgba,
+        &shot.view,
+        &order.loads,
+        order.phase,
+        order.style.theme == MapTheme::Dark,
+        order.scale,
+        Look::default(),
+    );
+    let treat_ms = treat.elapsed().as_secs_f64() * 1e3;
     Arc::new(Shown {
-        handle: Handle::from_rgba(w, h, shot.rgba),
+        handle: Handle::from_rgba(w, h, rgba),
         view: shot.view,
         placed: frames.placed().to_vec(),
         attribution: shot.attribution,
         missing: shot.missing,
         fading: shot.fading,
         ms: start.elapsed().as_secs_f64() * 1e3,
+        painted,
+        treat_ms,
         order,
     })
 }
@@ -1180,6 +1219,7 @@ impl App {
                 track_window: Default::default(),
                 notice: None,
                 loading: None,
+                loads: Loads::default(),
                 maps: 0,
                 autoload: false,
                 style: Style::SCREEN,
@@ -2085,7 +2125,11 @@ impl App {
         }
         // The screen's frames while the wheel's zoom glides or a frame is
         // held back for the frame interval (1431).
-        if self.screen == Screen::Map && (self.animating() || self.owed) {
+        // And while a load's stripes move (1812): only then, an idle map
+        // asks for no frame.
+        if self.screen == Screen::Map
+            && (self.animating() || self.owed || self.seen.loads.animates())
+        {
             all.push(window::frames().map(Message::Frame));
         }
         Subscription::batch(all)
@@ -2417,6 +2461,12 @@ impl App {
                 self.map_menu = !self.map_menu;
                 return Task::none();
             }
+            Message::MapRetry => {
+                if let Some(asks) = &self.asks {
+                    let _ = asks.send(Want::MapRetry);
+                }
+                return Task::none();
+            }
             Message::TimeZones => {
                 self.map_menu = false;
                 self.time_zones = !self.time_zones;
@@ -2671,6 +2721,8 @@ impl App {
             epoch: self.seen.maps,
             motion: self.motion,
             time_zones: self.time_zones.then(loquax::zoneclock::unix_minute),
+            loads: self.seen.loads.clone(),
+            phase: self.seen.loads.phase(self.now_ms()),
         })
     }
 
@@ -3370,6 +3422,20 @@ impl App {
             .width(Length::Fill)
             .align_right(Length::Fill)
             .clip(true),
+            // "Try now" while an area of the view failed and waits (1812).
+            match self.seen.loads.failed() {
+                true => Element::from(
+                    pressable(
+                        StrId::MapLoadTryNow.text(self.lang).to_string(),
+                        Message::MapRetry,
+                        chat::colour(t.text),
+                        chat::colour(t.panel),
+                        chat::colour(t.bar),
+                    )
+                    .padding([5, 12]),
+                ),
+                false => Space::new().into(),
+            },
             // The zoom is a debug overlay's, with the frame counter (1447).
             line(match leviculum_ui_iced::fps::enabled() {
                 true => format!("  z{:.1}", self.view.zoom()),
@@ -4123,6 +4189,7 @@ mod tests {
             track_window: Default::default(),
             notice: None,
             loading: None,
+            loads: Loads::default(),
             maps,
             autoload: false,
             style: Style::SCREEN,
@@ -5233,6 +5300,7 @@ mod tests {
             track_window: model.track_window,
             notice: None,
             loading: None,
+            loads: Loads::default(),
             maps: 0,
             autoload: false,
             style: Style::SCREEN,
