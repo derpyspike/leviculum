@@ -13,10 +13,46 @@ use leviculum_map::viewport::{ExactView, MILLI};
 /// The world's width in Mercator world units.
 const WORLD_F: f64 = 4_294_967_296.0;
 
-/// `v` wrapped onto the world's width, as `f64::rem_euclid` (not in
-/// `core`).
+// The float functions `core` lacks. With `std` they are `f64`'s own, so
+// the phone's and the window's gestures are bit for bit what they were
+// before these maths moved here (order 1841: `libm`'s `hypot` answers in
+// a different last bit, which moved a pinch's held centre and with it
+// which names a frame places); without `std` (the core's targets) the
+// `libm` port.
+#[cfg(feature = "std")]
+mod float {
+    pub fn round(v: f64) -> f64 {
+        v.round()
+    }
+    pub fn exp2(v: f64) -> f64 {
+        2f64.powf(v)
+    }
+    pub fn hypot(a: f64, b: f64) -> f64 {
+        a.hypot(b)
+    }
+    pub fn wrap(v: f64, w: f64) -> f64 {
+        v.rem_euclid(w)
+    }
+}
+#[cfg(not(feature = "std"))]
+mod float {
+    pub fn round(v: f64) -> f64 {
+        libm::round(v)
+    }
+    pub fn exp2(v: f64) -> f64 {
+        libm::pow(2.0, v)
+    }
+    pub fn hypot(a: f64, b: f64) -> f64 {
+        libm::hypot(a, b)
+    }
+    pub fn wrap(v: f64, w: f64) -> f64 {
+        v - w * libm::floor(v / w)
+    }
+}
+
+/// `v` wrapped onto the world's width.
 fn wrap(v: f64) -> f64 {
-    v - WORLD_F * libm::floor(v / WORLD_F)
+    float::wrap(v, WORLD_F)
 }
 
 /// The blend a drag on `view` turns, while the view is not yet Mercator
@@ -64,8 +100,8 @@ pub fn drag(view: &mut ExactView, dx: i32, dy: i32) {
 pub fn drag_about(view: &mut ExactView, dx: f64, dy: f64, x: f64, y: f64) {
     #[allow(clippy::cast_possible_truncation)]
     let whole = (
-        libm::round(dx).clamp(-1e9, 1e9) as i32,
-        libm::round(dy).clamp(-1e9, 1e9) as i32,
+        float::round(dx).clamp(-1e9, 1e9) as i32,
+        float::round(dy).clamp(-1e9, 1e9) as i32,
     );
     let (w, h) = view.size();
     let b = Blend::new(view.centre, view.zoom(), w, h);
@@ -77,7 +113,7 @@ pub fn drag_about(view: &mut ExactView, dx: f64, dy: f64, x: f64, y: f64) {
         // has none and stays whole pixels.
         let frac = (dx - f64::from(whole.0), dy - f64::from(whole.1));
         if frac != (0.0, 0.0) {
-            let unit = libm::pow(2.0, 24.0 - f64::from(view.zoom_milli()) / 1000.0);
+            let unit = float::exp2(24.0 - f64::from(view.zoom_milli()) / 1000.0);
             view.centre = leviculum_map::mercator::World {
                 x: wrap(f64::from(view.centre.x) + frac.0 * unit) as u32,
                 y: (f64::from(view.centre.y) + frac.1 * unit).clamp(0.0, WORLD_F - 1.0) as u32,
@@ -266,18 +302,18 @@ fn walk_held(view: &mut ExactView, held: leviculum_map::mercator::World, tx: f64
         let mut dx = (ex * j22 - ey * j12) / det;
         let mut dy = (ey * j11 - ex * j21) / det;
         let cap = f64::from(w) + f64::from(h);
-        let asked = libm::hypot(dx, dy);
+        let asked = float::hypot(dx, dy);
         if asked > cap {
             dx *= cap / asked;
             dy *= cap / asked;
         }
-        let err = libm::hypot(ex, ey);
+        let err = float::hypot(ex, ey);
         let mut stepped = false;
         for _ in 0..8 {
             let centre = b.turned(-dx, -dy);
             let c = Blend::new(centre, view.zoom(), w, h);
             let (nx, ny) = c.to_screen(held);
-            if libm::hypot(nx - tx, ny - ty) < err {
+            if float::hypot(nx - tx, ny - ty) < err {
                 view.centre = centre;
                 stepped = true;
                 break;
