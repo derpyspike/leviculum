@@ -23,7 +23,9 @@
 //! lower half undrawn), `stray-label` (a name across the right edge, on
 //! the buttons, over another, of zoom 20), `error-text` (a notice),
 //! `slow-frame` (20 ms more each moving frame), `heap-kept` (384 MB held
-//! past a gesture's end) and `view-lost` (a rotation that moves the view).
+//! past a gesture's end), `view-lost` (a rotation that moves the view)
+//! and `stray-view` (a view written with no input: the second frame
+//! asked again at rest answers a zoom half a step out, 1819).
 //!
 //! `RENDER_WALK_NAMES=<image>` prints the names of that picture with their
 //! boxes, in the frame's pixels: a label verdict checked by eye.
@@ -46,7 +48,8 @@ use loquax::when::WallTime;
 use loquax_android::map;
 use loquax_android::render_walk::{
     disk_fit, frame_rules, globe_disk_centred, globe_disk_fixed, java_margin, sequence_rules,
-    zoom_keeps_the_place, FrameFacts, JavaBitmap, Played, Screen, Verdict, SENTINEL,
+    view_only_by_input, zoom_keeps_the_place, FrameFacts, JavaBitmap, Played, Screen, Verdict,
+    REST_HOLD_MS, SENTINEL,
 };
 use loquax_android::schema::{MapRequest, MapShown};
 
@@ -254,6 +257,12 @@ enum Fault {
     /// The view's centre pushed five pixels while a zoom crosses the
     /// handover: the jump `zoom_keeps_the_place` must catch (order 1818).
     ZoomDrift,
+    /// A view written with no input (1819): the second frame asked again
+    /// at rest with the same view answers a zoom half a step out, as the
+    /// desktop's minute beat and a landed region did; the stray view
+    /// rides along, as Java feeds it back. `view_only_by_input` must
+    /// catch it.
+    StrayView,
 }
 
 impl Fault {
@@ -268,6 +277,7 @@ impl Fault {
             "view-lost" => Self::ViewLost,
             "disk-shift" => Self::DiskShift,
             "zoom-drift" => Self::ZoomDrift,
+            "stray-view" => Self::StrayView,
             _ => return None,
         })
     }
@@ -291,6 +301,9 @@ struct Java {
     turns: bool,
     screen: Screen,
     bitmap: JavaBitmap,
+    /// The last view asked at rest and how often in a row (1819): what
+    /// the `stray-view` fault counts.
+    rest_asked: Option<((u32, u32, u32), u32)>,
 }
 
 /// One drawn frame: what the library said, its time, its names.
@@ -298,6 +311,16 @@ struct Drawn {
     shown: MapShown,
     ms: f64,
     names: Vec<DrawnName>,
+    /// A settled frame's views, one per frame its settle asked (1819):
+    /// the first the view asked, the rest asked again with no input.
+    views: Vec<(u32, u32, u32)>,
+    /// The held clock the settle ran over, milliseconds.
+    held_ms: u64,
+}
+
+/// The view a frame answered: its centre and its zoom in thousandths.
+fn view_of(shown: &MapShown) -> (u32, u32, u32) {
+    (shown.x, shown.y, shown.zoom_milli)
 }
 
 impl Java {
@@ -308,6 +331,7 @@ impl Java {
             turns: false,
             screen: Screen::default(),
             bitmap: JavaBitmap::new(0, 0),
+            rest_asked: None,
         }
     }
 
@@ -363,6 +387,22 @@ impl Java {
             self.turns = shown.turns;
         }
         let mut names = map::drawn_names(Path::new(&self.dir)).unwrap_or_default();
+        // A frame asked at rest with a view and no gesture: the same view
+        // again in a row is what `stray-view` writes over.
+        let still = !ask.moving
+            && ask.pan_x == 0
+            && ask.pan_y == 0
+            && ask.zoom_by == 0
+            && ask.zoom_by_milli == 0
+            && ask.at_lat_e6.is_none();
+        let asked_view = match (ask.x, ask.y, ask.zoom_milli) {
+            (Some(x), Some(y), Some(z)) if still => Some((x, y, z)),
+            _ => None,
+        };
+        self.rest_asked = asked_view.map(|v| match self.rest_asked {
+            Some((last, n)) if last == v => (v, n + 1),
+            _ => (v, 1),
+        });
         match fault {
             Some(Fault::BlankHalf) => {
                 let half = self.screen.rgba.len() / 2;
@@ -391,9 +431,18 @@ impl Java {
                     shown.x = shown.x.wrapping_add((5.0 * unit) as u32);
                 }
             }
+            Some(Fault::StrayView) if shown.ok && self.rest_asked.is_some_and(|(_, n)| n == 2) => {
+                shown.zoom_milli = shown.zoom_milli.saturating_sub(MILLI / 2);
+            }
             _ => {}
         }
-        Drawn { shown, ms, names }
+        Drawn {
+            shown,
+            ms,
+            names,
+            views: Vec::new(),
+            held_ms: 0,
+        }
     }
 
     /// The view the last frame showed, asked again at rest until its
@@ -404,6 +453,7 @@ impl Java {
         let mut clock = 10_000u64;
         map::tune_clock(&dir, Some(clock));
         let mut drawn = self.draw(&ask, fault);
+        let mut views = vec![view_of(&drawn.shown)];
         for _ in 0..40 {
             if !drawn.shown.ok || !drawn.shown.pending {
                 break;
@@ -419,12 +469,57 @@ impl Java {
                 at_zoom_milli: None,
                 margin_x: java_margin(ask.w, self.turns),
                 margin_y: java_margin(ask.h, self.turns),
+                // A frame landed at rest: Java's leftover gesture is
+                // reset (`MapView.place`), so the ask again carries no
+                // pan and no zoom. Repeating the first ask's made the
+                // view creep on every frame of a pinch's settle, which
+                // `view_only_by_input` (1819) showed.
+                pan_x: 0,
+                pan_y: 0,
+                pan_x_milli: 0,
+                pan_y_milli: 0,
+                pan_about: false,
+                zoom_by: 0,
+                zoom_by_milli: 0,
                 ..ask
             };
             drawn = self.draw(&ask, fault);
+            if drawn.shown.ok {
+                views.push(view_of(&drawn.shown));
+            }
         }
         map::tune_clock(&dir, None);
+        drawn.views = views;
+        drawn.held_ms = clock - 10_000;
         drawn
+    }
+
+    /// The view `last` showed, asked again at rest as Java asks it, the
+    /// answer fed back, for [`REST_HOLD_MS`] of held clock, a frame every
+    /// ten seconds (1819): no input, so every frame must show it. The
+    /// views the frames showed.
+    fn hold(&mut self, last: &MapShown, fault: Option<Fault>) -> Vec<(u32, u32, u32)> {
+        let dir = PathBuf::from(&self.dir);
+        let mut clock = 500_000u64;
+        let mut shown = last.clone();
+        let mut views = Vec::new();
+        while clock < 500_000 + REST_HOLD_MS {
+            clock += 10_000;
+            map::tune_clock(&dir, Some(clock));
+            let ask = MapRequest {
+                x: Some(shown.x),
+                y: Some(shown.y),
+                zoom_milli: Some(shown.zoom_milli),
+                ..self.ask(false)
+            };
+            let drawn = self.draw(&ask, fault);
+            if drawn.shown.ok {
+                views.push(view_of(&drawn.shown));
+                shown = drawn.shown;
+            }
+        }
+        map::tune_clock(&dir, None);
+        views
     }
 }
 
@@ -530,7 +625,7 @@ impl Walk {
                 );
             }
         }
-        let verdicts = frame_rules(&FrameFacts {
+        let mut verdicts = frame_rules(&FrameFacts {
             shown: &drawn.shown,
             screen: &java.screen,
             view: (java.size.w, java.size.h),
@@ -539,6 +634,15 @@ impl Walk {
             settled,
             space: leviculum_mapfill::frame::rgb888(leviculum_map::outline::space(table)),
         });
+        // A settle asked its view again with no input (1819): every
+        // frame of it shows the view it started at.
+        if settled && drawn.views.len() > 1 {
+            verdicts.push(view_only_by_input(
+                drawn.views[0],
+                &drawn.views[1..],
+                drawn.held_ms,
+            ));
+        }
         write_png(
             &self.out.join("thumb").join(format!("{image}.png")),
             &java.screen,
@@ -898,6 +1002,16 @@ impl Walk {
         }
         let image = format!("{}-{name}-{}-rest", self.variant, size.name);
         let mut verdicts = self.judge(&java, &drawn, true, &image);
+        // The gesture's rest held two minutes of clock with no input
+        // (1819): the view it left stays bit for bit.
+        if drawn.shown.ok {
+            let held = java.hold(&drawn.shown, self.fault);
+            verdicts.push(view_only_by_input(
+                view_of(&drawn.shown),
+                &held,
+                REST_HOLD_MS,
+            ));
+        }
         // A zoom gesture that comes back to its starting zoom comes back
         // to its starting view: the place it left is in the middle again
         // (order 1818, "zooming in and out again returns to the same
@@ -991,6 +1105,28 @@ impl Walk {
                 shown = drawn.shown;
             }
         }
+        // The rotation recreates the Activity on a phone (walk finding
+        // 10, 1819): a MapView made anew asks its first frame without a
+        // view; the library shows the one the user left, and holds it two
+        // minutes with no input.
+        let mut fresh = Java::new(&home, size);
+        let drawn = fresh.settle(fresh.ask(false), self.fault);
+        played.frame_ms.push(drawn.ms);
+        let image = format!("{}-rotate-{}-anew", self.variant, size.name);
+        let mut verdicts = self.judge(&fresh, &drawn, true, &image);
+        if drawn.shown.ok {
+            let mut views = vec![view_of(&drawn.shown)];
+            views.extend(fresh.hold(&drawn.shown, self.fault));
+            verdicts.push(view_only_by_input(view_of(&shown), &views, REST_HOLD_MS));
+        }
+        let zoom = format!(
+            "{:.3}",
+            f64::from(drawn.shown.zoom_milli) / f64::from(MILLI)
+        );
+        self.rows(
+            ["frame", "rotate", size.name, centre.name, &zoom, &image],
+            &verdicts,
+        );
         if self.fault == Some(Fault::ViewLost) {
             shown.x = shown.x.wrapping_add(1 << 20);
         }

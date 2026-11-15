@@ -122,6 +122,7 @@ live in `loquax-android/src/render_walk.rs`.
 | `heap_peak` | a gesture | the live heap grows more than 320 MB during the gesture |
 | `view_kept` | the rotation | the centre or the zoom moved |
 | `globe_disk_fixed` | a turning globe's gesture frame | the disk fitted from the frame's own pixels differs from the gesture's reference frame at the same zoom by more than 1 px in centre or radius (order 1818, the wobble proof) |
+| `view_only_by_input` | a settled frame, a gesture's rest held 120 s of held clock, the rotation's MapView made anew | a frame asked with no input shows another view than the one the last input left, by its centre or a thousandth of zoom (1819: the desktop's minute beat and the landed regions moved the view; the phone's recreated Activity fitted it anew) |
 | `zoom_keeps_the_place` | a zoom gesture's frame | the geographic point that started under the pinch focus is more than 2 px from it; the rest frame of an out-and-in pinch adds one row for "the start view is back" (order 1818, the Morocco-to-Spain jump) |
 | `screen_drawn` | a window or terminal screen | it drew nothing. For the window, that is at most two of four quarters with more than one colour. For the terminal, it is text on less than a tenth of its rows |
 | `screen_repeats` | a window or terminal screen | the same screen drawn twice differs |
@@ -157,6 +158,7 @@ turn its rules red on a frame or gesture where the clean walk is green.
 | `view-lost` | `view_kept` |
 | `disk-shift` (every moving frame's picture 3 px right) | `globe_disk_fixed` |
 | `zoom-drift` (the view pushed 5 px once a zoom stands in the handover) | `zoom_keeps_the_place` |
+| `stray-view` (the second frame asked again at rest answers a zoom half a step out) | `view_only_by_input` |
 
 On the host the clean walk fails `frame_p95` on nearly every gesture. The
 rotation sometimes passes, but its frames are at rest and the fault does
