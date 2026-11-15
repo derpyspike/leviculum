@@ -518,7 +518,7 @@ halves stay: the store in flash, the scancodes, the send over the mesh.
   screen of one pane shows the pane the keys are in. That builds the Wide
   scene and drops its chat: the list's peak then carries the chat's.
 - **The list's cursor is the reader's** (1546, `list_top`,
-  `loquax/src/ui.rs:2666`). The model keeps the selected peer and the line
+  `loquax/src/ui.rs:2670`). The model keeps the selected peer and the line
   it stands on; while it stays selected, a pull or an arrival that sorts
   rows in above it moves the window, not the cursor. A key moves the line
   by as many rows as the selection moved in the order. Before, the window
@@ -1110,7 +1110,7 @@ twenty times slower (`docs/drafts/map-measurement-2026-10.md`).
   feature range-checked. The region's tiles are already geometry; there
   is no other decode.
 - **Pixels** is the map core's filler painting the view straight into
-  the panel's frame (`Painter::picture`, `loquax-m9/src/map.rs:935`); the
+  the panel's frame (`Painter::picture`, `loquax-m9/src/map.rs:937`); the
   whole screen adds the bar's and the legend's cells and the pins
   (`Renderer::show`, `loquax-m9/src/render.rs:260`).
 - **Cells** is the terminal's way (`leviculum_map::cells`): the view
@@ -1129,7 +1129,7 @@ in place:
 | the 2 km region, z10 to z15 | 820,244 B | flash, read in place: none in PSRAM |
 | the fixture region the image carries | 210,647 B (profile 2, 1707; 197,972 B before) | flash |
 | the view's tiles, read out of a card instead | 81,850 to 201,070 B | PSRAM, per view |
-| the painter's storage, made once (`Painter`, `loquax-m9/src/map.rs:887`) | 217,508 B | PSRAM |
+| the painter's storage, made once (`Painter`, `loquax-m9/src/map.rs:889`) | 217,508 B | PSRAM |
 | a map draw's heap peak (census, below) | 75,404 B | PSRAM |
 | the cells' own per view, besides the painter's (source and cells) | 191,436 B braille, 120,204 B quadrants | PSRAM |
 | the panel's frame | 153,600 B | SRAM or PSRAM |
@@ -1151,8 +1151,8 @@ same code the phone, the window and the terminal draw through, so no
 renderer is written twice; the cell renderer keeps the bar and the
 legend.
 
-**The screen** (`lines`, `loquax-m9/src/map.rs:262`; `pins`,
-`loquax-m9/src/map.rs:1041`), as 1531 left it after Lew's evening at
+**The screen** (`lines`, `loquax-m9/src/map.rs:264`; `pins`,
+`loquax-m9/src/map.rs:1043`), as 1531 left it after Lew's evening at
 the board on 2026-11-07: the map is in the light table; the UI around it
 keeps its dark tokens. Since 1565 the picture is the phone's
 (`Style::SCREEN`: casings, round joins, buildings from z16), its edges
@@ -1160,31 +1160,31 @@ smoothed by the panel's frame and the kept picture (`Coverage`), where
 1531 drew the M9's own finish (square caps, no casings, no buildings). There is no title row and no legend: the picture is
 the whole panel, rows 0 to 10 for the model's fit and pins (320 x 220),
 and row 11 is the picture too whenever it has no words. Its words
-(`Chrome`, `loquax-m9/src/map.rs:325`; `bottom`,
-`loquax-m9/src/map.rs:439`): the key hint, "T näher  Y weiter
+(`Chrome`, `loquax-m9/src/map.rs:327`; `bottom`,
+`loquax-m9/src/map.rs:441`): the key hint, "T näher  Y weiter
 Pfeile schieben", for three seconds after the map opens and after a key
 it does not know, the pins' page for three more when there is a pin;
 then the chosen pin's card, its age and the data's credit, "©
 OpenStreetMap", at the right end; and the credit for five seconds in the
 picture's top right corner the first time the map opens after a boot.
-The names (`names`, `loquax-m9/src/map.rs:524`) are set after the
+The names (`names`, `loquax-m9/src/map.rs:526`) are set after the
 picture and before the pins by the phone's label pass
 (`loquax::mapnames`, `no_std` under its `mapnames` feature since 1565):
 one round of the map core's rule (`place_found`,
-`loquax-m9/src/map.rs:649`), places centred on their point, streets and
+`loquax-m9/src/map.rs:651`), places centred on their point, streets and
 rivers along a straight run of their line at its angle, each with a
 halo, in Fira Sans at 1.6 times the phone's logical sizes (a street's
 x-height 9.3 px), kept off the pins. On that pass the board keeps what
 master's orders pinned for its cell pass. Both chip rows stay clear
-(1727, `CHIP_ROWS`, `loquax-m9/src/map.rs:460`): the top row with the
+(1727, `CHIP_ROWS`, `loquax-m9/src/map.rs:462`): the top row with the
 receiver's words and the credit, the bottom row with the hint and the
 card; the rule keeps a name out of their cells and no further
-(`chip_boxes`, `loquax-m9/src/map.rs:738`, which shrinks each row by the
+(`chip_boxes`, `loquax-m9/src/map.rs:740`, which shrinks each row by the
 rule's margin, since the rule grows every box it keeps clear by it). A
 region's names stay on the ground the region is drawn on (1727,
-`outside_of`, `loquax-m9/src/map.rs:566`), except in the world
+`outside_of`, `loquax-m9/src/map.rs:568`), except in the world
 overview, which is drawn over the whole picture. Parks and waters come from
-z15 (1531, `POI_ZOOM`, `loquax-m9/src/map.rs:464`). In the world
+z15 (1531, `POI_ZOOM`, `loquax-m9/src/map.rs:466`). In the world
 overview the world table's names (`outline::NAMES_M9`: countries, seas,
 ranges, deserts and its places) join the overview region's (1683),
 anywhere on the picture and clear of the overview's two rows of words;
@@ -1194,7 +1194,7 @@ reserves the copy's box, so the copy blocks no other name (the second
 audit of 1757; the unit test `a_name_blocked_only_by_a_dropped_copy_is_set`
 goes red without that rule). A place's name that would leave the picture by at
 most one cell is moved in to fit (`NUDGE_PX`,
-`loquax-m9/src/map.rs:730`), as far as the cell pass set a name off its
+`loquax-m9/src/map.rs:732`), as far as the cell pass set a name off its
 point: at 1.6 times "Frankfurt am Main" over Germany at z6 is 7 pixels
 wider than its point leaves it on the left, and without the move the
 overview there named nothing (the audit of 1757). The reviewer decided
@@ -1202,8 +1202,8 @@ on 2026-11-13 that the overview names Germany at z6 again and that the
 scale stays; the one-cell move is how the pass of order 1787 met that,
 and the move itself is that pass's proposal, awaiting Lew's decision. The time
 zone view (1684) sets its clocks through the same pass (`zone_names`,
-`loquax-m9/src/map.rs:611`) and strokes its borders over the picture
-(`Painter::zone_borders`, `loquax-m9/src/map.rs:1008`). The board shapes
+`loquax-m9/src/map.rs:613`) and strokes its borders over the picture
+(`Painter::zone_borders`, `loquax-m9/src/map.rs:1010`). The board shapes
 and rasterises the face with ab_glyph (`loquax-m9/src/glyphs.rs`),
 since cosmic-text needs `std`. 1531 set them in the cell atlas,
 horizontal, in three rounds, at most eight; 1565 dropped the rounds and
@@ -1220,7 +1220,7 @@ its cells when the screen leaves the map (`leave_map`,
 its cells are blank.
 
 **The pins are the model's**, as on every target (`map_pins`,
-`loquax/src/ui.rs:7210`): the shares the store kept, a `lev.position`
+`loquax/src/ui.rs:7210`): the shares the store has kept, a `lev.position`
 announce, and the board's own fix. That last one is new in the core:
 the shell's own fix (`UiEvent::OwnFix`, from the receiver or typed by
 hand) is now our pin where it is newer than our last share, so a board
@@ -1233,10 +1233,10 @@ the model (`map_picture`, `loquax/src/ui.rs:1395`): the fit, the pan's
 step and the pins' cells go by its 53 x 21 cells, not by the terminal's
 conversation pane.
 
-**The keys** (`ROWS`, `loquax-m9/src/map.rs:174`) are the terminal's map
+**The keys** (`ROWS`, `loquax-m9/src/map.rs:176`) are the terminal's map
 keys where the M9 has the key; Space and Backspace stand in for Tab and
 Shift-Tab, which it has not, and T, I, Y, O for `+` and `-`, which sit on
-the controller's Sym layer (`key`, `loquax-m9/src/map.rs:197`). A test
+the controller's Sym layer (`key`, `loquax-m9/src/map.rs:199`). A test
 takes every row through the shared resolver
 (`every_map_key_runs_the_terminals_map_command`).
 
@@ -2023,7 +2023,7 @@ words, and the picture was the shorter one while the bottom row had
 words. Now the picture always takes the bottom row and its names keep
 clear of the pins only; the hint, the pin's card and the credit are
 drawn over the copy (`Renderer::show`, `loquax-m9/src/render.rs:260`;
-`Kept`, `loquax-m9/src/map.rs:1279`), so a word that goes uncovers the
+`Kept`, `loquax-m9/src/map.rs:1281`), so a word that goes uncovers the
 picture kept under it. A name under a word stays hidden while the word
 stands. `the_words_over_the_map_never_draw_its_picture_again`
 (`loquax-m9/tests/map.rs:219`) walks the board's chrome clock: open with
@@ -2101,7 +2101,7 @@ plus decode under 100 ms for the long chat, window 16's to prove.
 
 **An invitation keeps its row.** A group the reader is invited to that
 no message reached has the invitation's listing, "Einladung", from when
-the invitation came (`UiModel::listing_for`, `loquax/src/ui.rs:2393`);
+the invitation came (`UiModel::listing_for`, `loquax/src/ui.rs:2397`);
 the index keeps the group's name from the invitation, so both boots
 name and list it alike.
 
@@ -2218,7 +2218,7 @@ the model, the model asks the cursor chat's page
 (`behind_the_list`, `loquax-m9/src/home.rs:292`), so no read mark is
 queued — `route` takes marks only from `take_marks`, and the hidden
 fold queues none. The summary write beside it is the touched row with
-its unread as it was (`UiModel::row`, `loquax/src/ui.rs:2457`, the
+its unread as it was (`UiModel::row`, `loquax/src/ui.rs:2461`, the
 a80038c2 rule); the cursor moves because the folded page gives the
 chat its real activity and the list re-sorts under a selection that
 follows the chat. A preload, not an open: nothing to stop for 1562/1564.
@@ -2518,7 +2518,7 @@ the same order.
 Two blocks of the rebuild grew with the ring whatever the chats were,
 and both went: the batch's note scope held one peer per folded entry
 (8192 x 16 B), now each conversation once (`Batch::fold`,
-`loquax/src/ui.rs:3770`); and every received message left a toast that a
+`loquax/src/ui.rs:3774`); and every received message left a toast that a
 board, which never ticks, never aged out, now at most `TOAST_KEEP`
 (`loquax/src/ui.rs:199`). The model after a rebuild holds about 470 KB
 less on the host. `a_rebuild_of_short_chats_asks_for_no_block_that_grows_with_the_ring`
@@ -2578,7 +2578,7 @@ keys were never deaf. One Back frame was lost on the line before core 0
 took it (`keys_rx=` stayed at 41; why the frame went is the UART FIFO
 during an erase, 1613). The walker's next Enter then came inside the
 open chat, where the shared key table's Enter opens the message under
-the cursor (1076), its detail view (`loquax/src/ui.rs:5945`). The M9
+the cursor (1076), its detail view (`loquax/src/ui.rs:5949`). The M9
 draws no detail view and its `[PAGE]` line called it `chat`, so the next
 Back closed what nobody saw, and every Enter and Back after it did the
 same: each one a `KEY` line the UI core wrote itself, no page change. The
