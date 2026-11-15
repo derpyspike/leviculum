@@ -829,7 +829,7 @@ fn newest_id(flash: &MemFlash, archive: &Archive, peer: [u8; 16]) -> [u8; 32] {
 fn with_rowless(archive: &Archive) -> (Vec<Entry>, [[u8; 16]; 2]) {
     use leviculum_lxmf::lev::{Invite, Lev};
     use loquax::home::wire::{mark_request, Mark, MarkFlag};
-    use loquax::home::KIND_MARK;
+    use loquax::home::{KIND_MARK, KIND_VOUCHED};
     let mut entries = archive.entries();
     let mut seq = MESSAGES;
     let mut at = |entries: &mut Vec<Entry>, kind: u8, packed: Vec<u8>| {
@@ -867,7 +867,10 @@ fn with_rowless(archive: &Archive) -> (Vec<Entry>, [[u8; 16]; 2]) {
         DeliveryMethod::Direct,
     )
     .expect("create");
-    at(&mut entries, KIND_RECEIVED, invitation.pack());
+    // Filed as the home files a message whose signature it checked
+    // (KIND_VOUCHED, 1744): since order 1834 an unverified invitation
+    // makes no group, so a plain KIND_RECEIVED one would list nothing.
+    at(&mut entries, KIND_VOUCHED, invitation.pack());
     let stranger = Identity::generate(&mut OsRng);
     let stranger_address = lxmf_address(&stranger.public_key_bytes()).expect("address");
     let gone = Message::create(
