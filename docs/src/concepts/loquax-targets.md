@@ -91,7 +91,7 @@ Rows marked (1341) or (1371) were MISSING before that pass and are closed by it.
 | 21 | Buildings on the map | `draws_buildings` (`loquax/src/picture.rs:1164`) (shared) | `draws_buildings` (`loquax/src/picture.rs:1164`) | `draws_buildings` (`loquax/src/picture.rs:1164`) (sixel, kitty) |
 | 22 | Load the map area | `prefetch` (`MapView.java:1279`) (autoload) | `Intent::LoadMapArea` (`loquax/src/gui.rs:1923`) | `PaletteCommand::LoadMapArea` (`loquax/src/ui.rs:5993`) |
 | 23 | Delete all downloaded maps | `Core.deleteRegions` (`SettingsActivity.java:791`) | `Intent::DeleteAllRegions` (`loquax/src/gui.rs:1690`) | `PaletteCommand::DeleteAllMaps` (`loquax/src/ui.rs:5972`) (palette `delete all maps`), `UiEffect::DeleteAllMaps` (`loquax/src/shell.rs:449`) (1371) |
-| 24 | Mesh positions (nodes nearby) | `nearby` (`MapPane.java:498`) | `Message::AddNearby` (`loquax/src/gui.rs:2326`) | `nearby` (`loquax/src/tui/map.rs:1589`) |
+| 24 | Mesh positions (nodes nearby) | `nearby` (`MapPane.java:498`) | `Message::AddNearby` (`loquax/src/gui.rs:2326`) | `nearby` (`loquax/src/tui/map.rs:1602`) |
 | 25 | Share the position, once or timed | `Core.shareFix` (`ChatActivity.java:1106`), `ShareService` (`ShareService.java:37`) | `Intent::EnterPosition` (`loquax/src/gui.rs:1524`), `Intent::FixAtMapCentre` (`loquax/src/gui.rs:1532`), position by hand `parse` (`loquax/src/ui/by_hand.rs:27`) (1371) | `PaletteCommand::Position` (`loquax/src/ui.rs:5963`) (palette `position`), `PaletteCommand::SharePosition` (`loquax/src/ui.rs:5967`) (`share position`, `stop sharing`) (1371) |
 | 26 | Pin | `Core.pin` (`ConversationsActivity.java:730`) | row menu `row_actions` (`loquax/src/gui/chat.rs:2354`), `Intent::Pin` (`loquax/src/gui.rs:1819`) (1371) | `PaletteCommand::Pin` (`loquax/src/ui.rs:5945`) |
 | 27 | Mute | `Core.mute` (`ContactActivity.java:540`) | row menu (1371) | `PaletteCommand::Mute` (`loquax/src/ui.rs:5953`) (palette `mute`) (1371) |
@@ -109,13 +109,13 @@ Rows marked (1341) or (1371) were MISSING before that pass and are closed by it.
 | 39 | Move the phone | `Core.movePhone` (`ProfileActivity.java:433`) | MISSING | MISSING |
 | 40 | Backup | `Core.backup` (`BackupActivity.java:130`) | MISSING | MISSING |
 | 41 | Help | `R.string.help` (`ConversationsActivity.java:662`) | `Intent::Help` (`loquax/src/gui.rs:1580`), `help_layer` (`loquax/src/gui.rs:3241`) (the shared overlay) (1371) | `PaletteCommand::Help` (`loquax/src/ui.rs:5879`) (palette `help`) |
-| 42 | Settings, nine sections in one order (1450) | `entries` (`SettingsActivity.java:191`) | `settings_pane` (`loquax/src/gui/chat.rs:444`) (gear) | `settings_view` (`loquax/src/ui.rs:8220`) (`S`, palette `settings`) |
+| 42 | Settings, nine sections in one order (1450) | `entries` (`SettingsActivity.java:191`) | `settings_pane` (`loquax/src/gui/chat.rs:444`) (gear) | `settings_view` (`loquax/src/ui.rs:8224`) (`S`, palette `settings`) |
 | 43 | Browse tab | `Core.browse` (`BrowsePane.java:499`) (behind `browse_tab`) | `browse_view` (`loquax/src/gui.rs:3266`), behind `browse_tab` (1369) | `draw_screen` (`loquax/src/tui.rs:1714`), behind `browse_tab` (1369) |
 | 44 | Notifications of new messages | `notify` (`LoquaxService.java:342`) | `desktop::post` (`loquax/src/gui.rs:455`), `post` (`loquax/src/desktop.rs:118`) (1341) | `notify` (`loquax/src/tui.rs:743`), bell and `post` (`loquax/src/desktop.rs:118`) (1341) |
 | 45 | Icon and application id | `LoquaxApp` (`loquax-android/android/AndroidManifest.xml:69`) | `application_id` (`loquax/src/gui.rs:596`) (1341) | n/a |
 | 46 | Rooms tab (RRC), a room as a chat (1450) | `Core.rooms` (`RoomsPane.java:261`), behind `rooms_hub` (1384) | `rooms_pane` (`loquax/src/gui/chat.rs:751`), behind `rooms_hub` (1379) | `draw_rooms` (`loquax/src/tui.rs:1744`), behind `rooms_hub` (1379) |
 | 47 | Explore: pages and public rooms under one button, the bar's third (1578) | `Core.explore` (`ExplorePane.java:681`), `loquax-android/src/explore.rs` | `explore_pane` (`loquax/src/gui/chat.rs:913`) | `draw_explore` (`loquax/src/tui.rs:1895`) (`E`, palette `explore`) |
-| 48 | Relief under the light map on/off, `map_relief` (1863, 1868) | `mapRelief` (`SettingsActivity.java:1069`) (the Advanced page's switch, stored as the config's `map_relief`) | config file `map_relief` (`relief: model.map_relief`, `loquax/src/gui.rs:234`) | config file `map_relief` (`set_relief`, `loquax/src/tui/map.rs:1163`, from `loquax/src/tui.rs:2360`; sixel, kitty and octant draw it) |
+| 48 | Relief under the light map on/off, `map_relief` (1863, 1868) | `mapRelief` (`SettingsActivity.java:1070`) (the Advanced page's switch, stored as the config's `map_relief`) | `map_relief` (`loquax/src/gui.rs:234`) (config file `map_relief`) | `set_relief` (`loquax/src/tui/map.rs:1163`), `painter.set_relief` (`loquax/src/tui.rs:2360`) (config file `map_relief`; sixel, kitty and octant draw it) |
 
 ## Counts
 
