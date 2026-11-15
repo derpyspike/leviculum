@@ -109,7 +109,7 @@ Rows marked (1341) or (1371) were MISSING before that pass and are closed by it.
 | 39 | Move the phone | `Core.movePhone` (`ProfileActivity.java:433`) | MISSING | MISSING |
 | 40 | Backup | `Core.backup` (`BackupActivity.java:130`) | MISSING | MISSING |
 | 41 | Help | `R.string.help` (`ConversationsActivity.java:662`) | `Intent::Help` (`loquax/src/gui.rs:1602`), `help_layer` (`loquax/src/gui.rs:3263`) (the shared overlay) (1371) | `PaletteCommand::Help` (`loquax/src/ui.rs:5970`) (palette `help`) |
-| 42 | Settings, nine sections in one order (1450) | `entries` (`SettingsActivity.java:191`) | `settings_pane` (`loquax/src/gui/chat.rs:444`) (gear) | `settings_view` (`loquax/src/ui.rs:8430`) (`S`, palette `settings`) |
+| 42 | Settings, nine sections in one order (1450) | `entries` (`SettingsActivity.java:191`) | `settings_pane` (`loquax/src/gui/chat.rs:444`) (gear) | `settings_view` (`loquax/src/ui.rs:8465`) (`S`, palette `settings`) |
 | 43 | Browse tab | `Core.browse` (`BrowsePane.java:499`) (behind `browse_tab`) | `browse_view` (`loquax/src/gui.rs:3288`), behind `browse_tab` (1369) | `draw_screen` (`loquax/src/tui.rs:1714`), behind `browse_tab` (1369) |
 | 44 | Notifications of new messages | `notify` (`LoquaxService.java:342`) | `desktop::post` (`loquax/src/gui.rs:456`), `post` (`loquax/src/desktop.rs:118`) (1341) | `notify` (`loquax/src/tui.rs:743`), bell and `post` (`loquax/src/desktop.rs:118`) (1341) |
 | 45 | Icon and application id | `LoquaxApp` (`loquax-android/android/AndroidManifest.xml:70`) | `application_id` (`loquax/src/gui.rs:597`) (1341) | n/a |
