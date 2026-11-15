@@ -414,8 +414,10 @@ catalogue; the tool refuses a pack elsewhere.
 
 **The device.** `loquax/src/mapload.rs`, the one loader of the window,
 the terminal and the phone: a region that landed queues its packs, and
-so, once a session and after them, does every autoloaded region on disk
-when the session starts, the most recently viewed first; the
+so, once a session and after them, does every autoloaded region on disk,
+the most recently viewed first, from the view's first decision on (the
+frontends schedule only with the autoload on, so with it off nothing is
+fetched by itself); the
 loader reads the catalogue once a session, finds the blocks under the
 region's box, reads the pack's directory piece (once per pack file and
 fetch) and each block by one range request, decodes every tile of the

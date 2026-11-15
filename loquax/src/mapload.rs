@@ -59,8 +59,9 @@
 //!   region's first, and none starts while a region for the screen runs
 //!   or waits. They count in the cache cap and go with the last
 //!   autoloaded region over them ([`evict`]). The autoloaded regions on
-//!   disk when the session starts want theirs too, once a session, the
-//!   most recently viewed first, after every region that lands. A pack
+//!   disk want theirs too, once a session from the view's first decision
+//!   on ([`Loader::schedule`], the autoload on), the most recently viewed
+//!   first, after every region that lands. A pack
 //!   that failed is retried on the long ladder; so is a catalogue the
 //!   server does not have (no such file, or not a catalogue), once a rung
 //!   for every pack waiting, since the default source's catalogue may come
@@ -394,7 +395,10 @@ struct Heights {
     /// Landed regions whose packs are wanted, in the order to fetch them.
     queue: Vec<HeightWant>,
     running: Option<RunningHeights>,
-    /// The regions on disk when the session started were queued.
+    /// The view scheduled ([`Loader::schedule`], which the frontends call
+    /// with the autoload on): the regions on disk want their packs.
+    scan_asked: bool,
+    /// The regions on disk were queued.
     scanned: bool,
     /// Asks of a catalogue the server did not have, in a row: the long
     /// ladder's rung.
@@ -452,6 +456,7 @@ impl Loader {
             catalogue: Arc::new(Mutex::new(None)),
             queue: Vec::new(),
             running: None,
+            scan_asked: false,
             scanned: false,
             catalogue_failures: 0,
             catalogue_until: 0,
@@ -663,6 +668,11 @@ impl Loader {
     /// the screen starts when nothing for it runs. A box asked for by
     /// hand keeps its place.
     pub fn schedule(&mut self, here: Vec<MapWant>, ahead: Vec<MapWant>, now_ms: u64) -> Vec<Step> {
+        // The view decides: the autoload is on, and the regions on disk
+        // want their height packs as those that land (1868).
+        if let Some(h) = self.heights.as_mut() {
+            h.scan_asked = true;
+        }
         let place = |b: &Bounds| {
             here.iter()
                 .position(|w| w.bounds == *b)
@@ -873,16 +883,17 @@ impl Loader {
     }
 
     /// Queue the height packs of every autoloaded region on disk that is
-    /// not queued yet, once a session, the most recently viewed first, as
-    /// boxes the view left: a region that landed before heights were
-    /// fetched (another session, a catalogue served later) wants its
-    /// packs as one that lands now. A region's packs on disk already are
-    /// counted, not fetched again.
+    /// not queued yet, once a session after the view first scheduled (the
+    /// autoload is on: with it off nothing is fetched by itself), the most
+    /// recently viewed first, as boxes the view left: a region that landed
+    /// before heights were fetched (another session, a catalogue served
+    /// later) wants its packs as one that lands now. A region's packs on
+    /// disk already are counted, not fetched again.
     fn want_heights_on_disk(&mut self, dir: &Path) {
         let Some(h) = self.heights.as_mut() else {
             return;
         };
-        if std::mem::replace(&mut h.scanned, true) {
+        if !h.scan_asked || std::mem::replace(&mut h.scanned, true) {
             return;
         }
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -2806,6 +2817,18 @@ mod tests {
         assert_eq!(names(dir.path()), std::slice::from_ref(&region));
         let mut loader = Loader::new(maps, Source::Url(serve.url("o.pmtiles")), 1 << 30)
             .with_heights(serve.url(CATALOGUE_NAME));
+        // With the autoload off the view never schedules: nothing is
+        // fetched by itself.
+        let requests = serve.requests();
+        for _ in 0..20 {
+            assert!(loader.poll(0).is_empty());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            serve.requests(),
+            requests,
+            "nothing fetched without the view"
+        );
         // The view over the region: nothing uncovered, no region asked.
         assert!(loader.schedule(Vec::new(), Vec::new(), 0).is_empty());
         let steps = settle_heights(&mut loader, 0);
