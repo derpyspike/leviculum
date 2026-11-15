@@ -188,6 +188,7 @@ skip  leviculum-map-tool heights            # the GLO-30 height cut over synthet
 skip  leviculum-mapcut cut                    # synthetic tiles through the cut; subject is the code
 skip  leviculum-mapcut geometry               # cuts the fixture and holds joins, buffers and goldens; subject is the code
 skip  leviculum-mapcut http                   # a loopback server and threads; subject is the HTTP reader and the load
+skip  leviculum-mapcut heights                # the catalogue and the device pack over the GLO-30 fixtures; subject is the code
 skip  leviculum-mapcut partial                # cuts in memory and reads every round back; subject is the writer and the reader
 skip  leviculum-mapcut pmtiles                # writes a temp archive and reads it back; subject is the reader
 skip  leviculum-mapcut simplify               # in-process geometry arithmetic; subject is the code
