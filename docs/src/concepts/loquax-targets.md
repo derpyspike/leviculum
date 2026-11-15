@@ -115,6 +115,7 @@ Rows marked (1341) or (1371) were MISSING before that pass and are closed by it.
 | 45 | Icon and application id | `LoquaxApp` (`loquax-android/android/AndroidManifest.xml:69`) | `application_id` (`loquax/src/gui.rs:596`) (1341) | n/a |
 | 46 | Rooms tab (RRC), a room as a chat (1450) | `Core.rooms` (`RoomsPane.java:261`), behind `rooms_hub` (1384) | `rooms_pane` (`loquax/src/gui/chat.rs:751`), behind `rooms_hub` (1379) | `draw_rooms` (`loquax/src/tui.rs:1744`), behind `rooms_hub` (1379) |
 | 47 | Explore: pages and public rooms under one button, the bar's third (1578) | `Core.explore` (`ExplorePane.java:681`), `loquax-android/src/explore.rs` | `explore_pane` (`loquax/src/gui/chat.rs:913`) | `draw_explore` (`loquax/src/tui.rs:1895`) (`E`, palette `explore`) |
+| 48 | Relief under the light map on/off, `map_relief` (1863, 1868) | `mapRelief` (`SettingsActivity.java:1069`) (the Advanced page's switch, stored as the config's `map_relief`) | config file `map_relief` (`relief: model.map_relief`, `loquax/src/gui.rs:234`) | config file `map_relief` (`set_relief`, `loquax/src/tui/map.rs:1163`, from `loquax/src/tui.rs:2360`; sixel, kitty and octant draw it) |
 
 ## Counts
 
@@ -268,6 +269,13 @@ all three since 1618 (off until then). Details in
   tiers, My code (the code and a QR the test scans back) and Help.
 
 ## The remaining gaps, with their reason
+
+- **Both desktop targets, row 48 (relief on/off):** the phone has the
+  switch on its Advanced page; the window and the terminal take the same
+  `map_relief` key from `loquax.conf` and draw by it, but have no switch
+  on screen. The setting is reached in the config file there; no row was
+  added to the settings pane, since the relief is on by default and the
+  key is for the rare reader who wants the plain map.
 
 - **Both desktop targets, rows 39 and 40 (move the phone, backup):** not
   built in 1371; both are possible, but each is a flow of its own (the

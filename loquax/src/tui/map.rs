@@ -1058,6 +1058,8 @@ pub struct MapPainter {
     theme: MapTheme,
     /// The time zone view (1684, [`MapPainter::set_time_zones`]).
     time_zones: bool,
+    /// The config's `map_relief` ([`MapPainter::set_relief`], 1863).
+    relief: bool,
     /// The frame budget (1422): a drag is the gesture, the paint the
     /// ground, the names placed in cells a pass the minimal rung leaves
     /// to the frame at rest.
@@ -1118,6 +1120,7 @@ impl MapPainter {
             tier: Tier::Truecolor,
             theme: MapTheme::Light,
             time_zones: false,
+            relief: true,
             ladder: Ladder::new(),
         }
     }
@@ -1154,6 +1157,13 @@ impl MapPainter {
         self.time_zones = on;
     }
 
+    /// Lay the relief under the picture, where its finish carries it, or
+    /// not, from the next frame on: the config's `map_relief` (1863), as
+    /// the window and the phone take it. A change paints the view again.
+    pub fn set_relief(&mut self, on: bool) {
+        self.relief = on;
+    }
+
     /// The style a paint asks for: the PC's finish where the picture has
     /// the pixels for casings and round joins (kitty, sixel, octant), the
     /// M9's plain strokes in the coarser techniques.
@@ -1162,7 +1172,10 @@ impl MapPainter {
             Graphics::Kitty | Graphics::Sixel | Graphics::Octant => MapStyle::PC,
             _ => MapStyle::M9,
         };
-        finish.in_theme(self.theme)
+        MapStyle {
+            relief: finish.relief && self.relief,
+            ..finish.in_theme(self.theme)
+        }
     }
 
     /// The same painter, drawing for a terminal behind tmux when `tmux`

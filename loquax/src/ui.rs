@@ -7828,6 +7828,10 @@ pub struct View {
     pub map_glyph_test: bool,
     /// The time zone view over the open map (1684).
     pub time_zones: bool,
+    /// The config's `map_relief` (1863): the terminal's picture lays the
+    /// relief under the light map only with it on, as the window and the
+    /// phone do.
+    pub map_relief: bool,
 }
 
 /// The map pane's title.
@@ -8722,6 +8726,7 @@ fn view_fresh<B: InputBuffer>(model: &UiModel<B>) -> View {
         map_theme: model.map_theme,
         map_glyph_test: map.is_some() && model.map_glyph_test,
         time_zones: map.is_some() && model.time_zones,
+        map_relief: model.map_relief,
         map,
     }
 }
