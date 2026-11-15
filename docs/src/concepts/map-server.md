@@ -403,11 +403,19 @@ doc of `leviculum-mapcut/src/heights.rs` and is held by
 and its version, `pack` and `block` lines, other lines skipped so a
 later version can add kinds. A reader refuses a pack name that is not
 one plain path segment, a block outside its pack's bytes or its zoom's
-grid, and a version it does not know. The packs must lie beside the
+grid, and a version it does not know. It also refuses a block longer
+than `BLOCK_MAX` (16 MiB, nine times the pilot's largest block of
+1.81 MB below), a directory piece longer than `DIRECTORY_MAX` (1 MiB)
+and a pack longer than such a directory can list: a device reads a
+block into memory, and a catalogue may come from any server the user
+names (audit 1863, round 2). The loader holds the same limits before
+each range request. The packs must lie beside the
 catalogue; the tool refuses a pack elsewhere.
 
 **The device.** `loquax/src/mapload.rs`, the one loader of the window,
-the terminal and the phone: a region that landed queues its packs; the
+the terminal and the phone: a region that landed queues its packs, and
+so, once a session and after them, does every autoloaded region on disk
+when the session starts, the most recently viewed first; the
 loader reads the catalogue once a session, finds the blocks under the
 region's box, reads the pack's directory piece (once per pack file and
 fetch) and each block by one range request, decodes every tile of the
@@ -420,9 +428,16 @@ it. A block already on disk is not fetched again. The packs queue
 behind the regions: one fetch at a time, none while a region for the
 screen loads or waits to; a failure retries on the long ladder (30 s
 doubling to an hour); a catalogue the server does not have (403, 404,
-410, or not a catalogue) ends the heights for the session. Offline, or
-with no catalogue, the map draws as before without relief, and no line
-is shown: the relief is a finish.
+410, or not a catalogue) is asked for again on the same ladder, once a
+rung for every pack waiting, not given up for the session (decided
+2026-11-15, audit 1863): the default source's catalogue is deployed
+after the first regions load, and a phone runs for days, so a session
+that gave up would keep every region it loaded meanwhile without relief
+until it restarted. At an hour a rung the cost is one small request an
+hour. Offline, or with no catalogue, the map draws as before without
+relief, and no line is shown: the relief is a finish. Two writers evict
+from the maps directory (a region's load and the height fetch); a file
+one finds gone that the other removed counts as removed.
 
 **The cache.** An autoloaded pack counts in `map_cache_mb` beside the
 regions and goes with the last autoloaded region over its block

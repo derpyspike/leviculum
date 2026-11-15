@@ -58,11 +58,16 @@
 //!   packs queue behind the regions: one fetch at a time, the screen's
 //!   region's first, and none starts while a region for the screen runs
 //!   or waits. They count in the cache cap and go with the last
-//!   autoloaded region over them ([`evict`]). A pack that failed is
-//!   retried on the long ladder; a catalogue the server does not have
-//!   (no such file, or not a catalogue) ends the heights for the session,
-//!   and the map draws as it did without relief. No line is shown for a
-//!   pack: the relief is a finish, its absence is no fault.
+//!   autoloaded region over them ([`evict`]). The autoloaded regions on
+//!   disk when the session starts want theirs too, once a session, the
+//!   most recently viewed first, after every region that lands. A pack
+//!   that failed is retried on the long ladder; so is a catalogue the
+//!   server does not have (no such file, or not a catalogue), once a rung
+//!   for every pack waiting, since the default source's catalogue may come
+//!   after the first regions; until then the map draws as it did without
+//!   relief. No line is shown for a pack: the relief is a finish, its
+//!   absence is no fault. A block or directory past the catalogue's
+//!   limits ([`BLOCK_MAX`], [`DIRECTORY_MAX`]) is never asked for.
 //!
 //! The source is `map_source` from the config, or the newest Protomaps
 //! daily build ([`leviculum_mapcut::http::daily`]) found once a session.
@@ -81,7 +86,9 @@ use std::vec::Vec;
 
 use leviculum_map::region::{Bounds, Region};
 use leviculum_mapcut::cut::Progress;
-use leviculum_mapcut::heights::{local_pack, BlockEntry, Catalogue, CATALOGUE_NAME};
+use leviculum_mapcut::heights::{
+    local_pack, BlockEntry, Catalogue, BLOCK_MAX, CATALOGUE_NAME, DIRECTORY_MAX,
+};
 use leviculum_mapcut::http::{self, HttpError, HttpRange};
 use leviculum_mapcut::load::{cut_planned, plan, Empty, Loaded, TooLarge, Want};
 use leviculum_mapcut::pmtiles::Archive;
@@ -134,8 +141,6 @@ pub const HEIGHTS_DEFAULT: &str = "https://leviculum.network/maps/heights.tsv";
 /// The longest catalogue a device reads: a world of z9 blocks is about
 /// 80,000 lines, 8 MB.
 pub const CATALOGUE_MAX: u64 = 16 << 20;
-/// The longest pack directory a device reads.
-const DIRECTORY_MAX: u64 = 1 << 20;
 
 /// The height catalogue's URL: `height_source` when set, else the
 /// catalogue beside the configured `map_source` (a server of its own
@@ -389,8 +394,14 @@ struct Heights {
     /// Landed regions whose packs are wanted, in the order to fetch them.
     queue: Vec<HeightWant>,
     running: Option<RunningHeights>,
-    /// The server has no catalogue: no heights this session.
-    absent: bool,
+    /// The regions on disk when the session started were queued.
+    scanned: bool,
+    /// Asks of a catalogue the server did not have, in a row: the long
+    /// ladder's rung.
+    catalogue_failures: u32,
+    /// No height fetch starts before this time: the server had no
+    /// catalogue, and every pack waits on its ladder together.
+    catalogue_until: u64,
 }
 
 /// A landed region whose height packs are wanted.
@@ -441,7 +452,9 @@ impl Loader {
             catalogue: Arc::new(Mutex::new(None)),
             queue: Vec::new(),
             running: None,
-            absent: false,
+            scanned: false,
+            catalogue_failures: 0,
+            catalogue_until: 0,
         });
         self
     }
@@ -784,21 +797,35 @@ impl Loader {
         let mut item = running.want;
         let want = item.want.clone();
         let landed = match result {
-            Ok(landed) => Ok(landed),
+            Ok(landed) => {
+                h.catalogue_failures = 0;
+                h.catalogue_until = 0;
+                Ok(landed)
+            }
             Err(failure) if failure.absent => {
-                // No catalogue there: nothing to fetch this session.
-                h.absent = true;
-                h.queue.clear();
+                // No catalogue there yet (the default source's comes after
+                // the first regions): asked again on the long ladder, once
+                // a rung, every pack waiting on it together.
+                h.catalogue_failures += 1;
+                let until = now_ms.saturating_add(ladder_ms(h.catalogue_failures));
+                h.catalogue_until = until;
+                for queued in &mut h.queue {
+                    queued.retry_at = queued.retry_at.max(until);
+                }
+                item.retry_at = until;
+                let at = h
+                    .queue
+                    .iter()
+                    .position(|q| q.rank > item.rank)
+                    .unwrap_or(h.queue.len());
+                h.queue.insert(at, item);
                 Err(failure.detail)
             }
             Err(failure) => {
                 // The long ladder, as a region away from the screen: the
                 // relief is a finish, it does not hurry a failing source.
                 item.failures += 1;
-                let wait = BACKOFF_FIRST_MS
-                    .saturating_mul(1 << (item.failures - 1).min(16))
-                    .min(BACKOFF_MAX_MS);
-                item.retry_at = now_ms.saturating_add(wait);
+                item.retry_at = now_ms.saturating_add(ladder_ms(item.failures));
                 let at = h
                     .queue
                     .iter()
@@ -821,9 +848,6 @@ impl Loader {
         let Some(h) = self.heights.as_mut() else {
             return;
         };
-        if h.absent {
-            return;
-        }
         h.queue.retain(|q| q.region != region);
         let at = h
             .queue
@@ -836,10 +860,52 @@ impl Loader {
                 want: want.clone(),
                 region: region.to_string(),
                 rank,
-                retry_at: 0,
+                retry_at: h.catalogue_until,
                 failures: 0,
             },
         );
+    }
+
+    /// Queue the height packs of every autoloaded region on disk that is
+    /// not queued yet, once a session, the most recently viewed first, as
+    /// boxes the view left: a region that landed before heights were
+    /// fetched (another session, a catalogue served later) wants its
+    /// packs as one that lands now. A region's packs on disk already are
+    /// counted, not fetched again.
+    fn want_heights_on_disk(&mut self, dir: &Path) {
+        let Some(h) = self.heights.as_mut() else {
+            return;
+        };
+        if std::mem::replace(&mut h.scanned, true) {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut on_disk: Vec<(SystemTime, String, MapWant)> = entries
+            .filter_map(Result::ok)
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let want = disk_want(&name)?;
+                let viewed = e.metadata().and_then(|m| m.modified()).ok()?;
+                Some((viewed, name, want))
+            })
+            .collect();
+        on_disk.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        for (_, region, want) in on_disk {
+            if h.queue.iter().any(|q| q.region == region)
+                || h.running.as_ref().is_some_and(|r| r.want.region == region)
+            {
+                continue;
+            }
+            h.queue.push(HeightWant {
+                want,
+                region,
+                rank: Rank::Away,
+                retry_at: h.catalogue_until,
+                failures: 0,
+            });
+        }
     }
 
     /// Start the first due height fetch when none runs and no region for
@@ -851,6 +917,7 @@ impl Loader {
         let Some(dir) = self.maps.dir().map(Path::to_path_buf) else {
             return;
         };
+        self.want_heights_on_disk(&dir);
         let maps = self.maps.clone();
         let cache_bytes = self.cache_bytes;
         let Some(h) = self.heights.as_mut() else {
@@ -1286,16 +1353,13 @@ impl HeightJob {
             let directory = match directories.iter().find(|d| d.0 == entry.pack) {
                 Some(d) => d.1.clone(),
                 None => {
-                    if file.directory > DIRECTORY_MAX {
-                        return Err(format!("{}: directory too long", file.name).into());
-                    }
-                    let d = exact(&source, 0, file.directory)?;
+                    let d = exact(&source, 0, file.directory, DIRECTORY_MAX)?;
                     landed.fetched += d.len() as u64;
                     directories.push((entry.pack, d.clone()));
                     d
                 }
             };
-            let block = exact(&source, entry.offset, entry.len)?;
+            let block = exact(&source, entry.offset, entry.len, BLOCK_MAX)?;
             landed.fetched += block.len() as u64;
             let pack = local_pack(&directory, &block, &entry)?;
             write_pack(&self.dir, &name, &pack)?;
@@ -1322,6 +1386,14 @@ impl core::fmt::Display for NoCatalogue {
 
 impl std::error::Error for NoCatalogue {}
 
+/// The long ladder's wait after `failures` in a row: [`BACKOFF_FIRST_MS`]
+/// doubling to [`BACKOFF_MAX_MS`].
+fn ladder_ms(failures: u32) -> u64 {
+    BACKOFF_FIRST_MS
+        .saturating_mul(1 << failures.saturating_sub(1).min(16))
+        .min(BACKOFF_MAX_MS)
+}
+
 /// Whether `e` says the server has no catalogue: none at the URL, or one
 /// this reader does not read. Retrying this session cannot help.
 fn absent(e: &(dyn std::error::Error + 'static)) -> bool {
@@ -1333,8 +1405,14 @@ fn absent(e: &(dyn std::error::Error + 'static)) -> bool {
 }
 
 /// Exactly `len` bytes at `offset` of `source`, or an error: a server
-/// that sends fewer has not the file the catalogue named.
-fn exact(source: &HttpRange, offset: u64, len: u64) -> leviculum_mapcut::Res<Vec<u8>> {
+/// that sends fewer has not the file the catalogue named. A `len` past
+/// `max` is not asked for: the catalogue's reader refuses it already
+/// ([`Catalogue::parse`]), and this read holds the limit whatever made
+/// the entry.
+fn exact(source: &HttpRange, offset: u64, len: u64, max: u64) -> leviculum_mapcut::Res<Vec<u8>> {
+    if len > max {
+        return Err(format!("{}: {len} bytes at {offset}, more than {max}", source.url()).into());
+    }
     let bytes = source.read_range(offset, len)?;
     if bytes.len() as u64 != len {
         return Err(format!(
@@ -1388,6 +1466,25 @@ fn auto_bounds(name: &str) -> Option<Bounds> {
     parts.next().is_none().then_some(bounds)
 }
 
+/// The want of an autoloaded region on disk from its name ([`auto_name`]):
+/// its box, its zooms, its centre.
+fn disk_want(name: &str) -> Option<MapWant> {
+    let bounds = auto_bounds(name)?;
+    let (_, zooms) = name.strip_suffix(".lmr")?.rsplit_once("-z")?;
+    let (low, high) = zooms.split_once('-')?;
+    let zooms = (low.parse().ok()?, high.parse().ok()?);
+    Some(MapWant {
+        bounds,
+        zooms,
+        floor: zooms.1,
+        reason: LoadReason::View,
+        centre: leviculum_map::mercator::World {
+            x: leviculum_map::mercator::x_of_lon(bounds.west / 2 + bounds.east / 2),
+            y: leviculum_map::mercator::y_of_lat(bounds.south / 2 + bounds.north / 2),
+        },
+    })
+}
+
 /// The block of an autoloaded height pack from its name
 /// ([`BlockEntry::local_name`] behind [`AUTO_PREFIX`]).
 fn pack_bounds(name: &str) -> Option<Bounds> {
@@ -1429,7 +1526,11 @@ pub fn evict(dir: &Path, cap: u64, keep: &str) -> std::io::Result<Vec<String>> {
         if !is_auto(&name) {
             continue;
         }
-        let meta = entry.metadata()?;
+        // Gone since the listing: another writer evicted it.
+        let meta = match entry.metadata() {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            meta => meta?,
+        };
         if name.ends_with(".lmr") {
             let viewed = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
             auto.push((viewed, name, meta.len()));
@@ -1459,7 +1560,7 @@ pub fn evict(dir: &Path, cap: u64, keep: &str) -> std::io::Result<Vec<String>> {
                 continue;
             }
             let (name, len, _) = packs.remove(n);
-            std::fs::remove_file(dir.join(&name))?;
+            remove_evicted(&dir.join(&name))?;
             *total = total.saturating_sub(len);
             evicted.push(name);
         }
@@ -1473,7 +1574,7 @@ pub fn evict(dir: &Path, cap: u64, keep: &str) -> std::io::Result<Vec<String>> {
             continue;
         }
         let (_, name, len) = auto.remove(n);
-        std::fs::remove_file(dir.join(&name))?;
+        remove_evicted(&dir.join(&name))?;
         total = total.saturating_sub(len);
         evicted.push(name);
         orphans(&auto, &mut total, &mut evicted)?;
@@ -1481,10 +1582,35 @@ pub fn evict(dir: &Path, cap: u64, keep: &str) -> std::io::Result<Vec<String>> {
     Ok(evicted)
 }
 
+/// Remove the evicted file at `path`. A file already gone is removed: the
+/// region jobs and the height fetch evict from listings of their own (1863),
+/// and the one that comes second finds the file the other took.
+fn remove_evicted(path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    tests::another_writer_removes(path);
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ui::map::LoadReason;
+
+    /// The directories in which another writer of the maps directory
+    /// removes each file an eviction listed, just before the eviction
+    /// removes it: the race of a region's eviction and a height fetch's
+    /// (audit 1863). Keyed by directory, so tests beside it run as ever.
+    static RACED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+    pub(super) fn another_writer_removes(path: &Path) {
+        let raced = RACED.lock().unwrap_or_else(PoisonError::into_inner);
+        if path.parent().is_some_and(|d| raced.iter().any(|r| r == d)) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
     use leviculum_map::mercator::World;
     use leviculum_mapcut::serve::Serve;
     use std::time::Duration;
@@ -2660,7 +2786,50 @@ mod tests {
     }
 
     #[test]
-    fn no_catalogue_is_said_once_and_ends_the_heights() {
+    fn a_region_on_disk_before_the_loader_starts_brings_its_pack() {
+        let w = want(112_615_000);
+        let (serve, pack) = heights_server(&w);
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut first = Loader::new(maps.clone(), Source::Url(serve.url("o.pmtiles")), 1 << 30);
+        first.ask(w.clone(), 0);
+        let steps = settle(&mut first, 0);
+        assert!(matches!(steps.as_slice(), [Step::Done { .. }]), "{steps:?}");
+        drop(first);
+        let region = auto_name(&w.bounds, (14, 15));
+        assert_eq!(names(dir.path()), std::slice::from_ref(&region));
+        let mut loader = Loader::new(maps, Source::Url(serve.url("o.pmtiles")), 1 << 30)
+            .with_heights(serve.url(CATALOGUE_NAME));
+        // The view over the region: nothing uncovered, no region asked.
+        assert!(loader.schedule(Vec::new(), Vec::new(), 0).is_empty());
+        let steps = settle_heights(&mut loader, 0);
+        let Some(Step::Heights {
+            want: got,
+            landed: Ok(landed),
+            ..
+        }) = steps.last()
+        else {
+            panic!("{steps:?}");
+        };
+        assert_eq!(got.bounds, w.bounds);
+        assert_eq!(landed.packs, std::slice::from_ref(&pack));
+        assert_eq!(names(dir.path()), [region, pack]);
+        // Once a session: nothing more is fetched.
+        let requests = serve.requests();
+        for _ in 0..20 {
+            assert!(loader.poll(0).is_empty());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(serve.requests(), requests);
+        assert!(!loader.busy());
+    }
+
+    /// Audit 1863: a server without a catalogue (404) is asked again on
+    /// the long ladder, not given up for the session: the catalogue at
+    /// the default source comes after the first regions. One ask a rung,
+    /// however many regions wait on it.
+    #[test]
+    fn no_catalogue_is_asked_again_on_the_long_ladder_once_a_rung() {
         let w = want(112_615_000);
         let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
         let dir = tempfile::tempdir().expect("tmp");
@@ -2673,23 +2842,36 @@ mod tests {
             matches!(steps.last(), Some(Step::Heights { landed: Err(_), .. })),
             "{steps:?}"
         );
-        assert!(!loader.busy());
+        assert!(
+            !loader.busy(),
+            "a catalogue waiting to be asked is not loading"
+        );
         assert_eq!(
             loader.next_due_ms(0),
-            None,
-            "no retry of a missing catalogue"
+            Some(BACKOFF_FIRST_MS),
+            "the catalogue is asked again on the long ladder"
         );
-        // The next region asks for no heights at all.
-        let requests = serve.requests();
-        let other = want(112_825_000);
-        loader.ask(other, 0);
+        // A second region lands meanwhile: its packs wait on the same rung.
+        loader.ask(want(112_825_000), 0);
         let steps = settle(&mut loader, 0);
         assert!(matches!(steps.as_slice(), [Step::Done { .. }]), "{steps:?}");
+        let requests = serve.requests();
         for _ in 0..20 {
-            assert!(loader.poll(0).is_empty());
+            assert!(loader.poll(BACKOFF_FIRST_MS - 1).is_empty());
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(serve.requests() > requests, "the region was fetched");
+        assert_eq!(serve.requests(), requests, "nothing asked before the rung");
+        let steps = settle_heights(&mut loader, BACKOFF_FIRST_MS);
+        assert!(
+            matches!(steps.last(), Some(Step::Heights { landed: Err(_), .. })),
+            "{steps:?}"
+        );
+        assert_eq!(serve.requests(), requests + 1, "one ask on the rung");
+        assert_eq!(
+            loader.next_due_ms(BACKOFF_FIRST_MS),
+            Some(2 * BACKOFF_FIRST_MS),
+            "the next rung is twice as far"
+        );
         assert_eq!(
             names(dir.path())
                 .iter()
@@ -2818,6 +3000,44 @@ mod tests {
         let gone = evict(dir.path(), 0, &far).expect("evict");
         assert_eq!(gone, [b, pack_name]);
         assert_eq!(names(dir.path()), [far, hand.to_string()]);
+    }
+
+    /// Audit 1863: two writers evict from one listing (a region's job and
+    /// a height fetch). The one that finds a file gone counts it as gone:
+    /// the region that landed stays landed, not failed and queued again.
+    #[test]
+    fn a_region_lands_when_another_writer_removed_what_its_eviction_listed() {
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        let dir = tempfile::tempdir().expect("tmp");
+        let old = want(112_825_000);
+        let stale = installed(&serve, dir.path(), &old, leviculum_map::profile::CUT_1);
+        let stale_name = stale
+            .file_name()
+            .expect("name")
+            .to_string_lossy()
+            .into_owned();
+        let stray = format!("{AUTO_PREFIX}h11-0-0.lmh");
+        std::fs::write(dir.path().join(&stray), [0u8; 50]).expect("stray pack");
+        RACED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(dir.path().to_path_buf());
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        // A cap of one byte: the old region and the stray pack go.
+        let mut loader = Loader::new(maps, Source::Url(serve.url("o.pmtiles")), 1);
+        let w = want(112_615_000);
+        loader.ask(w.clone(), 0);
+        let steps = settle(&mut loader, 0);
+        let [Step::Done { landed, .. }] = steps.as_slice() else {
+            panic!("the region must land: {steps:?}");
+        };
+        let mut evicted = landed.evicted.clone();
+        evicted.sort();
+        let mut both = vec![stale_name, stray];
+        both.sort();
+        assert_eq!(evicted, both, "counted as gone");
+        assert_eq!(names(dir.path()), [auto_name(&w.bounds, (14, 15))]);
+        assert!(!loader.busy(), "nothing queued again");
     }
 
     #[test]
