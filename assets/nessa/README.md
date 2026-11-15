@@ -36,8 +36,12 @@ threshold into a bear's snout at 112 pixels on black.
 
 ## What is rendered, and where it lives
 
-`python3 -I scripts/nessa-render.py` writes all of it; `--check` re-renders
-into `target/tmp` and compares bytes. `just nessa-check` runs the check, in
+`python3 -I scripts/nessa-render.py` writes all of it, and `products.sha256`
+beside this file: the digests of the source, the script and every product.
+`--check` re-renders into `target/tmp` and compares bytes; on a host without
+resvg it compares the committed files against `products.sha256` instead, and
+fails if the source or the script moved since that list was written. Its
+first line says which mode ran. `just nessa-check` runs the check, in
 `guards` and in `fast`.
 
 | picture | from | where |

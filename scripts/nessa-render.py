@@ -18,6 +18,10 @@ Every picture is framed out of that canvas by a box in `HEAD_BOX` and
 `SIGN_BOX` and rendered by resvg (0.45.1 measured; `sudo apt install
 resvg`), which writes the same bytes for the same SVG, so `--check`
 re-renders into `target/tmp` and fails on any committed file that differs.
+Every render also writes `assets/nessa/products.sha256`, the digests of the
+source, of this script and of every product; on a host without resvg
+`--check` holds the committed pictures to that list instead, and the first
+line of its output names which of the two modes ran (order 1698).
 The framed SVGs are written as well as the PNGs: a picture whose only form
 is a PNG cannot be inspected or revised.
 
@@ -71,6 +75,7 @@ the panel's ground.
 `assets/nessa/README.md` states what the source is and whose it is.
 """
 
+import hashlib
 import math
 import re
 import shutil
@@ -84,6 +89,10 @@ ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / "assets" / "nessa"
 SOURCE = ASSETS / "nessa-R3-b.svg"
 SCRATCH = ROOT / "target" / "tmp" / "nessa-render"
+SCRIPT = Path(__file__).resolve()
+# What the last render wrote: the digest of the source, of this script and
+# of every product. A host without resvg checks the pictures against it.
+LIST = ASSETS / "products.sha256"
 
 ICON = ROOT / "loquax-android" / "icon"
 RES = ROOT / "loquax-android" / "android" / "res"
@@ -157,6 +166,10 @@ SPLASH_PNG = ROOT / "loquax-m9" / "assets" / "splash-head.png"
 SPLASH_BITS = ROOT / "loquax-m9" / "assets" / "splash-head.1bpp"
 # The M9's splash side in panel pixels, `loquax_m9::splash::LOGO_PX`.
 SPLASH_PX = 112
+
+# What decides every product: the list a host without resvg checks against
+# names their digests, and is red once one of them moved.
+INPUTS = (SOURCE, SCRIPT, SPLASH_SVG)
 
 
 def num(value):
@@ -549,6 +562,61 @@ def render(src, size, out):
     )
 
 
+def sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def list_text(entries):
+    """The sha256 list as `sha256sum` writes it, sorted by path."""
+    return (
+        "".join(
+            f"{digest}  {path.relative_to(ROOT)}\n"
+            for path, digest in sorted(entries.items(), key=lambda e: str(e[0]))
+        )
+    )
+
+
+def read_list():
+    """The committed sha256 list, as {path: digest}, or None if absent."""
+    if not LIST.exists():
+        return None
+    out = {}
+    for line in LIST.read_text().splitlines():
+        digest, _, name = line.partition("  ")
+        out[ROOT / name] = digest
+    return out
+
+
+def check_against_list(expected_paths):
+    """The pictures held to the committed list, for a host without resvg.
+
+    The list is what the last render wrote: the digest of every input in
+    `INPUTS`, which together decide every product, and the digest of every
+    product. An input that moved since then means the list no longer speaks
+    for the products, which is red like any differing picture.
+    """
+    committed = read_list()
+    if committed is None:
+        return [LIST], [f"{LIST.relative_to(ROOT)} is missing"]
+    wanted = set(expected_paths) | set(INPUTS)
+    differ, notes = [], []
+    if set(committed) != wanted:
+        differ.append(LIST)
+        for path in sorted(wanted - set(committed), key=str):
+            notes.append(f"{LIST.relative_to(ROOT)} does not name {path.relative_to(ROOT)}")
+        for path in sorted(set(committed) - wanted, key=str):
+            notes.append(f"{LIST.relative_to(ROOT)} names {path.relative_to(ROOT)}, which this script does not write")
+    for path in sorted(wanted & set(committed), key=str):
+        if not path.exists() or sha256(path.read_bytes()) != committed[path]:
+            differ.append(path)
+            if path in INPUTS:
+                notes.append(
+                    f"{path.relative_to(ROOT)} moved since the pictures were "
+                    "rendered; run the script on a host with resvg"
+                )
+    return differ, notes
+
+
 def main():
     arguments = sys.argv[1:]
     if arguments not in ([], ["--check"]):
@@ -559,10 +627,12 @@ def main():
     if SCRATCH.exists():
         shutil.rmtree(SCRATCH)
     SCRATCH.mkdir(parents=True)
-    differ = []
+    differ, notes = [], []
+    digests = {path: sha256(path.read_bytes()) for path in INPUTS}
 
     texts = sources(groups)
     for path, text in texts.items():
+        digests[path] = sha256(text.encode())
         if check:
             if not path.exists() or path.read_text() != text:
                 differ.append(path)
@@ -570,51 +640,66 @@ def main():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text)
 
-    # Without resvg the pictures cannot be compared, and a guard that could
-    # not compare is red, not green (the audit of order 1824): `nessa-check`
-    # sits in `guards` and `fast`, so a silent pass here would let every host
-    # without resvg call the icons and the M9 splash held to the source. The
-    # products above are still checked first, so the output names those too.
-    if shutil.which("resvg") is None:
-        for path in differ:
-            print(f"nessa-render: {path.relative_to(ROOT)} differs from the source's")
-        sys.exit(
-            "nessa-render: FAIL the pictures were not compared, no resvg on this "
-            "host (sudo apt install resvg)"
-        )
-
-    # The rendered pictures are all from files written above, so a
-    # hand-edited one is what `--check` compares, not a stale copy.
     round_pictures = {}
     for sign in ("lnomad", "lnflash"):
         round_pictures[sign] = SCRATCH / f"{sign}-icon.svg"
         round_pictures[sign].write_text(composed_svg(groups, sign))
-    for path, (src, size) in rasters(groups, round_pictures).items():
-        out = SCRATCH / "png" / path.relative_to(ROOT)
-        render(src, size, out)
-        if check:
-            if not path.exists() or path.read_bytes() != out.read_bytes():
-                differ.append(path)
-        else:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(out, path)
+    pictures = list(rasters(groups, round_pictures)) + [SPLASH_PNG, SPLASH_BITS]
 
-    splash = SCRATCH / "splash-head.png"
-    render(SPLASH_SVG, SPLASH_PX, splash)
-    width, height, pixels = png_pixels(splash)
-    if (width, height) != (SPLASH_PX, SPLASH_PX):
-        sys.exit(f"nessa-render: the splash rendered {width}x{height}")
-    bits = pack_bits(pixels)
-    for path, wanted in ((SPLASH_PNG, splash.read_bytes()), (SPLASH_BITS, bits)):
+    # Without resvg the pictures cannot be rendered, so the check holds them
+    # to the sha256 list the last render wrote (order 1698): a guard that
+    # cannot compare is red, never a silent pass (the audit of order 1824),
+    # and with the list it can compare. Writing needs the renderer.
+    if shutil.which("resvg") is None:
+        if not check:
+            sys.exit("nessa-render: FAIL no resvg on this host, nothing rendered (sudo apt install resvg)")
+        print(
+            "nessa-render: mode sha256 list (no resvg): the pictures are compared "
+            f"against {LIST.relative_to(ROOT)}, not rendered"
+        )
+        listed, notes = check_against_list(list(texts) + pictures)
+        differ += listed
+    else:
+        print("nessa-render: mode render (resvg): every picture rendered and compared")
+        # The rendered pictures are all from files written above, so a
+        # hand-edited one is what `--check` compares, not a stale copy.
+        for path, (src, size) in rasters(groups, round_pictures).items():
+            out = SCRATCH / "png" / path.relative_to(ROOT)
+            render(src, size, out)
+            digests[path] = sha256(out.read_bytes())
+            if check:
+                if not path.exists() or path.read_bytes() != out.read_bytes():
+                    differ.append(path)
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(out, path)
+
+        splash = SCRATCH / "splash-head.png"
+        render(SPLASH_SVG, SPLASH_PX, splash)
+        width, height, pixels = png_pixels(splash)
+        if (width, height) != (SPLASH_PX, SPLASH_PX):
+            sys.exit(f"nessa-render: the splash rendered {width}x{height}")
+        bits = pack_bits(pixels)
+        for path, wanted in ((SPLASH_PNG, splash.read_bytes()), (SPLASH_BITS, bits)):
+            digests[path] = sha256(wanted)
+            if check:
+                if not path.exists() or path.read_bytes() != wanted:
+                    differ.append(path)
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(wanted)
+
+        wanted_list = list_text(digests)
         if check:
-            if not path.exists() or path.read_bytes() != wanted:
-                differ.append(path)
+            if not LIST.exists() or LIST.read_text() != wanted_list:
+                differ.append(LIST)
         else:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(wanted)
+            LIST.write_text(wanted_list)
 
     shutil.rmtree(SCRATCH)
-    for path in differ:
+    for note in notes:
+        print(f"nessa-render: {note}")
+    for path in dict.fromkeys(differ):
         print(f"nessa-render: {path.relative_to(ROOT)} differs from the source's")
     if differ:
         sys.exit(1)
