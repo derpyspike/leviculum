@@ -33,14 +33,14 @@ the two telemetry fields into positions (`telemetry::read`,
 `loquax/src/telemetry.rs:198`; a group's copy books its position under
 the writer, not the group, only where the signature was verified and a
 group the reader joined itself lists that writer at the copy's epoch,
-`copy_writer`, `loquax/src/ui.rs:7069` — a named writer the rule does
+`copy_writer`, `loquax/src/ui.rs:7077` — a named writer the rule does
 not credit makes the reading nobody's (Lew 2026-11-13,
 [the expedition map](loquax-expedition-map.md); the chat draws a copy's
 writer by the same rule, `groups::copy_writer`, 1696, 1702, 1728); a collector's
 stream row only where the reader chose that collector, and none can be
-chosen yet, `Writers`, `loquax/src/ui.rs:7091`), the screen model keeps
+chosen yet, `Writers`, `loquax/src/ui.rs:7099`), the screen model keeps
 each peer's latest and hands every one to the store (`take_telemetry`,
-`loquax/src/ui.rs:6970`), and the store keeps the fields whole in its
+`loquax/src/ui.rs:6978`), and the store keeps the fields whole in its
 `fields` column (`loquax/src/store.rs:3968`) and the positions in a table of
 their own (`SCHEMA_V2`, `loquax/src/store.rs:205`). The sender's timestamp
 is still not carried: `OutboxEvent`, the screen's `Message` and every type
