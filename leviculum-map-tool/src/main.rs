@@ -114,6 +114,16 @@ enum Cmd {
     /// Check a height pack whole and time its decode: every stored tile,
     /// and every derived tile from the block zoom down.
     HeightsInfo { pack: PathBuf },
+    /// Write the height catalogue a device reads (1863): every block of
+    /// the packs with its byte range and bounds. The packs lie beside the
+    /// catalogue and are served with it, by any HTTP server that answers
+    /// range requests.
+    HeightsCatalogue {
+        #[arg(short, long)]
+        output: PathBuf,
+        #[arg(required = true)]
+        packs: Vec<PathBuf>,
+    },
     /// Print a region's header and per-zoom sizes, after checking it whole.
     Info { region: PathBuf },
     /// Print the names a region holds at one zoom, a line each.
@@ -642,6 +652,16 @@ fn main() -> Res<()> {
             },
         ),
         Cmd::HeightsInfo { pack } => cmd_heights_info(&pack),
+        Cmd::HeightsCatalogue { output, packs } => {
+            let catalogue = leviculum_map_tool::heights::write_catalogue(&packs, &output)?;
+            println!(
+                "MAPTOOL heights-catalogue packs={} blocks={} bytes={}",
+                catalogue.packs.len(),
+                catalogue.blocks.len(),
+                catalogue.packs.iter().map(|p| p.bytes).sum::<u64>()
+            );
+            Ok(())
+        }
         Cmd::Info { region } => cmd_info(&region),
         Cmd::Labels { region, zoom } => cmd_labels(&region, zoom),
         Cmd::Render {
