@@ -228,7 +228,12 @@ impl Seen {
             },
             maps,
             autoload: model.map_autoload,
-            style: Style::SCREEN.in_theme(map_theme(model.map_theme, None)),
+            // The relief is the config's `map_relief` (1863); the dark
+            // table draws without it in any case.
+            style: Style {
+                relief: model.map_relief,
+                ..Style::SCREEN.in_theme(map_theme(model.map_theme, None))
+            },
             scene: model.scene(LayoutClass::Wide),
             now: model.now,
             receipts: model.reading.on,

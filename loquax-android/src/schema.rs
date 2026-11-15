@@ -12,7 +12,7 @@
 //! |---|---|
 //! | `start` | [`Start`] |
 //! | `command` | [`Request`], tagged by `t`: `open`, `close`, `send`, `react`, `reply`, `forward`, `delete`, `used`, `pull`, `front`, `link`, `unlink`, `notnow`, `rename`, `relink`, `share`, `addcontact`, `draft`, `stage`, `unstage`, `sheet`, `fix`, `nofix`, `sharefix`, `startshare`, `stopshare`, `record`, `recording`, `browse`, `rooms` |
-//! | `query` | [`Query`], tagged by `t`: `conversations`, `messages`, `info`, `recents`, `suggest`, `contact`, `links`, `run`, `friends`, `shared`, `profile`, `lxma`, `mapregions`, `maptheme`, `mapfling`, `staged`, `bar`, `shares`, `recording`, `linkdevice`, `linked`, `browse`, `rooms`, `people` |
+//! | `query` | [`Query`], tagged by `t`: `conversations`, `messages`, `info`, `recents`, `suggest`, `contact`, `links`, `run`, `friends`, `shared`, `profile`, `lxma`, `mapregions`, `maptheme`, `mapfling`, `maprelief`, `staged`, `bar`, `shares`, `recording`, `linkdevice`, `linked`, `browse`, `rooms`, `people` |
 //! | `renderMapInto` | [`MapRequest`], and the Bitmap to draw into (null for a prefetch) |
 //!
 //! Rust to Java:
@@ -21,7 +21,7 @@
 //! |---|---|
 //! | `start` | [`Started`] |
 //! | `command` | [`Done`] |
-//! | `query` | [`Conversations`], [`Messages`], [`Info`], [`Recents`], [`Suggestions`], [`Addresses`], [`Links`], [`Run`], [`Friends`], [`Shared`], [`Profile`], [`Lxma`], [`MapRegions`], [`MapThemeChoice`], [`MapFlingChoice`] or [`ReceiptsChoice`], or [`Done`] with the error |
+//! | `query` | [`Conversations`], [`Messages`], [`Info`], [`Recents`], [`Suggestions`], [`Addresses`], [`Links`], [`Run`], [`Friends`], [`Shared`], [`Profile`], [`Lxma`], [`MapRegions`], [`MapThemeChoice`], [`MapFlingChoice`], [`MapReliefChoice`] or [`ReceiptsChoice`], or [`Done`] with the error |
 //! | `nextEvent` | [`Event`], tagged by `t`: `changed`, `notice`, `sync`, `link`, `stopped`; none when the wait ran out |
 //! | `renderMapInto` | [`MapShown`]; its `w` times `h` RGBA pixels are in the Bitmap |
 //!
@@ -90,7 +90,8 @@
 //! and both pages showed their empty defaults; those fields are gone. No
 //! new version: an app that sent them got nothing but the error, and the
 //! frame's own fields are unchanged. The Advanced page's switch of the
-//! map's fling (1188) is [`Query::MapFling`] with its [`MapFlingChoice`];
+//! map's fling (1188) is [`Query::MapFling`] with its [`MapFlingChoice`],
+//! the relief switch (1863) [`Query::MapRelief`] with its [`MapReliefChoice`];
 //! the frame says the choice as `fling`, and how far its view may still
 //! move north and south before the world's edge as `room_north` and
 //! `room_south`, which a coast stops at. An older app reads none of them.
@@ -863,6 +864,12 @@ pub enum Query {
         #[serde(default)]
         set: Option<bool>,
     },
+    /// The Advanced page's relief switch (1863): `set` stored as the
+    /// config's `map_relief` when given, the choice in force answered.
+    MapRelief {
+        #[serde(default)]
+        set: Option<bool>,
+    },
     /// The Advanced page's public rooms' hub (1577): `set` chosen when
     /// given (`none`, or a hub's address, shipped or pasted), the choice
     /// in force answered as [`RoomsHubChoice`].
@@ -1161,6 +1168,16 @@ pub struct MapFlingChoice {
     pub v: u32,
     pub ok: bool,
     pub fling: bool,
+}
+
+/// What [`Query::MapRelief`] answers: whether the map lays the ground
+/// relief under the light map (on unless the config's `map_relief` says
+/// off, 1863).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MapReliefChoice {
+    pub v: u32,
+    pub ok: bool,
+    pub relief: bool,
 }
 
 /// What [`Query::Receipts`] answers: whether this phone sends read

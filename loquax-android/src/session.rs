@@ -1832,6 +1832,10 @@ impl Session {
                 let home = self.lock().home.clone();
                 return crate::map::fling(&home, set).map(|fling| schema::encode(&fling));
             }
+            schema::Query::MapRelief { set } => {
+                let home = self.lock().home.clone();
+                return crate::map::relief(&home, set).map(|relief| schema::encode(&relief));
+            }
             // The Privacy page's switch (1233): the model's, which the
             // config keeps (`UiEffect::Remember`).
             // The Chats page's photo size (1220), kept as the receipts'
@@ -2144,6 +2148,7 @@ impl Session {
             | schema::Query::MapRegions { .. }
             | schema::Query::MapTheme { .. }
             | schema::Query::MapFling { .. }
+            | schema::Query::MapRelief { .. }
             | schema::Query::Receipts { .. }
             | schema::Query::RoomsHub { .. }
             | schema::Query::PhotoSize { .. }

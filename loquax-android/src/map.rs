@@ -76,8 +76,8 @@ use loquax::when::WallTime;
 
 use crate::friends;
 use crate::schema::{
-    MapFlingChoice, MapMark, MapRegions, MapRequest, MapShown, MapThemeChoice, RegionRow,
-    TrackChoice, VERSION,
+    MapFlingChoice, MapMark, MapRegions, MapReliefChoice, MapRequest, MapShown, MapThemeChoice,
+    RegionRow, TrackChoice, VERSION,
 };
 use crate::session::pins_in;
 
@@ -113,6 +113,8 @@ pub struct Renderer {
     autoload: bool,
     /// The config's `map_fling` (1188).
     fling: bool,
+    /// The config's `map_relief` (1863): the relief under the light map.
+    relief: bool,
     theme: Option<ThemeFlag>,
     origin: Instant,
     /// The clock a test holds instead of [`origin`](Self::origin)'s
@@ -151,14 +153,21 @@ impl Renderer {
         let maps = Maps::new(Some(dir.join("maps")));
         let source = Source::of(config.map_source.as_deref());
         let cache = config.map_cache_mb.unwrap_or(CACHE_DEFAULT_MB) << 20;
+        // The relief's height packs come with every region that lands
+        // (1863), the same path as the window's.
+        let heights = loquax::mapload::heights_url(
+            config.height_source.as_deref(),
+            config.map_source.as_deref(),
+        );
         Self {
             dir: dir.to_path_buf(),
             maps: maps.clone(),
             frames: Frames::new(maps.clone()),
-            loader: Loader::new(maps, source, cache),
+            loader: Loader::new(maps, source, cache).with_heights(heights),
             loads: ViewLoads::new(),
             autoload: config.map_autoload.unwrap_or(true),
             fling: config.map_fling.unwrap_or(true),
+            relief: config.map_relief.unwrap_or(true),
             theme: config.map_theme,
             origin: Instant::now(),
             held_ms: None,
@@ -190,6 +199,9 @@ impl Renderer {
     /// landed.
     fn steps(&mut self, steps: Vec<Step>, notice: &mut Option<String>) -> bool {
         let mut landed = false;
+        // Height packs that came or went (1863): read again, but no region
+        // landed, so no refit.
+        let mut repaint = false;
         let now = self.now_ms();
         for step in steps {
             if step.kind() != StepKind::Skipped {
@@ -228,9 +240,27 @@ impl Renderer {
                     tracing::info!("MAPLOAD start reason={}", want.reason.word());
                 }
                 Step::Skipped { why, .. } => tracing::info!("MAPLOAD skipped why={why}"),
+                Step::Heights {
+                    landed: Ok(l),
+                    elapsed_ms,
+                    ..
+                } => {
+                    tracing::info!(
+                        "MAPLOAD heights packs={} had={} fetched={} elapsed_ms={elapsed_ms}",
+                        l.packs.len(),
+                        l.had,
+                        l.fetched
+                    );
+                    // A pack read again by every painter: the relief comes.
+                    repaint |= !l.packs.is_empty() || !l.evicted.is_empty();
+                }
+                Step::Heights {
+                    landed: Err(detail),
+                    ..
+                } => tracing::info!("MAPLOAD heights-failed detail={detail:?}"),
             }
         }
-        if landed {
+        if landed || repaint {
             self.frames.refresh();
         }
         landed
@@ -283,6 +313,23 @@ impl Renderer {
             ok: true,
             theme_chosen: matches!(self.theme, Some(ThemeFlag::Light | ThemeFlag::Dark)),
             theme: theme_word(self.theme).to_string(),
+        })
+    }
+
+    /// The Advanced page's relief switch (1863): `set` stored as the
+    /// config's `map_relief` when given and drawn from the next frame;
+    /// the choice in force back, no frame drawn.
+    pub fn relief(&mut self, set: Option<bool>) -> Result<MapReliefChoice, String> {
+        if let Some(on) = set {
+            let word = if on { "on" } else { "off" };
+            loquax::config::save(&self.dir, "map_relief", word)
+                .map_err(|error| format!("map: the choice was not stored: {error}"))?;
+            self.relief = on;
+        }
+        Ok(MapReliefChoice {
+            v: VERSION,
+            ok: true,
+            relief: self.relief,
         })
     }
 
@@ -641,7 +688,12 @@ impl Renderer {
         // Unset follows the phone; the config's `map_theme` still wins.
         let flag = self.theme.or(Some(ThemeFlag::Auto));
         let table = map_theme(flag, Some(screen));
-        let style = Style::SCREEN.in_theme(table);
+        // The config's `map_relief` (1863); the dark table draws without
+        // relief in any case.
+        let style = Style {
+            relief: self.relief,
+            ..Style::SCREEN.in_theme(table)
+        };
         if request.time_zones_toggle {
             self.time_zones = !self.time_zones;
         }
@@ -1012,6 +1064,11 @@ pub fn theme(dir: &Path, set: Option<&str>) -> Result<MapThemeChoice, String> {
 /// the renderer the map draws with, so the next frame says it.
 pub fn fling(dir: &Path, set: Option<bool>) -> Result<MapFlingChoice, String> {
     with_dir(dir, |renderer| renderer.fling(set))
+}
+
+/// The relief switch (1863) for the renderer over `dir`.
+pub fn relief(dir: &Path, set: Option<bool>) -> Result<MapReliefChoice, String> {
+    with_dir(dir, |renderer| renderer.relief(set))
 }
 
 /// The map's ground in `table` as Android's `0xAARRGGBB` (1441): the

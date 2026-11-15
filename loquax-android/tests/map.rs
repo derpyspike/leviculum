@@ -3631,7 +3631,7 @@ impl PhoneWalk {
                     running.retain(|rb| *rb != b);
                     starts.remove(&format!("{b:?}"));
                 }
-                loquax::mapload::StepKind::Skipped => {}
+                loquax::mapload::StepKind::Skipped | loquax::mapload::StepKind::Heights => {}
             }
         }
         out.push(PhoneVerdict {

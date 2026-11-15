@@ -1208,6 +1208,29 @@ impl Shell {
                 Step::Skipped { want, why } => {
                     tracing::info!("MAPLOAD skipped box={} why={why}", box_words(&want));
                 }
+                Step::Heights {
+                    want,
+                    landed,
+                    elapsed_ms,
+                } => match landed {
+                    Ok(l) => {
+                        tracing::info!(
+                            "MAPLOAD heights box={} packs={} had={} fetched={} elapsed_ms={elapsed_ms} evicted={}",
+                            box_words(&want),
+                            l.packs.len(),
+                            l.had,
+                            l.fetched,
+                            l.evicted.len()
+                        );
+                        if !l.packs.is_empty() || !l.evicted.is_empty() {
+                            self.regions_changed();
+                        }
+                    }
+                    Err(detail) => tracing::info!(
+                        "MAPLOAD heights-failed box={} detail={detail:?} elapsed_ms={elapsed_ms}",
+                        box_words(&want)
+                    ),
+                },
             }
         }
         // Whether a load runs or waits for the screen (1527): the
@@ -2017,8 +2040,15 @@ pub(crate) async fn start(
             Source::Daily(base) => format!("{base}<newest>.pmtiles"),
         }
     );
+    model.map_relief = config.map_relief.unwrap_or(true);
     let cache_bytes = config.map_cache_mb.unwrap_or(CACHE_DEFAULT_MB) << 20;
-    let loader = Loader::new(maps.clone(), source, cache_bytes);
+    // The relief's height packs come with every region that lands (1863).
+    let heights = loquax::mapload::heights_url(
+        config.height_source.as_deref(),
+        config.map_source.as_deref(),
+    );
+    tracing::info!("MAPLOAD heights={heights}");
+    let loader = Loader::new(maps.clone(), source, cache_bytes).with_heights(heights);
     let (done_tx, done_rx) = unbounded_channel();
     let watch = match (&client, options.scripted) {
         (Some(client), false) => {

@@ -241,6 +241,8 @@
     <string name="attach_position">Meine Position</string>
     <string name="map_fling">Karte gleitet nach</string>
     <string name="map_fling_text">Nach einem Wisch gleitet die Karte weiter und wird langsamer, wenn dein Finger loslässt.</string>
+    <string name="map_relief">Relief auf der Karte</string>
+    <string name="map_relief_text">Hügel und Dünen schattiert, wo Höhendaten für die Gegend geladen sind. Vorerst nur in der hellen Karte.</string>
     <string name="maps_auto">Karten automatisch laden</string>
     <string name="maps_auto_text">Die Karte der Gegend, die du anschaust, lädt von selbst und bleibt auf dem Handy.</string>
     <string name="maps_none">Noch keine Karten auf diesem Handy.</string>

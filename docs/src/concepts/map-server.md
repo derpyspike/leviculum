@@ -375,6 +375,99 @@ device on the cutting host). What the M9 must hold is the working set
 above, so it reads heights from PSRAM, not internal RAM; the flash cost
 is `ruzstd`'s decoder.
 
+## Height packs on the device
+
+Order 1863 (Lew's relief in the Moroccan desert by mid December 2026).
+Until then a pack reached the maps directory only by hand. Now a
+height pack reaches it the way a region does: by HTTP range requests
+from a static server, after the region it lies under.
+
+**One block per device file, a fixed grid (decided).** The device
+fetches the blocks of the pack's own grid (z9, 8 x 8 z12 tiles, about
+68 by 78 km at 30 N), not one pack per region box. A block is the
+smallest piece a pack already stands alone in, so it needs no new
+format; the device's boxes follow the view and overlap, and a fixed
+grid fetches each block once however many boxes lie over it, where one
+pack per box would fetch the same heights again for every neighbour.
+The cost is the block's size even for a small box: one block, about
+1.2 MB, for a 12 km place (below).
+
+**The catalogue.** The server keeps the packs as `leviculum-map-tool
+heights` cuts them, one file per area, and publishes a catalogue
+beside them: `leviculum-map-tool heights-catalogue -o heights.tsv
+morocco.lmh [more.lmh ...]` writes, for every block of every pack, the
+pack file, the block's zoom and coordinates, its byte offset and length
+in the file, and its bounds in degrees x 10^7. The format is the module
+doc of `leviculum-mapcut/src/heights.rs` and is held by
+`leviculum-mapcut/tests/heights.rs`: a first line naming the format
+and its version, `pack` and `block` lines, other lines skipped so a
+later version can add kinds. A reader refuses a pack name that is not
+one plain path segment, a block outside its pack's bytes or its zoom's
+grid, and a version it does not know. The packs must lie beside the
+catalogue; the tool refuses a pack elsewhere.
+
+**The device.** `loquax/src/mapload.rs`, the one loader of the window,
+the terminal and the phone: a region that landed queues its packs; the
+loader reads the catalogue once a session, finds the blocks under the
+region's box, reads the pack's directory piece (once per pack file and
+fetch) and each block by one range request, decodes every tile of the
+block once (a frame whose checksum disagrees is refused there), and
+writes `auto-h<zoom>-<x>-<y>.lmh` beside the region: a directory naming
+the one block, the block's bounds as its box, the pack's attribution
+and notice, then the block piece as served. It is written under a
+`.part` name, synced and renamed, so a painter never indexes half of
+it. A block already on disk is not fetched again. The packs queue
+behind the regions: one fetch at a time, none while a region for the
+screen loads or waits to; a failure retries on the long ladder (30 s
+doubling to an hour); a catalogue the server does not have (403, 404,
+410, or not a catalogue) ends the heights for the session. Offline, or
+with no catalogue, the map draws as before without relief, and no line
+is shown: the relief is a finish.
+
+**The cache.** An autoloaded pack counts in `map_cache_mb` beside the
+regions and goes with the last autoloaded region over its block
+(`evict`); the Maps page's usage counts its bytes and "Delete all"
+takes it.
+
+**The source.** `height_source` in the config names the catalogue's
+URL; unset, it is `heights.tsv` beside a configured `map_source` (a
+server of its own serves both from one directory), and with neither
+set the project's server, `https://leviculum.network/maps/heights.tsv`
+(`HEIGHTS_DEFAULT`). Any HTTP server that answers range requests
+serves it, as for the PMTiles archive.
+
+**Runbook (workorse).** The cut needs the internet (the GLO-30
+bucket) and about 650 MB of memory per block row; the pilot's Morocco
+pack of order 1740 is that cut already:
+
+```sh
+leviculum-map-tool heights -o morocco.lmh --bbox=-7.6,29.3,-3.7,31.5
+leviculum-map-tool heights-catalogue -o heights.tsv morocco.lmh
+# both into the directory nginx serves as https://leviculum.network/maps/
+```
+
+A wider area is one more pack cut beside it and the catalogue written
+again over all packs. The catalogue's 30 lines for Morocco are 2,578
+bytes; a world of z9 blocks would be about 80,000 lines, 8 MB, read
+once a session, which the reader caps at 16 MB.
+
+**Measured** (2026-11-15, `loquax/examples/heights_walk.rs`, the
+autoload's 12 km place at z10..z15 from a 2026-11-14 Protomaps extract
+and the pilot's pack, both from a local range server held to 200 kB/s,
+this host, release build):
+
+| | Erg Chebbi | Bani escarpment |
+|---|---|---|
+| region file | 162,171 bytes, 3.7 s | 41,916 bytes, 2.9 s |
+| height pack (one z9 block) | 1,041,903 bytes, 5.5 s | 1,067,723 bytes, 5.6 s |
+| one 256 px tile at z13, relief on, cold / warm | 548 / 2.6 ms | 595 / 2.6 ms |
+| the same tile, relief off | 0.3 / 0.2 ms | 0.2 / 0.2 ms |
+
+The pilot's 30 blocks are 0.66 to 1.81 MB, 1.24 MB on average: a place
+costs one block, a box on a block corner up to four (about 5 MB, 25 s at
+200 kB/s). The cold tile is the shade plane's computation, which the
+relief store then holds for every tile over it.
+
 ## What this page does not decide
 
 Deployment (K5 on workorse: nginx in front, the tunnel mechanism,

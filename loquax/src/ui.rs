@@ -1399,6 +1399,9 @@ pub struct UiModel<B> {
     /// The config's `map_theme`, which each frontend resolves against the
     /// theme it draws in (`picture::map_theme`); `None` for unset.
     pub map_theme: Option<ThemeFlag>,
+    /// The config's `map_relief` (1863): the ground relief under the
+    /// light map; on unless the config says off.
+    pub map_relief: bool,
     /// The word the map's title carries while a region loads.
     pub map_loading: Option<String>,
     /// A load runs or waits for what is on screen (1527): the title says
@@ -1670,6 +1673,7 @@ impl<B: InputBuffer + Default> UiModel<B> {
             map_from: Pane::Messages,
             map_autoload: false,
             map_theme: None,
+            map_relief: true,
             map_loading: None,
             map_here: false,
             map_glyph_test: false,

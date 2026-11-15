@@ -33,13 +33,13 @@ the two telemetry fields into positions (`telemetry::read`,
 `loquax/src/telemetry.rs:198`; a group's copy books its position under
 the writer, not the group, only where the signature was verified and a
 group the reader joined itself lists that writer at the copy's epoch,
-`copy_writer`, `loquax/src/ui.rs:6869` — a named writer the rule does
+`copy_writer`, `loquax/src/ui.rs:6873` — a named writer the rule does
 not credit makes the reading nobody's (Lew 2026-11-13,
 [the expedition map](loquax-expedition-map.md)); a collector's
 stream row only where the reader chose that collector, and none can be
-chosen yet, `Writers`, `loquax/src/ui.rs:6897`), the screen model keeps
+chosen yet, `Writers`, `loquax/src/ui.rs:6901`), the screen model keeps
 each peer's latest and hands every one to the store (`take_telemetry`,
-`loquax/src/ui.rs:6799`), and the store keeps the fields whole in its
+`loquax/src/ui.rs:6798`), and the store keeps the fields whole in its
 `fields` column (`loquax/src/store.rs:3829`) and the positions in a table of
 their own (`SCHEMA_V2`, `loquax/src/store.rs:204`). The sender's timestamp
 is still not carried: `OutboxEvent`, the screen's `Message` and every type
@@ -781,6 +781,11 @@ after the area fills and before the buildings and every line
 (`leviculum_map::draw::draw_in_relief`), so it shades the ground
 colours and never a road, a footprint or a name. The style is part of
 the tile cache's key, so switching the flag drops the cached tiles.
+The config's `map_relief` (1863, on by default; the phone's Advanced
+page has the switch) turns it off. The packs come with the regions:
+the autoload fetches the height pack blocks under every region that
+lands from the server's catalogue and evicts them with it
+([map server](map-server.md), "Height packs on the device").
 The packs are found and indexed by `loquax/src/relief.rs` (bounded
 reads, indexed again only when the set of pack files changes, one store
 shared by all of a tile cache's workers); the method and its parameters

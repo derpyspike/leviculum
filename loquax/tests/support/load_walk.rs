@@ -429,6 +429,8 @@ impl Walk {
                     self.events.push((t, Ev::Failed(b, detail.clone())));
                 }
                 Step::Skipped { why, .. } => self.events.push((t, Ev::Skipped(b, why))),
+                // The walk's loader fetches no height packs (1863).
+                Step::Heights { .. } => {}
             }
         }
         if landed {

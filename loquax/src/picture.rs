@@ -168,31 +168,31 @@ impl Maps {
     /// How many region files there are now and their bytes together, by
     /// the directory alone, none opened: the Maps page's "Delete all
     /// downloaded maps (1.2 GB)" (1290).
+    /// The autoloaded height packs (1863) count in the bytes, not as maps.
     pub fn usage(&self) -> (usize, u64) {
-        let lens: Vec<u64> = self
-            .dir()
-            .map(region_files)
-            .unwrap_or_default()
-            .iter()
-            .map(|path| std::fs::metadata(path).map_or(0, |m| m.len()))
-            .collect();
-        (lens.len(), lens.iter().sum())
+        let len = |path: &PathBuf| std::fs::metadata(path).map_or(0, |m| m.len());
+        let regions = self.dir().map(region_files).unwrap_or_default();
+        let packs = self.dir().map(auto_packs).unwrap_or_default();
+        (regions.len(), regions.iter().chain(&packs).map(len).sum())
     }
 
     /// Delete every region file, the hand placed ones too, and tell every
     /// painter (1290); how many went. One that will not go stops it with
     /// a line, the ones before it are gone. A region the autoload is
     /// writing lands after, as any area looked at does.
+    /// The autoloaded height packs go too (1863), after the regions, and
+    /// are not counted.
     pub fn delete_all(&self) -> Result<usize, String> {
         let paths = self.dir().map(region_files).unwrap_or_default();
+        let packs = self.dir().map(auto_packs).unwrap_or_default();
         let mut gone = 0;
-        let result = paths.iter().try_for_each(|path| {
+        let result = paths.iter().chain(&packs).try_for_each(|path| {
             std::fs::remove_file(path)
                 .map_err(|error| format!("map: {} was not deleted: {error}", path.display()))?;
-            gone += 1;
+            gone += usize::from(path.extension().is_some_and(|x| x == "lmr"));
             Ok(())
         });
-        if gone > 0 {
+        if gone > 0 || !packs.is_empty() {
             tracing::info!("MAPLOAD deleted all={gone}");
             self.changed();
         }
@@ -226,6 +226,25 @@ pub fn newest_first(regions: &[Installed]) -> Vec<&Installed> {
     let mut order: Vec<&Installed> = regions.iter().collect();
     order.sort_by(|a, b| b.modified.cmp(&a.modified).then(a.name.cmp(&b.name)));
     order
+}
+
+/// The paths of every autoloaded height pack (`auto-*.lmh`, 1863) in
+/// `dir`, by name; none for a missing directory.
+fn auto_packs(dir: &Path) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = match std::fs::read_dir(dir) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension().is_some_and(|x| x == "lmh")
+                    && p.file_name().and_then(|n| n.to_str()).is_some_and(is_auto)
+                    && p.is_file()
+            })
+            .collect(),
+        Err(_) => return Vec::new(),
+    };
+    paths.sort();
+    paths
 }
 
 /// The paths of every `*.lmr` in `dir`, by name; none for a missing

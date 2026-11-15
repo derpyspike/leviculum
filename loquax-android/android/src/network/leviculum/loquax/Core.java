@@ -887,6 +887,17 @@ final class Core {
     }
 
     /**
+     * The map's relief (1863): `set` stored as the config's `map_relief`,
+     * or with null only asked; the choice in force as `relief`. Waits for
+     * the frame a map may be drawing: not on the UI thread.
+     */
+    static Map<String, Object> mapRelief(Boolean set) {
+        Map<String, Object> request = map("t", "maprelief");
+        if (set != null) request.put("set", set);
+        return query(request);
+    }
+
+    /**
      * The Privacy page's "Send read receipts" (1233): with `set` stored,
      * the switch in force as "on" either way.
      */

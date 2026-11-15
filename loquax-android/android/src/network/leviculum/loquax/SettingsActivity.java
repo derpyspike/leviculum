@@ -1033,7 +1033,7 @@ public class SettingsActivity extends Activity implements Events.Listener {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
     }
 
-    /** The relay (the propagation node), the map's fling, and the service's end. */
+    /** The relay (the propagation node), the map's fling and relief, and the service's end. */
     private void advanced() {
         mapFling(null);
         TextView node = text(getString(R.string.propagation_node), 16, R.color.text);
@@ -1065,6 +1065,28 @@ public class SettingsActivity extends Activity implements Events.Listener {
         });
         row.addView(flings);
         body.addView(row, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        // The relief under the light map (1863), the same row as the fling.
+        mapRelief(null);
+        LinearLayout reliefRow = new LinearLayout(this);
+        reliefRow.setGravity(Gravity.CENTER_VERTICAL);
+        reliefRow.setPadding(dp(16), dp(16), dp(16), dp(4));
+        LinearLayout reliefWords = new LinearLayout(this);
+        reliefWords.setOrientation(LinearLayout.VERTICAL);
+        reliefWords.addView(text(getString(R.string.map_relief), 16, R.color.text));
+        reliefWords.addView(text(getString(R.string.map_relief_text), 14, R.color.text_secondary));
+        reliefRow.addView(reliefWords, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        final Switch relief = new Switch(this);
+        relief.setId(R.id.map_relief);
+        relief.setChecked(true);
+        relief.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                mapRelief(relief.isChecked());
+            }
+        });
+        reliefRow.addView(relief);
+        body.addView(reliefRow, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         // The verb and, under it, what it costs (1447, walk 1 finding 27):
         // nothing arrives until the app is opened again.
@@ -1200,6 +1222,33 @@ public class SettingsActivity extends Activity implements Events.Listener {
                 });
             }
         }, "loquax-fling").start();
+    }
+
+    /**
+     * The map's relief (1863): `set` stored when given, then the switch
+     * shows the choice in force; off the UI thread, as the renderer may
+     * be drawing.
+     */
+    private void mapRelief(final Boolean set) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final Map<String, Object> answer = Core.mapRelief(set);
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!Core.bool(answer, "ok")) {
+                            android.widget.Toast.makeText(SettingsActivity.this,
+                                    Core.str(answer, "error"), android.widget.Toast.LENGTH_LONG).show();
+                        }
+                        View shown = body.findViewById(R.id.map_relief);
+                        if (shown instanceof Switch) {
+                            ((Switch) shown).setChecked(Core.bool(answer, "relief"));
+                        }
+                    }
+                });
+            }
+        }, "loquax-relief").start();
     }
 
     /** One blocked peer: its avatar and name as every screen shows it, and "Unblock". */

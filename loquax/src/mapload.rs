@@ -50,8 +50,25 @@
 //!   by its file's modification time). A file without the prefix was placed
 //!   by hand and is never evicted, nor counted.
 //!
+//! - A region that landed wants its height packs (1863): the blocks of
+//!   the height catalogue ([`leviculum_mapcut::heights`]) under its box,
+//!   each fetched by one range request and written beside the region as
+//!   `auto-h<zoom>-<x>-<y>.lmh`, under a `.part` name first and renamed
+//!   once it checked whole, so a painter never indexes half a pack. The
+//!   packs queue behind the regions: one fetch at a time, the screen's
+//!   region's first, and none starts while a region for the screen runs
+//!   or waits. They count in the cache cap and go with the last
+//!   autoloaded region over them ([`evict`]). A pack that failed is
+//!   retried on the long ladder; a catalogue the server does not have
+//!   (no such file, or not a catalogue) ends the heights for the session,
+//!   and the map draws as it did without relief. No line is shown for a
+//!   pack: the relief is a finish, its absence is no fault.
+//!
 //! The source is `map_source` from the config, or the newest Protomaps
 //! daily build ([`leviculum_mapcut::http::daily`]) found once a session.
+//! The height catalogue is `height_source` from the config, else
+//! [`CATALOGUE_NAME`] beside a configured `map_source`, else
+//! [`HEIGHTS_DEFAULT`] ([`heights_url`]).
 
 use std::fs::File;
 use std::io::BufWriter;
@@ -64,9 +81,11 @@ use std::vec::Vec;
 
 use leviculum_map::region::{Bounds, Region};
 use leviculum_mapcut::cut::Progress;
-use leviculum_mapcut::http::{self, HttpRange};
+use leviculum_mapcut::heights::{local_pack, BlockEntry, Catalogue, CATALOGUE_NAME};
+use leviculum_mapcut::http::{self, HttpError, HttpRange};
 use leviculum_mapcut::load::{cut_planned, plan, Empty, Loaded, TooLarge, Want};
 use leviculum_mapcut::pmtiles::Archive;
+use leviculum_mapcut::pmtiles::RangeRead;
 
 use crate::picture::{is_auto, Maps, AUTO_PREFIX};
 use crate::ui::map::{LoadReason, MapWant};
@@ -108,6 +127,37 @@ const BY: &str = "loquax";
 /// The least time between two progress bumps of a region being written
 /// (1291): a frame on screen is drawn again at most four times a second.
 pub const PROGRESS_EVERY_MS: u64 = 250;
+
+/// The height catalogue when the config names neither `height_source`
+/// nor `map_source` (1863): the project's own map server.
+pub const HEIGHTS_DEFAULT: &str = "https://leviculum.network/maps/heights.tsv";
+/// The longest catalogue a device reads: a world of z9 blocks is about
+/// 80,000 lines, 8 MB.
+pub const CATALOGUE_MAX: u64 = 16 << 20;
+/// The longest pack directory a device reads.
+const DIRECTORY_MAX: u64 = 1 << 20;
+
+/// The height catalogue's URL: `height_source` when set, else the
+/// catalogue beside the configured `map_source` (a server of its own
+/// serves both from one directory), else [`HEIGHTS_DEFAULT`].
+pub fn heights_url(height_source: Option<&str>, map_source: Option<&str>) -> String {
+    match (height_source, map_source) {
+        (Some(url), _) => url.to_string(),
+        (None, Some(map)) => match map.rfind('/') {
+            Some(at) => format!("{}{CATALOGUE_NAME}", &map[..=at]),
+            None => HEIGHTS_DEFAULT.to_string(),
+        },
+        (None, None) => HEIGHTS_DEFAULT.to_string(),
+    }
+}
+
+/// The URL of `name` beside the catalogue at `catalogue`.
+fn beside(catalogue: &str, name: &str) -> String {
+    match catalogue.rfind('/') {
+        Some(at) => format!("{}{name}", &catalogue[..=at]),
+        None => name.to_string(),
+    }
+}
 
 /// The language of a locale setting (`de_DE.UTF-8` is `de`), `None` for
 /// the C and POSIX locales and an empty one.
@@ -172,6 +222,26 @@ pub enum Step {
         want: MapWant,
         why: &'static str,
     },
+    /// The height packs of a region that landed (1863) were fetched, or
+    /// failed to be: a line for the log, never one for the screen.
+    Heights {
+        want: MapWant,
+        landed: Result<HeightsLanded, String>,
+        elapsed_ms: u64,
+    },
+}
+
+/// The height packs one fetch wrote (1863).
+#[derive(Debug, PartialEq, Eq)]
+pub struct HeightsLanded {
+    /// The packs' file names, the ones written now.
+    pub packs: Vec<String>,
+    /// Pack bytes fetched for them.
+    pub fetched: u64,
+    /// Blocks under the region that were there already.
+    pub had: usize,
+    /// Files removed to stay under the cap.
+    pub evicted: Vec<String>,
 }
 
 /// What a [`Step`] did, without its detail: what a frontend keeps of
@@ -182,6 +252,7 @@ pub enum StepKind {
     Done,
     Failed,
     Skipped,
+    Heights,
 }
 
 impl Step {
@@ -192,6 +263,7 @@ impl Step {
             Self::Done { .. } => StepKind::Done,
             Self::Failed { .. } => StepKind::Failed,
             Self::Skipped { .. } => StepKind::Skipped,
+            Self::Heights { .. } => StepKind::Heights,
         }
     }
 
@@ -201,7 +273,8 @@ impl Step {
             Self::Started(want)
             | Self::Done { want, .. }
             | Self::Failed { want, .. }
-            | Self::Skipped { want, .. } => want,
+            | Self::Skipped { want, .. }
+            | Self::Heights { want, .. } => want,
         }
     }
 }
@@ -303,6 +376,45 @@ pub struct Loader {
     offline: bool,
     /// No internet was said, and no load landed since.
     offline_said: bool,
+    /// The height packs' side (1863), `None` without a catalogue.
+    heights: Option<Heights>,
+}
+
+/// The height packs' side of the loader (1863).
+struct Heights {
+    /// The catalogue's URL; the packs lie beside it.
+    url: String,
+    /// The catalogue read, kept for the session.
+    catalogue: Arc<Mutex<Option<Arc<Catalogue>>>>,
+    /// Landed regions whose packs are wanted, in the order to fetch them.
+    queue: Vec<HeightWant>,
+    running: Option<RunningHeights>,
+    /// The server has no catalogue: no heights this session.
+    absent: bool,
+}
+
+/// A landed region whose height packs are wanted.
+struct HeightWant {
+    want: MapWant,
+    /// The region's file name: kept by the eviction its packs run.
+    region: String,
+    rank: Rank,
+    /// Not started before this time; 0 is due.
+    retry_at: u64,
+    failures: u32,
+}
+
+struct RunningHeights {
+    want: HeightWant,
+    started: Instant,
+    done: Receiver<Result<HeightsLanded, HeightFailure>>,
+}
+
+/// Why a height fetch failed, as its thread hands it back.
+struct HeightFailure {
+    detail: String,
+    /// The server has no catalogue, or none this reader reads.
+    absent: bool,
 }
 
 impl Loader {
@@ -317,7 +429,42 @@ impl Loader {
             backoff: Vec::new(),
             offline: false,
             offline_said: false,
+            heights: None,
         }
+    }
+
+    /// Fetch the height packs of every region that lands from the
+    /// catalogue at `catalogue` ([`heights_url`], 1863).
+    pub fn with_heights(mut self, catalogue: String) -> Self {
+        self.heights = Some(Heights {
+            url: catalogue,
+            catalogue: Arc::new(Mutex::new(None)),
+            queue: Vec::new(),
+            running: None,
+            absent: false,
+        });
+        self
+    }
+
+    /// Whether height packs are fetched or wait to be, not counting those
+    /// waiting to retry.
+    fn heights_pending(&self) -> bool {
+        self.heights
+            .as_ref()
+            .is_some_and(|h| h.running.is_some() || h.queue.iter().any(|q| q.retry_at == 0))
+    }
+
+    /// Milliseconds until the next height fetch could start by the
+    /// heights' own clock, `None` when one runs or none waits.
+    fn heights_due_ms(&self, now_ms: u64) -> Option<u64> {
+        let h = self.heights.as_ref()?;
+        if h.running.is_some() {
+            return None;
+        }
+        h.queue
+            .iter()
+            .map(|q| q.retry_at.saturating_sub(now_ms))
+            .min()
     }
 
     /// Whether a load runs or waits to start. A box waiting to retry
@@ -325,7 +472,7 @@ impl Loader {
     /// retry in t" ([`LoadState::Retrying`]), and the chip and the
     /// offline word must not claim activity the loader postponed.
     pub fn busy(&self) -> bool {
-        if !self.running.is_empty() {
+        if !self.running.is_empty() || self.heights_pending() {
             return true;
         }
         // Mirror [`Loader::start_next`]: an off-screen box behind an
@@ -372,17 +519,30 @@ impl Loader {
     /// every 50 ms for nothing until the screen box's retry (the audit
     /// of 1821, finding 1). The wake named is the screen box's instead,
     /// and the held box starts, in order, once the screen is served.
+    ///
+    /// A height fetch waiting (1863) names its own wake, unless a region
+    /// for the screen loads or waits to: the packs start after it, and
+    /// the region's own end wakes the loader.
     pub fn next_due_ms(&self, now_ms: u64) -> Option<u64> {
-        if self.due_at(now_ms).is_some() {
-            return Some(0);
+        let regions = match self.due_at(now_ms) {
+            Some(_) => Some(0),
+            None => self
+                .queue
+                .iter()
+                .filter(|q| q.retry_at > now_ms)
+                .map(|q| q.retry_at)
+                .filter(|&at| self.due_at(at).is_some())
+                .min()
+                .map(|at| at - now_ms),
+        };
+        let heights = match self.loading_here() {
+            true => None,
+            false => self.heights_due_ms(now_ms),
+        };
+        match (regions, heights) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
         }
-        self.queue
-            .iter()
-            .filter(|q| q.retry_at > now_ms)
-            .map(|q| q.retry_at)
-            .filter(|&at| self.due_at(at).is_some())
-            .min()
-            .map(|at| at - now_ms)
     }
 
     /// Whether the last load that ended found no internet and none started
@@ -602,8 +762,133 @@ impl Loader {
             let running = self.running.remove(n);
             steps.push(self.ended(running, result, now_ms));
         }
+        steps.extend(self.heights_ended(now_ms));
         steps.extend(self.start_next(now_ms));
+        self.start_heights(now_ms);
         steps
+    }
+
+    /// The step of the height fetch that ended, if one did.
+    fn heights_ended(&mut self, now_ms: u64) -> Option<Step> {
+        let h = self.heights.as_mut()?;
+        let result = match h.running.as_ref()?.done.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return None,
+            Err(TryRecvError::Disconnected) => Err(HeightFailure {
+                detail: "the height fetch stopped".to_string(),
+                absent: false,
+            }),
+        };
+        let running = h.running.take()?;
+        let elapsed_ms = u64::try_from(running.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let mut item = running.want;
+        let want = item.want.clone();
+        let landed = match result {
+            Ok(landed) => Ok(landed),
+            Err(failure) if failure.absent => {
+                // No catalogue there: nothing to fetch this session.
+                h.absent = true;
+                h.queue.clear();
+                Err(failure.detail)
+            }
+            Err(failure) => {
+                // The long ladder, as a region away from the screen: the
+                // relief is a finish, it does not hurry a failing source.
+                item.failures += 1;
+                let wait = BACKOFF_FIRST_MS
+                    .saturating_mul(1 << (item.failures - 1).min(16))
+                    .min(BACKOFF_MAX_MS);
+                item.retry_at = now_ms.saturating_add(wait);
+                let at = h
+                    .queue
+                    .iter()
+                    .position(|q| q.rank > item.rank)
+                    .unwrap_or(h.queue.len());
+                h.queue.insert(at, item);
+                Err(failure.detail)
+            }
+        };
+        Some(Step::Heights {
+            want,
+            landed,
+            elapsed_ms,
+        })
+    }
+
+    /// Queue the height packs of `region`, landed for `want` at `rank`:
+    /// after every region of its rank or before, the same region once.
+    fn want_heights(&mut self, want: &MapWant, region: &str, rank: Rank) {
+        let Some(h) = self.heights.as_mut() else {
+            return;
+        };
+        if h.absent {
+            return;
+        }
+        h.queue.retain(|q| q.region != region);
+        let at = h
+            .queue
+            .iter()
+            .position(|q| q.rank > rank)
+            .unwrap_or(h.queue.len());
+        h.queue.insert(
+            at,
+            HeightWant {
+                want: want.clone(),
+                region: region.to_string(),
+                rank,
+                retry_at: 0,
+                failures: 0,
+            },
+        );
+    }
+
+    /// Start the first due height fetch when none runs and no region for
+    /// the screen loads or waits to: the packs come after the regions.
+    fn start_heights(&mut self, now_ms: u64) {
+        if self.loading_here() {
+            return;
+        }
+        let Some(dir) = self.maps.dir().map(Path::to_path_buf) else {
+            return;
+        };
+        let maps = self.maps.clone();
+        let cache_bytes = self.cache_bytes;
+        let Some(h) = self.heights.as_mut() else {
+            return;
+        };
+        if h.running.is_some() {
+            return;
+        }
+        let Some(n) = h.queue.iter().position(|q| q.retry_at <= now_ms) else {
+            return;
+        };
+        let item = h.queue.remove(n);
+        let job = HeightJob {
+            dir,
+            maps,
+            url: h.url.clone(),
+            catalogue: Arc::clone(&h.catalogue),
+            bounds: item.want.bounds,
+            region: item.region.clone(),
+            cache_bytes,
+        };
+        let (tx, rx) = channel();
+        let spawned = std::thread::Builder::new()
+            .name("map-heights".to_string())
+            .spawn(move || {
+                let _ = tx.send(job.run());
+            });
+        match spawned {
+            Ok(_) => {
+                h.running = Some(RunningHeights {
+                    want: item,
+                    started: Instant::now(),
+                    done: rx,
+                });
+            }
+            // No thread now: the item waits for the next poll.
+            Err(_) => h.queue.insert(n, item),
+        }
     }
 
     /// The step of `running`, which ended with `result`.
@@ -625,6 +910,7 @@ impl Loader {
                     queued.retry_at = 0;
                 }
                 self.maps.changed();
+                self.want_heights(&want, &landed.name, running.rank);
                 Step::Done {
                     want,
                     landed,
@@ -938,6 +1224,147 @@ impl Job {
     }
 }
 
+/// One height fetch, on its thread (1863).
+struct HeightJob {
+    dir: PathBuf,
+    maps: Maps,
+    url: String,
+    catalogue: Arc<Mutex<Option<Arc<Catalogue>>>>,
+    bounds: Bounds,
+    region: String,
+    cache_bytes: u64,
+}
+
+impl HeightJob {
+    fn run(self) -> Result<HeightsLanded, HeightFailure> {
+        let catalogue = self.catalogue().map_err(|e| HeightFailure {
+            absent: absent(e.as_ref()),
+            detail: e.to_string(),
+        })?;
+        self.fetch(&catalogue).map_err(|e| HeightFailure {
+            absent: false,
+            detail: e.to_string(),
+        })
+    }
+
+    /// The catalogue, read once a session.
+    fn catalogue(&self) -> leviculum_mapcut::Res<Arc<Catalogue>> {
+        let mut held = self
+            .catalogue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(catalogue) = held.as_ref() {
+            return Ok(Arc::clone(catalogue));
+        }
+        let bytes = HttpRange::new(&self.url).read_range(0, CATALOGUE_MAX)?;
+        let text = String::from_utf8(bytes).map_err(|_| NoCatalogue("not UTF-8".to_string()))?;
+        let catalogue = Arc::new(Catalogue::parse(&text).map_err(|e| NoCatalogue(e.to_string()))?);
+        *held = Some(Arc::clone(&catalogue));
+        Ok(catalogue)
+    }
+
+    /// Every block under the region's box not on disk yet, a range
+    /// request each, checked and written as a pack of its own.
+    fn fetch(&self, catalogue: &Catalogue) -> leviculum_mapcut::Res<HeightsLanded> {
+        let mut landed = HeightsLanded {
+            packs: Vec::new(),
+            fetched: 0,
+            had: 0,
+            evicted: Vec::new(),
+        };
+        // A pack file's directory, read once per fetch.
+        let mut directories: Vec<(usize, Vec<u8>)> = Vec::new();
+        for entry in catalogue.under(&self.bounds) {
+            let name = format!("{AUTO_PREFIX}{}", entry.local_name());
+            let path = self.dir.join(&name);
+            if path.exists() {
+                landed.had += 1;
+                continue;
+            }
+            let file = &catalogue.packs[entry.pack];
+            let source = HttpRange::new(&beside(&self.url, &file.name));
+            let directory = match directories.iter().find(|d| d.0 == entry.pack) {
+                Some(d) => d.1.clone(),
+                None => {
+                    if file.directory > DIRECTORY_MAX {
+                        return Err(format!("{}: directory too long", file.name).into());
+                    }
+                    let d = exact(&source, 0, file.directory)?;
+                    landed.fetched += d.len() as u64;
+                    directories.push((entry.pack, d.clone()));
+                    d
+                }
+            };
+            let block = exact(&source, entry.offset, entry.len)?;
+            landed.fetched += block.len() as u64;
+            let pack = local_pack(&directory, &block, &entry)?;
+            write_pack(&self.dir, &name, &pack)?;
+            landed.packs.push(name);
+            // Every painter indexes the packs again and shades with it.
+            self.maps.changed();
+        }
+        if !landed.packs.is_empty() {
+            landed.evicted = evict(&self.dir, self.cache_bytes, &self.region)?;
+        }
+        Ok(landed)
+    }
+}
+
+/// A catalogue that is no catalogue this reader reads.
+#[derive(Debug)]
+struct NoCatalogue(String);
+
+impl core::fmt::Display for NoCatalogue {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "no height catalogue: {}", self.0)
+    }
+}
+
+impl std::error::Error for NoCatalogue {}
+
+/// Whether `e` says the server has no catalogue: none at the URL, or one
+/// this reader does not read. Retrying this session cannot help.
+fn absent(e: &(dyn std::error::Error + 'static)) -> bool {
+    e.downcast_ref::<NoCatalogue>().is_some()
+        || matches!(
+            e.downcast_ref::<HttpError>(),
+            Some(HttpError::Status(403 | 404 | 410))
+        )
+}
+
+/// Exactly `len` bytes at `offset` of `source`, or an error: a server
+/// that sends fewer has not the file the catalogue named.
+fn exact(source: &HttpRange, offset: u64, len: u64) -> leviculum_mapcut::Res<Vec<u8>> {
+    let bytes = source.read_range(offset, len)?;
+    if bytes.len() as u64 != len {
+        return Err(format!(
+            "{}: {} bytes at {offset}, the catalogue says {len}",
+            source.url(),
+            bytes.len()
+        )
+        .into());
+    }
+    Ok(bytes)
+}
+
+/// Write `bytes` as `name` in `dir`: under a `.part` name first, synced,
+/// then renamed, so no painter indexes half a pack.
+fn write_pack(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    std::fs::create_dir_all(dir)?;
+    let part = dir.join(format!("{name}{PART_SUFFIX}"));
+    let written = (|| {
+        let mut file = File::create(&part)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&part, dir.join(name))
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    written
+}
+
 /// An autoloaded region's file name: the box in degrees times 10^7 and the
 /// zooms, so the same box asked again replaces its file.
 pub fn auto_name(b: &Bounds, zooms: (u8, u8)) -> String {
@@ -947,34 +1374,109 @@ pub fn auto_name(b: &Bounds, zooms: (u8, u8)) -> String {
     )
 }
 
+/// The box of an autoloaded region from its name ([`auto_name`]).
+fn auto_bounds(name: &str) -> Option<Bounds> {
+    let rest = name.strip_prefix(AUTO_PREFIX)?.strip_suffix(".lmr")?;
+    let (corners, _) = rest.split_once("-z")?;
+    let mut parts = corners.split('_').map(|p| p.parse::<i32>().ok());
+    let bounds = Bounds {
+        west: parts.next()??,
+        south: parts.next()??,
+        east: parts.next()??,
+        north: parts.next()??,
+    };
+    parts.next().is_none().then_some(bounds)
+}
+
+/// The block of an autoloaded height pack from its name
+/// ([`BlockEntry::local_name`] behind [`AUTO_PREFIX`]).
+fn pack_bounds(name: &str) -> Option<Bounds> {
+    let rest = name.strip_prefix(AUTO_PREFIX)?.strip_prefix('h')?;
+    let rest = rest.strip_suffix(".lmh")?;
+    let mut parts = rest.split('-').map(|p| p.parse::<u32>().ok());
+    let zoom = u8::try_from(parts.next()??).ok()?;
+    let (x, y) = (parts.next()??, parts.next()??);
+    if parts.next().is_some() || zoom > 31 || u64::from(x.max(y)) >= 1 << zoom {
+        return None;
+    }
+    let entry = BlockEntry {
+        pack: 0,
+        zoom,
+        x,
+        y,
+        offset: 0,
+        len: 0,
+    };
+    Some(entry.bounds())
+}
+
+/// Whether two boxes share ground; a common edge is none.
+fn overlaps(a: &Bounds, b: &Bounds) -> bool {
+    a.west < b.east && b.west < a.east && a.south < b.north && b.south < a.north
+}
+
 /// Remove autoloaded regions of `dir`, least recently viewed first, until
-/// they come to `cap` bytes or less; `keep` (the region just loaded) and
-/// every file without [`AUTO_PREFIX`] stay. The names removed.
+/// they and the autoloaded height packs come to `cap` bytes or less;
+/// `keep` (the region just loaded) and every file without [`AUTO_PREFIX`]
+/// stay. A height pack goes with the last autoloaded region over its
+/// block (1863), whether that went now or before. The names removed.
 pub fn evict(dir: &Path, cap: u64, keep: &str) -> std::io::Result<Vec<String>> {
     let mut auto: Vec<(SystemTime, String, u64)> = Vec::new();
+    let mut packs: Vec<(String, u64, Option<Bounds>)> = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !is_auto(&name) || !name.ends_with(".lmr") {
+        if !is_auto(&name) {
             continue;
         }
         let meta = entry.metadata()?;
-        let viewed = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        auto.push((viewed, name, meta.len()));
+        if name.ends_with(".lmr") {
+            let viewed = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            auto.push((viewed, name, meta.len()));
+        } else if name.ends_with(".lmh") {
+            let bounds = pack_bounds(&name);
+            packs.push((name, meta.len(), bounds));
+        }
     }
-    let mut total: u64 = auto.iter().map(|a| a.2).sum();
+    let mut total: u64 =
+        auto.iter().map(|a| a.2).sum::<u64>() + packs.iter().map(|p| p.1).sum::<u64>();
     auto.sort();
     let mut evicted = Vec::new();
-    for (_, name, len) in auto {
-        if total <= cap {
-            break;
+    // The packs no region left covers: removed at once, before a region
+    // is weighed against the cap.
+    let mut orphans = |auto: &[(SystemTime, String, u64)],
+                       total: &mut u64,
+                       evicted: &mut Vec<String>|
+     -> std::io::Result<()> {
+        let regions: Vec<Bounds> = auto.iter().filter_map(|a| auto_bounds(&a.1)).collect();
+        let mut n = 0;
+        while n < packs.len() {
+            let covered = packs[n]
+                .2
+                .is_some_and(|b| regions.iter().any(|r| overlaps(r, &b)));
+            if covered {
+                n += 1;
+                continue;
+            }
+            let (name, len, _) = packs.remove(n);
+            std::fs::remove_file(dir.join(&name))?;
+            *total = total.saturating_sub(len);
+            evicted.push(name);
         }
-        if name == keep {
+        Ok(())
+    };
+    orphans(&auto, &mut total, &mut evicted)?;
+    let mut n = 0;
+    while n < auto.len() && total > cap {
+        if auto[n].1 == keep {
+            n += 1;
             continue;
         }
+        let (_, name, len) = auto.remove(n);
         std::fs::remove_file(dir.join(&name))?;
         total = total.saturating_sub(len);
         evicted.push(name);
+        orphans(&auto, &mut total, &mut evicted)?;
     }
     Ok(evicted)
 }
@@ -2033,5 +2535,341 @@ mod tests {
             "{steps:?}"
         );
         assert_eq!(loader.next_due_ms(0), Some(0));
+    }
+
+    // 1863: the height packs come with the regions.
+
+    const CHEBBI: &[u8] = include_bytes!("../../leviculum-map/fixtures/erg-chebbi.lmh");
+
+    /// The block of `w`'s centre at the Erg Chebbi fixture's block zoom,
+    /// and a one-block pack file there: the fixture's block with its
+    /// coordinates moved under Florence, where the region fixture is (the
+    /// heights are data, a tile's checksum covers its heights alone).
+    fn pack_under(w: &MapWant) -> ((u32, u32), Vec<u8>) {
+        use leviculum_map::elevation::{split, write_directory, Directory, DirectoryInfo};
+        use leviculum_map::mercator::{x_of_lon, y_of_lat};
+        let (dir, ranges) = split(CHEBBI).expect("split");
+        let zoom = dir.block_zoom();
+        let shift = 32 - u32::from(zoom);
+        let x = x_of_lon((w.bounds.west + w.bounds.east) / 2) >> shift;
+        let y = y_of_lat((w.bounds.south + w.bounds.north) / 2) >> shift;
+        let mut block = CHEBBI[ranges[1].clone()].to_vec();
+        block[12..16].copy_from_slice(&x.to_le_bytes());
+        block[16..20].copy_from_slice(&y.to_le_bytes());
+        let (d, _) = Directory::parse_prefix(CHEBBI).expect("directory");
+        let mut pack = write_directory(
+            &DirectoryInfo {
+                tile_zoom: d.tile_zoom(),
+                block_zoom: zoom,
+                bounds: [w.bounds.west, w.bounds.south, w.bounds.east, w.bounds.north],
+                attribution: d.attribution(),
+                notice: d.notice(),
+            },
+            &[(x, y)],
+        )
+        .expect("write");
+        pack.extend_from_slice(&block);
+        ((x, y), pack)
+    }
+
+    /// A server of the region fixture, a height pack under `w` and its
+    /// catalogue; the pack's local name.
+    fn heights_server(w: &MapWant) -> (Serve, String) {
+        let (xy, pack) = pack_under(w);
+        let mut catalogue = Catalogue::default();
+        catalogue.add_pack("tuscany.lmh", &pack).expect("catalogue");
+        let serve = Serve::start(vec![
+            ("o.pmtiles".into(), FIXTURE.to_vec()),
+            ("tuscany.lmh".into(), pack),
+            (CATALOGUE_NAME.into(), catalogue.write().into_bytes()),
+        ])
+        .expect("serve");
+        (serve, format!("{AUTO_PREFIX}h11-{}-{}.lmh", xy.0, xy.1))
+    }
+
+    /// Poll until a heights step comes, at most ten seconds; the steps
+    /// before it too.
+    fn settle_heights(loader: &mut Loader, now_ms: u64) -> Vec<Step> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut all = Vec::new();
+        loop {
+            let steps = loader.poll(now_ms);
+            let done = steps.iter().any(|s| s.kind() == StepKind::Heights);
+            all.extend(steps);
+            if done {
+                return all;
+            }
+            assert!(Instant::now() < deadline, "no height fetch ended: {all:?}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .expect("dir")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_landed_region_brings_its_height_pack_after_it() {
+        let w = want(112_615_000);
+        let (serve, pack) = heights_server(&w);
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut loader = Loader::new(maps.clone(), Source::Url(serve.url("o.pmtiles")), 1 << 30)
+            .with_heights(serve.url(CATALOGUE_NAME));
+        loader.ask(w.clone(), 0);
+        let steps = settle_heights(&mut loader, 0);
+        let kinds: Vec<StepKind> = steps.iter().map(Step::kind).collect();
+        assert_eq!(kinds, [StepKind::Done, StepKind::Heights], "{steps:?}");
+        let Step::Heights {
+            want: got,
+            landed: Ok(landed),
+            ..
+        } = &steps[1]
+        else {
+            panic!("{steps:?}");
+        };
+        assert_eq!(got, &w);
+        assert_eq!(landed.packs, std::slice::from_ref(&pack));
+        assert_eq!(landed.had, 0);
+        assert!(landed.fetched > 0);
+        assert_eq!(
+            names(dir.path()),
+            [auto_name(&w.bounds, (14, 15)), pack.clone()]
+        );
+        // Every painter sees it: the relief has a pack to shade from.
+        let relief = crate::relief::ReliefStore::default();
+        relief.refresh(maps.dir());
+        assert!(relief.any());
+        assert!(!loader.busy());
+        // The same region again: the pack is there, nothing fetched.
+        std::fs::remove_file(dir.path().join(auto_name(&w.bounds, (14, 15)))).expect("rm");
+        loader.ask(w.clone(), 0);
+        let steps = settle_heights(&mut loader, 0);
+        let Some(Step::Heights {
+            landed: Ok(again), ..
+        }) = steps.last()
+        else {
+            panic!("{steps:?}");
+        };
+        assert_eq!((again.packs.len(), again.had, again.fetched), (0, 1, 0));
+    }
+
+    #[test]
+    fn no_catalogue_is_said_once_and_ends_the_heights() {
+        let w = want(112_615_000);
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut loader = Loader::new(maps, Source::Url(serve.url("o.pmtiles")), 1 << 30)
+            .with_heights(serve.url(CATALOGUE_NAME));
+        loader.ask(w.clone(), 0);
+        let steps = settle_heights(&mut loader, 0);
+        assert!(
+            matches!(steps.last(), Some(Step::Heights { landed: Err(_), .. })),
+            "{steps:?}"
+        );
+        assert!(!loader.busy());
+        assert_eq!(
+            loader.next_due_ms(0),
+            None,
+            "no retry of a missing catalogue"
+        );
+        // The next region asks for no heights at all.
+        let requests = serve.requests();
+        let other = want(112_825_000);
+        loader.ask(other, 0);
+        let steps = settle(&mut loader, 0);
+        assert!(matches!(steps.as_slice(), [Step::Done { .. }]), "{steps:?}");
+        for _ in 0..20 {
+            assert!(loader.poll(0).is_empty());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(serve.requests() > requests, "the region was fetched");
+        assert_eq!(
+            names(dir.path())
+                .iter()
+                .filter(|n| n.ends_with(".lmh"))
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn a_failed_height_fetch_retries_on_the_long_ladder() {
+        let w = want(112_615_000);
+        let (serve, pack) = heights_server(&w);
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut loader = Loader::new(maps, Source::Url(serve.url("o.pmtiles")), 1 << 30)
+            .with_heights(serve.url(CATALOGUE_NAME));
+        loader.ask(w.clone(), 0);
+        let steps = settle(&mut loader, 0);
+        assert!(matches!(steps.as_slice(), [Step::Done { .. }]), "{steps:?}");
+        // The source breaks before the packs start.
+        serve.fail(true);
+        let steps = settle_heights(&mut loader, 1_000);
+        assert!(
+            matches!(steps.last(), Some(Step::Heights { landed: Err(_), .. })),
+            "{steps:?}"
+        );
+        assert!(!loader.busy(), "a pack waiting to retry is not loading");
+        assert_eq!(loader.next_due_ms(1_000), Some(BACKOFF_FIRST_MS));
+        assert!(loader.poll(1_000 + BACKOFF_FIRST_MS - 1).is_empty());
+        serve.fail(false);
+        let steps = settle_heights(&mut loader, 1_000 + BACKOFF_FIRST_MS);
+        let Some(Step::Heights {
+            landed: Ok(landed), ..
+        }) = steps.last()
+        else {
+            panic!("{steps:?}");
+        };
+        assert_eq!(landed.packs, [pack]);
+    }
+
+    #[test]
+    fn the_packs_wait_while_a_region_for_the_screen_loads() {
+        let w = want(112_615_000);
+        let (serve, _) = heights_server(&w);
+        let (_listener, source) = stalling();
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut loader = Loader::new(maps, source, 1 << 30).with_heights(serve.url(CATALOGUE_NAME));
+        // A landed region's packs are wanted; a box asked by hand runs
+        // against a source that never answers.
+        loader.want_heights(&w, &auto_name(&w.bounds, (14, 15)), Rank::Here);
+        loader.ask(nth(1), 0);
+        for _ in 0..20 {
+            loader.poll(0);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(loader.loading_here());
+        let h = loader.heights.as_ref().expect("heights");
+        assert!(
+            h.running.is_none(),
+            "a pack started beside the screen's region"
+        );
+        assert_eq!(h.queue.len(), 1);
+        assert_eq!(serve.requests(), 0);
+        assert!(loader.busy());
+    }
+
+    #[test]
+    fn a_pack_goes_with_the_last_region_over_it_and_counts_in_the_cap() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let w = want(112_615_000);
+        let ((x, y), pack) = pack_under(&w);
+        let block = leviculum_mapcut::heights::block_bounds(11, x, y);
+        let pack_name = format!("{AUTO_PREFIX}h11-{x}-{y}.lmh");
+        // Two regions over the block, one far away, and a pack elsewhere
+        // that no region covers any more.
+        let inside = Bounds {
+            west: block.west + 10_000,
+            south: block.south + 10_000,
+            east: block.west + 20_000,
+            north: block.south + 20_000,
+        };
+        let a = auto_name(&inside, (14, 15));
+        let b = auto_name(&w.bounds, (14, 15));
+        let far = auto_name(
+            &Bounds {
+                west: 130_000_000,
+                south: 520_000_000,
+                east: 131_000_000,
+                north: 521_000_000,
+            },
+            (14, 15),
+        );
+        let stray = format!("{AUTO_PREFIX}h11-0-0.lmh");
+        let hand = "dunes.lmh";
+        let write = |name: &str, len: usize, age: u64| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, vec![0u8; len]).expect("write");
+            let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000 + age);
+            File::options()
+                .write(true)
+                .open(&path)
+                .expect("open")
+                .set_modified(at)
+                .expect("time");
+        };
+        write(&a, 100, 1);
+        write(&b, 100, 2);
+        write(&far, 100, 3);
+        std::fs::write(dir.path().join(&pack_name), &pack).expect("pack");
+        write(&stray, 50, 0);
+        write(hand, 70, 0);
+        // Under a large cap only the stray pack goes: no region over it.
+        let gone = evict(dir.path(), 1 << 30, &far).expect("evict");
+        assert_eq!(gone, std::slice::from_ref(&stray));
+        // The pack counts: 300 bytes of regions and the pack, one byte
+        // over the cap, take the oldest region; the pack stays under the
+        // other.
+        let cap = 299 + pack.len() as u64;
+        let gone = evict(dir.path(), cap, &far).expect("evict");
+        assert_eq!(gone, std::slice::from_ref(&a));
+        assert!(dir.path().join(&pack_name).exists());
+        // The last region over the block goes, the pack with it; the hand
+        // placed pack stays, whatever the cap.
+        let gone = evict(dir.path(), 0, &far).expect("evict");
+        assert_eq!(gone, [b, pack_name]);
+        assert_eq!(names(dir.path()), [far, hand.to_string()]);
+    }
+
+    #[test]
+    fn the_names_an_eviction_reads_back() {
+        let b = Bounds {
+            west: -39_750_000,
+            south: 311_200_000,
+            east: -39_700_000,
+            north: 311_250_000,
+        };
+        assert_eq!(auto_bounds(&auto_name(&b, (10, 15))), Some(b));
+        assert_eq!(auto_bounds("auto-1_2_3-z1-2.lmr"), None);
+        assert_eq!(auto_bounds("dunes.lmr"), None);
+        assert_eq!(
+            pack_bounds("auto-h11-1001-837.lmh"),
+            Some(leviculum_mapcut::heights::block_bounds(11, 1001, 837))
+        );
+        for bad in [
+            "auto-h11-2048-1.lmh",
+            "auto-h11-1-2-3.lmh",
+            "auto-hx-1-2.lmh",
+            "h11-1-2.lmh",
+        ] {
+            assert_eq!(pack_bounds(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_height_catalogue_lies_beside_the_map_source() {
+        assert_eq!(heights_url(None, None), HEIGHTS_DEFAULT);
+        assert_eq!(
+            heights_url(None, Some("https://maps.example.org/planet.pmtiles")),
+            "https://maps.example.org/heights.tsv"
+        );
+        assert_eq!(
+            heights_url(
+                Some("https://h.example.org/x.tsv"),
+                Some("https://m/p.pmtiles")
+            ),
+            "https://h.example.org/x.tsv"
+        );
+    }
+
+    #[test]
+    fn the_maps_usage_and_delete_all_take_the_downloaded_packs() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        std::fs::write(dir.path().join("auto-h11-1-1.lmh"), [0u8; 40]).expect("pack");
+        std::fs::write(dir.path().join("dunes.lmh"), [0u8; 7]).expect("hand pack");
+        std::fs::write(dir.path().join("a.lmr"), [0u8; 10]).expect("region");
+        assert_eq!(maps.usage(), (1, 50));
+        assert_eq!(maps.delete_all(), Ok(1));
+        assert_eq!(names(dir.path()), ["dunes.lmh"]);
     }
 }
