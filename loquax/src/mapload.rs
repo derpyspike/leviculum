@@ -9,9 +9,14 @@
 //! - The queue is ordered by what is on screen (1292,
 //!   [`crate::ui::viewload`]): a box asked for by hand or for the screen
 //!   first, then the boxes next to it, then those the view left, at most
-//!   [`MAX_AWAY`] of them. A load whose area left the screen cannot be
-//!   paused (the cut reads the archive in one call), so a load for the
-//!   screen starts beside it, two at most.
+//!   [`MAX_AWAY`] of them. A load runs a round of its cut at a time
+//!   ([`leviculum_mapcut::load::Loading`], 1836), and a load whose area
+//!   left the screen pauses at its next round while anything for the
+//!   screen runs or waits, its file kept and drawn as far as it came; it
+//!   goes on from there once the screen has what it wants, before any
+//!   new box starts. At most [`MAX_RUNNING`] loads run, at most
+//!   [`MAX_PAUSED`] wait paused; past that the worst-ranked paused load
+//!   is dropped, its file removed and its box queued again.
 //! - The screen's own box at its zoom (1527, [`LoadReason::Screen`]) goes
 //!   before the cells under the screen and starts beside any load but
 //!   another for the screen; a cell for the screen waits until it landed,
@@ -81,17 +86,16 @@ use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::string::{String, ToString};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Instant, SystemTime};
 use std::vec::Vec;
 
 use leviculum_map::region::{Bounds, Region};
-use leviculum_mapcut::cut::Progress;
 use leviculum_mapcut::heights::{
     local_pack, BlockEntry, Catalogue, BLOCK_MAX, CATALOGUE_NAME, DIRECTORY_MAX,
 };
 use leviculum_mapcut::http::{self, HttpError, HttpRange};
-use leviculum_mapcut::load::{cut_planned, plan, Empty, Loaded, TooLarge, Want};
+use leviculum_mapcut::load::{plan, Empty, LoadProgress, Loaded, Loading, TooLarge, Want};
 use leviculum_mapcut::pmtiles::Archive;
 use leviculum_mapcut::pmtiles::RangeRead;
 
@@ -121,6 +125,8 @@ pub const OFFLINE_RETRY_MS: u64 = 10_000;
 pub const MAX_RUNNING: usize = 2;
 /// The most queued boxes the view left that are kept, the newest.
 pub const MAX_AWAY: usize = 8;
+/// Loads paused at most (1836): each holds a thread and its file open.
+pub const MAX_PAUSED: usize = 4;
 /// The layer profile the autoload cuts under, the map tool's default:
 /// profile 2 (1707), whose deepest zoom keeps the source's geometry. A
 /// region cut the old way no longer covers the screen
@@ -228,6 +234,12 @@ pub enum Step {
         want: MapWant,
         why: &'static str,
     },
+    /// A running load was paused between two rounds, went on, or was
+    /// dropped to make room (1836): a line for the log.
+    Held {
+        want: MapWant,
+        how: Held,
+    },
     /// The height packs of a region that landed (1863) were fetched, or
     /// failed to be: a line for the log, never one for the screen.
     Heights {
@@ -235,6 +247,29 @@ pub enum Step {
         landed: Result<HeightsLanded, String>,
         elapsed_ms: u64,
     },
+}
+
+/// What became of a running load the screen no longer needs (1836).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Held {
+    /// It stopped after its round, its file kept.
+    Paused,
+    /// It goes on from the round it stopped at.
+    Resumed,
+    /// Too many waited paused: it stopped for good, its file removed and
+    /// its box queued again.
+    Dropped,
+}
+
+impl Held {
+    /// The word for the log.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Paused => "paused",
+            Self::Resumed => "resumed",
+            Self::Dropped => "dropped",
+        }
+    }
 }
 
 /// The height packs one fetch wrote (1863).
@@ -258,6 +293,8 @@ pub enum StepKind {
     Done,
     Failed,
     Skipped,
+    /// Paused, resumed or dropped (1836).
+    Held(Held),
     Heights,
 }
 
@@ -269,6 +306,7 @@ impl Step {
             Self::Done { .. } => StepKind::Done,
             Self::Failed { .. } => StepKind::Failed,
             Self::Skipped { .. } => StepKind::Skipped,
+            Self::Held { how, .. } => StepKind::Held(*how),
             Self::Heights { .. } => StepKind::Heights,
         }
     }
@@ -280,6 +318,7 @@ impl Step {
             | Self::Done { want, .. }
             | Self::Failed { want, .. }
             | Self::Skipped { want, .. }
+            | Self::Held { want, .. }
             | Self::Heights { want, .. } => want,
         }
     }
@@ -339,10 +378,62 @@ struct Running {
     rank: Rank,
     started: Instant,
     done: Receiver<Result<Landed, Failure>>,
-    /// Tiles written and planned, packed done << 32 | planned, as the
-    /// cut's rounds report them ([`LoadState::Running`]).
-    counts: Arc<std::sync::atomic::AtomicU64>,
+    /// How far the load came, as its rounds report it
+    /// ([`LoadState::Running`]).
+    progress: Arc<Mutex<LoadProgress>>,
+    /// Run, pause between rounds, or stop (1836).
+    gate: Arc<Gate>,
+    /// What the gate was last set to.
+    hold: Hold,
 }
+
+/// What a running load is to do at its next round (1836).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Hold {
+    #[default]
+    Run,
+    Pause,
+    Stop,
+}
+
+/// A running load's switch (1836): the loader sets it, the load's thread
+/// looks at it before every round and waits while it says pause.
+#[derive(Default)]
+struct Gate {
+    hold: Mutex<Hold>,
+    changed: Condvar,
+}
+
+impl Gate {
+    fn set(&self, hold: Hold) {
+        *self.hold.lock().unwrap_or_else(PoisonError::into_inner) = hold;
+        self.changed.notify_all();
+    }
+
+    /// Wait while paused; whether the load goes on (`false`: stop).
+    fn pass(&self) -> bool {
+        let mut hold = self.hold.lock().unwrap_or_else(PoisonError::into_inner);
+        while *hold == Hold::Pause {
+            hold = self
+                .changed
+                .wait(hold)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        *hold == Hold::Run
+    }
+}
+
+/// The load was told to stop between two rounds (1836).
+#[derive(Debug)]
+struct Stopped;
+
+impl core::fmt::Display for Stopped {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "the load was set aside")
+    }
+}
+
+impl std::error::Error for Stopped {}
 
 /// Why a load failed, as the thread hands it back.
 struct Failure {
@@ -352,6 +443,8 @@ struct Failure {
     /// The box itself cannot load (too large, no tiles there): retrying
     /// cannot help, the box is not requeued.
     permanent: bool,
+    /// The loader stopped it ([`Held::Dropped`]): no fault of the box.
+    stopped: bool,
 }
 
 /// One box's state as the loader tells it (1811, exposed for 1812's
@@ -360,8 +453,21 @@ struct Failure {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoadState {
     /// The load runs: tiles written, of the tiles planned (0 of 0 until
-    /// the plan is made).
-    Running { done: u32, planned: u32 },
+    /// the plan is made), and the tiles' archive bytes fetched of those
+    /// planned (1836).
+    Running {
+        done: u32,
+        planned: u32,
+        bytes_done: u64,
+        bytes: u64,
+    },
+    /// The load waits paused between two rounds, this far (1836).
+    Paused {
+        done: u32,
+        planned: u32,
+        bytes_done: u64,
+        bytes: u64,
+    },
     /// The box waits in the queue at this place, first is 0.
     Waiting { place: usize },
     /// The box failed and retries in this many milliseconds.
@@ -495,7 +601,8 @@ impl Loader {
     /// retry in t" ([`LoadState::Retrying`]), and the chip and the
     /// offline word must not claim activity the loader postponed.
     pub fn busy(&self) -> bool {
-        if !self.running.is_empty() || self.heights_pending() {
+        // A paused load waits for the screen's: it owes the view nothing.
+        if self.running.iter().any(|r| r.hold != Hold::Pause) || self.heights_pending() {
             return true;
         }
         // Mirror [`Loader::start_next`]: an off-screen box behind an
@@ -594,10 +701,22 @@ impl Loader {
             .running
             .iter()
             .map(|r| {
-                let packed = r.counts.load(std::sync::atomic::Ordering::Relaxed);
-                let state = LoadState::Running {
-                    done: (packed >> 32) as u32,
-                    planned: packed as u32,
+                let p = *r.progress.lock().unwrap_or_else(PoisonError::into_inner);
+                let (done, planned) = (p.tiles_done as u32, p.tiles as u32);
+                let (bytes_done, bytes) = (p.bytes_done, p.bytes);
+                let state = match r.hold {
+                    Hold::Pause => LoadState::Paused {
+                        done,
+                        planned,
+                        bytes_done,
+                        bytes,
+                    },
+                    _ => LoadState::Running {
+                        done,
+                        planned,
+                        bytes_done,
+                        bytes,
+                    },
                 };
                 (r.want.bounds, r.rank, state)
             })
@@ -786,6 +905,7 @@ impl Loader {
                     unreachable: false,
                     too_large: false,
                     permanent: false,
+                    stopped: false,
                 }),
             };
             let running = self.running.remove(n);
@@ -1001,6 +1121,27 @@ impl Loader {
                     elapsed_ms,
                 }
             }
+            Err(failure) if failure.stopped => {
+                // Dropped to make room (1836): queued again at its rank's
+                // tail, due at once, no failure booked.
+                let at = self
+                    .queue
+                    .iter()
+                    .position(|q| q.rank > running.rank)
+                    .unwrap_or(self.queue.len());
+                self.queue.insert(
+                    at,
+                    Queued {
+                        want: want.clone(),
+                        rank: running.rank,
+                        retry_at: 0,
+                    },
+                );
+                Step::Held {
+                    want,
+                    how: Held::Dropped,
+                }
+            }
             Err(failure) => {
                 // No internet is no fault of the box: it retries soon,
                 // and the state holds until a load starts.
@@ -1097,19 +1238,94 @@ impl Loader {
         None
     }
 
+    /// Pause, resume and drop running loads by what the screen wants
+    /// (1836): while a box for the screen runs or waits, every load for
+    /// an area off the screen pauses at its next round; once nothing for
+    /// the screen is left, the paused loads go on, the best ranked first,
+    /// [`MAX_RUNNING`] at most, before any new box starts. Past
+    /// [`MAX_PAUSED`] paused loads the worst ranked, the latest started
+    /// among equals, stops for good.
+    fn steer(&mut self) -> Vec<Step> {
+        let screen_wants = self
+            .running
+            .iter()
+            .any(|r| r.hold == Hold::Run && r.rank.on_screen())
+            || self.queue.iter().any(|q| q.rank.on_screen());
+        let mut steps = Vec::new();
+        let set = |r: &mut Running, hold: Hold, steps: &mut Vec<Step>| {
+            if r.hold == hold || r.hold == Hold::Stop {
+                return;
+            }
+            let how = match hold {
+                Hold::Run => Held::Resumed,
+                Hold::Pause => Held::Paused,
+                Hold::Stop => Held::Dropped,
+            };
+            r.hold = hold;
+            r.gate.set(hold);
+            // A drop says so when its thread hands the box back.
+            if hold != Hold::Stop {
+                steps.push(Step::Held {
+                    want: r.want.clone(),
+                    how,
+                });
+            }
+        };
+        if screen_wants {
+            for r in &mut self.running {
+                if !r.rank.on_screen() {
+                    set(r, Hold::Pause, &mut steps);
+                }
+            }
+        } else {
+            let mut order: Vec<usize> = (0..self.running.len())
+                .filter(|&n| self.running[n].hold != Hold::Stop)
+                .collect();
+            order.sort_by_key(|&n| (self.running[n].rank, self.running[n].started));
+            for (k, n) in order.into_iter().enumerate() {
+                let hold = match k < MAX_RUNNING {
+                    true => Hold::Run,
+                    false => Hold::Pause,
+                };
+                set(&mut self.running[n], hold, &mut steps);
+            }
+        }
+        let mut paused: Vec<usize> = (0..self.running.len())
+            .filter(|&n| self.running[n].hold == Hold::Pause)
+            .collect();
+        paused.sort_by_key(|&n| {
+            (
+                std::cmp::Reverse(self.running[n].rank),
+                std::cmp::Reverse(self.running[n].started),
+            )
+        });
+        for &n in paused.iter().take(paused.len().saturating_sub(MAX_PAUSED)) {
+            set(&mut self.running[n], Hold::Stop, &mut steps);
+        }
+        steps
+    }
+
     /// Start the queue's first boxes ([`due_at`](Self::due_at)): one
     /// when nothing runs, one for the screen beside loads for areas the
     /// view left, and the screen's own box (1527) beside any load but
     /// another for the screen itself.
     fn start_next(&mut self, now_ms: u64) -> Vec<Step> {
-        let mut steps = Vec::new();
+        let mut steps = self.steer();
         while let Some(n) = self.due_at(now_ms) {
+            let active: Vec<&Running> = self
+                .running
+                .iter()
+                .filter(|r| r.hold == Hold::Run)
+                .collect();
+            // Loads paused or stopping make way: a box waits only for one
+            // that runs ([`steer`](Self::steer) resumes the paused before
+            // a box off the screen is due).
             let beside = match self.queue[n].rank {
-                Rank::Screen => !self.running.iter().any(|r| r.rank <= Rank::Screen),
-                rank if rank.on_screen() => !self.running.iter().any(|r| r.rank.on_screen()),
+                Rank::Screen => !active.iter().any(|r| r.rank <= Rank::Screen),
+                rank if rank.on_screen() => !active.iter().any(|r| r.rank.on_screen()),
                 _ => false,
             };
-            if !(self.running.is_empty() || self.running.len() < MAX_RUNNING && beside) {
+            if !(active.is_empty() || active.len() < MAX_RUNNING && beside) {
                 break;
             }
             let queued = self.queue.remove(n);
@@ -1125,7 +1341,8 @@ impl Loader {
             return Vec::new();
         };
         let (tx, rx) = channel();
-        let counts = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let progress = Arc::new(Mutex::new(LoadProgress::default()));
+        let gate = Arc::new(Gate::default());
         let job = Job {
             dir: dir.to_path_buf(),
             maps: self.maps.clone(),
@@ -1133,7 +1350,8 @@ impl Loader {
             resolved: Arc::clone(&self.resolved),
             want: want.clone(),
             cache_bytes: self.cache_bytes,
-            counts: Arc::clone(&counts),
+            progress: Arc::clone(&progress),
+            gate: Arc::clone(&gate),
         };
         let spawned = std::thread::Builder::new()
             .name("map-load".to_string())
@@ -1154,9 +1372,21 @@ impl Loader {
             rank,
             started: Instant::now(),
             done: rx,
-            counts,
+            progress,
+            gate,
+            hold: Hold::Run,
         });
         vec![Step::Started(want)]
+    }
+}
+
+impl Drop for Loader {
+    /// A paused load's thread waits on its gate: told to stop, it removes
+    /// its unfinished file and ends instead of waiting for ever (1836).
+    fn drop(&mut self) {
+        for r in &self.running {
+            r.gate.set(Hold::Stop);
+        }
     }
 }
 
@@ -1177,9 +1407,10 @@ struct Job {
     resolved: Arc<Mutex<Option<String>>>,
     want: MapWant,
     cache_bytes: u64,
-    /// Tiles written and planned, packed done << 32 | planned, for
-    /// [`Loader::report`].
-    counts: Arc<std::sync::atomic::AtomicU64>,
+    /// How far the load came, for [`Loader::report`].
+    progress: Arc<Mutex<LoadProgress>>,
+    /// Looked at before every round (1836).
+    gate: Arc<Gate>,
 }
 
 impl Job {
@@ -1190,6 +1421,7 @@ impl Job {
                 unreachable: http::unreachable(e.as_ref()),
                 too_large,
                 permanent: too_large || e.downcast_ref::<Empty>().is_some(),
+                stopped: e.downcast_ref::<Stopped>().is_some(),
                 detail: e.to_string(),
             }
         })
@@ -1248,12 +1480,9 @@ impl Job {
         let threads = crate::picture::cores();
         let maps = self.maps.clone();
         let mut bumped: Option<Instant> = None;
-        let counts = Arc::clone(&self.counts);
-        let mut progress = |p: Progress| {
-            counts.store(
-                (p.done as u64) << 32 | p.tiles as u64 & u64::from(u32::MAX),
-                std::sync::atomic::Ordering::Relaxed,
-            );
+        let shared = Arc::clone(&self.progress);
+        let mut progress = |p: LoadProgress| {
+            *shared.lock().unwrap_or_else(PoisonError::into_inner) = p;
             let due =
                 bumped.is_none_or(|at| at.elapsed().as_millis() >= u128::from(PROGRESS_EVERY_MS));
             // A file written beside the region it replaces is no painter's
@@ -1265,15 +1494,25 @@ impl Job {
         };
         let write = || -> leviculum_mapcut::Res<Loaded> {
             let mut out = BufWriter::new(File::create(&written)?);
-            let loaded = cut_planned(
-                &archive,
-                &want,
-                planned,
-                BY,
-                threads,
-                &mut out,
-                &mut progress,
-            )?;
+            // A round at a time (1836): before each the gate says whether
+            // to go on, wait paused, or stop.
+            let mut loading = Loading::begin(&archive, &want, planned, BY, threads, &mut out)?;
+            progress(loading.progress());
+            loop {
+                if !self.gate.pass() {
+                    return Err(Box::new(Stopped));
+                }
+                match loading.step()? {
+                    Some(p) => progress(p),
+                    None => break,
+                }
+            }
+            let last = loading.progress();
+            let loaded = loading.finish()?;
+            progress(LoadProgress {
+                complete: true,
+                ..last
+            });
             let file = out.into_inner().map_err(|e| e.into_error())?;
             file.sync_all()?;
             let region = Region::open(File::open(&written)?).map_err(|e| format!("{e:?}"))?;
@@ -2079,18 +2318,26 @@ mod tests {
             [Step::Started(t.clone())],
             "beside the cell"
         );
-        // A second screen box waits for the first, which the view left:
-        // it runs on as left, the new one waits for a free slot.
+        // A second screen box does not wait for the first, which the view
+        // left (1836): that one pauses at its next round, the new one
+        // starts beside the cell at once.
         let u = screen(4);
-        assert!(loader
-            .schedule(vec![u.clone(), a.clone()], Vec::new(), 500)
-            .is_empty());
+        assert_eq!(
+            loader.schedule(vec![u.clone(), a.clone()], Vec::new(), 500),
+            [
+                Step::Held {
+                    want: t.clone(),
+                    how: Held::Paused
+                },
+                Step::Started(u.clone())
+            ]
+        );
         assert_eq!(
             order(&loader),
             [
                 (2, Rank::Here, true),
                 (3, Rank::Away, true),
-                (4, Rank::Screen, false)
+                (4, Rank::Screen, true)
             ]
         );
     }
@@ -2144,7 +2391,15 @@ mod tests {
         assert!(loader.loading_here());
         // The view moved on: a is left, b is on screen.
         let steps = loader.schedule(vec![b.clone()], Vec::new(), 250);
-        assert_eq!(steps, [Step::Started(b.clone())], "beside the old load");
+        let paused = Step::Held {
+            want: a.clone(),
+            how: Held::Paused,
+        };
+        assert_eq!(
+            steps,
+            [paused, Step::Started(b.clone())],
+            "the old load pauses (1836)"
+        );
         assert_eq!(
             order(&loader),
             [
@@ -2153,8 +2408,15 @@ mod tests {
                 (5, Rank::Away, false)
             ]
         );
-        // Away only: no chip for the screen.
-        loader.schedule(Vec::new(), Vec::new(), 500);
+        // Away only: no chip for the screen; the paused load goes on.
+        let steps = loader.schedule(Vec::new(), Vec::new(), 500);
+        assert_eq!(
+            steps,
+            [Step::Held {
+                want: a.clone(),
+                how: Held::Resumed
+            }]
+        );
         assert!(loader.busy() && !loader.loading_here());
         // Never more than the queue's cap of left boxes.
         let left: Vec<MapWant> = (10..30).map(nth).collect();
@@ -2162,14 +2424,244 @@ mod tests {
         loader.schedule(Vec::new(), Vec::new(), 1000);
         let queued = order(&loader).iter().filter(|o| !o.2).count();
         assert_eq!(queued, MAX_AWAY);
-        // The screen's own box (1527) goes before every queued box, and
-        // waits only for a free slot: both run, for areas left.
+        // The screen's own box (1527) goes before every queued box and
+        // waits for no load for an area left (1836): both pause at their
+        // next round and it starts at once.
         let s = screen(40);
-        assert!(loader
-            .schedule(vec![s.clone()], Vec::new(), 1250)
-            .is_empty());
-        assert_eq!(order(&loader)[2], (40, Rank::Screen, false));
+        assert_eq!(
+            loader.schedule(vec![s.clone()], Vec::new(), 1250),
+            [
+                Step::Held {
+                    want: a.clone(),
+                    how: Held::Paused
+                },
+                Step::Held {
+                    want: b.clone(),
+                    how: Held::Paused
+                },
+                Step::Started(s.clone())
+            ]
+        );
+        assert_eq!(order(&loader)[2], (40, Rank::Screen, true));
         assert!(loader.loading_here());
+    }
+
+    /// Poll until `done` holds of every step seen, at most twenty seconds;
+    /// every step seen.
+    fn poll_until(loader: &mut Loader, now_ms: u64, done: impl Fn(&[Step]) -> bool) -> Vec<Step> {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut all = Vec::new();
+        loop {
+            all.extend(loader.poll(now_ms));
+            if done(&all) {
+                return all;
+            }
+            assert!(Instant::now() < deadline, "not reached: {all:?}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn landed(steps: &[Step], w: &MapWant) -> bool {
+        steps
+            .iter()
+            .any(|s| matches!(s, Step::Done { want, .. } if want.bounds == w.bounds))
+    }
+
+    fn state_of(loader: &Loader, w: &MapWant) -> Option<LoadState> {
+        loader
+            .report(0)
+            .into_iter()
+            .find(|r| r.0 == w.bounds)
+            .map(|r| r.2)
+    }
+
+    /// A load whose area the view left pauses between two rounds, its
+    /// file kept in the maps directory as far as it came, while the
+    /// screen's box loads alone; once that landed it goes on from where
+    /// it was and lands too (1836). Before, it ran on beside the screen's
+    /// and took half the link: at 200 kB/s the screen waited 43.6 s
+    /// behind two such loads (the load walk's wheel-rested-slow).
+    #[test]
+    fn a_load_the_view_left_pauses_until_the_screen_has_its_box() {
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut loader = Loader::new(
+            Maps::new(Some(dir.path().to_path_buf())),
+            Source::Url(serve.url("o.pmtiles")),
+            1 << 30,
+        );
+        // Both loads wait at the link until the view has moved.
+        serve.hold_at(0);
+        let (a, b) = (nth(2), nth(3));
+        assert_eq!(
+            loader.schedule(vec![a.clone()], Vec::new(), 0),
+            [Step::Started(a.clone())]
+        );
+        assert_eq!(
+            loader.schedule(vec![b.clone()], Vec::new(), 10),
+            [
+                Step::Held {
+                    want: a.clone(),
+                    how: Held::Paused
+                },
+                Step::Started(b.clone())
+            ]
+        );
+        serve.release();
+        // a planned, wrote its header and slots, and waits at its gate.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(LoadState::Paused { planned, bytes, .. }) = state_of(&loader, &a) {
+                if planned > 0 && bytes > 0 {
+                    break;
+                }
+            }
+            assert!(Instant::now() < deadline, "{:?}", state_of(&loader, &a));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let Some(LoadState::Paused {
+            done, bytes_done, ..
+        }) = state_of(&loader, &a)
+        else {
+            panic!("a runs: {:?}", state_of(&loader, &a));
+        };
+        assert_eq!((done, bytes_done), (0, 0), "paused before its first round");
+        let file = std::fs::read_dir(dir.path())
+            .expect("dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| {
+                p.file_name().and_then(|n| n.to_str()).and_then(auto_bounds) == Some(a.bounds)
+            })
+            .expect("the paused load's file is kept");
+        let region = Region::open(File::open(&file).expect("open")).expect("a paused file reads");
+        assert!(!region.is_complete());
+
+        let steps = poll_until(&mut loader, 20, |s| landed(s, &b));
+        assert!(
+            !landed(&steps, &a),
+            "a paused load does not land: {steps:?}"
+        );
+        assert!(
+            steps.contains(&Step::Held {
+                want: a.clone(),
+                how: Held::Resumed
+            }),
+            "it goes on once the screen's box landed: {steps:?}"
+        );
+        poll_until(&mut loader, 30, |s| landed(s, &a));
+        let region = Region::open(File::open(&file).expect("open")).expect("read");
+        region.verify().expect("the resumed load's region verifies");
+    }
+
+    /// Once nothing for the screen runs or waits, the paused loads go on,
+    /// the best ranked and among equals the oldest first, as many as may
+    /// run, before any queued box starts (1836): what was loading when the
+    /// user moved on is finished first, not started over.
+    #[test]
+    fn paused_loads_go_on_before_a_new_box_starts() {
+        let (_source, source) = stalling();
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut loader = Loader::new(Maps::new(Some(dir.path().to_path_buf())), source, 1 << 30);
+        let (a, b, c, n) = (nth(1), nth(2), nth(3), nth(9));
+        loader.schedule(vec![a.clone()], Vec::new(), 0);
+        loader.schedule(vec![b.clone()], Vec::new(), 10);
+        loader.schedule(vec![c.clone()], Vec::new(), 20);
+        let holds = |l: &Loader| -> Vec<(i32, Hold)> {
+            l.running
+                .iter()
+                .map(|r| ((r.want.bounds.west - 112_615_000) / 1000, r.hold))
+                .collect()
+        };
+        assert_eq!(
+            holds(&loader),
+            [(1, Hold::Pause), (2, Hold::Pause), (3, Hold::Run)]
+        );
+        // The view rests on an area with its regions: only a box next to
+        // it is wanted, and it waits for the paused loads.
+        let steps = loader.schedule(Vec::new(), vec![n.clone()], 30);
+        assert_eq!(
+            steps,
+            [
+                Step::Held {
+                    want: a.clone(),
+                    how: Held::Resumed
+                },
+                Step::Held {
+                    want: b.clone(),
+                    how: Held::Resumed
+                },
+                Step::Held {
+                    want: c.clone(),
+                    how: Held::Paused
+                },
+            ]
+        );
+        assert_eq!(
+            holds(&loader),
+            [(1, Hold::Run), (2, Hold::Run), (3, Hold::Pause)]
+        );
+        assert!(!order(&loader).contains(&(9, Rank::Ahead, true)));
+        assert!(loader.busy(), "two loads run");
+        assert!(matches!(
+            state_of(&loader, &c),
+            Some(LoadState::Paused { .. })
+        ));
+    }
+
+    /// A paused load holds a thread and its file: past [`MAX_PAUSED`] the
+    /// worst ranked, the latest started among equals, stops for good, its
+    /// file removed and its box queued again, and it lands later like
+    /// every other (1836): nothing wanted is lost.
+    #[test]
+    fn past_the_paused_cap_the_worst_is_dropped_and_loads_again() {
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut loader = Loader::new(
+            Maps::new(Some(dir.path().to_path_buf())),
+            Source::Url(serve.url("o.pmtiles")),
+            1 << 30,
+        );
+        serve.hold_at(0);
+        let boxes: Vec<MapWant> = (0..=MAX_PAUSED as i32 + 1).map(nth).collect();
+        for (k, w) in boxes.iter().enumerate() {
+            loader.schedule(vec![w.clone()], Vec::new(), k as u64 * 10);
+        }
+        let dropped = &boxes[MAX_PAUSED];
+        let holds: Vec<Hold> = loader.running.iter().map(|r| r.hold).collect();
+        let mut want_holds = vec![Hold::Pause; MAX_PAUSED];
+        want_holds.push(Hold::Stop);
+        want_holds.push(Hold::Run);
+        assert_eq!(holds, want_holds);
+        serve.release();
+        let steps = poll_until(&mut loader, 100, |s| {
+            s.contains(&Step::Held {
+                want: dropped.clone(),
+                how: Held::Dropped,
+            })
+        });
+        assert!(!landed(&steps, dropped));
+        assert!(
+            !std::fs::read_dir(dir.path())
+                .expect("dir")
+                .filter_map(|e| e.ok())
+                .any(|e| auto_bounds(&e.file_name().to_string_lossy()) == Some(dropped.bounds)),
+            "the dropped load's file is gone"
+        );
+        assert!(order(&loader).contains(&(MAX_PAUSED as i32, Rank::Away, false)));
+        let early: Vec<Bounds> = steps
+            .iter()
+            .filter(|s| matches!(s, Step::Done { .. }))
+            .map(|s| s.want().bounds)
+            .collect();
+        // Nothing for the screen is left once the screen's box landed:
+        // every box lands, the dropped one too.
+        loader.schedule(Vec::new(), Vec::new(), 200);
+        poll_until(&mut loader, 300, |s| {
+            boxes
+                .iter()
+                .all(|w| early.contains(&w.bounds) || landed(s, w))
+        });
     }
 
     /// "Offline" is a state, not a latch (1292): a load that found no

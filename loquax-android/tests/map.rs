@@ -3681,7 +3681,13 @@ impl PhoneWalk {
                     running.retain(|rb| *rb != b);
                     starts.remove(&format!("{b:?}"));
                 }
-                loquax::mapload::StepKind::Skipped | loquax::mapload::StepKind::Heights => {}
+                // A dropped load ends there; it starts again later (1836).
+                loquax::mapload::StepKind::Held(loquax::mapload::Held::Dropped) => {
+                    running.retain(|rb| *rb != b)
+                }
+                loquax::mapload::StepKind::Skipped
+                | loquax::mapload::StepKind::Held(_)
+                | loquax::mapload::StepKind::Heights => {}
             }
         }
         out.push(PhoneVerdict {

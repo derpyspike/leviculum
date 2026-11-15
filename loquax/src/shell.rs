@@ -1222,6 +1222,9 @@ impl Shell {
                 Step::Skipped { want, why } => {
                     tracing::info!("MAPLOAD skipped box={} why={why}", box_words(&want));
                 }
+                Step::Held { want, how } => {
+                    tracing::info!("MAPLOAD {} box={}", how.word(), box_words(&want));
+                }
                 Step::Heights {
                     want,
                     landed,

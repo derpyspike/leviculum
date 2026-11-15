@@ -77,7 +77,7 @@ use leviculum_map::mercator::{project, LatLon, World};
 use leviculum_map::region::Bounds;
 use leviculum_map::viewport::{ExactView, MILLI};
 use leviculum_mapcut::serve::Serve;
-use loquax::mapload::{LoadState, Loader, Rank, Source, Step, MAX_AWAY, SCREEN_RETRY_MAX_MS};
+use loquax::mapload::{Held, LoadState, Loader, Rank, Source, Step, MAX_AWAY, SCREEN_RETRY_MAX_MS};
 use loquax::picture::Maps;
 use loquax::ui::map::MapWant;
 use loquax::ui::viewload::{uncovered, GAP_SHARE, MIN_ZOOM};
@@ -220,6 +220,8 @@ pub enum Ev {
     Done(Bounds, String, Vec<String>),
     Failed(Bounds, String),
     Skipped(Bounds, &'static str),
+    /// A running load paused, went on, or was dropped (1836).
+    Held(Bounds, Held),
 }
 
 /// A scripted pause's record: the view, its coverage, its picture.
@@ -593,6 +595,7 @@ impl Walk {
                     self.events.push((t, Ev::Failed(b, detail.clone())));
                 }
                 Step::Skipped { why, .. } => self.events.push((t, Ev::Skipped(b, why))),
+                Step::Held { how, .. } => self.events.push((t, Ev::Held(b, *how))),
                 // A desert session's packs (1868): a pack written is a
                 // landing every painter reads again.
                 Step::Heights { landed: l, .. } => {
@@ -1417,7 +1420,9 @@ pub fn rules(walk: &Walk) -> Vec<Verdict> {
                 runs.retain(|rb| rb != b);
                 starts.remove(&format!("{b:?}"));
             }
-            Ev::Skipped(..) => {}
+            // A dropped load ends there; it starts again later.
+            Ev::Held(b, Held::Dropped) => runs.retain(|rb| rb != b),
+            Ev::Skipped(..) | Ev::Held(..) => {}
         }
     }
     out.push(v(
@@ -1657,6 +1662,7 @@ pub fn write_out(
             Ev::Done(b, name, evicted) => ("done", b, format!("{name} evicted={evicted:?}")),
             Ev::Failed(b, why) => ("failed", b, why.clone()),
             Ev::Skipped(b, why) => ("skipped", b, (*why).to_string()),
+            Ev::Held(b, how) => (how.word(), b, String::new()),
         };
         trace.push_str(&format!("{t}\t{kind}\t{},{}\t{detail}\n", b.west, b.south));
     }

@@ -242,6 +242,9 @@ impl Renderer {
                     tracing::info!("MAPLOAD start reason={}", want.reason.word());
                 }
                 Step::Skipped { why, .. } => tracing::info!("MAPLOAD skipped why={why}"),
+                Step::Held { how, want } => {
+                    tracing::info!("MAPLOAD {} reason={}", how.word(), want.reason.word())
+                }
                 Step::Heights {
                     landed: Ok(l),
                     elapsed_ms,
