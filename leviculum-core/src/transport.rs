@@ -3870,14 +3870,35 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Only succeeds if the destination exists in the path table.
     /// Called when an unvalidated link expires for a 1-hop destination/initiator,
     /// and (order 1672) for a local client's link over a relayed path.
+    ///
+    /// A path through a connected local client's interface is never marked
+    /// (order 1881). The client sits on this host's IPC socket and cannot
+    /// have moved; an expired link request toward it says the client did
+    /// not answer, not that the route is wrong. Marking it let the next
+    /// relayed copy of the client's own emission (`unresponsive_same_
+    /// emission`) move the path off the box, and every link request for
+    /// the client was forwarded into the mesh (miauhaus, 2026-11-15: a
+    /// 7-hop copy via a backbone for two hours). The path leaves the
+    /// client only when the client disconnects (`set_local_client(id,
+    /// false)`) or a newer emission places it elsewhere. Python marks it
+    /// (Transport.py:746-753); the state is ours alone, the wire is
+    /// unchanged (deviation rule, P1).
     pub fn mark_path_unresponsive(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
-        if self.storage.has_path(dest_hash) {
-            self.storage
-                .set_path_state(*dest_hash, PathState::Unresponsive);
-            true
-        } else {
-            false
+        let Some(path) = self.storage.get_path(dest_hash) else {
+            return false;
+        };
+        if self.is_local_client(path.interface_index) {
+            crate::tracing::debug!(
+                event = "PATH_KEPT_LOCAL",
+                dst = %HexShort(dest_hash),
+                iface = %self.iface_name(path.interface_index),
+                reason = "local_client",
+            );
+            return false;
         }
+        self.storage
+            .set_path_state(*dest_hash, PathState::Unresponsive);
+        true
     }
 
     /// Mark a path as responsive
@@ -6576,7 +6597,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// recall source is the cached announce for the destination
     /// (`get_announce_cache`, keyed by destination hash, holding the raw announce
     /// whose payload starts with the 64-byte public key), the same source the
-    /// link-request path uses at transport.rs:4642. A destination with no cached
+    /// link-request path uses at transport.rs:4663. A destination with no cached
     /// announce cannot be associated with an identity, so it is left untouched,
     /// exactly as Python keeps a path whose `Identity.recall` returns `None`.
     ///
@@ -19224,7 +19245,7 @@ mod tests {
             // stored timebase, must be rejected. Acceptance is observed via
             // the PathFound event, which fires only when the table updates.
             // (The rejected blob is still RECORDED for replay detection —
-            // `random_blobs` (transport.rs:8249), a deliberate anti-replay
+            // `random_blobs` (transport.rs:8270), a deliberate anti-replay
             // extension — so the blob count is not a rejection indicator.)
             transport
                 .clock
@@ -28816,6 +28837,133 @@ mod tests {
             assert!(
                 transport.path_is_unresponsive(&dest_hash),
                 "Path should be marked unresponsive when initiator was directly connected"
+            );
+        }
+
+        /// Order 1881 (miauhaus, 2026-11-15): the path to a destination a
+        /// local client announced (hops 0, the client's IPC interface) is
+        /// not marked unresponsive when a link request forwarded to it
+        /// expires unproven, and the relayed copy of the same emission that
+        /// arrives afterwards does not take the path off the box.
+        #[test]
+        fn local_client_path_survives_link_request_expiry() {
+            let mut transport = make_transport_enabled();
+            let local = transport.register_interface(Box::new(MockInterface::new("local", 1)));
+            let backbone = transport.register_interface(Box::new(MockInterface::new("bb", 2)));
+            transport.set_local_client(local, true);
+
+            let dest = make_test_dest();
+            let dest_hash = dest.hash().into_bytes();
+            let rh = make_random_hash([0x01, 0x02, 0x03, 0x04, 0x05], 7000);
+            let own = make_announce_raw_with_random_hash(&dest, 0, &rh);
+            transport.process_incoming(local, &own).unwrap();
+            transport.drain_actions();
+            let path = transport.storage().get_path(&dest_hash).unwrap();
+            assert_eq!((path.interface_index, path.hops), (local, 0));
+
+            // A phone one hop away asks for a link; the request is forwarded
+            // to the client and dies unproven.
+            let now = transport.clock.now_ms();
+            let link_id = [0xAA; TRUNCATED_HASHBYTES];
+            transport.storage_mut().set_link_entry(
+                link_id,
+                LinkEntry {
+                    timestamp_ms: now,
+                    next_hop_interface_index: local,
+                    remaining_hops: 0,
+                    received_interface_index: backbone,
+                    hops: 1,
+                    validated: false,
+                    proof_timeout_ms: now + 1000,
+                    destination_hash: dest_hash,
+                    peer_signing_key: None,
+                    received_peer: None,
+                    next_hop_peer: None,
+                },
+            );
+            transport.clock.advance(1001);
+            transport.poll();
+            transport.drain_actions();
+            assert!(!transport.storage().has_link_entry(&link_id));
+            assert!(
+                !transport.path_is_unresponsive(&dest_hash),
+                "a connected local client's path must not be marked unresponsive"
+            );
+
+            // The same emission comes back from the mesh, seven hops long.
+            transport.storage_mut().clear_packet_hashes();
+            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
+            let relayed = make_announce_raw_with_random_hash(&dest, 6, &rh);
+            transport.process_incoming(backbone, &relayed).unwrap();
+            transport.drain_actions();
+            let path = transport.storage().get_path(&dest_hash).unwrap();
+            assert_eq!(
+                (path.interface_index, path.hops),
+                (local, 0),
+                "the relayed copy must not move the local client's path off the box"
+            );
+        }
+
+        /// Order 1881, the 08:38 case: the backbone echo of a local client's
+        /// announce lands before the client's own copy. The own copy wins,
+        /// and stays against a later expired link request and relayed copy.
+        #[test]
+        fn local_client_copy_wins_over_an_earlier_backbone_echo_and_stays() {
+            let mut transport = make_transport_enabled();
+            let local = transport.register_interface(Box::new(MockInterface::new("local", 1)));
+            let backbone = transport.register_interface(Box::new(MockInterface::new("bb", 2)));
+            transport.set_local_client(local, true);
+
+            let dest = make_test_dest();
+            let dest_hash = dest.hash().into_bytes();
+            let rh = make_random_hash([0x11, 0x12, 0x13, 0x14, 0x15], 8000);
+
+            let echo = make_announce_raw_with_random_hash(&dest, 1, &rh);
+            transport.process_incoming(backbone, &echo).unwrap();
+            transport.drain_actions();
+            assert_eq!(transport.hops_to(&dest_hash), Some(2));
+
+            transport.clock.advance(12_000);
+            let own = make_announce_raw_with_random_hash(&dest, 0, &rh);
+            transport.process_incoming(local, &own).unwrap();
+            transport.drain_actions();
+            let path = transport.storage().get_path(&dest_hash).unwrap();
+            assert_eq!(
+                (path.interface_index, path.hops),
+                (local, 0),
+                "the client's own copy must win over the backbone echo"
+            );
+
+            let now = transport.clock.now_ms();
+            transport.storage_mut().set_link_entry(
+                [0xAB; TRUNCATED_HASHBYTES],
+                LinkEntry {
+                    timestamp_ms: now,
+                    next_hop_interface_index: local,
+                    remaining_hops: 0,
+                    received_interface_index: backbone,
+                    hops: 1,
+                    validated: false,
+                    proof_timeout_ms: now + 1000,
+                    destination_hash: dest_hash,
+                    peer_signing_key: None,
+                    received_peer: None,
+                    next_hop_peer: None,
+                },
+            );
+            transport.clock.advance(1001);
+            transport.poll();
+            transport.drain_actions();
+            transport.storage_mut().clear_packet_hashes();
+            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
+            let relayed = make_announce_raw_with_random_hash(&dest, 6, &rh);
+            transport.process_incoming(backbone, &relayed).unwrap();
+            transport.drain_actions();
+            let path = transport.storage().get_path(&dest_hash).unwrap();
+            assert_eq!(
+                (path.interface_index, path.hops),
+                (local, 0),
+                "the client's path must stay on the box"
             );
         }
 
