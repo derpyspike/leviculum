@@ -61,6 +61,47 @@ use ruzstd::io::Read;
 pub const DIRECTORY_MAGIC: [u8; 4] = *b"LMHD";
 /// A block piece's first four bytes.
 pub const BLOCK_MAGIC: [u8; 4] = *b"LMHB";
+
+/// What a pack's tiles hold. The container (directory piece, block
+/// pieces, one zstd frame per tile, the refusals) is the same for every
+/// kind; the magics tell the kinds apart, so a reader of one kind
+/// refuses a pack of the other by its first four bytes, and the tile
+/// payload is the kind's own: two byte planes of height residuals for
+/// [`PackKind::Heights`], one ground class byte per cell for
+/// [`PackKind::Ground`] (order 1743, [`crate::ground`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PackKind {
+    /// Heights in whole metres (`LMHD`, `LMHB`).
+    Heights,
+    /// Ground classes (`LMGD`, `LMGB`).
+    Ground,
+}
+
+impl PackKind {
+    /// The directory piece's magic.
+    pub const fn directory_magic(self) -> [u8; 4] {
+        match self {
+            PackKind::Heights => DIRECTORY_MAGIC,
+            PackKind::Ground => *b"LMGD",
+        }
+    }
+
+    /// A block piece's magic.
+    pub const fn block_magic(self) -> [u8; 4] {
+        match self {
+            PackKind::Heights => BLOCK_MAGIC,
+            PackKind::Ground => *b"LMGB",
+        }
+    }
+
+    /// One tile's decoded bytes.
+    pub const fn tile_bytes(self) -> usize {
+        match self {
+            PackKind::Heights => TILE_BYTES,
+            PackKind::Ground => TILE_CELLS,
+        }
+    }
+}
 /// The format version this writer writes and this reader reads.
 pub const VERSION: u16 = 1;
 /// A tile's edge in heights.
@@ -107,6 +148,9 @@ pub enum ElevationError {
     /// Block coordinates outside the block zoom's grid, or a block that is
     /// not the one the directory names at that place.
     Coordinates,
+    /// The tiles were asked for as a kind the pack does not hold
+    /// (heights of a ground pack, or the reverse).
+    Kind,
     /// The attribution or the notice is not UTF-8.
     Text,
     /// A height asked for outside the block, or at a zoom it does not span.
@@ -185,6 +229,7 @@ fn check_header(b: &[u8], magic: [u8; 4], header: usize) -> Result<(), Elevation
 /// A parsed directory piece.
 #[derive(Clone, Copy, Debug)]
 pub struct Directory<'a> {
+    kind: PackKind,
     bytes: &'a [u8],
     tile_zoom: u8,
     block_zoom: u8,
@@ -199,7 +244,16 @@ impl<'a> Directory<'a> {
     /// Parse the directory at the start of `bytes`, returning it and its
     /// length: the blocks follow it in a whole height file.
     pub fn parse_prefix(bytes: &'a [u8]) -> Result<(Self, usize), ElevationError> {
-        check_header(bytes, DIRECTORY_MAGIC, DIRECTORY_HEADER)?;
+        Self::parse_prefix_of(PackKind::Heights, bytes)
+    }
+
+    /// [`Directory::parse_prefix`] for a pack of `kind`: another kind's
+    /// magic is refused.
+    pub fn parse_prefix_of(
+        kind: PackKind,
+        bytes: &'a [u8],
+    ) -> Result<(Self, usize), ElevationError> {
+        check_header(bytes, kind.directory_magic(), DIRECTORY_HEADER)?;
         let tile_zoom = bytes[8];
         let block_zoom = bytes[9];
         check_zooms(tile_zoom, block_zoom, u16le(bytes, 10))?;
@@ -236,6 +290,7 @@ impl<'a> Directory<'a> {
         }
         Ok((
             Directory {
+                kind,
                 bytes: &bytes[..len],
                 tile_zoom,
                 block_zoom,
@@ -251,11 +306,21 @@ impl<'a> Directory<'a> {
 
     /// Parse a directory piece that is exactly `bytes`.
     pub fn parse(bytes: &'a [u8]) -> Result<Self, ElevationError> {
-        let (directory, len) = Self::parse_prefix(bytes)?;
+        Self::parse_of(PackKind::Heights, bytes)
+    }
+
+    /// [`Directory::parse`] for a pack of `kind`.
+    pub fn parse_of(kind: PackKind, bytes: &'a [u8]) -> Result<Self, ElevationError> {
+        let (directory, len) = Self::parse_prefix_of(kind, bytes)?;
         if len != bytes.len() {
             return Err(ElevationError::Length);
         }
         Ok(directory)
+    }
+
+    /// What the pack's tiles hold.
+    pub fn kind(&self) -> PackKind {
+        self.kind
     }
 
     /// The zoom the tiles are stored at.
@@ -324,8 +389,8 @@ struct BlockHead {
 impl BlockHead {
     /// Read the head from `bytes`, which must hold at least the header
     /// and the length table ([`BlockHead::table_len`]).
-    fn parse(bytes: &[u8]) -> Result<Self, ElevationError> {
-        check_header(bytes, BLOCK_MAGIC, BLOCK_HEADER)?;
+    fn parse(kind: PackKind, bytes: &[u8]) -> Result<Self, ElevationError> {
+        check_header(bytes, kind.block_magic(), BLOCK_HEADER)?;
         let tile_zoom = bytes[8];
         let block_zoom = bytes[9];
         let side = check_zooms(tile_zoom, block_zoom, u16le(bytes, 10))?;
@@ -360,8 +425,8 @@ impl BlockHead {
 
     /// How many bytes of a block piece [`BlockHead::parse`] needs, from
     /// its fixed header: the header and the length table.
-    fn table_len(header: &[u8]) -> Result<usize, ElevationError> {
-        check_header(header, BLOCK_MAGIC, BLOCK_HEADER)?;
+    fn table_len(kind: PackKind, header: &[u8]) -> Result<usize, ElevationError> {
+        check_header(header, kind.block_magic(), BLOCK_HEADER)?;
         Ok(BLOCK_HEADER + 4 * usize::from(u16le(header, 20)))
     }
 }
@@ -374,6 +439,7 @@ impl BlockHead {
 /// phone's facade and the desktop's relief store both go through it.
 #[derive(Clone, Debug)]
 pub struct PackIndex {
+    kind: PackKind,
     tile_zoom: u8,
     block_zoom: u8,
     blocks: Vec<((u32, u32), core::ops::Range<usize>)>,
@@ -387,13 +453,22 @@ impl PackIndex {
     /// are [`Directory::parse`]'s and [`Block::parse_prefix`]'s.
     pub fn read(
         len: u64,
+        read_at: impl FnMut(u64, &mut [u8]) -> bool,
+    ) -> Result<Self, ElevationError> {
+        Self::read_of(PackKind::Heights, len, read_at)
+    }
+
+    /// [`PackIndex::read`] for a pack of `kind`.
+    pub fn read_of(
+        kind: PackKind,
+        len: u64,
         mut read_at: impl FnMut(u64, &mut [u8]) -> bool,
     ) -> Result<Self, ElevationError> {
         let mut head = [0u8; DIRECTORY_HEADER];
         if len < DIRECTORY_HEADER as u64 || !read_at(0, &mut head) {
             return Err(ElevationError::TooShort);
         }
-        check_header(&head, DIRECTORY_MAGIC, DIRECTORY_HEADER)?;
+        check_header(&head, kind.directory_magic(), DIRECTORY_HEADER)?;
         let dir_len = DIRECTORY_HEADER as u64
             + u64::from(u32le(&head, 32))
             + u64::from(u32le(&head, 36))
@@ -405,7 +480,7 @@ impl PackIndex {
         if !read_at(0, &mut dir_bytes) {
             return Err(ElevationError::Length);
         }
-        let dir = Directory::parse(&dir_bytes)?;
+        let dir = Directory::parse_of(kind, &dir_bytes)?;
         let mut blocks = Vec::with_capacity(dir.len());
         let mut at = dir_len;
         let mut fixed = [0u8; BLOCK_HEADER];
@@ -414,7 +489,7 @@ impl PackIndex {
             if at + BLOCK_HEADER as u64 > len || !read_at(at, &mut fixed) {
                 return Err(ElevationError::Length);
             }
-            let need = BlockHead::table_len(&fixed)?;
+            let need = BlockHead::table_len(kind, &fixed)?;
             if at + need as u64 > len {
                 return Err(ElevationError::Length);
             }
@@ -422,7 +497,7 @@ impl PackIndex {
             if !read_at(at, &mut table) {
                 return Err(ElevationError::Length);
             }
-            let block = BlockHead::parse(&table)?;
+            let block = BlockHead::parse(kind, &table)?;
             if Some((block.x, block.y)) != dir.block(n)
                 || block.tile_zoom != dir.tile_zoom()
                 || block.block_zoom != dir.block_zoom()
@@ -440,6 +515,7 @@ impl PackIndex {
             return Err(ElevationError::Length);
         }
         Ok(Self {
+            kind,
             tile_zoom: dir.tile_zoom(),
             block_zoom: dir.block_zoom(),
             blocks,
@@ -448,7 +524,12 @@ impl PackIndex {
 
     /// Index a pack held whole in memory.
     pub fn of(bytes: &[u8]) -> Result<Self, ElevationError> {
-        Self::read(bytes.len() as u64, |at, buf| {
+        Self::of_kind(PackKind::Heights, bytes)
+    }
+
+    /// [`PackIndex::of`] for a pack of `kind`.
+    pub fn of_kind(kind: PackKind, bytes: &[u8]) -> Result<Self, ElevationError> {
+        Self::read_of(kind, bytes.len() as u64, |at, buf| {
             let Ok(at) = usize::try_from(at) else {
                 return false;
             };
@@ -460,6 +541,11 @@ impl PackIndex {
                 None => false,
             }
         })
+    }
+
+    /// What the pack's tiles hold.
+    pub fn kind(&self) -> PackKind {
+        self.kind
     }
 
     /// The zoom the tiles are stored at.
@@ -519,13 +605,28 @@ impl PackIndex {
         out: &mut [i16],
         scratch: &mut [i16],
     ) -> Result<(), ElevationError> {
-        Block::parse(piece)?.heights(decoder, zoom, x, y, out, scratch)
+        Block::parse_of(self.kind, piece)?.heights(decoder, zoom, x, y, out, scratch)
+    }
+
+    /// The ground classes of tile `(zoom, x, y)` into `out`, from
+    /// `piece`, as [`decode`](Self::decode) for a ground pack
+    /// ([`Block::classes`]).
+    pub fn decode_classes(
+        &self,
+        piece: &[u8],
+        (zoom, x, y): (u8, u32, u32),
+        decoder: &mut TileDecoder,
+        out: &mut [u8],
+        scratch: &mut [u8],
+    ) -> Result<(), ElevationError> {
+        Block::parse_of(self.kind, piece)?.classes(decoder, zoom, x, y, out, scratch)
     }
 }
 
 /// A parsed block piece, its tiles still compressed.
 #[derive(Clone, Copy, Debug)]
 pub struct Block<'a> {
+    kind: PackKind,
     bytes: &'a [u8],
     tile_zoom: u8,
     block_zoom: u8,
@@ -537,12 +638,21 @@ pub struct Block<'a> {
 impl<'a> Block<'a> {
     /// Parse the block at the start of `bytes`, returning it and its length.
     pub fn parse_prefix(bytes: &'a [u8]) -> Result<(Self, usize), ElevationError> {
-        let head = BlockHead::parse(bytes)?;
+        Self::parse_prefix_of(PackKind::Heights, bytes)
+    }
+
+    /// [`Block::parse_prefix`] for a pack of `kind`.
+    pub fn parse_prefix_of(
+        kind: PackKind,
+        bytes: &'a [u8],
+    ) -> Result<(Self, usize), ElevationError> {
+        let head = BlockHead::parse(kind, bytes)?;
         if head.len > bytes.len() {
             return Err(ElevationError::Length);
         }
         Ok((
             Block {
+                kind,
                 bytes: &bytes[..head.len],
                 tile_zoom: head.tile_zoom,
                 block_zoom: head.block_zoom,
@@ -556,11 +666,21 @@ impl<'a> Block<'a> {
 
     /// Parse a block piece that is exactly `bytes`.
     pub fn parse(bytes: &'a [u8]) -> Result<Self, ElevationError> {
-        let (block, len) = Self::parse_prefix(bytes)?;
+        Self::parse_of(PackKind::Heights, bytes)
+    }
+
+    /// [`Block::parse`] for a pack of `kind`.
+    pub fn parse_of(kind: PackKind, bytes: &'a [u8]) -> Result<Self, ElevationError> {
+        let (block, len) = Self::parse_prefix_of(kind, bytes)?;
         if len != bytes.len() {
             return Err(ElevationError::Length);
         }
         Ok(block)
+    }
+
+    /// What the block's tiles hold.
+    pub fn kind(&self) -> PackKind {
+        self.kind
     }
 
     /// The block's coordinates at the block zoom.
@@ -613,24 +733,14 @@ impl<'a> Block<'a> {
         out: &mut [i16],
         scratch: &mut [i16],
     ) -> Result<(), ElevationError> {
+        if self.kind != PackKind::Heights {
+            return Err(ElevationError::Kind);
+        }
         if out.len() != TILE_CELLS || scratch.len() != TILE_CELLS {
             return Err(ElevationError::Buffer);
         }
-        if zoom < self.block_zoom || zoom > self.tile_zoom {
-            return Err(ElevationError::Outside);
-        }
-        // The tile's place inside the block at its own zoom.
-        let shift = zoom - self.block_zoom;
-        let (bx, by) = (u64::from(self.x) << shift, u64::from(self.y) << shift);
-        let per = 1u64 << shift;
-        let (x, y) = (u64::from(x), u64::from(y));
-        if x < bx || x >= bx + per || y < by || y >= by + per {
-            return Err(ElevationError::Outside);
-        }
-        let d = self.tile_zoom - zoom;
+        let (d, first_x, first_y) = self.under(zoom, x, y)?;
         let stored = 1u32 << d; // stored tiles per side under this tile
-        let first_x = ((x - bx) << d) as u32;
-        let first_y = ((y - by) << d) as u32;
         if d == 0 {
             let index = (first_y * self.side + first_x) as usize;
             return self.decode(decoder, index, out);
@@ -653,6 +763,82 @@ impl<'a> Block<'a> {
                         }
                         let at = (ty as usize * px + oy) * TILE_EDGE + tx as usize * px + ox;
                         out[at] = (2 * sum + n).div_euclid(2 * n) as i16;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Where tile (x, y) at `zoom` lies in the block: the zooms `d` it
+    /// sits above the tile zoom and the first stored tile under it.
+    fn under(&self, zoom: u8, x: u32, y: u32) -> Result<(u8, u32, u32), ElevationError> {
+        if zoom < self.block_zoom || zoom > self.tile_zoom {
+            return Err(ElevationError::Outside);
+        }
+        // The tile's place inside the block at its own zoom.
+        let shift = zoom - self.block_zoom;
+        let (bx, by) = (u64::from(self.x) << shift, u64::from(self.y) << shift);
+        let per = 1u64 << shift;
+        let (x, y) = (u64::from(x), u64::from(y));
+        if x < bx || x >= bx + per || y < by || y >= by + per {
+            return Err(ElevationError::Outside);
+        }
+        let d = self.tile_zoom - zoom;
+        Ok((d, ((x - bx) << d) as u32, ((y - by) << d) as u32))
+    }
+
+    /// The ground classes of the tile (x, y) at `zoom` into `out` (256 x
+    /// 256 class bytes, row-major, north row first), for a ground pack.
+    /// At the tile zoom the stored tile; above it each cell is the class
+    /// most of the 2^d x 2^d stored cells under it hold
+    /// ([`crate::ground::mode`]), so the coarser zooms cost no bytes on
+    /// the wire, as for heights.
+    pub fn classes(
+        &self,
+        decoder: &mut TileDecoder,
+        zoom: u8,
+        x: u32,
+        y: u32,
+        out: &mut [u8],
+        scratch: &mut [u8],
+    ) -> Result<(), ElevationError> {
+        if self.kind != PackKind::Ground {
+            return Err(ElevationError::Kind);
+        }
+        if out.len() != TILE_CELLS || scratch.len() != TILE_CELLS {
+            return Err(ElevationError::Buffer);
+        }
+        let (d, first_x, first_y) = self.under(zoom, x, y)?;
+        let fault = |index: usize| {
+            move |fault| ElevationError::Tile {
+                index: index as u16,
+                fault,
+            }
+        };
+        let frame = |index: usize| self.frame(index).ok_or(fault(index)(TileFault::Size));
+        if d == 0 {
+            let index = (first_y * self.side + first_x) as usize;
+            return decoder
+                .decode_bytes(frame(index)?, out)
+                .map_err(fault(index));
+        }
+        let stored = 1u32 << d;
+        let px = TILE_EDGE >> d;
+        let cell = 1usize << d;
+        for ty in 0..stored {
+            for tx in 0..stored {
+                let index = ((first_y + ty) * self.side + first_x + tx) as usize;
+                decoder
+                    .decode_bytes(frame(index)?, scratch)
+                    .map_err(fault(index))?;
+                for oy in 0..px {
+                    for ox in 0..px {
+                        let at = (ty as usize * px + oy) * TILE_EDGE + tx as usize * px + ox;
+                        out[at] = crate::ground::mode((0..cell).flat_map(|cy| {
+                            let row = (oy * cell + cy) * TILE_EDGE + ox * cell;
+                            scratch[row..row + cell].iter().copied()
+                        }));
                     }
                 }
             }
@@ -704,6 +890,27 @@ impl TileDecoder {
         if out.len() != TILE_CELLS {
             return Err(TileFault::Size);
         }
+        self.inflate(frame, TILE_BYTES)?;
+        planes_to_heights(&self.planes, out);
+        Ok(())
+    }
+
+    /// Decode one tile's zstd frame of `out.len()` bytes into `out` as
+    /// they are: a ground tile's class bytes ([`PackKind::Ground`]). A
+    /// frame of any other length is refused as for heights.
+    pub fn decode_bytes(&mut self, frame: &[u8], out: &mut [u8]) -> Result<(), TileFault> {
+        if out.len() > TILE_BYTES {
+            return Err(TileFault::Size);
+        }
+        self.inflate(frame, out.len())?;
+        out.copy_from_slice(&self.planes[..out.len()]);
+        Ok(())
+    }
+
+    /// Inflate `frame` into the first `want` bytes of the plane buffer,
+    /// refusing a frame that is not exactly `want` bytes or whose
+    /// checksum is missing or wrong.
+    fn inflate(&mut self, frame: &[u8], want: usize) -> Result<(), TileFault> {
         let mut source = frame;
         self.frame.init(&mut source).map_err(|_| TileFault::Frame)?;
         let mut written = 0usize;
@@ -715,7 +922,7 @@ impl TileDecoder {
                 .decode_blocks(&mut source, BlockDecodingStrategy::UptoBytes(TILE_BYTES))
                 .map_err(|_| TileFault::Frame)?;
             loop {
-                let room = &mut self.planes[written..];
+                let room = &mut self.planes[written..want];
                 if room.is_empty() {
                     break;
                 }
@@ -736,7 +943,7 @@ impl TileDecoder {
                 return Err(TileFault::Frame);
             }
         }
-        if written != TILE_BYTES || !source.is_empty() {
+        if written != want || !source.is_empty() {
             return Err(TileFault::Size);
         }
         let stored = self
@@ -746,7 +953,6 @@ impl TileDecoder {
         if self.frame.get_calculated_checksum() != Some(stored) {
             return Err(TileFault::Checksum);
         }
-        planes_to_heights(&self.planes, out);
         Ok(())
     }
 }
@@ -798,6 +1004,18 @@ pub fn write_block(
     y: u32,
     frames: &[Vec<u8>],
 ) -> Result<Vec<u8>, ElevationError> {
+    write_block_of(PackKind::Heights, tile_zoom, block_zoom, x, y, frames)
+}
+
+/// [`write_block`] for a pack of `kind`.
+pub fn write_block_of(
+    kind: PackKind,
+    tile_zoom: u8,
+    block_zoom: u8,
+    x: u32,
+    y: u32,
+    frames: &[Vec<u8>],
+) -> Result<Vec<u8>, ElevationError> {
     let side = check_zooms(tile_zoom, block_zoom, TILE_EDGE as u16)?;
     if frames.len() as u32 != side * side {
         return Err(ElevationError::TileCount);
@@ -809,7 +1027,7 @@ pub fn write_block(
     let mut out = Vec::with_capacity(
         BLOCK_HEADER + 4 * frames.len() + frames.iter().map(Vec::len).sum::<usize>(),
     );
-    out.extend_from_slice(&BLOCK_MAGIC);
+    out.extend_from_slice(&kind.block_magic());
     out.extend_from_slice(&VERSION.to_le_bytes());
     out.extend_from_slice(&(BLOCK_HEADER as u16).to_le_bytes());
     out.push(tile_zoom);
@@ -850,6 +1068,15 @@ pub fn write_directory(
     info: &DirectoryInfo<'_>,
     blocks: &[(u32, u32)],
 ) -> Result<Vec<u8>, ElevationError> {
+    write_directory_of(PackKind::Heights, info, blocks)
+}
+
+/// [`write_directory`] for a pack of `kind`.
+pub fn write_directory_of(
+    kind: PackKind,
+    info: &DirectoryInfo<'_>,
+    blocks: &[(u32, u32)],
+) -> Result<Vec<u8>, ElevationError> {
     check_zooms(info.tile_zoom, info.block_zoom, TILE_EDGE as u16)?;
     let attribution = u32::try_from(info.attribution.len()).map_err(|_| ElevationError::Length)?;
     let notice = u32::try_from(info.notice.len()).map_err(|_| ElevationError::Length)?;
@@ -860,7 +1087,7 @@ pub fn write_directory(
             + info.notice.len()
             + DIRECTORY_ENTRY * blocks.len(),
     );
-    out.extend_from_slice(&DIRECTORY_MAGIC);
+    out.extend_from_slice(&kind.directory_magic());
     out.extend_from_slice(&VERSION.to_le_bytes());
     out.extend_from_slice(&(DIRECTORY_HEADER as u16).to_le_bytes());
     out.push(info.tile_zoom);
@@ -885,11 +1112,19 @@ pub fn write_directory(
 /// in the directory's order. Returns the directory and each piece's byte
 /// range (the directory first): the split the map store cuts it at.
 pub fn split(file: &[u8]) -> Result<(Directory<'_>, Vec<core::ops::Range<usize>>), ElevationError> {
-    let (directory, mut at) = Directory::parse_prefix(file)?;
+    split_of(PackKind::Heights, file)
+}
+
+/// [`split`] for a pack of `kind`.
+pub fn split_of(
+    kind: PackKind,
+    file: &[u8],
+) -> Result<(Directory<'_>, Vec<core::ops::Range<usize>>), ElevationError> {
+    let (directory, mut at) = Directory::parse_prefix_of(kind, file)?;
     let mut ranges = Vec::with_capacity(directory.len().min(file.len() / BLOCK_HEADER) + 1);
     ranges.push(0..at);
     for n in 0..directory.len() {
-        let (block, len) = Block::parse_prefix(&file[at..])?;
+        let (block, len) = Block::parse_prefix_of(kind, &file[at..])?;
         if Some(block.position()) != directory.block(n)
             || block.tile_zoom() != directory.tile_zoom()
             || block.block_zoom() != directory.block_zoom()

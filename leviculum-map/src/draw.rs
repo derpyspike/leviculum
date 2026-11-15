@@ -185,7 +185,7 @@ where
     C: Clock,
 {
     draw_in_relief(
-        tiles, area, profile, ink, style, percent, warp, None, target, scratch, work, clock,
+        tiles, area, profile, ink, style, percent, warp, None, None, target, scratch, work, clock,
     )
 }
 
@@ -195,6 +195,11 @@ where
 /// back through the target's rows and shades it, so the relief sits
 /// under every road, name and footprint. A target that cannot read
 /// its pixels, or a view without height data, is drawn as without it.
+///
+/// `ground` lays the ground classes (1743) over the land fill (the
+/// source's earth areas) and under every other area, so OpenStreetMap's
+/// own areas (water, towns, fields, sand) lie over them and the relief
+/// shades both.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_in_relief<D, C>(
     tiles: &[DrawTile<'_>],
@@ -205,6 +210,7 @@ pub fn draw_in_relief<D, C>(
     percent: u32,
     warp: Option<&Warp<'_>>,
     mut shade: Option<&mut dyn crate::relief::Shade>,
+    ground: Option<&mut dyn crate::ground::Ground>,
     target: &mut D,
     scratch: &mut Scratch<'_>,
     work: &mut Work<'_>,
@@ -234,12 +240,20 @@ where
             (at, t.fixture.features().peekable())
         })
         .collect();
+    let mut ground = ground;
     let (areas, lines) = Class::ALL.split_at(AREAS);
     for &class in areas {
         for (at, features) in &mut cursors {
             // `<=`: a blob out of class order still has every feature drawn.
             while let Some(f) = features.next_if(|f| f.class <= class) {
                 pass.feature_warped(&f, *at, warp, profile, target, work, clock)?;
+            }
+        }
+        // The ground lies on the land (the source's earth fill, the
+        // first area class) and under every other area.
+        if class == Class::Earth {
+            if let Some(ground) = ground.take() {
+                crate::ground::apply(target, target.bounding_box(), ground)?;
             }
         }
     }

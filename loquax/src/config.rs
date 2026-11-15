@@ -18,7 +18,9 @@
 //! beside `map_source`, or the project's server when that is unset too,
 //! `crate::mapload::heights_url`), and `map_relief`, `on` (the default)
 //! or `off`, whether the map lays the ground relief under the light map
-//! (the dark table has none yet). `map_theme`, `light`, `dark` or `auto`
+//! (the dark table has none yet). `map_ground` (1743), `pastel` (the
+//! default), `strong` or `off`: the desert ground map's style under the
+//! light map, where ground packs lie in the maps directory. `map_theme`, `light`, `dark` or `auto`
 //! (1099): the map's colour table, `auto` following the theme the screen
 //! is drawn in (the terminal's, the window's, the phone's). Unset follows
 //! the window and the phone as `auto` does (1730) and is light in the
@@ -66,6 +68,8 @@
 //! # the relief's heights from the club's server too, and no relief here
 //! height_source = https://maps.example.org/heights.tsv
 //! map_relief = off
+//! # the ground map in its strong colours
+//! map_ground = strong
 //! # the map in its dark colours whenever the terminal is dark
 //! map_theme = auto
 //! # written by the terminal: octants in foot, braille over mosh
@@ -191,6 +195,8 @@ pub struct Config {
     pub height_source: Option<String>,
     /// `map_relief`, when the file sets it; unset is on (1863).
     pub map_relief: Option<bool>,
+    /// `map_ground`, when the file sets it; unset is pastel (1743).
+    pub map_ground: Option<GroundFlag>,
     /// `archive_cap_mb`, when the file sets it: the home node's archive cap.
     pub archive_cap_mb: Option<u64>,
     /// `home_token_hours`, when the file sets it: an admission token's life.
@@ -342,6 +348,18 @@ pub fn unset(text: &str, key: &str) -> String {
     out
 }
 
+/// The ground map's style as the config names it (1743).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GroundFlag {
+    /// No ground map.
+    Off,
+    /// Light colours, stones on hamada: the default.
+    #[default]
+    Pastel,
+    /// The full colour table with every signature.
+    Strong,
+}
+
 /// Read the config file's text.
 pub fn parse(text: &str) -> Result<Config, ConfigError> {
     let mut config = Config::default();
@@ -378,6 +396,20 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
                     }
                 });
             }
+        }
+        if key.trim() == "map_ground" {
+            config.map_ground = Some(match value.trim().trim_matches('"') {
+                "pastel" => GroundFlag::Pastel,
+                "strong" => GroundFlag::Strong,
+                "off" => GroundFlag::Off,
+                other => {
+                    return Err(ConfigError::BadValue {
+                        line: index + 1,
+                        key: "map_ground",
+                        detail: alloc::format!("{other:?} is not pastel, strong or off"),
+                    });
+                }
+            });
         }
         for (name, slot) in [
             ("theme", &mut config.theme),
@@ -975,6 +1007,20 @@ mod tests {
             Some("https://maps.example.org/h.tsv")
         );
         assert_eq!(heights.map_relief, Some(false));
+        // 1743: the ground map's style.
+        assert_eq!(empty.map_ground, None);
+        for (word, flag) in [
+            ("pastel", GroundFlag::Pastel),
+            ("strong", GroundFlag::Strong),
+            ("\"off\"", GroundFlag::Off),
+        ] {
+            assert_eq!(
+                parse_str(&alloc::format!("map_ground = {word}\n"))
+                    .expect("ground")
+                    .map_ground,
+                Some(flag)
+            );
+        }
         assert_eq!(empty.map_theme, None);
         assert_eq!(
             parse_str("map_theme = auto\n").expect("auto").map_theme,
@@ -990,6 +1036,7 @@ mod tests {
             ("map_source = ftp://x/p.pmtiles\n", "map_source"),
             ("height_source = /srv/heights.tsv\n", "height_source"),
             ("map_relief = sometimes\n", "map_relief"),
+            ("map_ground = loud\n", "map_ground"),
             ("map_cache_mb = lots\n", "map_cache_mb"),
         ] {
             match parse_str(text) {

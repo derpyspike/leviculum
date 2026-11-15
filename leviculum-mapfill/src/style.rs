@@ -360,6 +360,23 @@ pub struct Style {
     /// style, so a tile cache keyed by it drops its tiles when the relief
     /// is switched.
     pub relief: bool,
+    /// The ground map (leviculum-map 1743) under the view's areas, where
+    /// ground packs cover it, in one of its two styles; `None` draws no
+    /// ground. Like the relief, only in the light table: the class
+    /// colours are tuned against light paper. Off on the M9, which has
+    /// no loader for the packs yet.
+    pub ground: Option<GroundStyle>,
+}
+
+/// The ground map's two styles (Lew, 2026-11-12: both ship, he compares
+/// them in the field). The colours are `leviculum_map::ground_style`'s.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum GroundStyle {
+    /// Light colours, stones only on hamada.
+    #[default]
+    Pastel,
+    /// The full colour table with every signature.
+    Strong,
 }
 
 impl Style {
@@ -369,6 +386,7 @@ impl Style {
         cased: false,
         buildings: false,
         relief: false,
+        ground: None,
     };
     /// The PC's finish in the light table: casings and round joins, no
     /// buildings; what the terminal's sixel and kitty pictures draw.
@@ -377,6 +395,7 @@ impl Style {
         cased: true,
         buildings: false,
         relief: true,
+        ground: Some(GroundStyle::Pastel),
     };
     /// The finish of the phone and the window: the PC's with buildings.
     pub const SCREEN: Self = Self {

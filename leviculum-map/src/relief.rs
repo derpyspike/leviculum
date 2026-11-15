@@ -135,8 +135,9 @@ const SOFT: f32 = 1.4;
 /// Tone: `t = tanh(c V)`, shade and light sides.
 const C_NEG: f32 = 0.62;
 const C_POS: f32 = 0.48;
-/// The darkest multiplier (ambient lift).
-const FLOOR: f32 = 0.62;
+/// The darkest multiplier (ambient lift): the ground map's parameter
+/// table holds it beside the class colours (order 1743).
+const FLOOR: f32 = crate::ground_style::SHADOW_FLOOR;
 /// Shadow tint per unit darkening.
 const TINT: [f32; 3] = [-0.03, -0.03, 0.06];
 /// Skylight drift: shadows move this share toward their own luminance

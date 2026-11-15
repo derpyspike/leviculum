@@ -1413,6 +1413,9 @@ pub struct UiModel<B> {
     /// The config's `map_relief` (1863): the ground relief under the
     /// light map; on unless the config says off.
     pub map_relief: bool,
+    /// The config's `map_ground` (1743): the ground map's style under the
+    /// light map; pastel unless the config says otherwise.
+    pub map_ground: crate::config::GroundFlag,
     /// The word the map's title carries while a region loads.
     pub map_loading: Option<String>,
     /// A load runs or waits for what is on screen (1527): the title says
@@ -1686,6 +1689,7 @@ impl<B: InputBuffer + Default> UiModel<B> {
             map_autoload: false,
             map_theme: None,
             map_relief: true,
+            map_ground: crate::config::GroundFlag::Pastel,
             map_loading: None,
             map_here: false,
             map_glyph_test: false,
@@ -8032,6 +8036,8 @@ pub struct View {
     /// relief under the light map only with it on, as the window and the
     /// phone do.
     pub map_relief: bool,
+    /// The config's `map_ground` (1743), as the window takes it.
+    pub map_ground: crate::config::GroundFlag,
 }
 
 /// The map pane's title.
@@ -8927,6 +8933,7 @@ fn view_fresh<B: InputBuffer>(model: &UiModel<B>) -> View {
         map_glyph_test: map.is_some() && model.map_glyph_test,
         time_zones: map.is_some() && model.time_zones,
         map_relief: model.map_relief,
+        map_ground: model.map_ground,
         map,
     }
 }

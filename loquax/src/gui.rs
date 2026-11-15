@@ -237,6 +237,7 @@ impl Seen {
             // table draws without it in any case.
             style: Style {
                 relief: model.map_relief,
+                ground: loquax::picture::ground_style(model.map_ground),
                 ..Style::SCREEN.in_theme(map_theme(model.map_theme, None))
             },
             map_flag: model.map_theme,

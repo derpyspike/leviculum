@@ -2070,6 +2070,7 @@ pub(crate) async fn start(
         }
     );
     model.map_relief = config.map_relief.unwrap_or(true);
+    model.map_ground = config.map_ground.unwrap_or_default();
     let cache_bytes = config.map_cache_mb.unwrap_or(CACHE_DEFAULT_MB) << 20;
     // The relief's height packs come with every region that lands (1863).
     let heights = loquax::mapload::heights_url(

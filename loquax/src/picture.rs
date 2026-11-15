@@ -83,6 +83,16 @@ pub fn maps_dir() -> Option<PathBuf> {
     Some(data.join("loquax").join("maps"))
 }
 
+/// The ground map's style the config's `map_ground` names (1743).
+pub fn ground_style(flag: crate::config::GroundFlag) -> Option<leviculum_map::ground::GroundStyle> {
+    use leviculum_map::ground::GroundStyle;
+    match flag {
+        crate::config::GroundFlag::Off => None,
+        crate::config::GroundFlag::Pastel => Some(GroundStyle::Pastel),
+        crate::config::GroundFlag::Strong => Some(GroundStyle::Strong),
+    }
+}
+
 /// The map's colour table for the config's `map_theme` (`flag`) and the
 /// theme the screen is drawn in, `None` for a frontend that has none:
 /// unset is light, and `auto` follows the screen, light without one.
@@ -343,6 +353,9 @@ pub struct Painter {
     /// regions and their shade planes, laid under the ground where the
     /// style asks for it.
     relief: crate::relief::ReliefStore,
+    /// The ground side (1743): the `*.lmg` ground packs beside the
+    /// regions, laid under the areas where the style asks for it.
+    ground: crate::ground::GroundStore,
 }
 
 /// The filler's storage for one region drawn ([`region_into`]). The filler
@@ -383,6 +396,8 @@ impl Painter {
         let progress = maps.progress();
         let (regions, _) = maps.load();
         relief.refresh(maps.dir());
+        let ground = crate::ground::GroundStore::default();
+        ground.refresh(maps.dir());
         Self {
             maps,
             epoch,
@@ -396,6 +411,7 @@ impl Painter {
             time_zones: None,
             world_blend: false,
             relief,
+            ground,
         }
     }
 
@@ -417,6 +433,7 @@ impl Painter {
         // Lists the directory; indexes the packs again only when their
         // names, lengths or times moved, not on every progress tick.
         self.relief.refresh(self.maps.dir());
+        self.ground.refresh(self.maps.dir());
         true
     }
 
@@ -732,6 +749,13 @@ impl Painter {
             && ink == Ink::Colour
             && style.theme == MapTheme::Light
             && self.relief.any();
+        // The ground likewise: the class colours are tuned against light
+        // paper (1743).
+        let ground = style
+            .ground
+            .filter(|_| ink == Ink::Colour && style.theme == MapTheme::Light)
+            .filter(|_| self.ground.any())
+            .map(|g| (&self.ground, g));
         for &i in &order {
             let installed = &self.regions[i];
             let area = installed.region.area(view);
@@ -743,6 +767,7 @@ impl Painter {
                 style,
                 percent,
                 shaded.then_some(&self.relief),
+                ground,
                 &mut self.read,
                 &mut self.buildings,
                 &mut self.scratch,
@@ -1146,6 +1171,10 @@ fn region_into<D>(
     style: Style,
     percent: u32,
     relief: Option<&crate::relief::ReliefStore>,
+    ground: Option<(
+        &crate::ground::GroundStore,
+        leviculum_map::ground::GroundStyle,
+    )>,
     read: &mut Vec<(ViewTile, Vec<u8>)>,
     buildings: &mut Vec<(TileId, Vec<u8>)>,
     fill: &mut FillScratch,
@@ -1186,6 +1215,10 @@ where
     let shade = sampler
         .as_mut()
         .map(|s| s as &mut dyn leviculum_map::relief::Shade);
+    let mut grounds = ground.and_then(|(g, style)| g.sampler(view, style));
+    let laid = grounds
+        .as_mut()
+        .map(|s| s as &mut dyn leviculum_map::ground::Ground);
     let Ok(_) = draw_in_relief(
         &tiles,
         area,
@@ -1195,6 +1228,7 @@ where
         percent,
         None,
         shade,
+        laid,
         frame,
         &mut scratch,
         &mut work,
@@ -1402,6 +1436,105 @@ mod tests {
             held * 10 >= probes * 8,
             "{held} of {probes} probes kept their colour at the blend's place"
         );
+    }
+
+    /// 1743: a ground pack beside the region lays the ground classes on
+    /// the land, under the region's other areas, through the whole
+    /// painter path every screen frontend draws by: the same view over
+    /// Erg Chebbi differs with the ground and without it on over a third of the
+    /// region's pixels, the two styles differ, and the dark table draws
+    /// none. (Laid before the land fill, the ground was covered whole by
+    /// the source's earth areas and no pixel changed.)
+    #[test]
+    fn the_ground_lies_on_the_land() {
+        use leviculum_map::ground::GroundStyle;
+        use leviculum_map::mercator::{project, LatLon};
+        let fixtures =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../leviculum-map/fixtures");
+        let dir = tempfile::tempdir().expect("tmp");
+        std::fs::copy(
+            fixtures.join("morocco/merzouga.lmr"),
+            dir.path().join("merzouga.lmr"),
+        )
+        .expect("copy the region");
+        std::fs::copy(
+            fixtures.join("ground-chebbi-z9.lmg"),
+            dir.path().join("ground-chebbi-z9.lmg"),
+        )
+        .expect("copy the ground");
+        let mut painter = Painter::new(Maps::new(Some(dir.path().to_path_buf())));
+        let view = Viewport::new(project(LatLon::from_degrees(31.10, -4.02)), 12, 320, 240);
+        let style = |ground| Style {
+            ground,
+            ..Style::SCREEN
+        };
+        let pastel = painter.draw_with(
+            &view,
+            None,
+            Ink::Colour,
+            style(Some(GroundStyle::Pastel)),
+            100,
+        );
+        let strong = painter.draw_with(
+            &view,
+            None,
+            Ink::Colour,
+            style(Some(GroundStyle::Strong)),
+            100,
+        );
+        let none = painter.draw_with(&view, None, Ink::Colour, style(None), 100);
+        if let Ok(dump) = std::env::var("LOQUAX_DUMP_GROUND") {
+            for (name, fb) in [
+                ("pastel", &pastel.fb),
+                ("strong", &strong.fb),
+                ("none", &none.fb),
+            ] {
+                let mut rgb = Vec::new();
+                Frame::new(&mut fb.clone(), 320, 240)
+                    .expect("frame")
+                    .rgb888_into(&mut rgb);
+                let f = std::fs::File::create(format!("{dump}/ground-{name}.png")).expect("png");
+                let mut enc = png::Encoder::new(std::io::BufWriter::new(f), 320, 240);
+                enc.set_color(png::ColorType::Rgb);
+                enc.write_header()
+                    .expect("hdr")
+                    .write_image_data(&rgb)
+                    .expect("data");
+            }
+        }
+        let area = painter.regions()[0].region.area(&view);
+        let count = |a: &[u16], b: &[u16]| {
+            let (mut inside, mut differ) = (0usize, 0usize);
+            for y in 0..240u32 {
+                for x in 0..320u32 {
+                    if area.contains(Point::new(x as i32, y as i32)) {
+                        inside += 1;
+                        let i = (y * 320 + x) as usize;
+                        differ += usize::from(a[i] != b[i]);
+                    }
+                }
+            }
+            (differ, inside)
+        };
+        let (d, n) = count(&pastel.fb, &none.fb);
+        assert!(n > 10_000, "the region covers the view: {n}");
+        assert!(d * 3 > n, "the ground changed {d} of {n} pixels");
+        let (d, _) = count(&strong.fb, &pastel.fb);
+        assert!(d * 4 > n, "the styles differ on {d} of {n} pixels");
+        // The dark table draws no ground.
+        let dark = |ground| Style {
+            ground,
+            ..Style::SCREEN.in_theme(MapTheme::Dark)
+        };
+        let a = painter.draw_with(
+            &view,
+            None,
+            Ink::Colour,
+            dark(Some(GroundStyle::Strong)),
+            100,
+        );
+        let b = painter.draw_with(&view, None, Ink::Colour, dark(None), 100);
+        assert_eq!(count(&a.fb, &b.fb).0, 0);
     }
 
     /// 1741: a height pack beside the region lays the relief under the

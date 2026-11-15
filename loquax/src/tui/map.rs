@@ -1060,6 +1060,8 @@ pub struct MapPainter {
     time_zones: bool,
     /// The config's `map_relief` ([`MapPainter::set_relief`], 1863).
     relief: bool,
+    /// The config's `map_ground` ([`MapPainter::set_ground`], 1743).
+    ground: Option<leviculum_map::ground::GroundStyle>,
     /// The frame budget (1422): a drag is the gesture, the paint the
     /// ground, the names placed in cells a pass the minimal rung leaves
     /// to the frame at rest.
@@ -1121,6 +1123,7 @@ impl MapPainter {
             theme: MapTheme::Light,
             time_zones: false,
             relief: true,
+            ground: Some(leviculum_map::ground::GroundStyle::Pastel),
             ladder: Ladder::new(),
         }
     }
@@ -1164,6 +1167,12 @@ impl MapPainter {
         self.relief = on;
     }
 
+    /// The ground map's style under the picture, or none, from the next
+    /// frame on: the config's `map_ground` (1743).
+    pub fn set_ground(&mut self, ground: Option<leviculum_map::ground::GroundStyle>) {
+        self.ground = ground;
+    }
+
     /// The style a paint asks for: the PC's finish where the picture has
     /// the pixels for casings and round joins (kitty, sixel, octant), the
     /// M9's plain strokes in the coarser techniques.
@@ -1174,6 +1183,7 @@ impl MapPainter {
         };
         MapStyle {
             relief: finish.relief && self.relief,
+            ground: finish.ground.and(self.ground),
             ..finish.in_theme(self.theme)
         }
     }

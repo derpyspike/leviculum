@@ -114,10 +114,12 @@ pub const OVERZOOM: u8 = 2;
 /// holds 16.1 MB of working planes at its peak (measured on the host,
 /// 2026-11-14), twice the board's 8 MiB of PSRAM, of which the UI heap
 /// is 2 MiB; and the M9 draws no height packs. The flag is off so the
-/// style says what the board draws.
+/// style says what the board draws. Nor does it load ground packs
+/// (1743): the ground is off for the same reason.
 pub fn style() -> Style {
     Style {
         relief: false,
+        ground: None,
         ..Style::SCREEN
     }
 }
@@ -1458,6 +1460,7 @@ mod words_1531 {
             style(),
             Style {
                 relief: false,
+                ground: None,
                 ..Style::SCREEN
             }
         );

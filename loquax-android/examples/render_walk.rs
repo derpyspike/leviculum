@@ -251,6 +251,15 @@ const DESERT: [&str; 3] = [
 /// home ([`fetch_heights`]), never copied there (the audit of 1863).
 const PACKS: [&str; 3] = ["erg-chebbi-z10.lmh", "erg-chegaga-z10.lmh", "bani-z11.lmh"];
 
+/// The ground packs every walk home holds (1743): one z9 block each under
+/// the desert centres, cut from the Morocco pilot box. No loader brings
+/// ground packs yet, so they are copied in, as a hand-installed pack is.
+const GROUND: [&str; 3] = [
+    "ground-chebbi-z9.lmg",
+    "ground-chegaga-z9.lmg",
+    "ground-bani-z9.lmg",
+];
+
 const HZ: f64 = 60.0;
 
 /// The light table's paper as the screen shows it (RGB 565 widened):
@@ -691,6 +700,11 @@ impl Walk {
             }
         }
         fetch_heights(&maps, &fixtures);
+        for pack in GROUND {
+            if let Err(e) = std::fs::copy(fixtures.join(pack), maps.join(pack)) {
+                die(&format!("{pack}: {e}"));
+            }
+        }
         if let Err(e) = std::fs::write(
             home.join(loquax::config::CONFIG_FILE),
             "map_autoload = off\n",
