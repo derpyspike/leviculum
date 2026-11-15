@@ -607,31 +607,39 @@ fn forward<L: BleLink>(link: &mut L, aim: TxAim, packet: Vec<u8>) {
     link.send(aim, packet);
 }
 
+/// The installed sink as a [`leviculum_log_line::facts::LineSink`], for
+/// the line shapes this crate shares with the firmware's.
+struct SinkLines;
+
+impl leviculum_log_line::facts::LineSink for SinkLines {
+    fn line(
+        &mut self,
+        route: leviculum_log_line::facts::Route,
+        prefix: &str,
+        args: core::fmt::Arguments,
+    ) {
+        match route {
+            leviculum_log_line::facts::Route::Critical => {
+                crate::log::log_fmt_critical(prefix, args)
+            }
+            leviculum_log_line::facts::Route::Gated => crate::log::log_fmt(prefix, args),
+        }
+    }
+}
+
 /// Report a run of packets a down carrier threw away: the first drop of
 /// a run and every decade after it, never per packet — the reasoning and
-/// the host tests are [`leviculum_media_state::DropRun`]'s. The same
-/// `[MEDIA]` line shape `leviculum_firmware::media` writes for the LoRa
-/// interface; it lives here too because this crate cannot name that one.
+/// the host tests are [`leviculum_media_state::DropRun`]'s. The line is
+/// [`leviculum_log_line::facts::media_tx_drop`], the one the LoRa
+/// interface writes through `leviculum_firmware::media` too.
 fn log_tx_drop(iface: &str, run: leviculum_media_state::Swallowed) {
-    crate::log::log_fmt(
-        "[MEDIA] ",
-        format_args!(
-            "MEDIA_TX_DROP iface={} packets={} bytes={} reason=carrier-off",
-            iface, run.packets, run.bytes
-        ),
-    );
+    leviculum_log_line::facts::media_tx_drop(&mut SinkLines, iface, run.packets, run.bytes);
 }
 
 /// Close a drop run: the carrier took a packet again, and this is the
 /// only line carrying the run's untruncated totals.
 fn log_tx_resumed(iface: &str, run: leviculum_media_state::Swallowed) {
-    crate::log::log_fmt(
-        "[MEDIA] ",
-        format_args!(
-            "MEDIA_TX_RESUMED iface={} packets={} bytes={}",
-            iface, run.packets, run.bytes
-        ),
-    );
+    leviculum_log_line::facts::media_tx_resumed(&mut SinkLines, iface, run.packets, run.bytes);
 }
 
 /// The BLE [`Interface`]: what the node core hands an outbound packet

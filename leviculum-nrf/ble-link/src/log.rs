@@ -26,7 +26,7 @@ pub enum Level {
 }
 
 /// What the embedder installs: prefix, formatted body, level.
-pub type Sink = fn(&'static str, core::fmt::Arguments<'_>, Level);
+pub type Sink = fn(&str, core::fmt::Arguments<'_>, Level);
 
 static SINK: Mutex<CriticalSectionRawMutex, Cell<Option<Sink>>> = Mutex::new(Cell::new(None));
 
@@ -38,17 +38,17 @@ pub fn set_sink(sink: Sink) {
     SINK.lock(|cell| cell.set(Some(sink)));
 }
 
-pub(crate) fn log_fmt(prefix: &'static str, args: core::fmt::Arguments<'_>) {
+pub(crate) fn log_fmt(prefix: &str, args: core::fmt::Arguments<'_>) {
     if let Some(sink) = SINK.lock(|cell| cell.get()) {
         sink(prefix, args, Level::Runtime);
     }
 }
 
-/// For a line that must reach the boot scrollback. No line in this
-/// crate needs it today; the level exists so an embedder's sink match
-/// is complete and a future boot-critical line costs no API change.
-#[allow(dead_code)]
-pub(crate) fn log_fmt_critical(prefix: &'static str, args: core::fmt::Arguments<'_>) {
+/// For a line that must reach the boot scrollback. No line this crate
+/// writes takes this route today; the shared line shapes
+/// (`leviculum_log_line::facts`) carry their route as data, and the
+/// crate's `LineSink` maps the critical one here.
+pub(crate) fn log_fmt_critical(prefix: &str, args: core::fmt::Arguments<'_>) {
     if let Some(sink) = SINK.lock(|cell| cell.get()) {
         sink(prefix, args, Level::Critical);
     }

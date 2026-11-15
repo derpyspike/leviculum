@@ -522,6 +522,48 @@ pub fn tx_power_programmed<S: LineSink>(sink: &mut S, p: &TxPowerProgrammed) {
     );
 }
 
+/// `[MEDIA] MEDIA_TX_DROP …` — a run of packets a switched-off carrier
+/// threw away, for any carrier interface (`iface=lora`, `iface=ble`).
+///
+/// The line lives here once (1715's audit): the LoRa interface writes it
+/// through `leviculum_firmware::media`, the BLE interface through
+/// `leviculum-ble-link`, which cannot name the firmware's logger, and
+/// before this both carried their own copy of the format. Emitted on the
+/// first drop of a run and at every decade after it (the run's counting
+/// is `leviculum_media_state::DropRun`'s), so `packets=` is a lower bound
+/// within a factor of ten and [`media_tx_resumed`] carries the total.
+///
+/// ```text
+/// [MEDIA] MEDIA_TX_DROP iface=ble packets=10 bytes=450 reason=carrier-off
+/// ```
+pub fn media_tx_drop<S: LineSink>(sink: &mut S, iface: &str, packets: u32, bytes: u32) {
+    sink.line(
+        Route::Gated,
+        "[MEDIA] ",
+        format_args!(
+            "MEDIA_TX_DROP iface={} packets={} bytes={} reason=carrier-off",
+            iface, packets, bytes
+        ),
+    );
+}
+
+/// `[MEDIA] MEDIA_TX_RESUMED …` — the carrier took a packet again; the
+/// only line with the drop run's untruncated totals.
+///
+/// ```text
+/// [MEDIA] MEDIA_TX_RESUMED iface=ble packets=37 bytes=1665
+/// ```
+pub fn media_tx_resumed<S: LineSink>(sink: &mut S, iface: &str, packets: u32, bytes: u32) {
+    sink.line(
+        Route::Gated,
+        "[MEDIA] ",
+        format_args!(
+            "MEDIA_TX_RESUMED iface={} packets={} bytes={}",
+            iface, packets, bytes
+        ),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1103,6 +1145,30 @@ mod tests {
                 Route::Gated,
                 String::from("[LORA] LORA_MUTE_EXPIRED lease_s=6300 dropped=0 t=191\r\n")
             )]
+        );
+    }
+
+    /// The carrier-off drop run's two lines: gated (they describe running
+    /// traffic), with the interface name and the run's counts.
+    #[test]
+    fn the_media_drop_run_lines_are_gated_and_name_the_carrier() {
+        let mut sink = Recorder::default();
+        media_tx_drop(&mut sink, "ble", 10, 450);
+        media_tx_resumed(&mut sink, "lora", 37, 1665);
+        assert_eq!(
+            sink.lines,
+            [
+                (
+                    Route::Gated,
+                    String::from(
+                        "[MEDIA] MEDIA_TX_DROP iface=ble packets=10 bytes=450 reason=carrier-off t=191\r\n"
+                    )
+                ),
+                (
+                    Route::Gated,
+                    String::from("[MEDIA] MEDIA_TX_RESUMED iface=lora packets=37 bytes=1665 t=191\r\n")
+                ),
+            ]
         );
     }
 }

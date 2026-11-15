@@ -75,8 +75,8 @@ firmware/src/identity.rs (119): log_critical
 firmware/src/iface_bytes.rs (196):
 firmware/src/interface.rs (77): iface_bytes log
 firmware/src/lib.rs (82):
-firmware/src/log.rs (453): ble_link
-firmware/src/media.rs (62): log
+firmware/src/log.rs (473): ble_link
+firmware/src/media.rs (56): log
 firmware/src/postmortem.rs (501): boot_trace heap log thread_watch
 firmware/src/record_store.rs (665): fakes log seams
 firmware/src/seams.rs (231): battery button clock display feedback

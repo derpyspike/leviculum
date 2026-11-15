@@ -164,7 +164,7 @@ pub fn start(
 /// The shared node side's log sink: onto the backend's ring, between
 /// the same frames.
 fn ble_link_log(
-    prefix: &'static str,
+    prefix: &str,
     args: core::fmt::Arguments<'_>,
     level: leviculum_ble_link::log::Level,
 ) {

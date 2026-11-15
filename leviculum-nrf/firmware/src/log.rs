@@ -224,6 +224,26 @@ pub fn log_fmt_critical(prefix: &str, args: core::fmt::Arguments) {
     LOG_SIGNAL.signal(());
 }
 
+/// This module as a [`leviculum_log_line::facts::LineSink`]: the shared
+/// line shapes (`facts`) carry their route as data, and this carries it
+/// out — [`Route::Critical`](leviculum_log_line::facts::Route::Critical)
+/// onto [`log_fmt_critical`], the gated route onto [`log_fmt`].
+pub struct Lines;
+
+impl leviculum_log_line::facts::LineSink for Lines {
+    fn line(
+        &mut self,
+        route: leviculum_log_line::facts::Route,
+        prefix: &str,
+        args: core::fmt::Arguments,
+    ) {
+        match route {
+            leviculum_log_line::facts::Route::Critical => log_fmt_critical(prefix, args),
+            leviculum_log_line::facts::Route::Gated => log_fmt(prefix, args),
+        }
+    }
+}
+
 /// Install this module as `leviculum-ble-link`'s log sink (1715): the
 /// shared node side of the BLE seam cannot name a family's log, so the
 /// family hands its lines over once at boot. The nRF's install point is
@@ -234,7 +254,7 @@ pub(crate) fn hook_ble_link() {
 }
 
 fn ble_link_sink(
-    prefix: &'static str,
+    prefix: &str,
     args: core::fmt::Arguments<'_>,
     level: leviculum_ble_link::log::Level,
 ) {
