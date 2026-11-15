@@ -1732,6 +1732,35 @@ mod tests {
         assert_eq!(crate::name::gap_name_now().as_str(), "LN-12121212");
     }
 
+    /// A displacement hands the old link's queued packets to the new
+    /// link in order, as far as the new queue has room, and counts what
+    /// it could not place; the old queue ends empty.
+    #[test]
+    fn move_queued_carries_the_old_links_queue_over_and_counts_the_overflow() {
+        let _ring = crate::log::test_ring::lock();
+        let (old, new) = (2usize, 3usize);
+        for slot in [old, new] {
+            while super::super::link_out(slot).try_receive().is_ok() {}
+        }
+        for n in 0..3u8 {
+            super::super::link_out(old).try_send(vec![n]).unwrap();
+        }
+        for _ in 0..super::super::QUEUE_DEPTH - 1 {
+            super::super::link_out(new).try_send(vec![0xEE]).unwrap();
+        }
+        assert_eq!(move_queued(old, new), (1, 2));
+        assert!(super::super::link_out(old).try_receive().is_err());
+        let mut tail = None;
+        while let Ok(p) = super::super::link_out(new).try_receive() {
+            tail = Some(p);
+        }
+        assert_eq!(
+            tail,
+            Some(vec![0u8]),
+            "the oldest queued packet moved first"
+        );
+    }
+
     /// The node's own address is the identity's first six bytes, little
     /// endian, with the two top bits of the last set: random static,
     /// and the same on every boot.
