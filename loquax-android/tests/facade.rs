@@ -3292,41 +3292,67 @@ async fn the_first_pull_of_a_big_mailbox_never_blocks_the_screen() {
         // The history whole: every conversation but the archived and the
         // blocked one listed, each of them with every bubble.
         let pulled = std::time::Instant::now();
-        let listed = BIG_CONVERSATIONS - 2;
-        let deadline = std::time::Instant::now() + Duration::from_secs(BIG_PULL_SECS);
-        let mut whole = false;
-        while std::time::Instant::now() < deadline {
-            // The check reads all hundred conversations under the lock: four
-            // times a second, not once per event, or the harness's own
-            // reads are the probes' longest waits (1464).
-            std::thread::sleep(Duration::from_millis(250));
+        // Liveness is progress, not a total (1832): the pull's time is the
+        // host's disk, one store commit a message, and a busy host takes it
+        // past any total a quiet one suggests. So the bound is on the pull
+        // standing still: [`BIG_PULL_STILL`] without one more message on
+        // the phone is a stall, however long the whole took.
+        let per = ugly_store::PER_CONVERSATION - ugly_store::REACTIONS;
+        let expected = (BIG_CONVERSATIONS - 1) * per;
+        let mut have = 0;
+        let mut moved = std::time::Instant::now();
+        let mut still = Duration::ZERO;
+        let whole = loop {
+            // The count reads all hundred conversations under the lock:
+            // every [`BIG_PULL_COUNT`], not once per event, or the harness's
+            // own reads are the probes' longest waits (1464).
+            std::thread::sleep(BIG_PULL_COUNT);
             for _ in 0..10_000 {
                 if loquax_android::next_event(Duration::ZERO).is_none() {
                     break;
                 }
             }
-            let list: schema::Conversations = rmp_serde::from_slice(&loquax_android::query(
-                &schema::encode(&schema::Query::Conversations { search: None }),
-            ))
-            .expect("the list");
-            if list.conversations.len() < listed {
-                continue;
-            }
-            whole = (0..BIG_CONVERSATIONS)
+            let counts: Vec<usize> = (0..BIG_CONVERSATIONS)
                 .filter(|i| *i != ugly_store::BLOCKED)
-                .all(|i| {
+                .map(|i| {
                     let messages: schema::Messages = rmp_serde::from_slice(&loquax_android::query(
                         &schema::encode(&schema::Query::Messages {
                             peer: ugly_store::peer_hex(i),
                         }),
                     ))
                     .expect("the messages");
-                    messages.messages.len() == ugly_store::PER_CONVERSATION - ugly_store::REACTIONS
-                });
-            if whole {
-                break;
+                    messages.messages.len()
+                })
+                .collect();
+            let now: usize = counts.iter().sum();
+            if now != have {
+                still = still.max(moved.elapsed());
+                moved = std::time::Instant::now();
+                have = now;
+                eprintln!(
+                    "BIGPULL progress {have} of {expected} at {} ms",
+                    pulled.elapsed().as_millis()
+                );
             }
-        }
+            let whole = counts.iter().all(|n| *n == per);
+            if whole || moved.elapsed() > BIG_PULL_STILL {
+                if !whole {
+                    let short: Vec<(usize, usize)> = (0..BIG_CONVERSATIONS)
+                        .filter(|i| *i != ugly_store::BLOCKED)
+                        .zip(&counts)
+                        .filter(|(_, n)| **n != per)
+                        .map(|(i, n)| (i, *n))
+                        .collect();
+                    eprintln!(
+                        "BIGPULL short: {} conversations (index, messages of {per}): {short:?}",
+                        short.len()
+                    );
+                }
+                break whole;
+            }
+        };
+        let stalled = moved.elapsed();
+        still = still.max(stalled);
         let took = pulled.elapsed();
         done.store(true, std::sync::atomic::Ordering::Relaxed);
         let blocks = probe.join().expect("the probe");
@@ -3334,10 +3360,11 @@ async fn the_first_pull_of_a_big_mailbox_never_blocks_the_screen() {
         let engine = Block::worst(&blocks);
         let ui = Block::worst(&looks);
         eprintln!(
-            "BIGPULL whole={whole} after {} ms; onResume probes={} longest={} ms cpu={} ms \
+            "BIGPULL whole={whole} after {} ms, {have} of {expected}, longest still {} ms; onResume probes={} longest={} ms cpu={} ms \
              waited behind {} events in {} locks; list probes={} longest={} ms cpu={} ms \
              waited behind {} events in {} locks rows={rows}",
             took.as_millis(),
+            still.as_millis(),
             blocks.len(),
             engine.wall.as_millis(),
             engine.cpu.as_millis(),
@@ -3350,7 +3377,12 @@ async fn the_first_pull_of_a_big_mailbox_never_blocks_the_screen() {
             ui.locks,
         );
         loquax_android::stop();
-        assert!(whole, "the history not whole in {BIG_PULL_SECS} s");
+        assert!(
+            whole,
+            "the first pull stood still for {} ms at {have} of {expected} messages (bar {} s)",
+            stalled.as_millis(),
+            BIG_PULL_STILL.as_secs()
+        );
         assert!(
             ui.cpu < UI_BAR,
             "the list's query worked {} ms on the UI thread during the first pull (bar {} ms)",
@@ -3388,10 +3420,20 @@ async fn the_first_pull_of_a_big_mailbox_never_blocks_the_screen() {
 const BIG_CONVERSATIONS: usize = 100;
 /// Its archive cap: room for all of it.
 const BIG_CAP: u64 = 64 << 20;
-/// How long its first pull may take: a liveness bound, nothing measures
-/// it. The pull took 16 to 24 s on the coder host, 65 to 76 s under a
-/// quarter of a CPU and 187 to 199 s under 15 % (1610).
-const BIG_PULL_SECS: u64 = 600;
+/// How long its first pull may stand still, no message more on the
+/// phone: a liveness bound, nothing measures it (1832). The whole pull is
+/// the host's disk, one store commit a message: 16 to 24 s on an idle
+/// coder host, 236 and 382 s under stress-ng's CPU and disk load, so the
+/// former 600 s for the whole was a wall budget a busy host could spend.
+/// The longest standstill was 2 to 9 s, 13 s under that stress and 17 s
+/// at a load of 28. The red of the nightly of 2026-11-14 (9b9b3be38) was
+/// not slow but stuck: reproduced there, the phone's store held all 4000
+/// messages and the screen stayed short for ten minutes, on a build whose
+/// first pulls all ended unsettled, their one fence never answered in time
+/// (fixed by 02456b294). A stall like it fails here after this long.
+const BIG_PULL_STILL: Duration = Duration::from_secs(120);
+/// How often the harness counts the pulled messages.
+const BIG_PULL_COUNT: Duration = Duration::from_secs(2);
 /// The list query's work on the UI thread (1464): 100 ms, a few frames.
 /// 1446's 1 s kept Android's 5 s input limit away, but the Pixel still
 /// froze 35 s in blocks of 80 to 100 ms, one per event, and lost taps.
