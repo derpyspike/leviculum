@@ -431,9 +431,10 @@ pub fn read_sync_asked(data: &[u8]) -> Result<(u64, Option<u64>, Fold), Malforme
         _ => Fold::from_word(msgpack::read_str(data, &mut p)?),
     };
     // The home's verdicts (1744), for a board that asks them; a word this
-    // home does not know asks nothing.
+    // home does not know asks nothing, and neither does a fourth element
+    // that is no word at all (a later board's): the request stays served.
     let fold = match (fold, len) {
-        (Fold::Board, 4..) if msgpack::read_str(data, &mut p)? == VOUCHED_WORD => {
+        (Fold::Board, 4..) if msgpack::read_str(data, &mut p).is_ok_and(|w| w == VOUCHED_WORD) => {
             Fold::BoardVouched
         }
         (fold, _) => fold,

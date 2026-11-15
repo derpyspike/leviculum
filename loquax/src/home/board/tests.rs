@@ -1169,6 +1169,24 @@ fn the_board_asks_the_homes_verdicts_and_an_older_home_reads_past_them() {
     assert_eq!(wire::Fold::BoardVouched.word(), Some("board"));
 }
 
+/// Second auditor of order 1824: a later board's fourth `/sync` element
+/// that is no string asks nothing, as the doc says, rather than failing
+/// the whole request.
+#[test]
+fn a_sync_with_a_non_string_fourth_element_is_still_served() {
+    use leviculum_lxmf::msgpack;
+    let mut data = std::vec::Vec::new();
+    msgpack::array(&mut data, 4);
+    msgpack::uint(&mut data, 5);
+    msgpack::uint(&mut data, 412);
+    msgpack::string(&mut data, "board");
+    msgpack::uint(&mut data, 7);
+    assert_eq!(
+        wire::read_sync_asked(&data),
+        Ok((5, Some(412), wire::Fold::Board))
+    );
+}
+
 /// 1439: the board's word names exactly the kinds `fold` reads; an entry
 /// of any other kind folds to nothing, so the home skips nothing the
 /// board would show.
