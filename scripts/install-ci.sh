@@ -93,8 +93,8 @@ fi
 
 # Icon dependency: resvg renders the suite's icons and the M9's splash from
 # assets/nessa/nessa-R3-b.svg (1690, scripts/nessa-render.py). `just
-# nessa-check` skips without it and says so, so a host without resvg still
-# passes the guards; with it, the render is held to the SVG.
+# nessa-check` is red without it (the audit of order 1824: a guard that
+# cannot compare does not pass), and it sits in `guards` and `fast`.
 if ! command -v resvg >/dev/null 2>&1; then
     echo "[install-ci] Note: icon dependency 'resvg' not found"
     echo "[install-ci] Hint: sudo apt install resvg (renders the suite's icons)"
