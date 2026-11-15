@@ -497,7 +497,7 @@ fn speaks_for(info: &GroupInfo, epoch: Option<u64>, used: CopyUse) -> bool {
 /// Whether the reader's group `source` vouches for `copy`'s writer, the
 /// one membership test of a group's copy (1728, 1816, the audit of
 /// 1824), which [`super::copy_writer`] hands the writer rule for the map
-/// and the chat alike: the group speaks for the copy ([`speaks_for`]),
+/// and the chat alike: the group speaks for the copy (`speaks_for`),
 /// the copy's epoch is one the reader knows (at most the group's
 /// newest), and the membership at that epoch lists the writer
 /// ([`GroupMember::vouches_at`]).
@@ -514,7 +514,7 @@ pub fn vouches_for(groups: &Groups, source: &[u8; 16], copy: &GroupCopy, used: C
 
 /// The group a received `message` of `peer`'s conversation is a copy
 /// from, when that group may speak for the copy in the chat
-/// ([`speaks_for`] with [`CopyUse::Draw`]): the message came in with a
+/// (`speaks_for` with [`CopyUse::Draw`]): the message came in with a
 /// verified signature. Never for one of ours or a person's message.
 pub fn copies_from<'a>(
     groups: &'a Groups,
