@@ -42,6 +42,44 @@ final class MapFrame {
     }
 
     /**
+     * One axis of the drag the fingers made since the last request, which
+     * the frame answering that request did not absorb (order 1883): `off`
+     * and `pinch` the fingers' offset and its pinch share now, `scale` the
+     * scale now, the asked* values the same three when the request went.
+     *
+     * `off - pinch` is the drag share: a drag or a coast moves `off` alone,
+     * a zoom of `by` (a pinch, a double tap, a fly step) scales both about
+     * the same point and so scales their difference by `by`, as it scales
+     * `scale`. The request carried the drag share it had then, which the
+     * zooms since scaled by `scale / askedScale`; the rest came after it.
+     *
+     * A turning globe shows its frame at the pinch share alone, the drag
+     * being the next frame's turn (1762), so a landing frame's pinch share
+     * is its placed offset less this. Before 1883 it was the whole placed
+     * offset, and every frame that landed while the finger moved on was
+     * drawn shifted by the drag since its request, the earth sliding off
+     * the picture's centre until the finger lifted (Lew, APK 254c3f3aa).
+     * Without a drag since the request, the placed offset is untouched.
+     */
+    static float dragSince(float off, float pinch, float scale,
+            float askedOff, float askedPinch, float askedScale) {
+        return (off - pinch) - scale / askedScale * (askedOff - askedPinch);
+    }
+
+    /**
+     * Whether a landing frame answers a pure turn of the globe (order
+     * 1883): it turns, the request asked no zoom (`askedScale` 1), the
+     * fingers zoomed none since (`scale` 1), and it is drawn at the zoom
+     * of the frame before. Such a frame is drawn in place, whatever the
+     * library says of the held ground: where the turn stops short of the
+     * finger (north stays up, 1762), anchoring the held ground under the
+     * finger slid the disk 3 px on a drag to the pole.
+     */
+    static boolean turnsOnly(boolean turns, float askedScale, float scale, long zoomBefore, long zoomAfter) {
+        return turns && askedScale == 1f && scale == 1f && zoomBefore == zoomAfter;
+    }
+
+    /**
      * The factor a pinch of `by` may scale by, when the frame shown is at
      * `zoomMilli` and scaled by `scale` already: the view's zoom never
      * goes below `minZoomMilli`, the zoom where the world at its smallest

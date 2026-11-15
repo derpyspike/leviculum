@@ -4699,3 +4699,98 @@ fn the_emulators_rest_frames_hold_the_ground_under_the_fingers() {
         }
     }
 }
+
+/// Lew on the APK of 254c3f3aa (order 1883, P0): while a finger turns the
+/// globe, the earth slides off the picture's centre and snaps back when
+/// it lifts. The desktop's rule of 1799 ("a turning globe's frame is
+/// never translated") on the phone's path: MapView.java's arithmetic
+/// (`loquax_android::gesture::Gesture`) through a one-finger drag at the
+/// zoom floor, where — as on the device — the finger keeps moving while
+/// each frame renders, so every frame lands with a drag share it did not
+/// absorb. That share is the next frame's turn; the frame shown must sit
+/// exactly where the rest frame sat, unscaled, after every landing and
+/// between landings.
+#[test]
+fn a_drag_on_the_turning_globe_never_moves_the_shown_frame() {
+    let home = home();
+    let at = project(LatLon::from_degrees(32.0, -6.0));
+    let mut ask = MapRequest {
+        x: Some(at.x),
+        y: Some(at.y),
+        zoom: None,
+        zoom_milli: Some(2_000),
+        ..request(home.path(), false)
+    };
+    let (start, _) = frame(&loquax_android::map::render(&ask, Some(Vec::new()), now()));
+    // To the floor, the whole globe in view, as the device smoke starts.
+    ask.x = Some(start.x);
+    ask.y = Some(start.y);
+    ask.zoom_milli = Some(start.min_zoom_milli);
+    let (rest, _) = frame(&loquax_android::map::render(&ask, Some(Vec::new()), now()));
+    assert!(rest.turns, "the floor's frame is the globe: {rest:?}");
+    let (w, h) = (f64::from(W), f64::from(H));
+    for (name, step) in [
+        ("horizontal", (6.0, 0.0)),
+        ("vertical", (0.0, -6.0)),
+        ("diagonal", (5.0, 5.0)),
+        ("to the pole", (0.0, 9.0)),
+    ] {
+        let mut java = loquax_android::gesture::Gesture::new(W, H);
+        let render =
+            |java: &mut loquax_android::gesture::Gesture, ask: &MapRequest, moving: bool| {
+                let (shown, _) = frame(&loquax_android::map::render(ask, Some(Vec::new()), now()));
+                java.place(&shown, moving);
+                shown
+            };
+        let first = MapRequest {
+            dir: ask.dir.clone(),
+            density_milli: ask.density_milli,
+            x: Some(rest.x),
+            y: Some(rest.y),
+            zoom_milli: Some(rest.zoom_milli),
+            moving: false,
+            ..java.ask()
+        };
+        render(&mut java, &first, false);
+        let mut finger = (w * 0.4, h * 0.5);
+        let mut pending: Option<MapRequest> = None;
+        let mut landed = 0usize;
+        let mut turned = false;
+        for e in 0..30 {
+            // Android's distance is the one the content moves against.
+            finger = (finger.0 + step.0, finger.1 + step.1);
+            java.on_scroll(-step.0, -step.1, finger.0, finger.1);
+            if let Some(asked) = pending.take() {
+                // The frame asked two moves ago lands now: the finger
+                // moved on while it rendered.
+                let shown = render(&mut java, &asked, true);
+                assert!(shown.turns, "{name} event {e}: the drag left the globe");
+                turned |= (shown.x, shown.y) != (rest.x, rest.y);
+                landed += 1;
+            }
+            let corner = java.drawn(0.0, 0.0);
+            let far = java.drawn(w, h);
+            let moved = corner.0.hypot(corner.1).max((far.0 - w).hypot(far.1 - h));
+            assert!(
+                moved <= 0.01,
+                "{name} event {e}: the turning globe's frame is drawn {moved:.2} px off \
+                 its place (corner at ({:.2}, {:.2}), far corner at ({:.2}, {:.2}))",
+                corner.0,
+                corner.1,
+                far.0,
+                far.1
+            );
+            if e % 2 == 1 {
+                pending = Some(MapRequest {
+                    dir: ask.dir.clone(),
+                    density_milli: ask.density_milli,
+                    ..java.ask()
+                });
+            }
+        }
+        assert!(
+            landed >= 10 && turned,
+            "{name}: {landed} frames landed, turned {turned}"
+        );
+    }
+}

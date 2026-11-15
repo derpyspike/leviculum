@@ -31,7 +31,35 @@ pub fn margin(side: u32, turns: bool) -> u32 {
     }
 }
 
-/// `MapFrame.zoomBy` (`MapFrame.java:52-61`): the factor a pinch may
+/// `MapFrame.dragSince` (`MapFrame.java:64-67`, order 1883): one axis of
+/// the drag made since the request, which the frame answering it did not
+/// absorb. `off - pinch` is the drag share; a zoom scales it as it scales
+/// `scale`.
+fn drag_since(
+    off: f64,
+    pinch: f64,
+    scale: f64,
+    asked_off: f64,
+    asked_pinch: f64,
+    asked_scale: f64,
+) -> f64 {
+    (off - pinch) - scale / asked_scale * (asked_off - asked_pinch)
+}
+
+/// `MapFrame.turnsOnly` (`MapFrame.java:78-80`, order 1883): the landing
+/// frame answers a pure turn, drawn in place whatever the held ground says.
+#[allow(clippy::float_cmp)]
+fn turns_only(
+    turns: bool,
+    asked_scale: f64,
+    scale: f64,
+    zoom_before: i64,
+    zoom_after: i64,
+) -> bool {
+    turns && asked_scale == 1.0 && scale == 1.0 && zoom_before == zoom_after
+}
+
+/// `MapFrame.zoomBy` (`MapFrame.java:90-99`): the factor a pinch may
 /// scale by, never below the zoom where the world fills the screen.
 fn zoom_by(scale: f64, by: f64, zoom_milli: i64, min_zoom_milli: i64) -> f64 {
     if min_zoom_milli <= 0 || scale <= 0.0 {
@@ -46,7 +74,7 @@ fn zoom_by(scale: f64, by: f64, zoom_milli: i64, min_zoom_milli: i64) -> f64 {
 }
 
 /// What the last request carried (`MapView.java`, the asked* fields).
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 struct Asked {
     off: (f64, f64),
     /// The about point (to a thousandth) and the pan in full precision:
@@ -54,6 +82,23 @@ struct Asked {
     /// the one the library held, the anchor `place` uses.
     about: (f64, f64),
     pan: (f64, f64),
+    /// The pinch share and the scale when the request went
+    /// (`askedPinchX/Y`, `askedScale`, order 1883).
+    pinch: (f64, f64),
+    scale: f64,
+}
+
+impl Default for Asked {
+    /// Nothing asked yet: Java's fields start at zero, `askedScale` at 1.
+    fn default() -> Self {
+        Self {
+            off: (0.0, 0.0),
+            about: (0.0, 0.0),
+            pan: (0.0, 0.0),
+            pinch: (0.0, 0.0),
+            scale: 1.0,
+        }
+    }
 }
 
 /// One `MapView`'s gesture state between frames.
@@ -61,7 +106,7 @@ pub struct Gesture {
     /// The view's size in screen pixels.
     w: u32,
     h: u32,
-    /// `scale`, `offX`, `offY` (`MapView.java:219-228`).
+    /// `scale`, `offX`, `offY` (`MapView.java:221-230`).
     scale: f64,
     off: (f64, f64),
     /// The pinch events' share of `off` (order 1833).
@@ -101,7 +146,7 @@ impl Gesture {
         }
     }
 
-    /// `zoomAbout` (`MapView.java:357-375`): scale what is on screen by
+    /// `zoomAbout` (`MapView.java:413-431`): scale what is on screen by
     /// `by` about the screen point `(fx, fy)` — a pinch event, a double
     /// tap, a fly step.
     pub fn on_scale(&mut self, by: f64, fx: f64, fy: f64) {
@@ -150,7 +195,7 @@ impl Gesture {
         }
     }
 
-    /// The frame request `drawFrames` builds (`MapView.java:991-1062`):
+    /// The frame request `drawFrames` builds (`MapView.java:1080-1151`):
     /// the gesture since the last frame as pan, zoom and the focus, over
     /// the last frame's view. The caller fills the rest of the request.
     pub fn ask(&mut self) -> MapRequest {
@@ -176,6 +221,8 @@ impl Gesture {
             off: self.off,
             about: (px, py),
             pan: (pan_xf, pan_yf),
+            pinch: self.pinch,
+            scale: self.scale,
         };
         let by_milli = (1000.0 * self.scale.log2()).round();
         #[allow(clippy::cast_possible_truncation)]
@@ -202,7 +249,7 @@ impl Gesture {
         }
     }
 
-    /// `place` (`MapView.java:1217-1267`) and the fields `drawFrames`
+    /// `place` (`MapView.java:1320-1392`) and the fields `drawFrames`
     /// keeps from the answer: what the fingers did since the ask stays,
     /// the rest is absorbed by the frame. `moving` is a finger down or a
     /// fly running, as the Java reads `touching || flying || coasting`.
@@ -229,8 +276,32 @@ impl Gesture {
                 // absorbed pure drag anchors on the focus and leaves
                 // zero, the frame in place (1762, order 1833).
                 let sigma = self.scale * a;
+                // The drag since the request: the next frame's turn,
+                // never a slide of this one (order 1883).
+                let asked = self.asked;
+                let drag = (
+                    drag_since(
+                        self.off.0,
+                        self.pinch.0,
+                        self.scale,
+                        asked.off.0,
+                        asked.pinch.0,
+                        asked.scale,
+                    ),
+                    drag_since(
+                        self.off.1,
+                        self.pinch.1,
+                        self.scale,
+                        asked.off.1,
+                        asked.pinch.1,
+                        asked.scale,
+                    ),
+                );
+                // A pure turn is drawn in place: the held ground anchors
+                // only a frame that answers a zoom (order 1883).
+                let pure = turns_only(shown.turns, asked.scale, self.scale, zoom0, z1);
                 match (shown.held_x_micro, shown.held_y_micro) {
-                    (Some(hx), Some(hy)) => {
+                    (Some(hx), Some(hy)) if !pure => {
                         #[allow(clippy::cast_precision_loss)]
                         let held = (hx as f64 / 1e6, hy as f64 / 1e6);
                         let held_old = (
@@ -245,7 +316,7 @@ impl Gesture {
                         self.off.1 -= sigma * self.asked.off.1;
                     }
                 }
-                self.pinch = self.off;
+                self.pinch = (self.off.0 - drag.0, self.off.1 - drag.1);
                 self.scale = sigma;
             } else {
                 // Java's `unit` reads the OLD frame's zoom: `zoomMilli`
