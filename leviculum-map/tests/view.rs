@@ -981,8 +981,8 @@ fn the_region_whose_deepest_zoom_is_the_views_is_drawn_on_top() {
     let cell = ("auto-a-z10-15.lmr", header(10, 15));
     let shallow = ("auto-c-z9-11.lmr", header(9, 11));
     // Landed in either order, listed in either order: one order.
-    let first = [screen.clone(), cell.clone()];
-    let later = [cell.clone(), screen.clone()];
+    let first = [screen, cell];
+    let later = [cell, screen];
     assert_eq!(
         order(&first, 13),
         ["auto-a-z10-15.lmr", "auto-b-z12-13.lmr"]
@@ -994,7 +994,7 @@ fn the_region_whose_deepest_zoom_is_the_views_is_drawn_on_top() {
         ["auto-b-z12-13.lmr", "auto-a-z10-15.lmr"]
     );
     // z12: both are deeper; the nearer, the screen's, on top.
-    let three = [cell.clone(), shallow.clone(), screen.clone()];
+    let three = [cell, shallow, screen];
     assert_eq!(
         order(&three, 12),
         ["auto-c-z9-11.lmr", "auto-a-z10-15.lmr", "auto-b-z12-13.lmr"]
