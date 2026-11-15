@@ -507,7 +507,7 @@ impl Drop for GateRestore {
 /// The shared crate's lines into this crate's ring, as the M9 installs
 /// it (`leviculum-esp/src/ble.rs`'s `ble_link_log`).
 fn ble_link_log(
-    prefix: &'static str,
+    prefix: &str,
     args: core::fmt::Arguments<'_>,
     level: leviculum_ble_link::log::Level,
 ) {

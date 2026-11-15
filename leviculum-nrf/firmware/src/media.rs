@@ -15,37 +15,31 @@
 ///
 /// Called by the interfaces on the first drop of a run and at every
 /// decade after it, never per packet: the reasoning, and the host tests,
-/// are in [`leviculum_media_state::DropRun`]. `packets=` is the run's
-/// count at the moment of the line, so the last such line is a lower
-/// bound on the run within a factor of ten, and
+/// are in [`leviculum_media_state::DropRun`]. The line's shape is
+/// [`leviculum_log_line::facts::media_tx_drop`]'s, which the BLE
+/// interface in `leviculum-ble-link` writes through too, and
 /// [`log_tx_resumed`] states the exact total when the carrier comes back.
 ///
 /// ```text
 /// [MEDIA] MEDIA_TX_DROP iface=ble packets=10 bytes=450 reason=carrier-off
 /// ```
 pub fn log_tx_drop(iface: &str, run: leviculum_media_state::Swallowed) {
-    crate::log::log_fmt(
-        "[MEDIA] ",
-        format_args!(
-            "MEDIA_TX_DROP iface={} packets={} bytes={} reason=carrier-off",
-            iface, run.packets, run.bytes
-        ),
-    );
+    leviculum_log_line::facts::media_tx_drop(&mut crate::log::Lines, iface, run.packets, run.bytes);
 }
 
 /// Close a drop run: the carrier took a packet again, and this is the
-/// only line carrying the run's untruncated totals.
+/// only line carrying the run's untruncated totals
+/// ([`leviculum_log_line::facts::media_tx_resumed`]).
 ///
 /// ```text
 /// [MEDIA] MEDIA_TX_RESUMED iface=ble packets=37 bytes=1665
 /// ```
 pub fn log_tx_resumed(iface: &str, run: leviculum_media_state::Swallowed) {
-    crate::log::log_fmt(
-        "[MEDIA] ",
-        format_args!(
-            "MEDIA_TX_RESUMED iface={} packets={} bytes={}",
-            iface, run.packets, run.bytes
-        ),
+    leviculum_log_line::facts::media_tx_resumed(
+        &mut crate::log::Lines,
+        iface,
+        run.packets,
+        run.bytes,
     );
 }
 

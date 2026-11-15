@@ -133,9 +133,12 @@ pub fn start(
     );
     // A refused GATT registration keeps the board alive without BLE;
     // its reason is on the backend's ring, which nothing drains without
-    // a `Ble`, so the UART line here is the one a bench reads.
+    // a `Ble`, so the UART line here is the one a bench reads. By now
+    // the scheduler runs and the controller is built, and this path
+    // takes neither down, so the line says so: BLE carries nothing, the
+    // radio is not off.
     let Some((server, hint)) = columba::start(identity_hash) else {
-        log.line("[BLE ] ", format_args!("off reason=gatt"));
+        log.line("[BLE ] ", format_args!("off reason=gatt radio=up"));
         return None;
     };
     let channels = leviculum_ble_link::channels();
@@ -161,7 +164,7 @@ pub fn start(
 /// The shared node side's log sink: onto the backend's ring, between
 /// the same frames.
 fn ble_link_log(
-    prefix: &'static str,
+    prefix: &str,
     args: core::fmt::Arguments<'_>,
     level: leviculum_ble_link::log::Level,
 ) {

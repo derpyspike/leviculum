@@ -52,7 +52,7 @@ use alloc::vec::Vec;
 
 use leviculum_lxmf::constants::{FIELD_CUSTOM_DATA, FIELD_CUSTOM_TYPE};
 use leviculum_lxmf::lev::{
-    DigestLine, GroupStatus, Lev, Member, MemberRung, Members, StandIn, CAP_GROUPS,
+    DigestLine, GroupCopy, GroupStatus, Lev, Member, MemberRung, Members, StandIn, CAP_GROUPS,
     CAP_PROPAGATION_RECEIPTS, CAP_READ_RECEIPTS, LEFT_OUT_FILE, LEFT_OUT_GONE, LEFT_OUT_PHOTO,
     LEFT_OUT_VOICE, MEMBER_ADMIN, MEMBER_JOINED, MEMBER_LEFT,
 };
@@ -454,70 +454,102 @@ pub fn is_state(body: &str, fields: &[Field]) -> bool {
         })
 }
 
+/// What a group's copy is judged for, the one difference between the
+/// chat and the map (the reviewer's decision D2 of order 1824).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopyUse {
+    /// A position booked under the copy's writer ([`super::copy_writer`],
+    /// order 1816): only a group the reader has joined speaks.
+    Book,
+    /// The writer a copy is drawn under in the chat ([`copy_writer`]): a
+    /// group the reader left or that ended also speaks for the copies the
+    /// home made before ([`GroupInfo::closed_at`]), so its history stays
+    /// drawn under its writers, as the chat drew every group's before
+    /// 1728. Such a copy moves no pin.
+    Draw,
+}
+
+/// Whether `info` may speak for a copy of `epoch` (`None` for a message
+/// that names none) at all, before its membership is asked (1702, 1728):
+/// the group does not name its own address as its inviter (a home
+/// invites from its admin, so that is a person's own word; the one place
+/// of this refusal), and the reader joined it by its own Join or made it
+/// ([`Standing::Joined`]: nothing else takes a group there); for
+/// [`CopyUse::Draw`] also a left or ended group, for a copy from before
+/// it closed. Never an invited group.
+fn speaks_for(info: &GroupInfo, epoch: Option<u64>, used: CopyUse) -> bool {
+    if info.inviter == Some(info.address) {
+        return false;
+    }
+    match info.standing {
+        Standing::Joined => true,
+        Standing::Invited => false,
+        Standing::Left | Standing::Ended => {
+            used == CopyUse::Draw
+                && info
+                    .closed_at
+                    .zip(epoch)
+                    .is_some_and(|(until, epoch)| epoch < until)
+        }
+    }
+}
+
+/// Whether the reader's group `source` vouches for `copy`'s writer, the
+/// one membership test of a group's copy (1728, 1816, the audit of
+/// 1824), which [`super::copy_writer`] hands the writer rule for the map
+/// and the chat alike: the group speaks for the copy (`speaks_for`),
+/// the copy's epoch is one the reader knows (at most the group's
+/// newest), and the membership at that epoch lists the writer
+/// ([`GroupMember::vouches_at`]).
+pub fn vouches_for(groups: &Groups, source: &[u8; 16], copy: &GroupCopy, used: CopyUse) -> bool {
+    groups.get(source).is_some_and(|info| {
+        speaks_for(info, Some(copy.epoch), used)
+            && copy.epoch <= info.epoch
+            && info
+                .members
+                .iter()
+                .any(|m| m.vouches_at(copy.epoch, &copy.sender))
+    })
+}
+
 /// The group a received `message` of `peer`'s conversation is a copy
-/// from, when that group may speak for the copy (1702, 1728): the
-/// message came in with a verified signature, the group does not name
-/// its own address as its inviter (a home invites from its admin, so
-/// that is a person's own word), and the reader joined it by its own
-/// Join or made it ([`Standing::Joined`]: nothing else takes a group
-/// there). A group the reader left or that ended speaks for the copies
-/// the home made before ([`GroupInfo::closed_at`]): its history stays
-/// drawn under its writers, as the chat drew every group's before 1728.
-/// Never for one of ours, a person's message or an invited group.
-///
-/// This is the chat's half: who a copy is DRAWN under. A copy's
-/// position is booked by the writer rule alone ([`super::copy_writer`],
-/// order 1816), which asks a joined group: a left or ended group's
-/// earlier copies are drawn under their writers but move no pin (the
-/// reviewer's decision D2 of order 1824).
+/// from, when that group may speak for the copy in the chat
+/// (`speaks_for` with [`CopyUse::Draw`]): the message came in with a
+/// verified signature. Never for one of ours or a person's message.
 pub fn copies_from<'a>(
     groups: &'a Groups,
     peer: &[u8; 16],
     message: &Message,
 ) -> Option<&'a GroupInfo> {
     let info = groups.get(peer)?;
-    if message.outbound
-        || message.signature != super::Signature::Verified
-        || info.inviter == Some(info.address)
-    {
+    if message.outbound || message.signature != super::Signature::Verified {
         return None;
     }
-    match info.standing {
-        Standing::Joined => Some(info),
-        Standing::Invited => None,
-        Standing::Left | Standing::Ended => {
-            let until = info.closed_at?;
-            let epoch = Lev::from_fields(&message.fields)?.group_copy?.epoch;
-            (epoch < until).then_some(info)
-        }
-    }
+    let epoch = Lev::from_fields(&message.fields)
+        .and_then(|lev| lev.group_copy)
+        .map(|copy| copy.epoch);
+    speaks_for(info, epoch, CopyUse::Draw).then_some(info)
 }
 
 /// The writer a group's copy is drawn under, its name and its text
-/// without the home's prefix ([`copy_of`]): a copy from a group
-/// [`copies_from`] accepts whose writer [`Lev::reading_writer`] credits
-/// by that group's membership, listed at the copy's epoch
-/// ([`GroupMember::vouches_at`]) — the test the writer rule makes
-/// ([`super::copy_writer`], 1728, 1816). A copy naming anybody else is
-/// drawn as the group's own text, under no writer, whatever its
-/// `"Name: "` prefix says.
+/// without the home's prefix ([`copy_of`]): a verified copy that came in,
+/// whose writer the one writer rule credits ([`super::copy_writer`] with
+/// [`CopyUse::Draw`], 1728, 1816). A copy naming anybody else is drawn
+/// as the group's own text, under no writer, whatever its `"Name: "`
+/// prefix says.
 pub fn copy_writer<'a>(
     groups: &'a Groups,
     peer: &[u8; 16],
     message: &'a Message,
 ) -> Option<([u8; 16], &'a str, &'a str)> {
-    let info = copies_from(groups, peer, message)?;
-    let owner = Lev::reading_writer(&message.fields, peer, true, |copy| {
-        copy.epoch <= info.epoch
-            && info
-                .members
-                .iter()
-                .any(|m| m.vouches_at(copy.epoch, &copy.sender))
-    });
+    if message.outbound || message.signature != super::Signature::Verified {
+        return None;
+    }
+    let owner = super::copy_writer(groups, *peer, &message.fields, true, CopyUse::Draw);
     let leviculum_lxmf::lev::ReadingOwner::Writer(_) = owner else {
         return None;
     };
-    copy_of(&message.body, &message.fields, Some(info))
+    copy_of(&message.body, &message.fields, groups.get(peer))
 }
 
 /// The writer of a group's copy and the text the home put after its
@@ -899,7 +931,13 @@ impl<B> UiModel<B> {
                 continue;
             }
             let verified = message.signature == super::Signature::Verified;
-            let owner = super::copy_writer(writers.groups, group, &message.fields, verified);
+            let owner = super::copy_writer(
+                writers.groups,
+                group,
+                &message.fields,
+                verified,
+                CopyUse::Book,
+            );
             let leviculum_lxmf::lev::ReadingOwner::Writer(copy) = owner else {
                 continue;
             };
@@ -4396,7 +4434,7 @@ mod tests {
                 }),
                 ..Lev::default()
             });
-            super::super::copy_writer(&model.groups, GROUP, &fields, true)
+            super::super::copy_writer(&model.groups, GROUP, &fields, true, CopyUse::Book)
         };
         // The gap first, then (rule 4, one interval) the epochs before it.
         for epoch in [3, 4, 1, 2] {

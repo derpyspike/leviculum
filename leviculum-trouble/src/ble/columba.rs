@@ -1555,4 +1555,220 @@ mod tests {
             ADV_BYTES_USED
         );
     }
+
+    /// Audit 1715: the seam implementation's fan-out. A flood with no
+    /// claimed slot queues nothing; a flood over two claimed (not yet
+    /// handshaked) slots reaches both and no other; a packet routed to a
+    /// peer no link carries reaches no slot and counts one route miss.
+    #[test]
+    fn audit_trouble_link_flood_and_route_miss() {
+        use leviculum_ble_link::BleLink;
+        use leviculum_ble_tx::TxAim;
+        let _ring = crate::log::test_ring::lock();
+        let max = crate::ble::MAX_LINKS;
+        let empty_all = || {
+            for i in 0..max {
+                while crate::ble::link_out(i).try_receive().is_ok() {}
+            }
+        };
+        empty_all();
+        let mut link = crate::ble::TroubleLink;
+
+        link.send(TxAim::Flood, vec![0xA5u8; 8]);
+        for i in 0..max {
+            assert!(
+                crate::ble::link_out(i).try_receive().is_err(),
+                "slot {i} got a flood with no link claimed"
+            );
+        }
+
+        let (a, _) = crate::ble::TX_DRAIN.claim_indexed(0x0101).unwrap();
+        let (b, _) = crate::ble::TX_DRAIN.claim_indexed(0x0202).unwrap();
+        link.send(TxAim::Flood, vec![1u8, 2, 3]);
+        for i in 0..max {
+            let got = crate::ble::link_out(i).try_receive().ok();
+            if i == a || i == b {
+                assert_eq!(got.as_deref(), Some(&[1u8, 2, 3][..]), "claimed slot {i}");
+            } else {
+                assert!(got.is_none(), "unclaimed slot {i} got the flood");
+            }
+        }
+
+        let before = crate::ble::BLE_TX_ROUTE_MISSES.load(core::sync::atomic::Ordering::Relaxed);
+        link.send(TxAim::Peer([0x77; 16]), vec![9u8; 4]);
+        for i in 0..max {
+            assert!(
+                crate::ble::link_out(i).try_receive().is_err(),
+                "a routed packet for an unknown peer reached slot {i}"
+            );
+        }
+        assert_eq!(
+            crate::ble::BLE_TX_ROUTE_MISSES.load(core::sync::atomic::Ordering::Relaxed),
+            before + 1
+        );
+
+        crate::ble::TX_DRAIN.release(0x0101);
+        crate::ble::TX_DRAIN.release(0x0202);
+        empty_all();
+    }
+
+    /// Everything the ring holds now, as text (empties it).
+    fn ring_text() -> String {
+        let mut out = String::new();
+        let mut chunk = [0u8; 256];
+        loop {
+            let n = crate::log::LOG_RING.read(&mut chunk);
+            if n == 0 {
+                return out;
+            }
+            out.push_str(&String::from_utf8_lossy(&chunk[..n]));
+        }
+    }
+
+    /// Closes the runtime log gate again when a test that opened it
+    /// ends, pass or fail: the log module's own test needs it closed.
+    struct GateRestore;
+
+    impl Drop for GateRestore {
+        fn drop(&mut self) {
+            crate::log::RUNTIME_DRAIN_OPEN.store(false, Ordering::Relaxed);
+        }
+    }
+
+    /// Audit 1715: the #422 ingress exclusion on this backend. With two
+    /// claimed links, one of them carrying a handshaked peer, a
+    /// `FloodExcept` naming that peer reaches the other link only, and a
+    /// packet routed to that peer reaches its link only.
+    #[test]
+    fn trouble_link_flood_except_skips_the_ingress_peer_and_routes_to_it() {
+        use leviculum_ble_link::BleLink;
+        use leviculum_ble_tx::{AddrType, TxAim};
+        let _ring = crate::log::test_ring::lock();
+        let max = crate::ble::MAX_LINKS;
+        let empty_all = || {
+            for i in 0..max {
+                while crate::ble::link_out(i).try_receive().is_ok() {}
+            }
+        };
+        empty_all();
+        crate::log::open_runtime_drain();
+        let _gate = GateRestore;
+        let _ = ring_text();
+        let ingress = [0x5e; 16];
+        let (a, _) = crate::ble::TX_DRAIN.claim_indexed(0x0303).unwrap();
+        let (b, _) = crate::ble::TX_DRAIN.claim_indexed(0x0404).unwrap();
+        let addr = PeerAddr {
+            value: 0x0000_c0ff_ee00_0001,
+            addr_type: AddrType::RandomStatic,
+        };
+        session::conn_link_up(a, addr);
+        assert!(session::peer_link_up(
+            a,
+            0x0303,
+            addr,
+            ingress,
+            Origin::Incoming,
+            23,
+            |_, _| (0, 0),
+        ));
+        let mut link = crate::ble::TroubleLink;
+
+        link.send(TxAim::FloodExcept(ingress), vec![4u8, 5, 6]);
+        assert!(
+            crate::ble::link_out(a).try_receive().is_err(),
+            "the ingress peer's own link got its flood back"
+        );
+        assert_eq!(
+            crate::ble::link_out(b).try_receive().ok().as_deref(),
+            Some(&[4u8, 5, 6][..]),
+            "the other claimed link missed the flood"
+        );
+        let log = ring_text();
+        assert!(
+            log.contains("BLE_TX_FLOOD links=1 len=3 excl_link=5e5e5e5e"),
+            "the flood line names one link and the excluded peer: {log}"
+        );
+
+        link.send(TxAim::Peer(ingress), vec![7u8; 3]);
+        assert_eq!(
+            crate::ble::link_out(a).try_receive().ok().as_deref(),
+            Some(&[7u8; 3][..]),
+            "the routed packet missed its peer's link"
+        );
+        assert!(
+            crate::ble::link_out(b).try_receive().is_err(),
+            "a routed packet reached a link of another peer"
+        );
+        let log = ring_text();
+        assert!(
+            log.contains(&format!(
+                "BLE_TX_ROUTE peer=5e5e5e5e conn=771 slot={a} len=3"
+            )),
+            "the route line names the peer, its link and the length: {log}"
+        );
+
+        session::peer_link_down(a);
+        session::conn_link_down(a);
+        crate::ble::TX_DRAIN.release(0x0303);
+        crate::ble::TX_DRAIN.release(0x0404);
+        let chans = leviculum_ble_link::channels();
+        while chans.peer_event_rx.try_receive().is_ok() {}
+        empty_all();
+    }
+
+    /// Audit 1715: the seam's name push reaches the name the next
+    /// advertising start carries.
+    #[test]
+    fn trouble_link_set_advertised_name_changes_the_gap_name() {
+        use leviculum_ble_link::BleLink;
+        use leviculum_core::node_name::NodeName;
+        let _ring = crate::log::test_ring::lock();
+        crate::name::note_boot_identity([0x12; 16]);
+        let mut link = crate::ble::TroubleLink;
+        let name = NodeName::parse(b"Nessa").unwrap();
+        link.set_advertised_name(name);
+        assert_eq!(crate::name::gap_name_now().as_str(), "Nessa");
+        crate::name::set_configured(None);
+        assert_eq!(crate::name::gap_name_now().as_str(), "LN-12121212");
+    }
+
+    /// A displacement hands the old link's queued packets to the new
+    /// link in order, as far as the new queue has room, and counts what
+    /// it could not place; the old queue ends empty.
+    #[test]
+    fn move_queued_carries_the_old_links_queue_over_and_counts_the_overflow() {
+        let _ring = crate::log::test_ring::lock();
+        let (old, new) = (2usize, 3usize);
+        for slot in [old, new] {
+            while super::super::link_out(slot).try_receive().is_ok() {}
+        }
+        for n in 0..3u8 {
+            super::super::link_out(old).try_send(vec![n]).unwrap();
+        }
+        for _ in 0..super::super::QUEUE_DEPTH - 1 {
+            super::super::link_out(new).try_send(vec![0xEE]).unwrap();
+        }
+        assert_eq!(move_queued(old, new), (1, 2));
+        assert!(super::super::link_out(old).try_receive().is_err());
+        let mut tail = None;
+        while let Ok(p) = super::super::link_out(new).try_receive() {
+            tail = Some(p);
+        }
+        assert_eq!(
+            tail,
+            Some(vec![0u8]),
+            "the oldest queued packet moved first"
+        );
+    }
+
+    /// The node's own address is the identity's first six bytes, little
+    /// endian, with the two top bits of the last set: random static,
+    /// and the same on every boot.
+    #[test]
+    fn the_own_address_is_random_static_from_the_identity() {
+        let mut identity = [0u8; 16];
+        identity[..6].copy_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+        let addr = crate::ble::own_address(&identity);
+        assert_eq!(addr, Address::random([0x01, 0x02, 0x03, 0x04, 0x05, 0xC6]));
+    }
 }

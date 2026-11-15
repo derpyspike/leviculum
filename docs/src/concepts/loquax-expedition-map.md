@@ -872,7 +872,7 @@ Additions (decided):
      pin moves for the relay or for the member — the member's own
      signed message is the only word about the member's position
      outside a vouched group copy. The rule is one function in LXMF,
-     `Lev::reading_writer` (`copy_writer`, `loquax/src/ui.rs:7074`, the
+     `Lev::reading_writer` (`copy_writer`, `loquax/src/ui.rs:7069`, the
      audits of 1757, 1787 and 1808), which the node helper's telemetry
      report and the liveness judgement go through too (rule 5: one
      definition of "this message names a copy's writer", so filing and
@@ -882,6 +882,17 @@ Additions (decided):
      message — on the arrival path and on the verdict path alike: the
      early-copy refiling skips the message that carried the membership
      (`file_early_copies`, the second auditor's audit of 1828).
+     A group's copy or a collector's row naming the READER moves no pin
+     of the reader's and stores nothing, on every filing path: the rule
+     sits where every received reading is filed (`UiModel::take_fix`,
+     the second audit of 1824, after the early-copy refiling had
+     bypassed a filter on the arrival path alone); a message the
+     reader's own address signed, from another of its devices, stays
+     its own. The membership test the map and the chat ask is one
+     function (`groups::vouches_for`, the audit of 1824), and the self-
+     inviter refusal is in it once; they differ in one parameter
+     (`CopyUse`: the map books only a joined group's copies, the chat
+     also draws a left or ended group's from before it closed).
      The chat, the info view and the reaction line draw a copy under its
      writer by the same rule (`groups::copy_writer`; 1696, 1702, 1728): a
      copy the rule does not credit is the group's own text under no
@@ -911,7 +922,7 @@ Additions (decided):
      in the conversation, marked as unverified, as LXMF shows it. The
      gate is one place, the single entry where a received message's
      position and group claims become state (`apply_message_claims`,
-     `loquax/src/ui.rs:6783`; the restore has the same gate at its own
+     `loquax/src/ui.rs:6775`; the restore has the same gate at its own
      entry, `learn_groups`); nothing behind the gate knows about
      verification. The held message is kept as received with its
      verdict pending: when the verdict says valid, its claims are
@@ -940,7 +951,7 @@ Additions (decided):
      named writer, for the source and for the group address — a group
      is not a place and gets no pin of its own. Nothing of it shows in
      the pin, the store, the bubble's position line or the Info
-     (`Writers`, `loquax/src/ui.rs:7103`); each refused reading is said
+     (`Writers`, `loquax/src/ui.rs:7091`); each refused reading is said
      in one structured `POSITION_REFUSED reason=…` event in `tui.log`,
      nothing on screen — exactly one, where the judging happens: at
      arrival for a verified message, at the valid verdict for a held
@@ -953,6 +964,11 @@ Additions (decided):
      1787: a copy that outruns its list would otherwise lose a member's
      position for good) — still held, though, while its signature is
      unverified.
+     **Pending the reviewer's written confirmation** (the audit of order
+     1824: this sentence came in from homenode, where master's said the
+     board believes no message at all, and D2 lets master win where the
+     sides differ; until confirmed, the board's trust in the home's
+     verdict is not a decision of this concept):
      The M9 board checks no signature (it holds no sender's key); it
      takes the home's verdict instead (1744): the home keeps its own
      verdict with each received archive entry (`archive.vouched`, schema
@@ -1198,9 +1214,6 @@ any other word that promises a vehicle gets through.
   longer the dark brown of steep rock (Lew, 2026-11-12, on the pilot's
   images). Whether the pastel or the strong style becomes the default
   is open.
-- Stage A landed with order 1743: ground packs, their cut and its
-  validation, and both styles on the shared painter
-  ([the map server, "Ground packs"](map-server.md#ground-packs)).
 - Why imagery cannot lead (the imagery survey): none of the sharp
   imagery in the OpenStreetMap editors may be shipped by our server
   (Bing, Esri, Mapbox, Maxar), and nothing sharper than 10 m is openly

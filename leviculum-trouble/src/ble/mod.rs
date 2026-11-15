@@ -83,7 +83,12 @@ pub const CENTRAL_LINKS: usize = 1;
 /// the heap budget pins.
 pub const MAX_LINKS: usize = PERIPH_LINKS + CENTRAL_LINKS;
 const _: () = assert!(MAX_LINKS == leviculum_heap_budget::MAX_LINKS);
-/// L2CAP channels the host reserves: one signalling and one ATT per link.
+/// Credit-based L2CAP channel slots the host reserves. ATT and the LE
+/// signalling channel ride fixed CIDs the host keeps no storage for, so
+/// Columba uses none of these (the scripted-controller test runs green
+/// with zero, 1715); two per link is a reserve for a peer that opens a
+/// credit-based channel, which the host then answers instead of
+/// refusing for want of a slot.
 const L2CAP_CHANNELS: usize = 2 * MAX_LINKS;
 /// The depth of each PER-LINK outbound queue. 4 was the nRF's
 /// SoftDevice-era bound; on this family a public relay's announce bursts

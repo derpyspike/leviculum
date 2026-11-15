@@ -36,6 +36,9 @@ leviculum-heap-budget = { path = "../heap-budget" }
 # The carrier-off drop run the interface counts instead of logging per
 # packet.
 leviculum-media-state = { path = "../media-state" }
+# The `[MEDIA]` drop-run lines, whose shape the LoRa interface writes
+# through the same function (1715's audit: one writer).
+leviculum-log-line = { path = "../log-line" }
 
 [features]
 # The seam's host fake for an embedder's own tests

@@ -2057,13 +2057,31 @@ async fn peer_session(
     prepare: impl FnOnce(&Path),
     messages: impl FnOnce([u8; 16]) -> Vec<(&'static str, Vec<(i64, Vec<u8>)>)>,
 ) -> (String, String) {
-    let (frames, log, _) =
-        peer_session_of(name, size, script_text, extra, prepare, messages, false).await;
+    let (frames, log, _) = peer_session_of(
+        name,
+        size,
+        script_text,
+        extra,
+        prepare,
+        messages,
+        false,
+        Vec::new(),
+    )
+    .await;
     (frames, log)
 }
 
+/// A second sender of [`peer_session_of`]: its identity and the fields of
+/// its one message.
+type Other = (Identity, Vec<(i64, Vec<u8>)>);
+
 /// [`peer_session`]; with `listen`, the peer also reads what loquax sends
 /// it until loquax quits, and returns each message's body and fields.
+/// Each of `others`, an identity and the fields of one message, sends that
+/// message from its own address before the peer sends its own: a second
+/// person in the reader's list (1702: a position of somebody else comes
+/// from that somebody, not from the peer's word).
+#[allow(clippy::too_many_arguments)]
 async fn peer_session_of(
     name: &str,
     size: &str,
@@ -2072,6 +2090,7 @@ async fn peer_session_of(
     prepare: impl FnOnce(&Path),
     messages: impl FnOnce([u8; 16]) -> Vec<(&'static str, Vec<(i64, Vec<u8>)>)>,
     listen: bool,
+    others: Vec<Other>,
 ) -> (String, String, Vec<(Vec<u8>, Vec<(i64, Vec<u8>)>)>) {
     let daemon = daemon(&format!("tui-{name}-{size}"), |b| b).await;
     let home = tempfile::tempdir().expect("tui home");
@@ -2129,6 +2148,46 @@ async fn peer_session_of(
     });
 
     wait_for_frame(&frames, "attached", Duration::from_secs(20)).await;
+    let options = SendOptions::new(daemon.instance.clone(), Duration::from_secs(20));
+    for (identity, fields) in others {
+        let storage = tempfile::tempdir().expect("the other's storage");
+        let mut other = attach(AttachConfig {
+            instance: daemon.instance.clone(),
+            config_dir: Some(daemon.config_dir.path().to_path_buf()),
+            storage_dir: storage.path().to_path_buf(),
+            identity,
+            display_name: Vec::new(),
+            notices: Terminal::new(storage.path().to_path_buf()),
+        })
+        .await
+        .expect("the other attaches");
+        let mut fanout = Fanout::default();
+        let mut tap = fanout.tap();
+        let clock = Tokio::new();
+        let send = run_send(
+            &mut tap,
+            SendRequest {
+                destination: our_address,
+                title: Vec::new(),
+                body: Vec::new(),
+                fields,
+                via: Via::Direct,
+            },
+            &options,
+            &clock,
+        );
+        tokio::pin!(send);
+        let sent = loop {
+            tokio::select! {
+                sent = &mut send => break sent,
+                _ = tokio::time::sleep(Duration::from_millis(20)) => {
+                    let _ = fanout.pump(&mut other.outbox);
+                }
+            }
+        };
+        assert!(sent.is_ok(), "the other's message did not go out: {sent:?}");
+        other.stop().await;
+    }
     let storage = tempfile::tempdir().expect("their storage");
     let mut them = attach(AttachConfig {
         instance: daemon.instance.clone(),
@@ -2140,7 +2199,6 @@ async fn peer_session_of(
     })
     .await
     .expect("the correspondent attaches");
-    let options = SendOptions::new(daemon.instance.clone(), Duration::from_secs(20));
     let mut fanout = Fanout::default();
     for (body, fields) in messages(our_address) {
         let mut tap = fanout.tap();
@@ -2303,6 +2361,7 @@ async fn the_terminal_sends_one_receipt_six_seconds_after_the_focus_came() {
         |_| {},
         messages,
         true,
+        Vec::new(),
     )
     .await;
     let elapsed = |prefix: &str| -> Vec<u64> {
@@ -2447,8 +2506,10 @@ async fn a_position_reports_line_says_live_recent_or_stale_and_no_badge_in(lang:
 }
 
 /// The map session (`docs/src/concepts/loquax-map.md`, slice (c)): the
-/// peer reports its own position and, as a collector, a stream row for a
-/// third peer three hours old and one for us. With the Florence fixture
+/// peer reports its own position and a stream naming a third peer, Carol,
+/// and us; Carol reports her own position, three hours old, and ours is
+/// kept from before. The peer is no collector the reader chose, so its
+/// rows draw nothing (1702, 1792). With the Florence fixture
 /// installed as the only region, `M` fits the three pins on it; `Tab`
 /// moves the selection; a drag that starts on the selected pin moves the
 /// map ten cells left and three up under the pointer and opens nothing;
@@ -2463,7 +2524,7 @@ const MAP_SCRIPT: &str = "\
 clock 2026-10-26 14:00
 until ready 20
 frame attached
-until received 1 60
+until received 2 60
 tick 12
 key M
 frame map
@@ -2495,9 +2556,6 @@ key esc
 frame report closed
 key q
 ";
-
-/// The third peer the stream reports.
-const CAROL: [u8; 16] = [0x33; 16];
 
 fn located(minutes_ago: i64, lat_e6: i32, lon_e6: i32) -> leviculum_lxmf::telemetry::Telemetry {
     use leviculum_lxmf::telemetry::{Location, Telemetry};
@@ -2534,41 +2592,78 @@ async fn map_session_of(name: &str, script: &str, graphics: &str) -> (String, St
             maps.join("firenze.lmr"),
         )
         .expect("install the fixture region");
-        // Carol's fix and our own, kept from before the session. Until the
-        // audit of 1787 they came as stream rows in the peer's message,
-        // which Loquax now files under nobody: the peer is no collector
-        // the reader chose, and one of the rows named the reader itself.
+        // Our own fix, kept from before the session. Until the audit of
+        // 1787 it came as a stream row in the peer's message, which Loquax
+        // now files under nobody: the peer is no collector the reader
+        // chose, and the row names the reader itself (1728).
         let ours = delivery_address(&fixed_identity(0x11)).expect("our address");
-        let theirs = delivery_address(&fixed_identity(0x22)).expect("their address");
-        let kept = |peer: [u8; 16], telemetry: leviculum_lxmf::telemetry::Telemetry| {
-            loquax::ui::history::StoreWrite::Position(loquax::telemetry::Fix {
-                peer,
-                via: theirs,
-                message: None,
-                received_at: Some(TELEMETRY_NOW),
-                location: telemetry.location.expect("a location"),
-                telemetry: telemetry.encode(),
-                source: loquax::telemetry::Source::Telemetry,
-            })
-        };
         let mut store =
             loquax::store::Store::open(&home.join(loquax::store::STORE_FILE), ours).expect("store");
+        let telemetry = located(1, 43_774_000, 11_258_000);
         store
-            .write(&[
-                kept(CAROL, located(180, 43_776_000, 11_266_000)),
-                kept(ours, located(1, 43_774_000, 11_258_000)),
-            ])
-            .expect("keep the fixes");
+            .write(&[loquax::ui::history::StoreWrite::Position(
+                loquax::telemetry::Fix {
+                    peer: ours,
+                    via: ours,
+                    message: None,
+                    received_at: Some(TELEMETRY_NOW),
+                    location: telemetry.location.expect("a location"),
+                    telemetry: telemetry.encode(),
+                    source: loquax::telemetry::Source::Telemetry,
+                },
+            )])
+            .expect("keep our fix");
     };
-    let messages = |_ours: [u8; 16]| {
-        let own = vec![(
-            leviculum_lxmf::constants::FIELD_TELEMETRY,
-            located(4, 43_775_000, 11_261_000).encode_field_value(),
-        )];
+    let messages = |ours: [u8; 16]| {
+        use leviculum_lxmf::msgpack::Number;
+        use leviculum_lxmf::telemetry::{encode_stream_field_value, StreamEntry};
+        // The peer's stream names Carol and the reader, newer than either's
+        // pin and somewhere else: had a row been filed, Carol's pin would
+        // lose its "3 h" and the reader's dot would move.
+        let row = |source: [u8; 16], telemetry: Vec<u8>| StreamEntry {
+            source: source.to_vec(),
+            timestamp: Number::Int(TELEMETRY_NOW),
+            telemetry,
+            appearance: None,
+        };
+        // Carol, the third peer, sends her own position (below); this row
+        // is the peer's word about her, from a deliverer the reader did
+        // not choose (1702, 1792).
+        let carol = delivery_address(&fixed_identity(0x33)).expect("Carol's address");
+        let stream = encode_stream_field_value(&[
+            row(carol, located(0, 43_772_000, 11_250_000).encode()),
+            row(ours, located(0, 43_778_000, 11_270_000).encode()),
+        ]);
+        let own = vec![
+            (
+                leviculum_lxmf::constants::FIELD_TELEMETRY,
+                located(4, 43_775_000, 11_261_000).encode_field_value(),
+            ),
+            (leviculum_lxmf::constants::FIELD_TELEMETRY_STREAM, stream),
+        ];
         vec![("", own)]
     };
+    // Carol's own position, three hours old, from Carol herself.
+    let carol = vec![(
+        fixed_identity(0x33),
+        vec![(
+            leviculum_lxmf::constants::FIELD_TELEMETRY,
+            located(180, 43_776_000, 11_266_000).encode_field_value(),
+        )],
+    )];
     let flag = format!("--graphics={graphics}");
-    peer_session(name, "80x24", script, &[&flag], install, messages).await
+    let (frames, log, _) = peer_session_of(
+        name,
+        "80x24",
+        script,
+        &[&flag],
+        install,
+        messages,
+        false,
+        carol,
+    )
+    .await;
+    (frames, log)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2680,6 +2775,14 @@ async fn the_map_shows_the_pins_on_the_region_and_the_outline_in_braille_and_hal
         assert!(!en || !reported.contains("z15"), "{reported}");
         assert!(!en || reported.contains("◉ them"), "{reported}");
         assert_eq!(frame(&frames, "report closed"), back);
+        // The peer's rows about Carol and about the reader were dropped, not
+        // filed (1702, 1792): one line for the message, two rows; Carol's
+        // pin kept her own three-hour-old report ("· 3 h" above).
+        assert!(
+            log.contains("TELEMETRY_ROWS_DROPPED")
+                && log.contains("rows=2 reason=no-chosen-collector"),
+            "{log}"
+        );
         all.push_str(&format!("=== {graphics} ===\n{frames}"));
     }
     all
@@ -2694,7 +2797,7 @@ const MAP_CYCLE_SCRIPT: &str = "\
 clock 2026-10-26 14:00
 until ready 20
 frame attached
-until received 1 60
+until received 2 60
 tick 12
 key M
 frame octant

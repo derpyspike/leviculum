@@ -570,15 +570,18 @@ def main():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text)
 
-    # The forge's gate container may not carry resvg; the push path and every
-    # coder pass do. Everything above this line needs no renderer at all, so
-    # the SVG and vector-drawable products are still held to the source there
-    # and only the pictures are skipped, with a line that says which.
+    # Without resvg the pictures cannot be compared, and a guard that could
+    # not compare is red, not green (the audit of order 1824): `nessa-check`
+    # sits in `guards` and `fast`, so a silent pass here would let every host
+    # without resvg call the icons and the M9 splash held to the source. The
+    # products above are still checked first, so the output names those too.
     if shutil.which("resvg") is None:
-        print("nessa-render: SKIP the pictures, no resvg on this host (sudo apt install resvg)")
         for path in differ:
             print(f"nessa-render: {path.relative_to(ROOT)} differs from the source's")
-        sys.exit(1 if differ else 0)
+        sys.exit(
+            "nessa-render: FAIL the pictures were not compared, no resvg on this "
+            "host (sudo apt install resvg)"
+        )
 
     # The rendered pictures are all from files written above, so a
     # hand-edited one is what `--check` compares, not a stale copy.

@@ -6798,7 +6798,7 @@ fn apply_message_claims<B>(
     let fields = message.fields.clone();
     // The copy's writer, judged before this message's own membership is
     // learned (the audit of 1787): no message vouches for its own claim.
-    let writer = copy_writer(&model.groups, source, &fields, true);
+    let writer = copy_writer(&model.groups, source, &fields, true, groups::CopyUse::Book);
     model.learn_group(source, false, &fields, Some(key));
     // The readings; the read-receipt handshake is not here (it is learned
     // for every message at arrival, verified or not — see the `Received`
@@ -6953,7 +6953,13 @@ fn take_settled<B>(
     if held {
         return Vec::new();
     }
-    let writer = copy_writer(&model.groups, peer, &message.fields, true);
+    let writer = copy_writer(
+        &model.groups,
+        peer,
+        &message.fields,
+        true,
+        groups::CopyUse::Book,
+    );
     model.learn_group(peer, false, &message.fields, None);
     let received = message.at.map(|at| at.unix_secs);
     let effects = read_positions(model, peer, &message, id, writer, received);
@@ -7042,12 +7048,7 @@ fn read_positions<B>(
             )));
         }
     }
-    // The reader's own place is never another's word (1728): a group's copy
-    // or row naming the reader moves no pin of the reader's. One the
-    // reader's own address signed (another device of the reader's) stays.
-    let own = model.address;
-    let anothers_word = |fix: &telemetry::Fix| Some(fix.peer) == own && fix.via != fix.peer;
-    for mut fix in read.fixes.into_iter().filter(|fix| !anothers_word(fix)) {
+    for mut fix in read.fixes {
         fix.message = Some(key);
         model.take_fix(fix);
     }
@@ -7058,35 +7059,30 @@ fn read_positions<B>(
 /// are (1687, the audits of 1757 and 1808; Lew 2026-11-13): LXMF's one
 /// rule, [`leviculum_lxmf::lev::Lev::reading_writer`], with the
 /// signature's verdict and what the reader knows of its groups. A group
-/// copy's named writer counts only when the signature was verified,
-/// `source` is a group the reader has joined, the copy's epoch is one
-/// the reader knows (at most the group's newest), and the membership at
-/// the copy's epoch lists the writer — listed from an epoch at or before
-/// the copy's ([`groups::GroupMember::since`]) and not left by then —
-/// and the `lev` map is the source's own word. A message that names no
-/// writer is the source's own reading. Everything else is NOBODY's: it
-/// moves no pin, no track, no liveness, for anyone (rule 2). A group is
-/// joined only by the reader's own Join or because the reader made it
-/// ([`groups`], the audit of 1787), so no message vouches for itself. A
-/// group that names its own address as its inviter vouches for nobody
-/// (1728): a home invites from its admin, so that is a person's own word
-/// about itself, kept in a store from before the invitation rule.
+/// copy's named writer counts only when the signature was verified and
+/// the reader's group `source` vouches for it ([`groups::vouches_for`],
+/// the one membership test, for the map and the chat alike): a group the
+/// reader has joined, at an epoch the reader knows, whose membership at
+/// that epoch lists the writer, and the `lev` map is the source's own
+/// word. `used` is the one difference between the two: a position is
+/// booked only from a joined group ([`groups::CopyUse::Book`]); the chat
+/// also draws a left or ended group's earlier copies under their writers
+/// ([`groups::CopyUse::Draw`], decision D2 of order 1824). A message that
+/// names no writer is the source's own reading. Everything else is
+/// NOBODY's: it moves no pin, no track, no liveness, for anyone (rule
+/// 2). A group is joined only by the reader's own Join or because the
+/// reader made it ([`groups`], the audit of 1787), so no message vouches
+/// for itself. A group that names its own address as its inviter
+/// vouches for nobody (1728).
 pub fn copy_writer(
     groups: &groups::Groups,
     source: [u8; 16],
     fields: &[Field],
     verified: bool,
+    used: groups::CopyUse,
 ) -> leviculum_lxmf::lev::ReadingOwner {
     leviculum_lxmf::lev::Lev::reading_writer(fields, &source, verified, |copy| {
-        groups.get(&source).is_some_and(|group| {
-            group.standing == groups::Standing::Joined
-                && group.inviter != Some(group.address)
-                && copy.epoch <= group.epoch
-                && group
-                    .members
-                    .iter()
-                    .any(|m| m.vouches_at(copy.epoch, &copy.sender))
-        })
+        groups::vouches_for(groups, &source, copy, used)
     })
 }
 
@@ -7119,6 +7115,7 @@ impl Writers<'_> {
             source,
             &message.fields,
             message.signature == Signature::Verified,
+            groups::CopyUse::Book,
         );
         let own = match (message.signature == Signature::Invalid, owner) {
             (true, _) => telemetry::Own::Refused,
@@ -7368,9 +7365,26 @@ impl<B> UiModel<B> {
         })
     }
 
+    /// The reader's own place is never another's word (1728, the second
+    /// audit of 1824): a group's copy or a collector's row naming the
+    /// reader (`via` is not the peer) moves no pin of the reader's and
+    /// stores nothing, whichever path files it. One the reader's own
+    /// address signed (another device of the reader's) stays.
+    fn anothers_word_about_the_reader(&self, fix: &Fix) -> bool {
+        Some(fix.peer) == self.address && fix.via != fix.peer
+    }
+
     /// One position received: the peer's latest when it is newer than what
     /// the screen holds, and for the store either way, which keeps the track.
+    /// Every received reading is filed here, a message's own and a stream
+    /// row's, at arrival ([`read_positions`]) and when a group's
+    /// membership comes after its copy ([`groups`]'s early copies), so the
+    /// rule that the reader's own place is never another's word lives here
+    /// once ([`Self::anothers_word_about_the_reader`]).
     fn take_fix(&mut self, fix: Fix) {
+        if self.anothers_word_about_the_reader(&fix) {
+            return;
+        }
         let newer = self
             .positions
             .get(&fix.peer)
@@ -15579,10 +15593,6 @@ pub(crate) mod tests {
         );
     }
 
-    /// Door 1, what still counts: a row naming the message's own signed
-    /// source, and in a joined group's copy a row naming its writer, a
-    /// present member (1728: not any present member); a row naming
-    /// somebody else, or a member who left, does not.
     #[test]
     fn restored_positions_keep_the_latest_and_a_deleted_conversation_takes_them() {
         let mut model = UiModel::<Field>::new(&[PEER]);
@@ -22909,12 +22919,15 @@ pub(crate) mod tests {
         assert_eq!(view(&model).messages_title_right, "pos 1 min");
     }
 
-    /// Door 1, what still counts: a row naming the message's own signed
-    /// source, and in a joined group's copy a row naming its writer, a
-    /// present member (1728: not any present member); a row naming
-    /// somebody else, or a member who left, does not.
+    /// Door 1 under order 1792/1816 (D2 of order 1824): a stream row is
+    /// filed only when its deliverer is a collector the reader chose.
+    /// Rows from any other deliverer are dropped, a row about the source
+    /// itself and a joined group's copy carrying rows alike. The positive
+    /// twin: the same rows from a chosen collector are filed under the
+    /// measurers they name, and a row naming the reader still moves no
+    /// pin of the reader's (1728).
     #[test]
-    fn a_stream_row_counts_for_its_source_or_a_joined_groups_copy_writer() {
+    fn stream_rows_from_a_deliverer_the_reader_did_not_choose_are_dropped() {
         let mut model = atk_model(&[(ATK_BOB, false), (ATK_STRANGER, true)]);
         arrive(
             &mut model,
@@ -22942,6 +22955,42 @@ pub(crate) mod tests {
         assert!(
             !model.positions.contains_key(&ATK_STRANGER),
             "a row of a member who left counted"
+        );
+        // The positive twin: the reader chose Mallory as a collector, so
+        // the same rows are filed under the measurers they name, via her.
+        let mut model = atk_model(&[(ATK_BOB, false), (ATK_STRANGER, true)]);
+        model.collectors.insert(ATK_MALLORY);
+        arrive(
+            &mut model,
+            ATK_MALLORY,
+            1,
+            "",
+            atk_stream(&[(ATK_MALLORY, 5_100_000)]),
+        );
+        assert_eq!(
+            model.positions[&ATK_MALLORY].location.latitude_e6,
+            5_100_000
+        );
+        arrive(
+            &mut model,
+            ATK_MALLORY,
+            2,
+            "",
+            atk_stream(&[
+                (ATK_BOB, 5_200_000),
+                (ATK_STRANGER, 5_300_000),
+                (ATK_ME, 5_400_000),
+            ]),
+        );
+        assert_eq!(model.positions[&ATK_BOB].location.latitude_e6, 5_200_000);
+        assert_eq!(model.positions[&ATK_BOB].via, ATK_MALLORY);
+        assert_eq!(
+            model.positions[&ATK_STRANGER].location.latitude_e6,
+            5_300_000
+        );
+        assert!(
+            !model.positions.contains_key(&ATK_ME),
+            "a chosen collector's row moved the reader's own pin"
         );
     }
 
@@ -23125,5 +23174,219 @@ pub(crate) mod tests {
                 .all(|b| b.writer.as_ref().map(|w| w.0) != Some(ATK_BOB)),
             "an invited group's text is drawn under Bob"
         );
+    }
+
+    /// Order 1824 audit: the 1744 store path (`take_settled`) under
+    /// master's rule. A verified copy the store settles from a group the
+    /// reader is only invited to, has left, or that ended (no closed_at)
+    /// moves no member's pin and no group pin. Joined is the positive
+    /// control.
+    #[test]
+    fn audit1824_a_settled_copy_from_a_group_not_joined_moves_no_pin() {
+        let mut then = atk_model(&[(ATK_BOB, false)]);
+        aud_arrive_unverified(&mut then, 1, "", atk_copy(ATK_BOB, 9_950_000));
+        let c = then.conversation(ATK_GROUP);
+        let mut kept = Vec::new();
+        then.conversations[c]
+            .messages
+            .for_each_mut(|m| kept.push(m.clone()));
+        let mut message = kept.pop().expect("one message");
+        message.signature = Signature::Verified;
+        for standing in [
+            groups::Standing::Invited,
+            groups::Standing::Left,
+            groups::Standing::Ended,
+        ] {
+            let mut model = atk_model(&[(ATK_BOB, false)]);
+            arrive(&mut model, ATK_GROUP, 2, "M: hi", aud_text(ATK_BOB, 0));
+            model.groups.get_mut(&ATK_GROUP).expect("group").standing = standing;
+            model.positions.clear();
+            update(
+                &mut model,
+                UiEvent::Settled {
+                    peer: ATK_GROUP,
+                    message: Some(message.clone()),
+                },
+            );
+            assert!(!model.positions.contains_key(&ATK_BOB), "{standing:?}");
+            assert!(!model.positions.contains_key(&ATK_GROUP), "{standing:?}");
+        }
+        // Positive control: the same message in a joined group moves Bob's pin.
+        let mut model = atk_model(&[(ATK_BOB, false)]);
+        arrive(&mut model, ATK_GROUP, 2, "M: hi", aud_text(ATK_BOB, 0));
+        model.positions.clear();
+        update(
+            &mut model,
+            UiEvent::Settled {
+                peer: ATK_GROUP,
+                message: Some(message),
+            },
+        );
+        assert_eq!(model.positions[&ATK_BOB].location.latitude_e6, 9_950_000);
+    }
+
+    /// Order 1824 audit: through the settled path, a joined group's copy
+    /// naming a non-member, a member who left, or coming from a group
+    /// that names its own address as inviter moves no pin.
+    #[test]
+    fn audit1824_a_settled_copy_of_a_non_member_or_from_a_self_inviter_moves_no_pin() {
+        let mut then = atk_model(&[(ATK_BOB, false)]);
+        aud_arrive_unverified(&mut then, 1, "", atk_copy(ATK_BOB, 9_940_000));
+        let c = then.conversation(ATK_GROUP);
+        let mut kept = Vec::new();
+        then.conversations[c]
+            .messages
+            .for_each_mut(|m| kept.push(m.clone()));
+        let mut message = kept.pop().expect("one message");
+        message.signature = Signature::Verified;
+        // Bob is no member.
+        let mut model = atk_model(&[(ATK_STRANGER, false)]);
+        arrive(&mut model, ATK_GROUP, 2, "M: hi", aud_text(ATK_STRANGER, 0));
+        model.positions.clear();
+        update(
+            &mut model,
+            UiEvent::Settled {
+                peer: ATK_GROUP,
+                message: Some(message.clone()),
+            },
+        );
+        assert!(!model.positions.contains_key(&ATK_BOB), "non-member");
+        assert!(
+            !model.positions.contains_key(&ATK_GROUP),
+            "non-member group pin"
+        );
+        // Bob left at the copy's epoch.
+        let mut model = atk_model(&[(ATK_BOB, true)]);
+        arrive(&mut model, ATK_GROUP, 2, "M: hi", aud_text(ATK_BOB, 0));
+        model.positions.clear();
+        update(
+            &mut model,
+            UiEvent::Settled {
+                peer: ATK_GROUP,
+                message: Some(message.clone()),
+            },
+        );
+        assert!(!model.positions.contains_key(&ATK_BOB), "member who left");
+        // A joined group that names its own address as its inviter.
+        let mut model = atk_model(&[(ATK_BOB, false)]);
+        arrive(&mut model, ATK_GROUP, 2, "M: hi", aud_text(ATK_BOB, 0));
+        model.groups.get_mut(&ATK_GROUP).expect("group").inviter = Some(ATK_GROUP);
+        model.positions.clear();
+        update(
+            &mut model,
+            UiEvent::Settled {
+                peer: ATK_GROUP,
+                message: Some(message),
+            },
+        );
+        assert!(!model.positions.contains_key(&ATK_BOB), "self-inviter");
+        assert!(
+            !model.positions.contains_key(&ATK_GROUP),
+            "self-inviter group pin"
+        );
+    }
+
+    /// Second auditor of order 1824: the early-copy refiling path
+    /// (`file_early_copies`) must keep the reader's own place out of a
+    /// group's word, as `read_positions` does.
+    #[test]
+    fn an_early_copy_naming_the_reader_moves_no_pin_of_the_readers_when_its_membership_comes() {
+        use leviculum_lxmf::lev::{Lev, Member, Members, MEMBER_JOINED};
+        let mut model = atk_model(&[(ATK_BOB, false), (ATK_ME, false)]);
+        // A copy at epoch 2, ahead of the reader's epoch 1: nobody's on arrival.
+        arrive(
+            &mut model,
+            ATK_GROUP,
+            1,
+            "",
+            atk_copy_at(ATK_ME, 9_990_000, 2),
+        );
+        assert!(
+            !model.positions.contains_key(&ATK_ME),
+            "direct path moved the reader's pin"
+        );
+        let _ = model.take_writes();
+        // The group's membership of epoch 2 arrives, listing the reader.
+        let mut fields = Vec::new();
+        Lev {
+            members: Some(Members {
+                epoch: 2,
+                members: vec![
+                    Member {
+                        address: ATK_BOB,
+                        name: "Bob".into(),
+                        flags: MEMBER_JOINED,
+                    },
+                    Member {
+                        address: ATK_ME,
+                        name: "Me".into(),
+                        flags: MEMBER_JOINED,
+                    },
+                ],
+                ended: false,
+            }),
+            ..Lev::default()
+        }
+        .put_into(&mut fields);
+        arrive(&mut model, ATK_GROUP, 2, "", fields);
+        assert!(
+            !model.positions.contains_key(&ATK_ME),
+            "the early-copy refiling moved the reader's own pin on the group's word"
+        );
+        let stored: Vec<[u8; 16]> = model
+            .take_writes()
+            .into_iter()
+            .filter_map(|w| match w {
+                StoreWrite::Position(f) => Some(f.peer),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !stored.contains(&ATK_ME),
+            "a position under the reader went to the store"
+        );
+    }
+
+    /// The positive control of the attack above: the same path files a
+    /// member's early copy once its membership comes.
+    #[test]
+    fn an_early_copy_of_a_member_is_filed_when_its_membership_comes() {
+        use leviculum_lxmf::lev::{Lev, Member, Members, MEMBER_JOINED};
+        let mut model = atk_model(&[(ATK_BOB, false), (ATK_ME, false)]);
+        arrive(
+            &mut model,
+            ATK_GROUP,
+            1,
+            "",
+            atk_copy_at(ATK_BOB, 9_880_000, 2),
+        );
+        assert!(
+            !model.positions.contains_key(&ATK_BOB),
+            "an early copy was filed at once"
+        );
+        let mut fields = Vec::new();
+        Lev {
+            members: Some(Members {
+                epoch: 2,
+                members: vec![
+                    Member {
+                        address: ATK_BOB,
+                        name: "Bob".into(),
+                        flags: MEMBER_JOINED,
+                    },
+                    Member {
+                        address: ATK_ME,
+                        name: "Me".into(),
+                        flags: MEMBER_JOINED,
+                    },
+                ],
+                ended: false,
+            }),
+            ..Lev::default()
+        }
+        .put_into(&mut fields);
+        arrive(&mut model, ATK_GROUP, 2, "", fields);
+        assert_eq!(model.positions[&ATK_BOB].location.latitude_e6, 9_880_000);
+        assert_eq!(model.positions[&ATK_BOB].via, ATK_GROUP);
     }
 }

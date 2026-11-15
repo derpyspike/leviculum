@@ -1567,6 +1567,7 @@ dependencies = [
  "leviculum-ble-tx",
  "leviculum-core",
  "leviculum-heap-budget",
+ "leviculum-log-line",
  "leviculum-media-state",
 ]
 

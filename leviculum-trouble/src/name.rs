@@ -42,6 +42,9 @@ mod tests {
 
     #[test]
     fn the_fallback_name_is_ln_hex8_of_the_identity() {
+        // The seam test in `ble::columba` sets a configured name; the
+        // shared lock keeps it out of this one's window.
+        let _ring = crate::log::test_ring::lock();
         note_boot_identity([0xab, 0xcd, 0x12, 0x34, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(gap_name_now().as_str(), "LN-abcd1234");
     }
