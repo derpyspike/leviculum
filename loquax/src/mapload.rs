@@ -490,6 +490,41 @@ pub struct Loader {
     offline_said: bool,
     /// The height packs' side (1863), `None` without a catalogue.
     heights: Option<Heights>,
+    /// The region files loads write in place now, running or paused
+    /// (1836): no eviction takes them.
+    writing: Writing,
+}
+
+/// The names of the region files being written in place, shared by the
+/// loader and its jobs (1836).
+type Writing = Arc<Mutex<Vec<String>>>;
+
+/// A file's place in [`Writing`] while its load holds it; gone with it.
+struct Written {
+    writing: Writing,
+    name: String,
+}
+
+impl Written {
+    fn new(writing: &Writing, name: &str) -> Self {
+        writing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(name.to_string());
+        Self {
+            writing: Arc::clone(writing),
+            name: name.to_string(),
+        }
+    }
+}
+
+impl Drop for Written {
+    fn drop(&mut self) {
+        let mut names = self.writing.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(n) = names.iter().position(|w| *w == self.name) {
+            names.remove(n);
+        }
+    }
 }
 
 /// The height packs' side of the loader (1863).
@@ -551,6 +586,7 @@ impl Loader {
             offline: false,
             offline_said: false,
             heights: None,
+            writing: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -1057,6 +1093,7 @@ impl Loader {
         self.want_heights_on_disk(&dir);
         let maps = self.maps.clone();
         let cache_bytes = self.cache_bytes;
+        let writing = Arc::clone(&self.writing);
         let Some(h) = self.heights.as_mut() else {
             return;
         };
@@ -1075,6 +1112,7 @@ impl Loader {
             bounds: item.want.bounds,
             region: item.region.clone(),
             cache_bytes,
+            writing,
         };
         let (tx, rx) = channel();
         let spawned = std::thread::Builder::new()
@@ -1352,6 +1390,7 @@ impl Loader {
             cache_bytes: self.cache_bytes,
             progress: Arc::clone(&progress),
             gate: Arc::clone(&gate),
+            writing: Arc::clone(&self.writing),
         };
         let spawned = std::thread::Builder::new()
             .name("map-load".to_string())
@@ -1411,6 +1450,8 @@ struct Job {
     progress: Arc<Mutex<LoadProgress>>,
     /// Looked at before every round (1836).
     gate: Arc<Gate>,
+    /// Holds this load's file while it writes it in place (1836).
+    writing: Writing,
 }
 
 impl Job {
@@ -1476,6 +1517,9 @@ impl Job {
             true => self.dir.join(format!("{name}{PART_SUFFIX}")),
             false => path.clone(),
         };
+        // No other load's eviction takes the file while this one writes
+        // it, running or paused (1836).
+        let _held = Written::new(&self.writing, &name);
         // As wide as the tile painters (1473): one core count for the map.
         let threads = crate::picture::cores();
         let maps = self.maps.clone();
@@ -1536,7 +1580,7 @@ impl Job {
                 return Err(error);
             }
         };
-        let evicted = evict(&self.dir, self.cache_bytes, &name)?;
+        let evicted = evict_keeping(&self.dir, self.cache_bytes, &kept(&self.writing, &name))?;
         Ok(Landed {
             bytes: loaded.stats.bytes,
             name,
@@ -1556,6 +1600,7 @@ struct HeightJob {
     bounds: Bounds,
     region: String,
     cache_bytes: u64,
+    writing: Writing,
 }
 
 impl HeightJob {
@@ -1624,7 +1669,11 @@ impl HeightJob {
             self.maps.changed();
         }
         if !landed.packs.is_empty() {
-            landed.evicted = evict(&self.dir, self.cache_bytes, &self.region)?;
+            landed.evicted = evict_keeping(
+                &self.dir,
+                self.cache_bytes,
+                &kept(&self.writing, &self.region),
+            )?;
         }
         Ok(landed)
     }
@@ -1774,6 +1823,22 @@ fn overlaps(a: &Bounds, b: &Bounds) -> bool {
 /// stay. A height pack goes with the last autoloaded region over its
 /// block (1863), whether that went now or before. The names removed.
 pub fn evict(dir: &Path, cap: u64, keep: &str) -> std::io::Result<Vec<String>> {
+    evict_keeping(dir, cap, &[keep.to_string()])
+}
+
+/// `keep` and every file a load writes now ([`Writing`], 1836).
+fn kept(writing: &Writing, keep: &str) -> Vec<String> {
+    let mut names = writing
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    names.push(keep.to_string());
+    names
+}
+
+/// [`evict`] keeping every name of `keep`: the region just loaded and the
+/// files loads still write, running or paused (1836).
+pub fn evict_keeping(dir: &Path, cap: u64, keep: &[String]) -> std::io::Result<Vec<String>> {
     let mut auto: Vec<(SystemTime, String, u64)> = Vec::new();
     let mut packs: Vec<(String, u64, Option<Bounds>)> = Vec::new();
     for entry in std::fs::read_dir(dir)? {
@@ -1825,7 +1890,7 @@ pub fn evict(dir: &Path, cap: u64, keep: &str) -> std::io::Result<Vec<String>> {
     orphans(&auto, &mut total, &mut evicted)?;
     let mut n = 0;
     while n < auto.len() && total > cap {
-        if auto[n].1 == keep {
+        if keep.contains(&auto[n].1) {
             n += 1;
             continue;
         }
@@ -2552,6 +2617,57 @@ mod tests {
         poll_until(&mut loader, 30, |s| landed(s, &a));
         let region = Region::open(File::open(&file).expect("open")).expect("read");
         region.verify().expect("the resumed load's region verifies");
+    }
+
+    /// A paused load's file is in the maps directory, an autoloaded
+    /// region like any other: a landing that evicts to stay under the cap
+    /// must not take a file a load is still writing (1836), or the load
+    /// writes on into a file no painter sees and fails when it is done.
+    #[test]
+    fn a_landing_does_not_evict_a_file_a_paused_load_writes() {
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        let dir = tempfile::tempdir().expect("tmp");
+        // A cap below any one region: every landing evicts all it may.
+        let mut loader = Loader::new(
+            Maps::new(Some(dir.path().to_path_buf())),
+            Source::Url(serve.url("o.pmtiles")),
+            1,
+        );
+        serve.hold_at(0);
+        let (a, b) = (nth(2), nth(3));
+        loader.schedule(vec![a.clone()], Vec::new(), 0);
+        loader.schedule(vec![b.clone()], Vec::new(), 10);
+        serve.release();
+        let a_file = || {
+            std::fs::read_dir(dir.path())
+                .expect("dir")
+                .filter_map(|e| e.ok())
+                .any(|e| auto_bounds(&e.file_name().to_string_lossy()) == Some(a.bounds))
+        };
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !(a_file()
+            && matches!(state_of(&loader, &a), Some(LoadState::Paused { bytes, .. }) if bytes > 0))
+        {
+            assert!(Instant::now() < deadline, "a never paused with its file");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let steps = poll_until(&mut loader, 20, |s| landed(s, &b));
+        let evicted: Vec<String> = steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::Done { landed, .. } => Some(landed.evicted.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert!(
+            evicted.iter().all(|n| auto_bounds(n) != Some(a.bounds)),
+            "the paused load's file was evicted: {evicted:?}"
+        );
+        let steps = poll_until(&mut loader, 30, |s| {
+            landed(s, &a) || s.iter().any(|s| matches!(s, Step::Failed { .. }))
+        });
+        assert!(landed(&steps, &a), "{steps:?}");
     }
 
     /// Once nothing for the screen runs or waits, the paused loads go on,
