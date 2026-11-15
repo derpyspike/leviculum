@@ -97,7 +97,7 @@ fn main() -> Res<()> {
     let mut first_tile: Option<u128> = None;
     let mut zoom_done: BTreeMap<u8, u128> = BTreeMap::new();
     let mut rounds = 0;
-    let mut progress = |p: leviculum_mapcut::cut::Progress| {
+    let mut progress = |p: leviculum_mapcut::load::LoadProgress| {
         rounds += 1;
         let ms = started.elapsed().as_millis();
         let Ok(region) = File::open(out)
@@ -127,9 +127,9 @@ fn main() -> Res<()> {
         println!(
             "ARRIVE round={rounds} ms={ms} zoom={} tiles={}/{} bytes={} complete={}",
             p.zoom,
-            p.done,
+            p.tiles_done,
             p.tiles,
-            p.bytes,
+            p.bytes_done,
             region.is_complete()
         );
     };
