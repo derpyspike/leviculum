@@ -50,7 +50,8 @@ reader never sees a half-written index.
 A pack is one logical cut of one data kind: `vectors` (a region file
 per catalogue entry, the format of [Loquax: the map](loquax-map.md)
 section "Region file") and, since order 1740, `elevation` (a height
-file, § "Height packs" below); shading and pois-as-their-own-tier get
+file, § "Height packs" below) and, since order 1743, ground packs
+(§ "Ground packs", not in the store yet); shading and pois-as-their-own-tier get
 their own `kind` strings in the same index without a format change.
 
 ## The pieces: a prefix split of the region file
@@ -487,6 +488,138 @@ The pilot's 30 blocks are 0.66 to 1.81 MB, 1.24 MB on average: a place
 costs one block, a box on a block corner up to four (about 5 MB, 25 s at
 200 kB/s). The cold tile is the shade plane's computation, which the
 relief store then holds for every tile over it.
+
+## Ground packs
+
+Order 1743, stage A of the Sahara ground map (section 12 of
+[Loquax as expedition map](loquax-expedition-map.md); Lew 2026-11-12:
+ground classes from radar coherence and backscatter, imagery and
+elevation, hamada a cool grey with a stone signature, a pastel and a
+strong style, both shipped). The byte layout is the height pack's
+container with its own magics, `LMGD` and `LMGB`
+(`leviculum_map::elevation::PackKind::Ground`, module doc of
+`leviculum-map/src/ground.rs`); a height reader refuses a ground pack by
+its first four bytes and the reverse. A tile is 256 x 256 class bytes
+(`leviculum_map::ground::Class`, 0 outside the cut) in one zstd frame
+with its checksum, at **z11** (66 m at 30 N; the radar is 90 m), in the
+height packs' z9 blocks of 4 x 4 tiles. z10 and z9 are derived on the
+device, each cell the class most of the cells under it hold, ties to the
+lower byte, the outside only where nothing else is.
+
+**Inputs**, the three order 1742 cleared and nothing else (its draft,
+`docs/drafts/africa-ground-map-licences.md`): Kellndorfer et al.'s
+seasonal Sentinel-1 coherence (median of the four seasons' 12-day
+coherence) and summer VV backscatter, GeoMAD 2024 (albedo from blue,
+green and red, NDVI from near infrared and red, read at the 40 m
+overview), and GLO-30 through a height pack the height cut already
+wrote, so the ground and the relief see the same heights. Water
+Observations from Space is not used: water is OpenStreetMap's, so open
+water is no class and a dry lake is found from flatness and paleness
+alone. The attribution and the notice name every input and its licence
+and say the classes describe ground, never whether it can be crossed.
+
+**The cut.** `leviculum-map-tool ground -o pack.lmg --bbox w,s,e,n
+--heights pack.lmh [--source dir]` walks the blocks north to south; each
+block is computed over a window reaching 512 z11 pixels (34 km) past it,
+so filters, flow accumulation, the dry lakes' size and the
+generalisation see the ground around it; only the block is written.
+Features per pixel: coherence, VV, albedo, NDVI, the steepest z12 slope
+under it, the height deviation within about 1 km, the height above the
+5 km mean, and D8 flow accumulation over a priority-flood filled
+surface. Catchments are counted inside the window only. The rules are
+the pilot's (`leviculum-map-tool/src/ground/rules.rs`, each with its
+reason), with one change, the **erg guard**: steep ground inside an erg
+(dune sand on more than 35 % of the 1.5 km around) stays dune sand. The
+pilot's mountain rule ((relief within 1 km over 25 m or slope over 18°)
+and coherence at least 0.45) also fired on the slip faces of Erg
+Chebbi's star dunes and painted grey specks there; `--pilot-rules` cuts
+without the guard for comparison. Generalisation as in the pilot: a 5 x 5
+mode filter, then patches under 12 pixels (about 5 ha) merged into the
+nearest kept class, wadis exempt. The output depends only on the input
+bytes, the box, the rules and the halo; a test cuts with one and three
+threads and compares bytes.
+
+**Validation**, a repeatable command: `leviculum-map-tool
+ground-validate pack.lmg --heights pack.lmh --tracks <protomaps> --bbox
+...` counts where OpenStreetMap's tracks (`kind_detail=track`, read at
+z13) run per class and per slope against how much ground each holds, in
+both halves of the box, and the dry lake against OpenStreetMap's water
+around Lac Iriki. Measured on the pilot box (29.3 to 31.5 N, 7.6 to
+3.7 W, 2026-11-15, Protomaps 2026-11-14, 17,701 km of tracks; the pilot
+counted 17,629 km and dropped tracks near towns, this command does not):
+
+| class | track share | area share | ratio | pilot ratio |
+|---|---|---|---|---|
+| gravel plain (reg) | 48.1 % | 31.6 % | 1.52 | 1.54 |
+| sand sheet | 8.1 % | 5.4 % | 1.50 | 1.41 |
+| wadi bed | 1.4 % | 0.9 % | 1.53 | 1.40 |
+| vegetation, oasis | 8.6 % | 2.9 % | 2.98 | 2.78 |
+| dry lake | 0.3 % | 0.3 % | 1.24 | 0.92 |
+| mountain | 16.1 % | 26.0 % | 0.62 | 0.73 |
+| uncertain | 9.0 % | 14.2 % | 0.64 | 0.57 |
+| dune sand | 0.8 % | 1.7 % | 0.46 | 0.50 |
+| hamada | 7.6 % | 17.0 % | 0.44 | 0.41 |
+
+Slopes, tracks against area: 0-2° 1.23, 2-5° 1.15, 5-10° 1.06, 10-20°
+0.65, above 20° 0.32 (pilot 0.40). Halves (west of 5.65 W / east): reg
+1.32 / 1.82, dune 0.50 / 0.40, hamada **0.79 / 0.36**. The class shares
+of the box are the pilot's within 0.3 points except the dry lake (0.3 %
+against 0.8 %, the water input gone).
+
+**Known weaknesses, kept visible.** Hamada against reg: the pilot
+relabelled it from the very tracks this validation counts, so the split
+is partly circular, and here it holds in the east half (0.36) but much
+less in the west (0.79). The dry lake: without the water input the class
+finds 65 % of OpenStreetMap's Lac Iriki (the pilot 94 %) and covers 1.69
+times its area in the window (precision 0.38; the pilot's was three
+times as wide). The erg guard changes no ratio above (the generalisation
+removes most specks already); what it changes is the Erg Chebbi core: 17
+mountain pixels (0.1 %) with the pilot's rules, none with the guard.
+
+**Drawing** (`leviculum_map::ground::paint_row`): each display pixel
+takes its class colour blended bilinearly between the four samples
+around it (soft borders), then the signature of the nearest class,
+anchored to the global pixel grid of the display zoom so tiles join
+(tested). The painter lays the ground after the land fill and before
+every other area, so OpenStreetMap's water, towns, fields and sand lie
+over it, and the relief shades both. The uncertain class and ground
+outside every pack stay the map's paper; above z9 nothing is drawn; the
+dark table draws none. Every colour, signature ink and the relief's
+shadow floor are in one table, `leviculum-map/src/ground_style.rs`,
+with the trial's final values (`mapout-r2/README_R2.md`); a test fails
+when a class has no row. The style is the config's `map_ground`
+(`pastel`, the default, `strong`, or `off`). The cost, measured on a
+1224 x 2197 frame over Erg Chebbi (release, this host): 18 ms at z12 and
+20 to 22 ms at z14 on top of 3 to 5 ms without, about 7 ns a pixel,
+paid once per tile by the frontends' tile caches.
+
+**The legend** names ground kinds only (`Class::name`: dune sand, sand
+sheet, rock plateau, gravel plain, mountain, dry lake, wadi bed,
+vegetation, not classified); a test holds that no legend text says
+passable, drivable or the like. Its source line
+(`leviculum_map::ground::SOURCE_LINE`) also says the relief is GLO-30's
+30 m and soft from zoom 14 on: it is not sharpened, the detail is not in
+the data.
+
+**Sizes.** The pilot box: 30 blocks, 480 tiles, **888,671 bytes** at
+zstd level 19, over 136,583 km² of blocks (6.5 bytes per km²; the pilot
+estimated 3.4 MB for z9 to z12 as WebP, which the derived zooms make
+unnecessary). Extrapolated at the same density: Morocco with Western
+Sahara (about 713,000 km²) about 4.6 MB, the Sahara (about 9.2 million
+km², about 2,000 blocks) about 60 MB, against the pilot's estimate of
+350 MB. The cut on this host, inputs local: 340 s wall for the box (11 s
+a block, four threads, 3.5 GB resident), about six hours for the
+Sahara; its reads, 218 MB of radar cells and 944 MB of GeoMAD overviews
+for the box with its halo, scaled by block area (67 times the box) give
+about 15 GB and 63 GB for the Sahara, an upper bound, since the box's
+reads include the halo past its edge.
+
+**Not in stage A:** a loader and catalogue for ground packs (they reach
+the maps directory by hand, as the height packs did before 1863), the
+phone's and the M9's style switch (the phone draws pastel, the M9
+none), a legend on screen and the credit screen's lines, barrier lines
+(their ink is undecided; the pilot's dark red read as roads) and
+interdune corridors (90 m is too coarse for them, the pilot measured).
 
 ## What this page does not decide
 
