@@ -199,6 +199,9 @@ skip  leviculum-rrc   session                   # replays recorded envelopes; th
 skip  leviculum-rrc   vectors                   # a vector corpus; the subject is the codec
 skip  leviculum-proxy log_backpressure           # spawns the proxy binary
 skip  leviculum-proxy proxy_control              # binds sockets under a tokio runtime
+skip  leviculum-std   audit_1898_first_install_pin # in-process transport: a first-installed replay loses the path at the bound (order 1905); subject is the code
+skip  leviculum-std   audit_1898_relayed_proof_pin # in-process transport: a relayed proof holds the path only up to the bound (order 1905); subject is the code
+skip  leviculum-std   audit_1898_reused_index    # in-process transport: a reused client index inherits no ownership (order 1905); subject is the code
 skip  leviculum-std   ble_handshake_primer       # btvirt + bluetoothd, no daemon; the #[ignore]d 1004 reproduction, run by name
 skip  leviculum-std   ble_adapter_return         # btvirt + two lnsd + bluetoothd; the #[ignore]d 600 reproduction, run by name
 skip  leviculum-std   ble_link_gap_floor         # btvirt + two lnsd + bluetoothd; an #[ignore]d measurement grid, run by name

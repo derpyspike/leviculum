@@ -1248,14 +1248,16 @@ pub const EVENT_CATALOG: &[EventSchema] = &[
         name: "PATH_UNRESPONSIVE",
         required_keys: &["dst", "next_hop", "iface", "path_hops"],
     },
-    // Order 1881, bounded by order 1898: an unresponsive mark was refused
-    // because the path is a connected local client's own (`iface`, reason
-    // `local_client_owns`: hops 0, no next hop, installed by the client
-    // first or proven over it); the client cannot have moved, so the path
-    // stays on the box.
+    // Order 1881, bounded by orders 1898 and 1905: an unresponsive mark was
+    // refused because the path is a connected local client's own (`iface`,
+    // reason `local_client_owns`: hops 0, no next hop, installed by the
+    // client first or proven over it) and fewer than
+    // LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT consecutive unproven expiries
+    // (`unproven`, counting this one) were held against it; the path stays
+    // on the box. At the limit the mark is taken.
     EventSchema {
         name: "PATH_KEPT_LOCAL",
-        required_keys: &["dst", "iface", "reason"],
+        required_keys: &["dst", "iface", "reason", "unproven"],
     },
     // Remaining `leviculum-core` transport events.
     EventSchema {

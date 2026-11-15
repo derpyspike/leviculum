@@ -893,17 +893,28 @@ pub trait Storage {
     /// Remove entries older than `expiry_ms`. Returns count removed.
     fn expire_local_client_known_dests(&mut self, now_ms: u64, expiry_ms: u64) -> usize;
 
-    // Local client path ownership (order 1898)
+    // Local client path ownership (orders 1898, 1905)
     /// Record that the local client on `iface_id` owns the path to
-    /// `dest_hash`: it installed the path before any copy of that emission
-    /// was heard, or a checked link proof for the destination came back
+    /// `dest_hash`, with no unproven link-request expiry counted against
+    /// it: it installed the first copy of that emission this daemon
+    /// remembers, or a checked link proof for the destination came back
     /// over its interface. Only an owned path is kept from an unresponsive
-    /// mark (`Transport::mark_path_unresponsive`).
+    /// mark (`Transport::mark_path_unresponsive`), and only below
+    /// `LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT` consecutive unproven expiries.
     ///
     /// The default keeps nothing, which is right for a store that never
     /// serves local clients (the boards): no path is owned, every path is
-    /// markable. A store behind a shared instance must override all four.
+    /// markable. A store behind a shared instance must override all five.
     fn set_local_path_owner(&mut self, _dest_hash: [u8; TRUNCATED_HASHBYTES], _iface_id: usize) {}
+
+    /// Count one more consecutive unproven link-request expiry against the
+    /// owner of the path to `dest_hash` and return the count so far
+    /// (order 1905). `set_local_path_owner` starts the count at zero again.
+    /// The default owns nothing and returns `u8::MAX`, which no hold
+    /// survives.
+    fn note_unproven_local_path_expiry(&mut self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> u8 {
+        u8::MAX
+    }
 
     /// The local client interface that owns the path to `dest_hash`, if any.
     fn local_path_owner(&self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<usize> {

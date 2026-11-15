@@ -111,6 +111,18 @@ const PATH_ENTRIES_DUMP_INTERVAL_MS: u64 = 5 * 60 * 1000;
 /// The reasoning for the value is on `handle_announce`.
 const ANNOUNCE_SLOW_MS: u64 = 100;
 
+/// How many consecutive unproven link-request expiries a local client's
+/// owned path survives before it is marked unresponsive like any other
+/// (order 1905). The owner keeps the path through
+/// `LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT - 1` dead requests, which covers a
+/// client that missed a request or two while busy; a checked link proof
+/// over the client or a new install by it starts the count again. A
+/// client that installed a path it cannot answer for (a replayed announce
+/// after an lnsd restart) loses it at the limit. Only expiries that reach
+/// the mark count: one inside `PATH_REQUEST_MIN_INTERVAL_MS` of the last
+/// path request for the destination is throttled before it.
+pub const LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT: u8 = 3;
+
 /// Draw ordinal of the announce-cap release delay
 /// (`Transport::cap_release_draw_ms`). The rebroadcast schedule uses
 /// `retries + 1` for its ordinals, a handful of small numbers; this one sits
@@ -3874,39 +3886,64 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Returns whether the path was marked. Every writer of the
     /// unresponsive state goes through here.
     ///
-    /// A path a connected local client owns is not marked (order 1881,
-    /// bounded by order 1898). The client sits on this host's IPC socket and
-    /// cannot have moved; an expired link request toward it says the client
-    /// did not answer, not that the route is wrong. Marking it let the next
-    /// relayed copy of the client's own emission (`unresponsive_same_
-    /// emission`) move the path off the box, and every link request for the
-    /// client was forwarded into the mesh (miauhaus, 2026-11-15: a 7-hop
-    /// copy via a backbone for two hours).
+    /// A path a connected local client owns is not marked, for a bounded
+    /// number of tries (order 1881, bounded by orders 1898 and 1905). The
+    /// client sits on this host's IPC socket and cannot have moved; an
+    /// expired link request toward it says the client did not answer, not
+    /// that the route is wrong. Marking it let the next relayed copy of the
+    /// client's own emission (`unresponsive_same_emission`) move the path
+    /// off the box, and every link request for the client was forwarded
+    /// into the mesh (miauhaus, 2026-11-15: a 7-hop copy via a backbone for
+    /// two hours).
     ///
     /// Owned means all of: the path's interface is a connected, online
     /// local client's; the path is at hops 0 with no next hop (the client's
     /// own announce, not a copy another transport node relayed to it); and
-    /// the client either installed the path before any copy of that
-    /// emission was heard here, or a link proof for the destination came
-    /// back over its interface (`Storage::local_path_owner`). A client that replays
-    /// a destination the network announced first, or hands in a relayed
-    /// HEADER_2 copy, owns nothing and its path is marked like any other.
-    /// The hold ends when the client disconnects (`set_local_client(id,
-    /// false)`) or an announce installs the destination from elsewhere.
-    /// Python marks every such path (Transport.py:746-753); the state is
-    /// ours alone, the wire is unchanged (deviation rule, P1).
+    /// the client installed the first copy of that emission this daemon
+    /// remembers, or a link proof for the destination, its signature
+    /// checked, came back over its interface (`Storage::local_path_owner`).
+    ///
+    /// Neither proves that the client hosts the destination. "First copy
+    /// this daemon remembers" is also met by a local process that hands in
+    /// a captured announce after an lnsd restart, a path expiry or an
+    /// eviction, and by a client with a faster route of its own. A proof
+    /// shows that the destination answered, and any relay can forward one.
+    /// So the hold is bounded: after `LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT`
+    /// consecutive calls here with no checked proof over the client in
+    /// between (in practice: unproven one-hop link-request expiries), the
+    /// ownership ends and the path is marked like any other. A checked proof
+    /// or a new install by the client starts the count again
+    /// (`Storage::note_unproven_local_path_expiry`). A client that relays
+    /// for a destination it does not host therefore keeps the path while
+    /// the destination keeps answering through it, which is a working path
+    /// (accepted under the deviation rule: wire unchanged, Python peers'
+    /// links still reach the destination, P1 keeps a proven route).
+    ///
+    /// A client that replays a destination the network announced first, or
+    /// hands in a relayed HEADER_2 copy, owns nothing and its path is marked
+    /// at once. The hold also ends when the client disconnects
+    /// (`set_local_client(id, false)`) or an announce installs the
+    /// destination from elsewhere. Python marks every such path
+    /// (Transport.py:746-753); the state is ours alone, the wire is
+    /// unchanged (deviation rule, P1).
     pub fn mark_path_unresponsive(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
         let Some(path) = self.storage.get_path(dest_hash) else {
             return false;
         };
+        let iface = path.interface_index;
         if self.local_client_owns(dest_hash, path) {
-            crate::tracing::debug!(
-                event = "PATH_KEPT_LOCAL",
-                dst = %HexShort(dest_hash),
-                iface = %self.iface_name(path.interface_index),
-                reason = "local_client_owns",
-            );
-            return false;
+            let unproven = self.storage.note_unproven_local_path_expiry(dest_hash);
+            if unproven < LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT {
+                crate::tracing::debug!(
+                    event = "PATH_KEPT_LOCAL",
+                    dst = %HexShort(dest_hash),
+                    iface = %self.iface_name(iface),
+                    reason = "local_client_owns",
+                    unproven = unproven,
+                );
+                return false;
+            }
+            self.storage.clear_local_path_owner(dest_hash);
         }
         self.storage
             .set_path_state(*dest_hash, PathState::Unresponsive);
@@ -6620,7 +6657,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// recall source is the cached announce for the destination
     /// (`get_announce_cache`, keyed by destination hash, holding the raw announce
     /// whose payload starts with the 64-byte public key), the same source the
-    /// link-request path uses at transport.rs:8486. A destination with no cached
+    /// link-request path uses at transport.rs:8523. A destination with no cached
     /// announce cannot be associated with an identity, so it is left untouched,
     /// exactly as Python keeps a path whose `Identity.recall` returns `None`.
     ///
@@ -7421,7 +7458,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             path_response = is_path_response,
         );
 
-        // Gate on the already-incremented hops (transport.rs:1825 ran in the
+        // Gate on the already-incremented hops (transport.rs:1837 ran in the
         // inbound path before handle_announce, and local-client/shared-instance
         // accounting has already been applied there). Announces whose hop count
         // exceeds max_hops are neither stored in the path table nor scheduled
@@ -12909,7 +12946,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 // Emit the STORED path-table count, matching Python
                 // Transport.py:2956 (`packet.hops = path_table[dst][IDX_PT_HOPS]`).
                 // The cached raw's hop byte is the PRE-increment wire value
-                // (`stored - 1`): the receipt increment (`transport.rs:2973`) only
+                // (`stored - 1`): the receipt increment (`transport.rs:2985`) only
                 // touches the in-memory packet, never the raw buffer stashed by
                 // `set_announce_cache`. Using it here would put `stored - 1` on the
                 // wire and every peer that learns via this response would be one hop
@@ -19306,7 +19343,7 @@ mod tests {
             // stored timebase, must be rejected. Acceptance is observed via
             // the PathFound event, which fires only when the table updates.
             // (The rejected blob is still RECORDED for replay detection —
-            // `random_blobs` (transport.rs:8308), a deliberate anti-replay
+            // `random_blobs` (transport.rs:8345), a deliberate anti-replay
             // extension — so the blob count is not a rejection indicator.)
             transport
                 .clock
@@ -25600,7 +25637,7 @@ mod tests {
         // (PATHFINDER_MAX_HOPS=128) must NOT be stored in the path table nor
         // scheduled for rebroadcast, mirroring Python RNS Transport.py:1750
         // (`local_and_hops_condition = packet.hops < PATHFINDER_M+1`, M=128).
-        // The inbound path increments hops once (transport.rs:1825) before
+        // The inbound path increments hops once (transport.rs:1837) before
         // handle_announce, so `packet.hops` inside the handler is already the
         // post-increment value — same accounting as the RNS gate.
         #[test]
@@ -29075,6 +29112,28 @@ mod tests {
             assert!(!transport.storage().has_link_entry(&link_id));
         }
 
+        /// As [`expire_one_hop_link_request`], after the path-request
+        /// throttle has run out, so the expiry reaches sub-case 4 and is
+        /// counted against an owned path (order 1905). Expiries inside
+        /// `PATH_REQUEST_MIN_INTERVAL_MS` of the last path request are
+        /// throttled and do not reach the mark at all.
+        fn expire_counted_one_hop_link_request(
+            transport: &mut Transport<MockClock, MemoryStorage>,
+            link_id: [u8; TRUNCATED_HASHBYTES],
+            next_hop_iface: usize,
+            received_iface: usize,
+            dest_hash: [u8; TRUNCATED_HASHBYTES],
+        ) {
+            transport.clock.advance(PATH_REQUEST_MIN_INTERVAL_MS);
+            expire_one_hop_link_request(
+                transport,
+                link_id,
+                next_hop_iface,
+                received_iface,
+                dest_hash,
+            );
+        }
+
         /// A link request toward `dest`, forwarded over `local`, is proven by
         /// a link proof signed with the destination's key that comes back
         /// over `local` (the client answered for the destination).
@@ -29145,13 +29204,13 @@ mod tests {
             );
         }
 
-        /// Order 1898 (audit of 1881): a local client cannot hold the path of
-        /// a destination it does not host. The backbone installs the path at
-        /// hops 2; a local client replays the same emission at hops 0 and
-        /// takes it; a link request from a one-hop initiator expires; the
-        /// backbone's copy comes again and must win the path back.
+        /// Order 1898 (audit of 1881), the pass's own variant: the backbone
+        /// installs the path at hops 2; twelve seconds later a local client
+        /// replays the same emission at hops 0 and takes it; a link request
+        /// from a one-hop initiator expires; the backbone's copy comes again
+        /// and must win the path back.
         #[test]
-        fn a_local_clients_replay_of_a_network_destination_is_not_pinned() {
+        fn a_local_clients_replay_twelve_seconds_later_is_not_pinned() {
             let mut transport = make_transport_enabled();
             let local = transport.register_interface(Box::new(MockInterface::new("local", 1)));
             let backbone = transport.register_interface(Box::new(MockInterface::new("bb", 2)));
@@ -29195,6 +29254,263 @@ mod tests {
                 (backbone, 2),
                 "the backbone's copy must take the path back from the replaying client"
             );
+        }
+
+        /// Order 1905, the auditor's test of order 1898: the backbone
+        /// installs the path, one second later a local client replays the
+        /// same emission (packet hashes cleared, the result ignored), a
+        /// one-hop link request expires, and the backbone's copy must win.
+        #[test]
+        fn a_local_clients_replay_of_a_network_destination_is_not_pinned() {
+            let mut transport = make_transport_enabled();
+            let local = transport.register_interface(Box::new(MockInterface::new("local", 1)));
+            let backbone = transport.register_interface(Box::new(MockInterface::new("bb", 2)));
+            transport.set_local_client(local, true);
+
+            let dest = make_test_dest();
+            let dest_hash = dest.hash().into_bytes();
+            let rh = make_random_hash([0x26, 0x27, 0x28, 0x29, 0x2A], 9050);
+            let network = make_announce_raw_with_random_hash(&dest, 1, &rh);
+            transport.process_incoming(backbone, &network).unwrap();
+            transport.drain_actions();
+
+            transport.clock.advance(1_000);
+            transport.storage_mut().clear_packet_hashes();
+            let replay = make_announce_raw_with_random_hash(&dest, 0, &rh);
+            let _ = transport.process_incoming(local, &replay);
+            transport.drain_actions();
+
+            expire_one_hop_link_request(
+                &mut transport,
+                [0xC6; TRUNCATED_HASHBYTES],
+                local,
+                backbone,
+                dest_hash,
+            );
+
+            transport.storage_mut().clear_packet_hashes();
+            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
+            transport.process_incoming(backbone, &network).unwrap();
+            transport.drain_actions();
+            let path = transport.storage().get_path(&dest_hash).unwrap();
+            assert_eq!(
+                (path.interface_index, path.hops),
+                (backbone, 2),
+                "the backbone's copy must hold the path"
+            );
+        }
+
+        /// Order 1905: a replay after an lnsd restart. The transport is fresh,
+        /// so the client's hops-0 copy of a destination it does not host is
+        /// the first copy this daemon remembers and makes the client the
+        /// owner. The network copy of the same emission arrives 12 s later
+        /// and is refused (the same emission at more hops). The hold lasts
+        /// only for `LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT` consecutive unproven
+        /// one-hop link requests; after that the path is marked, and the
+        /// network copy takes it back.
+        #[test]
+        fn a_replay_after_a_restart_holds_a_foreign_path() {
+            let mut transport = make_transport_enabled();
+            let local = transport.register_interface(Box::new(MockInterface::new("local", 1)));
+            let network = transport.register_interface(Box::new(MockInterface::new("net", 2)));
+            transport.set_local_client(local, true);
+
+            let dest = make_test_dest();
+            let dest_hash = dest.hash().into_bytes();
+            let rh = make_random_hash([0x81, 0x82, 0x83, 0x84, 0x85], 9700);
+            let replay = make_announce_raw_with_random_hash(&dest, 0, &rh);
+            transport.process_incoming(local, &replay).unwrap();
+            transport.drain_actions();
+            let path = transport.storage().get_path(&dest_hash).unwrap();
+            assert_eq!((path.interface_index, path.hops), (local, 0));
+
+            transport.clock.advance(12_000);
+            let copy = make_announce_raw_with_random_hash(&dest, 1, &rh);
+            let _ = transport.process_incoming(network, &copy);
+            transport.drain_actions();
+
+            let limit = usize::from(LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT);
+            for i in 0..limit {
+                expire_counted_one_hop_link_request(
+                    &mut transport,
+                    [0xD0 + i as u8; TRUNCATED_HASHBYTES],
+                    local,
+                    network,
+                    dest_hash,
+                );
+                assert_eq!(
+                    transport.path_is_unresponsive(&dest_hash),
+                    i + 1 == limit,
+                    "expiry {} of {}: kept below the bound, marked at it",
+                    i + 1,
+                    limit
+                );
+            }
+
+            transport.storage_mut().clear_packet_hashes();
+            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
+            transport.process_incoming(network, &copy).unwrap();
+            transport.drain_actions();
+            let path = transport.storage().get_path(&dest_hash).unwrap();
+            assert_eq!(
+                (path.interface_index, path.hops),
+                (network, 2),
+                "after the bound the network copy takes the path back"
+            );
+        }
+
+        /// Order 1905: a disconnect forgets the client's ownership, so a new
+        /// client under the same interface index inherits nothing.
+        #[test]
+        fn a_disconnect_forgets_the_clients_ownership() {
+            let mut transport = make_transport_enabled();
+            let local = transport.register_interface(Box::new(MockInterface::new("local", 1)));
+            let _backbone = transport.register_interface(Box::new(MockInterface::new("bb", 2)));
+            transport.set_local_client(local, true);
+
+            let dest = make_test_dest();
+            let dest_hash = dest.hash().into_bytes();
+            let rh = make_random_hash([0x91, 0x92, 0x93, 0x94, 0x95], 9800);
+            let own = make_announce_raw_with_random_hash(&dest, 0, &rh);
+            transport.process_incoming(local, &own).unwrap();
+            transport.drain_actions();
+            assert_eq!(
+                transport.storage().local_path_owner(&dest_hash),
+                Some(local)
+            );
+
+            transport.set_local_client(local, false);
+            assert_eq!(
+                transport.storage().local_path_owner(&dest_hash),
+                None,
+                "a departed client owns nothing"
+            );
+
+            transport.set_local_client(local, true);
+            assert!(transport.storage().has_path(&dest_hash));
+            assert!(
+                transport.mark_path_unresponsive(&dest_hash),
+                "a new client under the reused index inherits no ownership"
+            );
+        }
+
+        /// Order 1905, the positive twin of the bound: an owned path survives
+        /// `LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT - 1` consecutive dead requests,
+        /// and any number of them while a checked proof comes back over the
+        /// client in between.
+        #[test]
+        fn an_owned_path_survives_dead_requests_below_the_bound_and_with_proofs_between() {
+            let mut transport = make_transport_enabled();
+            let local = transport.register_interface(Box::new(MockInterface::new("local", 1)));
+            let backbone = transport.register_interface(Box::new(MockInterface::new("bb", 2)));
+            transport.set_local_client(local, true);
+
+            let dest = make_test_dest();
+            let dest_hash = dest.hash().into_bytes();
+            let rh = make_random_hash([0xA1, 0xA2, 0xA3, 0xA4, 0xA5], 9900);
+            let own = make_announce_raw_with_random_hash(&dest, 0, &rh);
+            transport.process_incoming(local, &own).unwrap();
+            transport.drain_actions();
+
+            let below = usize::from(LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT) - 1;
+            let mut id = 0x10u8;
+            for _round in 0..4 {
+                for _ in 0..below {
+                    expire_counted_one_hop_link_request(
+                        &mut transport,
+                        [id; TRUNCATED_HASHBYTES],
+                        local,
+                        backbone,
+                        dest_hash,
+                    );
+                    id += 1;
+                    assert!(
+                        !transport.path_is_unresponsive(&dest_hash),
+                        "an owned path survives dead requests below the bound"
+                    );
+                }
+                prove_link_over(
+                    &mut transport,
+                    [id; TRUNCATED_HASHBYTES],
+                    local,
+                    backbone,
+                    &dest,
+                );
+                id += 1;
+            }
+            assert_eq!(
+                transport.storage().local_path_owner(&dest_hash),
+                Some(local)
+            );
+            assert!(!transport.path_is_unresponsive(&dest_hash));
+        }
+
+        /// Order 1905, declared as PINNING behaviour accepted under the
+        /// deviation rule: a proof over the client shows that the destination
+        /// answered, not that the client hosts it, since a client that relays
+        /// the link request elsewhere returns the same proof. Such a client
+        /// gets the same bounded hold as an owner: it keeps the path while
+        /// proofs come back and loses it after
+        /// `LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT` consecutive unproven requests.
+        #[test]
+        fn a_relayed_proof_holds_the_path_only_up_to_the_bound() {
+            let mut transport = make_transport_enabled();
+            let local = transport.register_interface(Box::new(MockInterface::new("local", 1)));
+            let backbone = transport.register_interface(Box::new(MockInterface::new("bb", 2)));
+            transport.set_local_client(local, true);
+
+            let dest = make_test_dest();
+            let dest_hash = dest.hash().into_bytes();
+            let rh = make_random_hash([0xB1, 0xB2, 0xB3, 0xB4, 0xB5], 9950);
+            let network = make_announce_raw_with_random_hash(&dest, 1, &rh);
+            transport.process_incoming(backbone, &network).unwrap();
+            transport.drain_actions();
+            transport.clock.advance(12_000);
+            let replay = make_announce_raw_with_random_hash(&dest, 0, &rh);
+            transport.process_incoming(local, &replay).unwrap();
+            transport.drain_actions();
+            assert_eq!(
+                transport
+                    .storage()
+                    .get_path(&dest_hash)
+                    .unwrap()
+                    .interface_index,
+                local
+            );
+
+            // The client relays one link request to the real destination and
+            // its proof comes back over the client's interface.
+            prove_link_over(
+                &mut transport,
+                [0xE0; TRUNCATED_HASHBYTES],
+                local,
+                backbone,
+                &dest,
+            );
+            assert_eq!(
+                transport.storage().local_path_owner(&dest_hash),
+                Some(local)
+            );
+
+            let limit = usize::from(LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT);
+            for i in 0..limit {
+                expire_counted_one_hop_link_request(
+                    &mut transport,
+                    [0xE1 + i as u8; TRUNCATED_HASHBYTES],
+                    local,
+                    backbone,
+                    dest_hash,
+                );
+                assert_eq!(transport.path_is_unresponsive(&dest_hash), i + 1 == limit);
+            }
+            assert_eq!(transport.storage().local_path_owner(&dest_hash), None);
+
+            transport.storage_mut().clear_packet_hashes();
+            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
+            transport.process_incoming(backbone, &network).unwrap();
+            transport.drain_actions();
+            let path = transport.storage().get_path(&dest_hash).unwrap();
+            assert_eq!((path.interface_index, path.hops), (backbone, 2));
         }
 
         /// Order 1898: the exemption ends with the client's connection. A
@@ -29415,8 +29731,11 @@ mod tests {
             );
         }
 
-        /// Order 1898: a kept path logs no PATH_UNRESPONSIVE and installs no
-        /// next-hop refusal in sub-case 4.
+        /// Order 1898, PINS EXISTING BEHAVIOUR: a kept path is not marked and
+        /// installs no next-hop refusal in sub-case 4. It cannot tell the
+        /// sub-case 4 change of 1898 apart from the code before it: an owned
+        /// path has no next hop, so `refuse_unresponsive_next_hop` returns at
+        /// its `let Some(next_hop) = path.next_hop else` either way.
         #[test]
         fn a_kept_local_path_gets_no_next_hop_refusal() {
             let mut transport = make_transport_enabled();
