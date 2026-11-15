@@ -1095,11 +1095,6 @@ impl<W: Write + Seek> Streaming<W> {
         self.done
     }
 
-    /// The rounds of the cut, and how many are written.
-    pub fn rounds_written(&self) -> (usize, usize) {
-        (self.next, self.spans.len())
-    }
-
     /// The tiles of the round [`round`](Self::round) writes next, `None`
     /// once every round is written.
     pub fn next_round(&self) -> Option<&[TileId]> {
