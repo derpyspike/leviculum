@@ -1314,6 +1314,59 @@ fn ratspeak_on_a_mailbox_the_history_goes_into_the_archive_for_the_clients() {
     );
 }
 
+/// 1894: the phone reads a pull's imported history off its session's lock,
+/// on a connection of its own, while the pump commits one message after
+/// another. Reproduced on 9b9b3be38 under a quarter of a CPU, that read
+/// waited out the store's busy time ("database is locked"), the session
+/// said "not shown", and the Ratspeak and NomadNet conversations never
+/// reached the screen: the next pulls found the rows held (`new=0`) and
+/// read nothing again, though the store kept all of them. A read that
+/// missed is done again on the session's own connection, which its own
+/// commits cannot lock out.
+#[test]
+fn a_pulled_import_the_side_read_missed_is_shown_from_the_sessions_store() {
+    let dir = tempfile::tempdir().expect("dir");
+    let rat = ratspeak_db(dir.path(), 45);
+    let home = home_with(dir.path(), &rat.own);
+    let me = address(&rat.own);
+    make_mailbox(&home, me);
+    let found = import::sniff(&rat.db).expect("db");
+    import::import(&found, &home, ALL, false).expect("import");
+    let entries: Vec<Vec<u8>> = Store::open_in(&home, me)
+        .expect("store")
+        .archive_since(0, usize::MAX)
+        .expect("archive")
+        .entries
+        .into_iter()
+        .filter(|e| e.kind == loquax::home::KIND_IMPORTED)
+        .map(|e| e.packed)
+        .collect();
+    let client = dir.path().join("client");
+    std::fs::create_dir_all(&client).expect("client");
+    let public = rat.own.public_key_bytes();
+    let new = loquax::home::runner::keep_imported(&client, &public, &entries).expect("keep");
+    assert_eq!(new, 4);
+    // The session's own connection, and a screen that has none of it yet.
+    let store = Store::open_in(&client, me).expect("the session's store");
+    let mut model = loquax::ui::UiModel::<leviculum_ui::input::Line>::new(&[]);
+    let missed = Err("the message store: database is locked".to_string());
+    let shown = loquax::home::runner::show_pulled(&mut model, &store, missed);
+    assert_eq!(shown, Ok(()), "the session's own read");
+    let bodies = |peer: [u8; 16]| -> Vec<String> {
+        model
+            .conversations
+            .iter()
+            .find(|c| c.peer == peer)
+            .map(|c| c.messages.iter().map(|m| m.body.clone()).collect())
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        bodies(address(&rat.peer)),
+        ["sent before", "received after", "with a file"],
+        "the imported conversation on the screen"
+    );
+}
+
 /// A home node, as after a device joined: one device admitted.
 fn make_mailbox(home: &Path, me: [u8; 16]) {
     let mut store = Store::open_in(home, me).expect("store");

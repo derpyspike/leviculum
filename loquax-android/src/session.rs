@@ -3442,8 +3442,9 @@ impl Inner {
         }
         if let Some(stored) = stored {
             self.persist();
-            let shown = stored
-                .and_then(|stored| runner::show_restored(&mut self.model, &self.store, stored));
+            // A side read that missed is done again on the session's own
+            // connection (1894).
+            let shown = runner::show_pulled(&mut self.model, &self.store, stored);
             match shown {
                 Ok(()) => tracing::info!("HOME imported rows={} shown", end.imported),
                 Err(error) => {
