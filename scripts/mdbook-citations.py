@@ -34,10 +34,7 @@ _SPEC = importlib.util.spec_from_file_location("citations", os.path.join(_HERE, 
 C = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(C)
 
-# A code span may wrap onto the next line (never across a blank one), and
-# its backticks have to pair from the start of the text, or one span that
-# wraps shifts every pairing after it.
-CODE_SPAN = re.compile(r"`((?:[^`\n]|\n(?!\s*\n))+)`")
+CODE_SPAN = re.compile(r"(?<!\[)`([^`\n]+)`(?!\]\()")
 
 
 def link_citations(text, root, base):
@@ -47,8 +44,6 @@ def link_citations(text, root, base):
     def repl(m):
         if any(a <= m.start() < b for a, b in fences):
             return m.group(0)
-        if text[max(0, m.start() - 1):m.start()] == "[" and text[m.end():m.end() + 2] == "](":
-            return m.group(0)  # already a link's text
         inner = m.group(1)
         cite = C.NAME_CITE.fullmatch(inner)
         if not cite or not C.citable(cite.group(1)):

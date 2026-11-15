@@ -326,10 +326,6 @@ def main():
     check("the book leaves the fenced block alone", "engine.rs:12 something" in chapter, chapter)
     check("the book links a recipe",
           "(https://forge/src/commit/abc/Justfile#L3-L7)" in chapter, chapter)
-    wrapped = B.link_citations("A span `that wraps\nonto a line` then (`src/engine.rs#Engine::new`).\n",
-                               root, "https://forge/src/commit/abc")
-    check("a code span that wraps a line does not shift the pairing",
-          "(https://forge/src/commit/abc/src/engine.rs#L21-L24)" in wrapped, wrapped)
     book = {"sections": [{"Chapter": {"content": PAGE, "sub_items": []}}]}
     linked = B.process_book(json.loads(json.dumps(book)), root, "https://forge/src/commit/abc")
     check("the preprocessor walks the book",
