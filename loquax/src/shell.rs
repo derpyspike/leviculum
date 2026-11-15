@@ -36,7 +36,7 @@ use loquax::home::runner::{self, HomeClient};
 use loquax::home::watch::{self, Fallback, WatchEvent};
 use loquax::mailbox::{Unanswered, UNANSWERED_EXCLUSION_MS, UNANSWERED_LIMIT};
 use loquax::mailbox_state::{self, short, Stored};
-use loquax::mapload::{Loader, Source, Step, CACHE_DEFAULT_MB};
+use loquax::mapload::{Loader, Source, Step, Watch, CACHE_DEFAULT_MB};
 use loquax::outbox::{Command, Outbox, OutboxEvent, OutboxGone, SendRequest, Via};
 use loquax::picture::Maps;
 use loquax::seen::{SeenStore, SeenWrite};
@@ -260,6 +260,9 @@ pub(crate) struct Shell {
     pub(crate) maps: Maps,
     /// The autoload: regions the model asks for, one load at a time.
     loader: Loader,
+    /// The loader's report as the map shows it (1812): each running
+    /// load's bytes watched for a stall.
+    load_watch: Watch,
     /// The terminal's map pane's scheduler (1527, [`ViewLoads`]): every
     /// frame of the open map is shown to it, and the screen at its zoom
     /// loads first. `None` in the window, whose map keeps its own view and
@@ -1256,6 +1259,19 @@ impl Shell {
         if here != self.model.map_here {
             self.apply(UiEvent::MapLoad(MapLoad::Here(here)));
         }
+        // What of the view is still to come, area by area (1812): the
+        // map draws it in place, every target says it in one line.
+        let loads = self.load_watch.loads(&self.loader, self.elapsed_ms());
+        if loads != self.model.map_loads {
+            self.apply(UiEvent::MapLoad(MapLoad::Loads(loads)));
+        }
+    }
+
+    /// "Try now" on the map's failed areas (1812): every box for the view
+    /// that waits to retry is due at once.
+    pub(crate) fn map_retry_now(&mut self) {
+        let steps = self.loader.retry_now(self.elapsed_ms());
+        self.map_steps(steps);
     }
 
     /// What the watching link said: a wake past the cursor pulls, and while
@@ -2140,6 +2156,7 @@ pub(crate) async fn start(
         outputs: Vec::new(),
         maps,
         loader,
+        load_watch: Watch::default(),
         map_drive: Some(ViewLoads::new()),
         origin: tokio::time::Instant::now(),
         watch,

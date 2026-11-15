@@ -224,6 +224,16 @@ pub fn uncovered(view: &Viewport, regions: &[Header]) -> f64 {
     gaps as f64 / f64::from(SAMPLES * SAMPLES)
 }
 
+/// The points of `view`'s screen [`uncovered`] counts as lacking their
+/// zoom's data: where the map must show it is still to come (1812's
+/// `loading_is_visible`).
+pub fn gaps(view: &Viewport, regions: &[Header]) -> Vec<World> {
+    let zoom = need_zoom(view);
+    samples(view, SAMPLES)
+        .filter(|&at| !held(regions, at, zoom))
+        .collect()
+}
+
 /// The cells under the uncovered points of `view`, nearest its centre
 /// first.
 fn gap_cells(view: &Viewport, regions: &[Header], n: u32) -> Vec<Cell> {
@@ -489,6 +499,22 @@ mod tests {
         let w = wants(&view, &[r], false, None);
         assert_eq!(w.share, 0.0);
         assert!(w.here.is_empty() && w.ahead.is_empty(), "{w:?}");
+    }
+
+    /// 1812: the gap points are the share `uncovered` counts, each one a
+    /// point no region holds.
+    #[test]
+    fn the_gaps_are_the_uncovered_points() {
+        let (r, at) = florence();
+        let mut view = Viewport::new(Cell::of(at, 13).centre(), 16, 480, 320);
+        assert!(gaps(&view, &[r]).is_empty());
+        // Half a screen past the cell's east edge (2048 px wide at z16).
+        view.pan(1024, 0);
+        let g = gaps(&view, &[r]);
+        let share = uncovered(&view, &[r]);
+        assert!(share > 0.0 && share < 1.0, "{share}");
+        assert_eq!(g.len() as f64, share * f64::from(SAMPLES * SAMPLES));
+        assert!(g.iter().all(|&p| !held(&[r], p, need_zoom(&view))));
     }
 
     /// 1707: a region cut under the old profile 1 no longer holds the

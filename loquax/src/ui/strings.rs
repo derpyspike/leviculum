@@ -831,6 +831,14 @@ leviculum_ui::catalogue! {
     M9BarWifiOne = "m9_bar_wifi_one", "WiFi · %1$d station", "WLAN · %1$d Station";
     M9BarBle = "m9_bar_ble", "Bluetooth · %1$d stations", "Bluetooth · %1$d Stationen";
     M9BarBleOne = "m9_bar_ble_one", "Bluetooth · %1$d station", "Bluetooth · %1$d Station";
+    // 1812: the one line beside the map while part of the view is still to
+    // come; the map itself shows where (`ui::maploading`).
+    MapLoadingPercent = "map_loading_percent", "Loading the map · %1$d %%", "Karte lädt · %1$d %%";
+    MapLoadStalled = "map_load_stalled", "No map data for %1$d s", "Seit %1$d s keine Kartendaten";
+    MapLoadRetry = "map_load_retry", "Map not loaded · next try in %1$d s", "Karte nicht geladen · neuer Versuch in %1$d s";
+    MapLoadWaiting = "map_load_waiting", "The map waits its turn", "Karte wartet, bis sie dran ist";
+    MapLoadOffline = "map_load_offline", "Offline · the map loads when the network is back", "Offline · die Karte lädt, sobald das Netz zurück ist";
+    MapLoadTryNow = "map_load_try_now", "Try now", "Jetzt versuchen";
 }
 
 /// [`leviculum_ui::strings::format`] over Loquax's catalogue.

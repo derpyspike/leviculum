@@ -650,4 +650,10 @@
     <string name="m9_bar_wifi_one">WiFi · %1$d station</string>
     <string name="m9_bar_ble">Bluetooth · %1$d stations</string>
     <string name="m9_bar_ble_one">Bluetooth · %1$d station</string>
+    <string name="map_loading_percent">Loading the map · %1$d %%</string>
+    <string name="map_load_stalled">No map data for %1$d s</string>
+    <string name="map_load_retry">Map not loaded · next try in %1$d s</string>
+    <string name="map_load_waiting">The map waits its turn</string>
+    <string name="map_load_offline">Offline · the map loads when the network is back</string>
+    <string name="map_load_try_now">Try now</string>
 </resources>

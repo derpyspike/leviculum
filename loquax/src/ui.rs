@@ -157,6 +157,7 @@ pub mod listing;
 pub mod liveness;
 pub mod mailbox_page;
 pub mod map;
+pub mod maploading;
 pub mod owed;
 pub mod pager;
 pub mod photos;
@@ -1421,6 +1422,10 @@ pub struct UiModel<B> {
     /// A load runs or waits for what is on screen (1527): the title says
     /// [`MAP_LOADING_HERE`], the window's chip too.
     pub map_here: bool,
+    /// What of the map's view is still to come (1812): each area's state
+    /// from the loader's report, drawn over the map in place and said in
+    /// one line ([`maploading::Loads::line`]), the title's here.
+    pub map_loads: maploading::Loads,
     /// The glyph test pattern is over the map (`g`, 1093).
     pub map_glyph_test: bool,
     /// The tick until which the map's title names the way it is drawn,
@@ -1692,6 +1697,7 @@ impl<B: InputBuffer + Default> UiModel<B> {
             map_ground: crate::config::GroundFlag::Pastel,
             map_loading: None,
             map_here: false,
+            map_loads: maploading::Loads::default(),
             map_glyph_test: false,
             map_named_until: None,
             map_wants: Vec::new(),
@@ -3532,6 +3538,8 @@ pub enum MapLoad {
     /// Whether a load runs or waits for what is on screen (1527, the
     /// loader's `loading_here`): "Loading the map of this area".
     Here(bool),
+    /// What of the view is still to come, area by area (1812).
+    Loads(maploading::Loads),
 }
 
 /// What the shell is asked to do.
@@ -4906,6 +4914,7 @@ fn map_load<B: InputBuffer>(model: &mut UiModel<B>, load: MapLoad) {
             }
         }
         MapLoad::Here(here) => model.map_here = here,
+        MapLoad::Loads(loads) => model.map_loads = loads,
     }
 }
 
@@ -8919,9 +8928,12 @@ fn view_fresh<B: InputBuffer>(model: &UiModel<B>) -> View {
         });
     // The screen's own load says so in words (1527), as the phone's chip
     // does.
-    let loading_word = match model.map_here {
-        true => Some(MAP_LOADING_HERE.to_string()),
-        false => model.map_loading.clone(),
+    // Since 1812 the loads' one line where it has one: how far, stalled,
+    // failed and when it retries, offline.
+    let loading_word = match (model.map_loads.line(model.lang), model.map_here) {
+        (Some(line), _) => Some(line),
+        (None, true) => Some(MAP_LOADING_HERE.to_string()),
+        (None, false) => model.map_loading.clone(),
     };
     let (messages_title, messages_title_right) = match &map {
         Some(shown) => (

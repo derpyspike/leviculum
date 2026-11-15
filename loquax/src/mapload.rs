@@ -354,7 +354,7 @@ pub enum Rank {
 
 impl Rank {
     /// Whether the box is for what the user looks at.
-    fn on_screen(self) -> bool {
+    pub fn on_screen(self) -> bool {
         self <= Self::Here
     }
 }
@@ -472,6 +472,82 @@ pub enum LoadState {
     Waiting { place: usize },
     /// The box failed and retries in this many milliseconds.
     Retrying { in_ms: u64 },
+}
+
+/// What of the view is still to come, as the map shows it (1812): the
+/// loader's report turned into [`crate::ui::maploading::Loads`], each
+/// running load's bytes watched so one that receives nothing for
+/// [`maploading::STALL_MS`](crate::ui::maploading::STALL_MS) is said to
+/// stand still instead of loading. Only boxes for what the user looks at
+/// count ([`Rank::on_screen`]).
+#[derive(Default)]
+pub struct Watch {
+    /// Each running box's bytes when they last moved, and since when.
+    moved: Vec<(Bounds, u64, u64)>,
+}
+
+impl Watch {
+    /// The loads of `loader` at `now_ms`.
+    pub fn loads(&mut self, loader: &Loader, now_ms: u64) -> crate::ui::maploading::Loads {
+        self.of(&loader.report(now_ms), loader.offline(), now_ms)
+    }
+
+    /// The loads of a report ([`Loader::report`]) at `now_ms`.
+    pub fn of(
+        &mut self,
+        report: &[(Bounds, Rank, LoadState)],
+        offline: bool,
+        now_ms: u64,
+    ) -> crate::ui::maploading::Loads {
+        use crate::ui::maploading::{milli_of, Area, Kind, Loads, STALL_MS};
+        let mut moved = Vec::new();
+        let mut areas = Vec::new();
+        for (bounds, rank, state) in report {
+            if !rank.on_screen() {
+                continue;
+            }
+            let (kind, bytes_done, bytes) = match *state {
+                LoadState::Running {
+                    bytes_done, bytes, ..
+                } => {
+                    let since = match self.moved.iter().find(|(b, _, _)| b == bounds) {
+                        Some(&(_, was, since)) if was == bytes_done => since,
+                        _ => now_ms,
+                    };
+                    moved.push((*bounds, bytes_done, since));
+                    let milli = milli_of(bytes_done, bytes);
+                    let quiet = now_ms.saturating_sub(since);
+                    let kind = match quiet >= STALL_MS {
+                        true => Kind::Stalled {
+                            milli,
+                            quiet_s: (quiet / 1000) as u32,
+                        },
+                        false => Kind::Loading { milli },
+                    };
+                    (kind, bytes_done, bytes)
+                }
+                LoadState::Paused {
+                    bytes_done, bytes, ..
+                } => (Kind::Waiting, bytes_done, bytes),
+                LoadState::Waiting { .. } => (Kind::Waiting, 0, 0),
+                LoadState::Retrying { in_ms } => (
+                    Kind::Failed {
+                        retry_s: in_ms.div_ceil(1000) as u32,
+                    },
+                    0,
+                    0,
+                ),
+            };
+            areas.push(Area {
+                bounds: *bounds,
+                kind,
+                bytes_done,
+                bytes,
+            });
+        }
+        self.moved = moved;
+        Loads { areas, offline }
+    }
 }
 
 /// The loader the shell holds.
@@ -765,6 +841,21 @@ impl Loader {
             out.push((q.want.bounds, q.rank, state));
         }
         out
+    }
+
+    /// "Try now" (1812): every box for what the user looks at that waits
+    /// to retry after a failure is due at once, its wait forgotten, and
+    /// the next is started.
+    pub fn retry_now(&mut self, now_ms: u64) -> Vec<Step> {
+        let mut retried = Vec::new();
+        for q in self.queue.iter_mut() {
+            if q.rank.on_screen() && q.retry_at > now_ms {
+                q.retry_at = 0;
+                retried.push(q.want.bounds);
+            }
+        }
+        self.backoff.retain(|b| !retried.contains(&b.bounds));
+        self.start_next(now_ms)
     }
 
     /// Whether `bounds` is queued or loading.
@@ -3154,6 +3245,70 @@ mod tests {
             matches!(report[1].2, LoadState::Waiting { place: 0 }),
             "{report:?}"
         );
+    }
+
+    /// The map's view of the loads (1812): a box that failed is "failed,
+    /// next try in s" until "try now" makes it due at once; a running
+    /// load is "loading" with its bytes' fraction while bytes move, and
+    /// "stalled" once none came for `STALL_MS`; a box off the screen is
+    /// not the view's.
+    #[test]
+    fn the_watch_tells_the_map_each_areas_state() {
+        use crate::ui::maploading::{Kind, STALL_MS};
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        serve.fail(true);
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut loader = Loader::new(maps, Source::Url(serve.url("o.pmtiles")), 1 << 30);
+        let mut watch = Watch::default();
+        loader.schedule(vec![screen(1)], Vec::new(), 0);
+        settle(&mut loader, 0);
+        let loads = watch.loads(&loader, 1_000);
+        let [area] = loads.areas.as_slice() else {
+            panic!("{loads:?}");
+        };
+        let Kind::Failed { retry_s } = area.kind else {
+            panic!("{area:?}");
+        };
+        assert!(retry_s >= 1, "{retry_s}");
+        // Try now: due at once, started again (and fails again here).
+        serve.fail(false);
+        let steps = loader.retry_now(1_000);
+        assert!(
+            steps.iter().any(|s| matches!(s, Step::Started(_))),
+            "{steps:?}"
+        );
+        // Running loads, by a report: bytes that move load, bytes that
+        // stand still past STALL_MS stall; an off-screen box is left out.
+        let b = screen(1).bounds;
+        let away = nth(5).bounds;
+        let running = |done: u64| LoadState::Running {
+            done: 0,
+            planned: 0,
+            bytes_done: done,
+            bytes: 1_000,
+        };
+        let mut watch = Watch::default();
+        let report = |done| {
+            vec![
+                (b, Rank::Screen, running(done)),
+                (away, Rank::Ahead, running(done)),
+            ]
+        };
+        let first = watch.of(&report(100), false, 0);
+        assert_eq!(first.areas.len(), 1, "{first:?}");
+        assert_eq!(first.areas[0].kind, Kind::Loading { milli: 100 });
+        let moved = watch.of(&report(400), false, STALL_MS - 1);
+        assert_eq!(moved.areas[0].kind, Kind::Loading { milli: 400 });
+        let still = watch.of(&report(400), false, 2 * STALL_MS);
+        assert_eq!(
+            still.areas[0].kind,
+            Kind::Stalled {
+                milli: 400,
+                quiet_s: ((STALL_MS + 1) / 1000) as u32
+            }
+        );
+        assert!(!still.animates());
     }
 
     /// Audit 1821: the phone wakes at `next_due_ms` (loquax-android/android/src/network/leviculum/loquax/MapView.java#MapView.drawFrames,
