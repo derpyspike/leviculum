@@ -107,17 +107,6 @@ pub const SOURCE_LINE: &str = "Ground: Sentinel-1 coherence and backscatter (Kel
 /// the map's other style switches.
 pub use leviculum_mapfill::style::GroundStyle;
 
-/// The style a config word names (`pastel`, `strong`); `off` is `None`
-/// inside `Some`, and an unknown word `None`.
-pub fn parse_style(s: &str) -> Option<Option<GroundStyle>> {
-    match s {
-        "pastel" => Some(Some(GroundStyle::Pastel)),
-        "strong" => Some(Some(GroundStyle::Strong)),
-        "off" => Some(None),
-        _ => None,
-    }
-}
-
 /// The class most of `cells` hold; a tie goes to the lower byte, and
 /// [`NONE`] only wins where every cell is [`NONE`], so a block's edge
 /// does not eat into the classes at coarser zooms.
