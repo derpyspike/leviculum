@@ -9,6 +9,7 @@
 # `just citation-guard`. Never add a file.
 Justfile
 docs/src/architecture-broadcast-python-parity.md
+docs/src/architecture-hop-counting.md
 docs/src/architecture.md
 docs/src/concepts/board-support-scope.md
 docs/src/concepts/checks-and-citations.md
