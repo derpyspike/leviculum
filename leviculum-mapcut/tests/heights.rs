@@ -4,7 +4,9 @@
 
 use leviculum_map::elevation::{self, split, Directory, DirectoryInfo, PackIndex, TileDecoder};
 use leviculum_map::region::Bounds;
-use leviculum_mapcut::heights::{block_bounds, local_pack, Catalogue, CATALOGUE_MAGIC};
+use leviculum_mapcut::heights::{
+    block_bounds, local_pack, Catalogue, BLOCK_MAX, CATALOGUE_MAGIC, DIRECTORY_MAX, PACK_MAX,
+};
 
 const CHEBBI: &[u8] = include_bytes!("../../leviculum-map/fixtures/erg-chebbi.lmh");
 const BANI: &[u8] = include_bytes!("../../leviculum-map/fixtures/bani-z11.lmh");
@@ -244,4 +246,95 @@ fn a_catalogue_that_lies_is_refused() {
     assert!(c.add_pack("../x.lmh", CHEBBI).is_err());
     c.add_pack("x.lmh", CHEBBI).expect("x");
     assert!(c.add_pack("x.lmh", CHEBBI).is_err());
+}
+
+/// Audit 1863, round 2: a catalogue may not make a device read a block of
+/// any size it names into memory. An 8 GiB pack with one 4 GiB block is
+/// refused when the catalogue is read, before any fetch.
+#[test]
+fn a_catalogue_naming_a_huge_block_is_refused() {
+    let hostile =
+        "lmh-catalogue\t1\npack\tm.lmh\t8589934592\t100\nblock\tm.lmh\t9\t1\t1\t100\t4294967296\n";
+    assert!(
+        Catalogue::parse(hostile).is_err(),
+        "a 4 GiB block was accepted"
+    );
+}
+
+#[test]
+fn a_catalogue_with_another_magic_is_refused() {
+    assert!(Catalogue::parse("other\t1\n").is_err());
+    assert!(Catalogue::parse("other\t1\npack\tm.lmh\t1000\t100\n").is_err());
+}
+
+/// The boundaries of the catalogue's own checks, each on its edge: a pack
+/// that is all directory, a block at the deepest zoom a pack may have, and
+/// one zoom past it.
+#[test]
+fn the_catalogue_checks_hold_on_their_edges() {
+    let all_directory = "lmh-catalogue\t1\npack\tm.lmh\t100\t100\n";
+    assert!(Catalogue::parse(all_directory).is_ok(), "directory = pack");
+    let deepest = format!(
+        "lmh-catalogue\t1\npack\tm.lmh\t1000\t100\nblock\tm.lmh\t{}\t1\t1\t100\t20\n",
+        elevation::MAX_TILE_ZOOM
+    );
+    assert_eq!(Catalogue::parse(&deepest).expect("deepest").blocks.len(), 1);
+    let past = format!(
+        "lmh-catalogue\t1\npack\tm.lmh\t1000\t100\nblock\tm.lmh\t{}\t1\t1\t100\t20\n",
+        elevation::MAX_TILE_ZOOM + 1
+    );
+    assert!(Catalogue::parse(&past).is_err(), "a zoom past the deepest");
+}
+
+/// A box across the antimeridian (west east of its east) and a box of no
+/// width or no height hold no block, even where the block lies under it.
+#[test]
+fn a_box_across_the_antimeridian_or_without_area_holds_no_block() {
+    let pack = two_block_pack();
+    let mut catalogue = Catalogue::default();
+    catalogue.add_pack("morocco.lmh", &pack).expect("add");
+    let b = catalogue.blocks[1].bounds();
+    let mid_x = (b.west + b.east) / 2;
+    let mid_y = (b.south + b.north) / 2;
+    let across = Bounds {
+        west: 1_790_000_000,
+        south: b.south,
+        east: -1_790_000_000,
+        north: b.north,
+    };
+    assert!(
+        catalogue.under(&across).is_empty(),
+        "across the antimeridian"
+    );
+    let no_width = Bounds {
+        west: mid_x,
+        east: mid_x,
+        ..b
+    };
+    assert!(catalogue.under(&no_width).is_empty(), "no width");
+    let no_height = Bounds {
+        south: mid_y,
+        north: mid_y,
+        ..b
+    };
+    assert!(catalogue.under(&no_height).is_empty(), "no height");
+}
+
+/// The twin of the huge block: a block of exactly [`BLOCK_MAX`], in a pack
+/// of exactly [`PACK_MAX`] with a directory of exactly [`DIRECTORY_MAX`],
+/// is read; a byte past any of them is not.
+#[test]
+fn a_catalogue_at_the_limits_is_read_and_a_byte_past_is_not() {
+    let at = |bytes: u64, directory: u64, len: u64| {
+        format!(
+            "lmh-catalogue\t1\npack\tm.lmh\t{bytes}\t{directory}\nblock\tm.lmh\t9\t1\t1\t{directory}\t{len}\n"
+        )
+    };
+    let edge = Catalogue::parse(&at(PACK_MAX, DIRECTORY_MAX, BLOCK_MAX)).expect("at the limits");
+    assert_eq!(edge.blocks[0].len, BLOCK_MAX);
+    assert!(Catalogue::parse(&at(PACK_MAX, DIRECTORY_MAX, BLOCK_MAX + 1)).is_err());
+    assert!(Catalogue::parse(&at(PACK_MAX + 1, DIRECTORY_MAX, BLOCK_MAX)).is_err());
+    assert!(Catalogue::parse(&at(PACK_MAX, DIRECTORY_MAX + 1, BLOCK_MAX)).is_err());
+    // The pilot's largest block, 1.81 MB, with room to spare.
+    const { assert!(BLOCK_MAX >= 8 * 1_810_000) };
 }

@@ -54,6 +54,22 @@ pub const CATALOGUE_VERSION: u32 = 1;
 /// archive.
 pub const CATALOGUE_NAME: &str = "heights.tsv";
 
+/// The longest block a catalogue may name, the most a device reads into
+/// memory for one block: 16 MiB, nine times the pilot's largest z9 block
+/// (1.81 MB, `docs/src/concepts/map-server.md`, "Height packs on the
+/// device"). A block's tiles are zstd frames of 16-bit heights, so a block
+/// past this is a cut the device should not take, or a catalogue that lies
+/// (audit 1863, round 2: one naming a 4 GiB block made a phone allocate
+/// it).
+pub const BLOCK_MAX: u64 = 16 << 20;
+/// The longest directory piece a catalogue may name: 1 MiB, room for
+/// 131,072 blocks of eight bytes each, about the land of the whole world at
+/// the block zoom of 9.
+pub const DIRECTORY_MAX: u64 = 1 << 20;
+/// The longest pack a catalogue may name: the longest directory, and as
+/// many blocks of [`BLOCK_MAX`] as it can list.
+pub const PACK_MAX: u64 = DIRECTORY_MAX + DIRECTORY_MAX / 8 * BLOCK_MAX;
+
 /// One pack file of a catalogue.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PackFile {
@@ -149,10 +165,10 @@ impl Catalogue {
             bytes: bytes.len() as u64,
             directory: ranges.first().map_or(0, |r| r.end as u64),
         });
-        for (n, range) in ranges.iter().skip(1).enumerate() {
-            let Some((x, y)) = directory.block(n) else {
-                return Err(format!("{name}: block {n} is not in the directory").into());
-            };
+        // `split` checked every piece against its directory entry: one
+        // range a block, in the directory's order.
+        let places = (0..directory.len()).filter_map(|n| directory.block(n));
+        for ((x, y), range) in places.zip(ranges.iter().skip(1)) {
             self.blocks.push(BlockEntry {
                 pack,
                 zoom: directory.block_zoom(),
@@ -196,9 +212,11 @@ impl Catalogue {
     }
 
     /// Read a catalogue's text. Refused: another first line or version, a
-    /// pack name that is not one plain segment or listed twice, a block of
-    /// a pack not listed before it, a block outside its pack's bytes or
-    /// its zoom's grid, a number that does not parse.
+    /// pack name that is not one plain segment or listed twice, a pack
+    /// longer than [`PACK_MAX`] or with a directory longer than
+    /// [`DIRECTORY_MAX`], a block of a pack not listed before it, a block
+    /// longer than [`BLOCK_MAX`], a block outside its pack's bytes or its
+    /// zoom's grid, a number that does not parse.
     pub fn parse(text: &str) -> Res<Self> {
         let mut lines = text.lines().enumerate();
         let first: Vec<&str> = lines
@@ -231,6 +249,9 @@ impl Catalogue {
                     if directory > bytes {
                         return Err(at(&"directory longer than the pack").into());
                     }
+                    if directory > DIRECTORY_MAX || bytes > PACK_MAX {
+                        return Err(at(&"pack or directory past the limit").into());
+                    }
                     catalogue.packs.push(PackFile {
                         name: name.to_string(),
                         bytes,
@@ -255,6 +276,9 @@ impl Catalogue {
                         return Err(at(&"block outside its grid").into());
                     }
                     let file = &catalogue.packs[pack];
+                    if len > BLOCK_MAX {
+                        return Err(at(&"block past the limit").into());
+                    }
                     if offset < file.directory
                         || len == 0
                         || offset.checked_add(len).is_none_or(|end| end > file.bytes)
