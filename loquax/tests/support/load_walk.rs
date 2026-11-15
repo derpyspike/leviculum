@@ -49,6 +49,14 @@
 //!   instant at which a load can start, so a frame-driven frontend (the
 //!   phone, `MapShown::retry_in_ms`) woken at it never redraws for
 //!   nothing until the next real retry.
+//! - `pack_after_region` and `relief_drawn` (1868, the audit of 1863),
+//!   the desert sessions alone: over a desert archive with a height
+//!   catalogue beside it (the committed GLO-30 blocks of Erg Chebbi and
+//!   the Bani escarpment), the loader runs with
+//!   [`loquax::mapload::Loader::with_heights`] as the shell's does; the
+//!   block under the place lands as a pack after a region over it, and
+//!   the rested view with the relief on differs from the same view drawn
+//!   with it off on at least [`RELIEF_SHARE`] of the screen.
 //!
 //! With `LOQUAX_LOAD_WALK=DIR` the pictures go to `DIR/full/`, the
 //! verdicts to `DIR/rows-load.tsv` and the per-frame traces to
@@ -111,6 +119,74 @@ pub const SPIN_STARTS: usize = 2;
 /// A frame whose most common colour covers more of the screen than this
 /// is blank.
 pub const BLANK_SHARE: f64 = 0.99;
+/// The share of a rested desert view the relief must move: the block lies
+/// under most of a z13 view at the place, and a relief that shades less
+/// than a fifth of it was not drawn.
+pub const RELIEF_SHARE: f64 = 0.2;
+
+/// Where a walk starts and what its maps directory holds.
+struct Ground {
+    /// The view's middle and zoom.
+    at: World,
+    zoom: u8,
+    /// The autoload cache's cap.
+    cache_bytes: u64,
+    /// Old regions installed first ([`prefill_cache`]).
+    prefill: usize,
+}
+
+/// A desert place of the height sessions (1868): its name and the
+/// committed GLO-30 pack whose one block it lies in the middle of.
+pub struct Desert {
+    pub name: &'static str,
+    pub pack: &'static [u8],
+}
+
+/// Erg Chebbi, the z11 block of `erg-chebbi.lmh`.
+pub const ERG_CHEBBI: Desert = Desert {
+    name: "erg-chebbi",
+    pack: include_bytes!("../../../leviculum-map/fixtures/erg-chebbi.lmh"),
+};
+/// The Bani escarpment, the z11 block of `bani-z11.lmh`.
+pub const BANI: Desert = Desert {
+    name: "bani",
+    pack: include_bytes!("../../../leviculum-map/fixtures/bani-z11.lmh"),
+};
+
+impl Desert {
+    /// The block's ground: the place is its middle.
+    pub fn block(&self) -> Bounds {
+        let (dir, _) =
+            leviculum_map::elevation::Directory::parse_prefix(self.pack).expect("the pack");
+        let (x, y) = dir.block(0).expect("one block");
+        leviculum_mapcut::heights::block_bounds(dir.block_zoom(), x, y)
+    }
+
+    /// The place, the block's middle.
+    pub fn at(&self) -> World {
+        let b = self.block();
+        project(LatLon::from_degrees(
+            (f64::from(b.south) + f64::from(b.north)) / 2e7,
+            (f64::from(b.west) + f64::from(b.east)) / 2e7,
+        ))
+    }
+
+    /// The archive's box: the place and 0.2 degrees east and west, 0.12
+    /// north and south, so a z13 view and its screen box stay inside.
+    pub fn area(&self) -> Bounds {
+        let at = self.at();
+        let (lon, lat) = (
+            leviculum_map::mercator::lon_of_x(at.x),
+            leviculum_map::mercator::lat_of_y(at.y),
+        );
+        Bounds {
+            west: lon - 2_000_000,
+            south: lat - 1_200_000,
+            east: lon + 2_000_000,
+            north: lat + 1_200_000,
+        }
+    }
+}
 
 /// One frame interval of the trace.
 pub struct FrameRec {
@@ -206,6 +282,9 @@ pub enum Inject {
     /// nothing starts (1835): `no_busy_wake`'s positive control, at the
     /// signal the rule reads.
     BusyWake,
+    /// A desert session's loader fetches no height packs (1868):
+    /// `pack_after_region` and `relief_drawn`'s positive control.
+    NoHeights,
 }
 
 /// One verdict row, the render walk's columns.
@@ -247,6 +326,16 @@ pub struct Walk {
     done_wants: Vec<MapWant>,
     /// The last drawn frame said a name still fades.
     last_fading: bool,
+    /// The archive's box ([`inside_archive`]).
+    pub area: Bounds,
+    /// A desert session (1868): its loader fetches height packs, and the
+    /// block of its place, whose pack must land.
+    pub desert: Option<(String, Bounds)>,
+    /// Every height fetch that ended: when, the region's box, the packs
+    /// it wrote or why it failed.
+    pub heights: Vec<(u64, Bounds, Result<Vec<String>, String>)>,
+    /// The share of the rested view the relief moved ([`Walk::relief`]).
+    pub relief: Option<f64>,
 }
 
 impl Walk {
@@ -270,6 +359,78 @@ impl Walk {
         prefill: usize,
     ) -> Self {
         let serve = Serve::start(vec![("w.pmtiles".into(), wide_archive())]).expect("serve");
+        let at = project(LatLon::from_degrees(AREA_A.0, AREA_A.1));
+        let ground = Ground {
+            at,
+            zoom,
+            cache_bytes,
+            prefill,
+        };
+        Self::over(serve, name, rate, latency_ms, ground, inject)
+    }
+
+    /// A desert session's walk (1868): an archive over `place`'s box, its
+    /// height catalogue and the two committed packs beside it, the loader
+    /// fetching height packs as the shell's does, the view at the place.
+    pub fn desert(place: &Desert, rate: u64, latency_ms: u64, zoom: u8, inject: Inject) -> Self {
+        let area = place.area();
+        let mut catalogue = leviculum_mapcut::heights::Catalogue::default();
+        catalogue
+            .add_pack("chebbi.lmh", ERG_CHEBBI.pack)
+            .expect("chebbi");
+        catalogue.add_pack("bani.lmh", BANI.pack).expect("bani");
+        let serve = Serve::start(vec![
+            ("w.pmtiles".into(), archive_over(&area)),
+            ("chebbi.lmh".into(), ERG_CHEBBI.pack.to_vec()),
+            ("bani.lmh".into(), BANI.pack.to_vec()),
+            ("heights.tsv".into(), catalogue.write().into_bytes()),
+        ])
+        .expect("serve");
+        let ground = Ground {
+            at: place.at(),
+            zoom,
+            cache_bytes: 1 << 30,
+            prefill: 0,
+        };
+        let tag = if rate == 0 { "" } else { "-slow" };
+        let name = format!("desert-{}{tag}", place.name);
+        let mut walk = Self::over(serve, &name, rate, latency_ms, ground, inject);
+        walk.area = area;
+        let (dir, _) =
+            leviculum_map::elevation::Directory::parse_prefix(place.pack).expect("the pack");
+        let (x, y) = dir.block(0).expect("one block");
+        let pack = format!(
+            "{}h{}-{x}-{y}.lmh",
+            loquax::picture::AUTO_PREFIX,
+            dir.block_zoom()
+        );
+        walk.desert = Some((pack, place.block()));
+        let loader = std::mem::replace(
+            &mut walk.loader,
+            Loader::new(Maps::default(), Source::Url(String::new()), 0),
+        );
+        walk.loader = match inject {
+            Inject::NoHeights => loader,
+            _ => loader.with_heights(walk.serve.url("heights.tsv")),
+        };
+        walk
+    }
+
+    /// The walk over `serve`'s `w.pmtiles` and `ground`.
+    fn over(
+        serve: Serve,
+        name: &str,
+        rate: u64,
+        latency_ms: u64,
+        ground: Ground,
+        inject: Inject,
+    ) -> Self {
+        let Ground {
+            at,
+            zoom,
+            cache_bytes,
+            prefill,
+        } = ground;
         let dir = tempfile::tempdir().expect("home");
         let path = dir.path().join("maps");
         std::fs::create_dir_all(&path).expect("maps");
@@ -290,7 +451,6 @@ impl Walk {
         seen.autoload = true;
         seen.maps = maps.epoch();
         app.apply(Message::Seen(Box::new(seen)));
-        let at = project(LatLon::from_degrees(AREA_A.0, AREA_A.1));
         app.view = ExactView::new(at, u32::from(zoom) * MILLI, w, h);
         app.hold();
         // The walk's view is the user's: a region landing fits nothing.
@@ -318,6 +478,10 @@ impl Walk {
             last_ask: None,
             done_wants: Vec::new(),
             last_fading: false,
+            area: WIDE_BOX,
+            desert: None,
+            heights: Vec::new(),
+            relief: None,
         }
     }
 
@@ -429,8 +593,13 @@ impl Walk {
                     self.events.push((t, Ev::Failed(b, detail.clone())));
                 }
                 Step::Skipped { why, .. } => self.events.push((t, Ev::Skipped(b, why))),
-                // The walk's loader fetches no height packs (1863).
-                Step::Heights { .. } => {}
+                // A desert session's packs (1868): a pack written is a
+                // landing every painter reads again.
+                Step::Heights { landed: l, .. } => {
+                    let packs = l.as_ref().map(|l| l.packs.clone()).map_err(Clone::clone);
+                    landed |= packs.as_ref().is_ok_and(|p| !p.is_empty());
+                    self.heights.push((t, b, packs));
+                }
             }
         }
         if landed {
@@ -460,7 +629,7 @@ impl Walk {
             missing,
             drew,
             blank,
-            inside: inside_archive(&self.view_now().bounds()),
+            inside: inside_archive(&self.area, &self.view_now().bounds()),
             busy_wake,
         });
         let next = t + 16;
@@ -622,7 +791,7 @@ impl Walk {
             }
         }
         let blank = blank_share(&crop) > BLANK_SHARE;
-        let inside = inside_archive(&self.view_now().bounds());
+        let inside = inside_archive(&self.area, &self.view_now().bounds());
         self.checks.push(Check {
             label: label.to_string(),
             t,
@@ -682,6 +851,44 @@ impl Walk {
             self.step();
         }
         self.run(4);
+    }
+
+    /// The share of the rested view's pixels the relief moves (1868): the
+    /// view drawn as the window draws it, with the relief, and again with
+    /// the config's `map_relief` off; recorded for `relief_drawn`.
+    pub fn relief(&mut self) {
+        let mut crops = Vec::new();
+        for relief in [true, false] {
+            let mut seen = self.app.seen.clone();
+            seen.style.relief = relief;
+            self.app.apply(Message::Seen(Box::new(seen)));
+            self.app.settle();
+            let Some(order) = self.app.order() else {
+                return;
+            };
+            let mut shown = draw(&self.app.frames, order);
+            for _ in 0..60 {
+                if !shown.fading && shown.missing == 0 {
+                    break;
+                }
+                self.step();
+                let Some(order) = self.app.order() else {
+                    break;
+                };
+                shown = draw(&self.app.frames, order);
+            }
+            crops.push(crop_screen(&shown, &self.app));
+        }
+        let mut seen = self.app.seen.clone();
+        seen.style.relief = true;
+        self.app.apply(Message::Seen(Box::new(seen)));
+        let (on, off) = (&crops[0], &crops[1]);
+        let moved = on
+            .chunks_exact(4)
+            .zip(off.chunks_exact(4))
+            .filter(|(a, b)| a != b)
+            .count();
+        self.relief = Some(moved as f64 / (on.len() / 4).max(1) as f64);
     }
 
     /// Mark the walk's fault as ended now; [`rules`] holds the recovery
@@ -745,6 +952,12 @@ impl Walk {
 /// The two-area archive: [`first_tile`]'s z15 tile in every slot of
 /// [`WIDE_BOX`] from z10 to z15, padded to a dense city tile's size.
 pub fn wide_archive() -> Vec<u8> {
+    archive_over(&WIDE_BOX)
+}
+
+/// [`first_tile`]'s z15 tile in every slot of `area` from z10 to z15: the
+/// walk's archive over any box (the desert sessions', 1868).
+pub fn archive_over(area: &Bounds) -> Vec<u8> {
     use leviculum_mapcut::pmtiles::{padded, Archive};
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../leviculum-mapcut/fixtures/grunewald.pmtiles");
@@ -757,7 +970,7 @@ pub fn wide_archive() -> Vec<u8> {
         .expect("a z15 tile");
     let mvt = archive.mvt(z15).expect("read").expect("the tile");
     let meta = archive.metadata().expect("metadata");
-    padded(&mvt, &WIDE_BOX, 10..=15, first_tile::FIRST_TILE_PAD, &meta).expect("the archive")
+    padded(&mvt, area, 10..=15, first_tile::FIRST_TILE_PAD, &meta).expect("the archive")
 }
 
 /// Install `copies` old autoloaded regions of a far corner of the
@@ -847,17 +1060,17 @@ pub fn view_bytes(view: &leviculum_map::viewport::Viewport) -> u64 {
     (tiles(0) + tiles(1)) * first_tile::first_tile_blob()
 }
 
-/// Whether `view` lies inside [`WIDE_BOX`] with a margin of 0.03
-/// degrees (the screen box's growth): past the archive the world is
-/// empty, which is no loader's fault, so no fill or picture rule judges
-/// a view that reaches out.
-pub fn inside_archive(view: &Bounds) -> bool {
+/// Whether `view` lies inside the archive's box `area` ([`WIDE_BOX`],
+/// or a desert's) with a margin of 0.03 degrees (the screen box's
+/// growth): past the archive the world is empty, which is no loader's
+/// fault, so no fill or picture rule judges a view that reaches out.
+pub fn inside_archive(area: &Bounds, view: &Bounds) -> bool {
     const MARGIN: i32 = 300_000;
     let shrunk = Bounds {
-        west: WIDE_BOX.west + MARGIN,
-        south: WIDE_BOX.south + MARGIN,
-        east: WIDE_BOX.east - MARGIN,
-        north: WIDE_BOX.north - MARGIN,
+        west: area.west + MARGIN,
+        south: area.south + MARGIN,
+        east: area.east - MARGIN,
+        north: area.north - MARGIN,
     };
     shrunk.holds(view)
 }
@@ -1308,6 +1521,51 @@ pub fn rules(walk: &Walk) -> Vec<Verdict> {
             .unwrap_or_default(),
         String::new(),
     ));
+    // pack_after_region, relief_drawn: the desert sessions (1868).
+    if let Some((pack, block)) = &walk.desert {
+        let landed = walk.heights.iter().find_map(|(t, _, r)| match r {
+            Ok(packs) if packs.contains(pack) => Some(*t),
+            _ => None,
+        });
+        let region = walk.events.iter().find_map(|(t, ev)| match ev {
+            Ev::Done(b, ..) if overlaps(b, block) => Some(*t),
+            _ => None,
+        });
+        let failed: Vec<String> = walk
+            .heights
+            .iter()
+            .filter_map(|(_, _, r)| r.as_ref().err().cloned())
+            .take(2)
+            .collect();
+        out.push(v(
+            "pack_after_region",
+            matches!((region, landed), (Some(r), Some(p)) if r <= p),
+            format!("region over the block at {region:?} ms, {pack} at {landed:?} ms"),
+            "the pack lands, after a region over its block".to_string(),
+            failed.join("; "),
+            String::new(),
+            String::new(),
+        ));
+        let share = walk.relief.unwrap_or(0.0);
+        let image = walk
+            .checks
+            .len()
+            .checked_sub(1)
+            .map(|n| image_name(walk, n))
+            .unwrap_or_default();
+        out.push(v(
+            "relief_drawn",
+            share >= RELIEF_SHARE,
+            format!("{share:.3} of the rested view moved with the relief on"),
+            format!(">= {RELIEF_SHARE:.3}"),
+            "the same view drawn with map_relief off".to_string(),
+            image,
+            walk.checks
+                .last()
+                .map(|c| format!("{}", c.zoom_milli / 1000))
+                .unwrap_or_default(),
+        ));
+    }
     out
 }
 
@@ -1587,6 +1845,40 @@ pub fn cache_at_cap(rate: u64, latency: u64) -> Walk {
 
 /// The sessions of a set: `short` is the per-batch `cargo test` default,
 /// `quick` what fits two minutes released, `full` everything.
+/// A desert place loaded as a user does (1868, the audit of 1863): the
+/// view rests over the place at z13 until it fills, the loader brings
+/// the region and then the height pack of the block under it, the view
+/// rests again with the pack drawn, and the relief is measured against
+/// the same view drawn without it. One SMOKE line a step for the report.
+pub fn desert_rest(place: &Desert, rate: u64, latency: u64, inject: Inject) -> Walk {
+    let mut walk = Walk::desert(place, rate, latency, 13, inject);
+    let bound = walk.fill_bound();
+    walk.rest("z13", true);
+    walk.drain(bound);
+    walk.wheel(1000, 14);
+    walk.rest("z14", true);
+    walk.drain(bound);
+    walk.relief();
+    for (t, ev) in &walk.events {
+        if let Ev::Done(b, name, _) = ev {
+            eprintln!(
+                "SMOKE {} region t_ms={t} name={name} box={},{},{},{}",
+                place.name, b.west, b.south, b.east, b.north
+            );
+        }
+    }
+    for (t, _, r) in &walk.heights {
+        eprintln!("SMOKE {} heights t_ms={t} result={r:?}", place.name);
+    }
+    eprintln!(
+        "SMOKE {} relief_share={:.3} sent_bytes={}",
+        place.name,
+        walk.relief.unwrap_or(0.0),
+        walk.serve.sent()
+    );
+    walk
+}
+
 pub fn run_set(set: &str) -> Vec<(Walk, Vec<Verdict>)> {
     let mut walks: Vec<Walk> = Vec::new();
     match set {
@@ -1602,6 +1894,8 @@ pub fn run_set(set: &str) -> Vec<(Walk, Vec<Verdict>)> {
             walks.push(wheel_in_rested(0, 0, 4, 16, Inject::None));
             walks.push(in_out_in(0, 0, 2, Inject::None));
             walks.push(pan_slow_fast(0, 0));
+            walks.push(desert_rest(&ERG_CHEBBI, 0, 0, Inject::None));
+            walks.push(desert_rest(&BANI, 0, 0, Inject::None));
         }
         "full" => {
             walks.push(wheel_in_rested(0, 0, 4, 16, Inject::None));
@@ -1617,6 +1911,8 @@ pub fn run_set(set: &str) -> Vec<(Walk, Vec<Verdict>)> {
             walks.push(recovers_drop(0, 0));
             walks.push(recovers_stall(0, 0));
             walks.push(cache_at_cap(0, 0));
+            walks.push(desert_rest(&ERG_CHEBBI, 0, 0, Inject::None));
+            walks.push(desert_rest(&BANI, 0, 0, Inject::None));
         }
         other => panic!("no load walk set named {other}"),
     }
@@ -1679,6 +1975,8 @@ pub fn selftest_cases() -> Vec<(&'static str, Inject, &'static str)> {
             "same_view_same_picture",
         ),
         ("busy-wake", Inject::BusyWake, "no_busy_wake"),
+        ("no-heights", Inject::NoHeights, "pack_after_region"),
+        ("no-heights", Inject::NoHeights, "relief_drawn"),
     ]
 }
 
@@ -1695,6 +1993,7 @@ pub fn selftest_walk(inject: Inject) -> Walk {
             walk
         }
         Inject::NeverRecovers => recovers_503(0, 0, false),
+        Inject::NoHeights => desert_rest(&ERG_CHEBBI, 0, 0, Inject::NoHeights),
         Inject::DeleteRegion | Inject::PerturbPicture => {
             let mut walk = Walk::new(
                 match inject {

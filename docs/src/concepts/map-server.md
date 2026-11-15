@@ -434,7 +434,10 @@ rung for every pack waiting, not given up for the session (decided
 after the first regions load, and a phone runs for days, so a session
 that gave up would keep every region it loaded meanwhile without relief
 until it restarted. At an hour a rung the cost is one small request an
-hour. Offline, or with no catalogue, the map draws as before without
+hour, and a missing catalogue wakes no frontend: the packs start at
+the first poll after the rung, which any frame brings, so a still phone
+is not woken for a server that may never have one. Offline, or with no
+catalogue, the map draws as before without
 relief, and no line is shown: the relief is a finish. Two writers evict
 from the maps directory (a region's load and the height fetch); a file
 one finds gone that the other removed counts as removed.

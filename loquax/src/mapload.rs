@@ -471,7 +471,12 @@ impl Loader {
     /// heights' own clock, `None` when one runs or none waits.
     fn heights_due_ms(&self, now_ms: u64) -> Option<u64> {
         let h = self.heights.as_ref()?;
-        if h.running.is_some() {
+        // A server without a catalogue wakes no frontend: the packs wait
+        // for its next rung and start at the first poll after it, which
+        // any frame brings; a still screen loses nothing meanwhile, and
+        // a phone is not woken every rung for a server that may never
+        // have one (the phone's load walk, 1868).
+        if h.running.is_some() || h.catalogue_failures > 0 {
             return None;
         }
         h.queue
@@ -535,7 +540,8 @@ impl Loader {
     ///
     /// A height fetch waiting (1863) names its own wake, unless a region
     /// for the screen loads or waits to: the packs start after it, and
-    /// the region's own end wakes the loader.
+    /// the region's own end wakes the loader. Packs waiting for a
+    /// catalogue the server did not have name none (1868).
     pub fn next_due_ms(&self, now_ms: u64) -> Option<u64> {
         let regions = match self.due_at(now_ms) {
             Some(_) => Some(0),
@@ -2848,8 +2854,8 @@ mod tests {
         );
         assert_eq!(
             loader.next_due_ms(0),
-            Some(BACKOFF_FIRST_MS),
-            "the catalogue is asked again on the long ladder"
+            None,
+            "a missing catalogue wakes nothing"
         );
         // A second region lands meanwhile: its packs wait on the same rung.
         loader.ask(want(112_825_000), 0);
@@ -2867,11 +2873,22 @@ mod tests {
             "{steps:?}"
         );
         assert_eq!(serve.requests(), requests + 1, "one ask on the rung");
+        // The next rung is twice as far: nothing asked before it.
+        for _ in 0..20 {
+            assert!(loader.poll(3 * BACKOFF_FIRST_MS - 1).is_empty());
+            std::thread::sleep(Duration::from_millis(5));
+        }
         assert_eq!(
-            loader.next_due_ms(BACKOFF_FIRST_MS),
-            Some(2 * BACKOFF_FIRST_MS),
-            "the next rung is twice as far"
+            serve.requests(),
+            requests + 1,
+            "nothing before the next rung"
         );
+        let steps = settle_heights(&mut loader, 3 * BACKOFF_FIRST_MS);
+        assert!(
+            matches!(steps.last(), Some(Step::Heights { landed: Err(_), .. })),
+            "{steps:?}"
+        );
+        assert_eq!(serve.requests(), requests + 2, "one ask on the second rung");
         assert_eq!(
             names(dir.path())
                 .iter()
@@ -3038,6 +3055,38 @@ mod tests {
         assert_eq!(evicted, both, "counted as gone");
         assert_eq!(names(dir.path()), [auto_name(&w.bounds, (14, 15))]);
         assert!(!loader.busy(), "nothing queued again");
+    }
+
+    /// Audit 1863, without the seam: eight evictions start together over
+    /// one directory of 400 orphan packs, each from its own listing, as
+    /// the region jobs and the height fetch run. Every one returns Ok and
+    /// the directory ends empty; one that took a NotFound for an error
+    /// fails here.
+    #[test]
+    fn evictions_from_one_listing_at_once_all_succeed() {
+        let dir = tempfile::tempdir().expect("tmp");
+        for n in 0..400u32 {
+            let name = format!("{AUTO_PREFIX}h11-{}-{}.lmh", n % 2048, n / 2048);
+            std::fs::write(dir.path().join(name), [0u8; 8]).expect("pack");
+        }
+        let start = Arc::new(std::sync::Barrier::new(8));
+        let results: Vec<std::io::Result<Vec<String>>> = (0..8)
+            .map(|_| {
+                let start = Arc::clone(&start);
+                let dir = dir.path().to_path_buf();
+                std::thread::spawn(move || {
+                    start.wait();
+                    evict(&dir, 1 << 30, "")
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|t| t.join().expect("the thread"))
+            .collect();
+        for r in &results {
+            assert!(r.is_ok(), "{r:?}");
+        }
+        assert!(names(dir.path()).is_empty());
     }
 
     #[test]
