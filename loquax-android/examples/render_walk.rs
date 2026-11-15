@@ -168,7 +168,7 @@ struct Centre {
     lon: f64,
 }
 
-const CENTRES: [Centre; 9] = [
+const CENTRES: [Centre; 10] = [
     Centre {
         name: "germany",
         lat: 51.0,
@@ -218,21 +218,36 @@ const CENTRES: [Centre; 9] = [
         lat: 29.9930,
         lon: -6.1523,
     },
+    // The Bani escarpment (1868, the audit of 1863): the middle of the
+    // `bani-z11.lmh` block, its region `morocco/bani.lmr` over it.
+    Centre {
+        name: "bani",
+        lat: 29.7643,
+        lon: -6.7676,
+    },
 ];
 
 /// The regions every walk home holds (`leviculum-map/fixtures`).
-const REGIONS: [&str; 6] = [
+const REGIONS: [&str; 4] = [
     "firenze.lmr",
     "berlin/wide.lmr",
     "berlin/mitte.lmr",
     "frankfurt/roemer.lmr",
-    "morocco/merzouga.lmr",
-    "morocco/chegaga.lmr",
 ];
 
-/// The height packs every walk home holds beside the regions: the relief
-/// under the two Moroccan regions from z10 down.
-const PACKS: [&str; 2] = ["erg-chebbi-z10.lmh", "erg-chegaga-z10.lmh"];
+/// The desert regions every walk home holds, under the names the autoload
+/// gives them ([`loquax::mapload::auto_name`]): regions on disk, whose
+/// height packs the loader brings (1868).
+const DESERT: [&str; 3] = [
+    "morocco/merzouga.lmr",
+    "morocco/chegaga.lmr",
+    "morocco/bani.lmr",
+];
+
+/// The height packs a local range server holds beside its catalogue, one
+/// block each under the desert regions: what the loader fetches into every
+/// home ([`fetch_heights`]), never copied there (the audit of 1863).
+const PACKS: [&str; 3] = ["erg-chebbi-z10.lmh", "erg-chegaga-z10.lmh", "bani-z11.lmh"];
 
 const HZ: f64 = 60.0;
 
@@ -482,6 +497,74 @@ fn stray(shown: &MapShown, ask: &MapRequest) -> Vec<DrawnName> {
     ]
 }
 
+/// Bring the height packs of the desert regions in `maps` as the device
+/// does (1868, the audit of 1863): a local range server holds [`PACKS`]
+/// and their catalogue, and the shell's loader with
+/// [`loquax::mapload::Loader::with_heights`] finds the regions on disk and
+/// fetches the blocks under them. Every pack must land; the first home
+/// says what came.
+fn fetch_heights(maps: &Path, fixtures: &Path) {
+    use leviculum_mapcut::heights::Catalogue;
+    use loquax::mapload::{Loader, Source, Step};
+    static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let mut catalogue = Catalogue::default();
+    let mut files = Vec::new();
+    for pack in PACKS {
+        let bytes =
+            std::fs::read(fixtures.join(pack)).unwrap_or_else(|e| die(&format!("{pack}: {e}")));
+        if let Err(e) = catalogue.add_pack(pack, &bytes) {
+            die(&format!("{pack}: {e}"));
+        }
+        files.push((pack.to_string(), bytes));
+    }
+    files.push(("heights.tsv".to_string(), catalogue.write().into_bytes()));
+    let serve = leviculum_mapcut::serve::Serve::start(files)
+        .unwrap_or_else(|e| die(&format!("the heights server: {e}")));
+    let started = Instant::now();
+    let mut loader = Loader::new(
+        loquax::picture::Maps::new(Some(maps.to_path_buf())),
+        Source::Url(serve.url("no-map.pmtiles")),
+        1 << 30,
+    )
+    .with_heights(serve.url("heights.tsv"));
+    // The view's decision, as the autoload makes it: the regions on disk
+    // want their packs from here on.
+    loader.schedule(Vec::new(), Vec::new(), 0);
+    let mut landed: Vec<String> = Vec::new();
+    loop {
+        for step in loader.poll(0) {
+            if let Step::Heights { landed: l, .. } = step {
+                match l {
+                    Ok(l) => landed.extend(l.packs),
+                    Err(e) => die(&format!("a height fetch failed: {e}")),
+                }
+            }
+        }
+        if !loader.busy() {
+            break;
+        }
+        if started.elapsed().as_secs() > 60 {
+            die("the height packs did not land in 60 s");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    landed.sort();
+    if landed.len() != PACKS.len() {
+        die(&format!(
+            "{} packs landed, {} served: {landed:?}",
+            landed.len(),
+            PACKS.len()
+        ));
+    }
+    if !SAID.swap(true, Ordering::Relaxed) {
+        println!(
+            "render_walk: heights through the loader: {landed:?}, {} bytes in {} ms",
+            serve.sent(),
+            started.elapsed().as_millis()
+        );
+    }
+}
+
 impl Walk {
     /// A fresh app home: the regions, no autoload.
     fn home(&self, name: &str) -> PathBuf {
@@ -492,12 +575,28 @@ impl Walk {
             die(&format!("{}: {e}", maps.display()));
         }
         let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../leviculum-map/fixtures");
-        for region in REGIONS.iter().chain(&PACKS) {
+        for region in REGIONS {
             let to = maps.join(region.replace('/', "-"));
             if let Err(e) = std::fs::copy(fixtures.join(region), &to) {
                 die(&format!("{region}: {e}"));
             }
         }
+        for region in DESERT {
+            let header = std::fs::File::open(fixtures.join(region))
+                .map_err(|e| e.to_string())
+                .and_then(|f| {
+                    leviculum_map::region::Region::open(f)
+                        .map(|r| *r.header())
+                        .map_err(|e| format!("{e:?}"))
+                })
+                .unwrap_or_else(|e| die(&format!("{region}: {e}")));
+            let name =
+                loquax::mapload::auto_name(&header.bounds, (header.min_zoom, header.max_zoom));
+            if let Err(e) = std::fs::copy(fixtures.join(region), maps.join(name)) {
+                die(&format!("{region}: {e}"));
+            }
+        }
+        fetch_heights(&maps, &fixtures);
         if let Err(e) = std::fs::write(
             home.join(loquax::config::CONFIG_FILE),
             "map_autoload = off\n",
@@ -1097,7 +1196,7 @@ impl Walk {
 
     /// The five gestures on `size`.
     fn gestures(&mut self, size: Size) {
-        let [germany, _, _, _, _, berlin, _, erg, _] = CENTRES;
+        let [germany, _, _, _, _, berlin, _, erg, _, bani] = CENTRES;
         // Over the relief (order 1853): Erg Chebbi's packs and region,
         // each gesture in a fresh home, so the relief store starts cold.
         // Across the relief tiles' seams at z12, 40 px a frame east, 24
@@ -1122,6 +1221,12 @@ impl Walk {
                     ..ask
                 })
             }
+        });
+        // Over the Bani escarpment's relief (1868): its region on disk,
+        // its pack brought by the loader; across the seams at z12 as
+        // over the erg.
+        self.gesture("bani-pan-seam", size, bani, 12 * MILLI, 24, &|_, _, ask| {
+            Some(MapRequest { pan_x: 40, ..ask })
         });
         // Across tile seams at z13 over Berlin's region: 40 px a frame
         // east, 24 frames, three seams.
@@ -1290,7 +1395,7 @@ fn main() {
     };
     let started = Instant::now();
     let [phone, _, _, window, _] = SIZES;
-    let [germany, _, north, _, _, berlin, _, _, _] = CENTRES;
+    let [germany, _, north, _, _, berlin, _, _, _, _] = CENTRES;
     if strip {
         // The 1799 item 0 proof strip: Germany and the Sahara on the
         // phone frame, every half zoom.

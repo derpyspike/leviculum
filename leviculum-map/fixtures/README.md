@@ -165,6 +165,18 @@ leviculum-map-tool cut -o chegaga.lmr https://build.protomaps.com/20261113.pmtil
 from the Protomaps daily build of 2026-11-13, © OpenStreetMap
 contributors, ODbL 1.0, as above.
 
+`morocco/bani.lmr` (45,621 bytes, sha256
+`1707c25568b6b8e1c949e7101a6a7e259b7a147fc2132acae38916c08a1e82e2`): the
+render walk's Bani centre (order 1868), over the box of the
+`bani-z11.lmh` block (z11 tile 985/846), zooms 10 to 14, cut on
+2026-11-15 from the same build and under the same licence with
+
+```sh
+leviculum-map-tool cut -o bani.lmr https://build.protomaps.com/20261113.pmtiles \
+    --bbox=-6.8555,29.6880,-6.6797,29.8407 --min-zoom 10 --max-zoom 14 \
+    --locale de --buildings false --pois false
+```
+
 ## The world outline
 
 `../data/ne_50m_land.lwo` is not a test fixture but the table the crate

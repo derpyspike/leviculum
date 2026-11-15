@@ -54,10 +54,16 @@ renderer.
   - Centres: Germany (51 N 10 E), Morocco (31 N 5 W), both poles (85°),
     the antimeridian (17 S 179.99 E), and Berlin and Florence, where the
     fixture regions give street level from data, and Erg Chebbi and Erg
-    Chegaga (the z10 tiles at 31.20 N 4.04 W and 29.99 N 6.15 W), where
-    two Moroccan fixture regions lie over the height packs
-    `erg-chebbi-z10.lmh` and `erg-chegaga-z10.lmh` that every walk home
-    also holds: the desert relief under the vector map (1741, 1851).
+    Chegaga (the z10 tiles at 31.20 N 4.04 W and 29.99 N 6.15 W) and the
+    Bani escarpment (29.76 N 6.77 W, the middle of the `bani-z11.lmh`
+    block), where three Moroccan fixture regions lie over the height
+    packs `erg-chebbi-z10.lmh`, `erg-chegaga-z10.lmh` and `bani-z11.lmh`:
+    the desert relief under the vector map (1741, 1851, 1868). The packs
+    are not copied into a walk home: the regions are, under the names the
+    autoload gives them, and the shell's loader with `with_heights` finds
+    them on disk and fetches the blocks under them from a local range
+    server holding the packs and their catalogue, as a device fetches
+    them (the audit of 1863). The first home prints the packs it got.
   - Frame sizes: 1224x2197 at a density of 2.75 (Lew's phone), 1080x2400
     at 2.625, 1600x2560 at 2.0, 900x560 at 1.0 (the window), and
     2197x1224 (Lew's phone in landscape).
@@ -73,6 +79,7 @@ renderer.
     store starts cold (order 1853).
   - `erg-pinch-12-14`: over Erg Chebbi from z12 in to z14 and back out, a
     quarter step a frame about the screen's middle, cold as above.
+  - `bani-pan-seam`: as `erg-pan-seam`, over the Bani escarpment (1868).
   - `pan-seam`: 40 px a frame across three tile seams at z13.
   - `pinch-out-in`: a quarter step a frame from z12 out to the world and
     back.
