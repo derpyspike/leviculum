@@ -67,7 +67,6 @@ leviculum-nrf/src/ble/mod.rs
 leviculum-nrf/src/transport_stats.rs
 leviculum-std/examples/lora_airtime_census.rs
 leviculum-std/src/interfaces/ble/links.rs
-leviculum-std/tests/event_log_rotation.rs
 leviculum-std/tests/jl_filter.rs
 leviculum-std/tests/jl_jldiff_edge_cases.rs
 leviculum-std/tests/mvr/ratchet_rotation_single_packet.rs
