@@ -64,8 +64,6 @@ pub mod handover;
 pub mod hub_rooms;
 #[cfg(feature = "std")]
 pub mod lock;
-#[cfg(feature = "history")]
-pub mod pending;
 #[cfg(feature = "std")]
 pub mod phone_server;
 #[cfg(feature = "qr")]
