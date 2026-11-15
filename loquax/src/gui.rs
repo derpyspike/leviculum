@@ -73,7 +73,6 @@ use iced::{
 };
 use tokio::sync::oneshot;
 
-use leviculum_map::mercator::World;
 use leviculum_map::viewport::{ExactView, MILLI};
 use leviculum_mapfill::style::Style;
 use leviculum_ui::input::KeyCode;
@@ -1004,8 +1003,11 @@ struct App {
     /// The core's scheduler over the map's frames (1527): the screen at its
     /// zoom loads first.
     loads: ViewLoads,
-    /// The view the last fit chose: a region landing under it fits again.
-    fitted_at: Option<(World, u32)>,
+    /// The user's input moved the view (1819): from then on the view is
+    /// theirs, and no background change (a `Seen`, a region landing, the
+    /// first pins, a resize) fits it again. Before the first input the
+    /// start fits once, and again only for the first pins.
+    touched: bool,
     frames: Arc<Mutex<Frames>>,
     setup: MapSetup,
     /// The map's view in screen pixels, at the zoom the wheel left.
@@ -1191,7 +1193,7 @@ impl App {
             },
             asks,
             track_cache: std::cell::RefCell::new(None),
-            fitted_at: None,
+            touched: false,
             frames: Arc::new(Mutex::new(frames)),
             view: ExactView::new(centre, u32::from(setup.zooms.0) * MILLI, 1, 1),
             setup,
@@ -1981,6 +1983,8 @@ impl App {
     /// pin's conversation, or close the map.
     fn map_cmd(&mut self, cmd: MapCmd) {
         self.settle();
+        // Every map key is the user's: the view is theirs from here.
+        self.touched = true;
         let (w, h) = self.view.size();
         let (cx, cy) = (f64::from(w) / 2.0, f64::from(h) / 2.0);
         let z = i64::from(self.view.zoom_milli());
@@ -2497,21 +2501,20 @@ impl App {
                 if landed {
                     self.regions_changed();
                 }
-                if !self.fitted && self.unmoved() {
+                if self.first_pins() {
                     self.fit();
                 }
             }
             Message::MapSize(size) => {
                 self.settle();
-                // Whether the view sits where the last fit left it BEFORE
-                // the canvas's hold: a resize that moves it (a larger
-                // canvas raises the globe's floor) is no input, so the
-                // first pins must still fit (audit of 1818, condition
-                // 19), and the fit is taken again at the new size.
-                let unmoved = self.unmoved();
+                // The start's fit, once the canvas has a size; after it a
+                // resize only holds the view to the canvas (a larger one
+                // raises the globe's floor), and the first pins still fit
+                // when they come (audit of 1818, condition 19).
+                let start = self.size.is_none();
                 self.size = Some(size);
                 self.hold();
-                if !self.fitted && unmoved {
+                if start || self.first_pins() {
                     self.fit();
                 }
             }
@@ -2543,6 +2546,8 @@ impl App {
             Message::Pointer(pointer) => self.pointer(pointer),
             Message::Select(peer) => {
                 self.settle();
+                // A click on a peer in the list is the user's command.
+                self.touched = true;
                 self.selected = Some(peer);
                 if let Some(pin) = self.seen.pins.iter().find(|p| p.peer == peer) {
                     self.view.centre = pin.at;
@@ -2816,15 +2821,16 @@ impl App {
         Task::batch(tasks)
     }
 
-    /// Whether the view still sits where the last fit left it, or none
-    /// ran yet: only then may a background change — the first pins, a
-    /// resize — fit anew. A `Seen` landing seconds after the wheel
-    /// stomped the view back to the start otherwise (D1, order 1818).
-    fn unmoved(&self) -> bool {
-        match self.fitted_at {
-            None => true,
-            Some(at) => at == (self.view.centre, self.view.zoom_milli()),
-        }
+    /// Whether the first pins are here to be fitted to (1819): no input
+    /// moved the view yet and no fit had pins. The only background fit
+    /// after the start's. With no pins the fit is the newest region's,
+    /// so a fit on every `Seen` moved the view to each region the
+    /// autoload landed and back to the start on every minute's `Seen`
+    /// (the walk of 057b65e07; D1 of order 1818); comparing the view
+    /// with the last fit's (`unmoved`, 1818) still read a user's way
+    /// back onto the start's view as no input.
+    fn first_pins(&self) -> bool {
+        !self.touched && !self.fitted && !self.seen.pins.is_empty()
     }
 
     /// Every pin in view, as `0` does; before the first pins and the
@@ -2837,7 +2843,6 @@ impl App {
         let (centre, zoom) = fit(&self.seen.pins, map::area(size), &self.setup);
         self.view = ExactView::new(centre, u32::from(zoom) * MILLI, size.0, size.1);
         self.hold();
-        self.fitted_at = Some((self.view.centre, self.view.zoom_milli()));
         let first = !self.fitted && !self.seen.pins.is_empty();
         self.fitted = !self.seen.pins.is_empty();
         if first && self.seen.autoload {
@@ -2872,7 +2877,7 @@ impl App {
     }
 
     /// A region landed or left: the regions read again, the setup with
-    /// them, and the fit again when the reader has not moved since it.
+    /// them. The view stays where it is (1819): a load never moves it.
     /// The tiles drop themselves on the new epoch.
     /// The maps directory the window draws from, as the shell's autoload
     /// shares it.
@@ -2886,11 +2891,6 @@ impl App {
             let mut frames = self.frames.lock().unwrap_or_else(PoisonError::into_inner);
             frames.refresh();
             self.setup = map::setup(frames.painter());
-        }
-        if self.fitted_at == Some((self.view.centre, self.view.zoom_milli())) {
-            let selected = self.selected;
-            self.fit();
-            self.selected = selected.or(self.selected);
         }
     }
 
@@ -2953,6 +2953,7 @@ impl App {
                 press.dragging |=
                     (x - press.from.0).abs() >= far || (y - press.from.1).abs() >= far;
                 if press.dragging {
+                    self.touched = true;
                     let (dx, dy) = (press.last.0 - x, press.last.1 - y);
                     // At globe zooms the drag turns the sphere (1762),
                     // holding the ground under the cursor through the
@@ -2988,6 +2989,7 @@ impl App {
                 let (x, y) = at(p);
                 let now = Instant::now();
                 self.wheel = Some(now);
+                self.touched = true;
                 let goal = self
                     .glide
                     .map_or(self.view.zoom_milli(), |g| g.to.zoom_milli());
@@ -4706,22 +4708,18 @@ mod tests {
             Point::new(100.0, 80.0),
             -9_000,
         )));
+        let start = app.view;
         app.settle();
         let moved = app.view;
-        assert_ne!(
-            app.fitted_at,
-            Some((moved.centre, moved.zoom_milli())),
-            "the wheel moved the view off the fit"
-        );
+        assert_ne!(moved, start, "the wheel moved the view");
         // Seconds later a Seen lands, the same state again: nothing the
         // user did may move the view.
         app.apply(Message::Seen(Box::new(florence_seen(Vec::new(), maps))));
         assert_eq!(app.view, moved, "no input, the view stays");
-        // The control: while the view still sits where the last fit left
-        // it, the first pins do fit — the map zooms to the peers.
+        // The control: before any input the first pins do fit — the map
+        // zooms to the peers.
         let mut fresh = window_over_florence(Vec::new(), 12 * MILLI);
-        let (centre, zoom) = fresh.fitted_at.expect("the empty fit");
-        fresh.view = ExactView::new(centre, zoom, 480, 320);
+        let (centre, zoom) = (fresh.view.centre, fresh.view.zoom_milli());
         fresh.apply(Message::Seen(Box::new(florence_seen(
             vec![pin(1, "alice", 43.7752, 11.2640)],
             maps,
@@ -4732,6 +4730,229 @@ mod tests {
             (centre, zoom),
             "the fit went to the pins"
         );
+    }
+
+    /// The committed region `from` (under `leviculum-map/fixtures`)
+    /// written into `dir` and told to `maps`: a region landing as the
+    /// shell's loader lands one.
+    fn land(dir: &std::path::Path, maps: &loquax::picture::Maps, from: &str) {
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../leviculum-map/fixtures")
+            .join(from);
+        let name = from.replace('/', "-");
+        std::fs::copy(fixture, dir.join(name)).expect("the region");
+        maps.changed();
+    }
+
+    /// The window over a maps directory of its own with no region, 480 x
+    /// 320, the first `Seen` applied: the start, before any input.
+    fn window_over_empty(
+        dir: &std::path::Path,
+        asks: Option<Asks>,
+    ) -> (App, loquax::picture::Maps) {
+        let maps = loquax::picture::Maps::new(Some(dir.to_path_buf()));
+        let mut app = App::new(Frames::new(maps.clone()), asks);
+        app.screen = Screen::Map;
+        app.apply(Message::MapSize(Size::new(480.0, 320.0)));
+        let mut seen = florence_seen(Vec::new(), maps.epoch());
+        seen.autoload = app.asks.is_some();
+        app.apply(Message::Seen(Box::new(seen)));
+        (app, maps)
+    }
+
+    /// 1819 (P0), the load-time family: a region that lands never moves
+    /// the view, also before the first input. With no pins the fit is
+    /// the newest region's, so every region the autoload landed fitted
+    /// the view to that region (`regions_changed`, and `fit` on the next
+    /// `Seen`): from z20 over the Adriatic to the screen box's z9, then
+    /// to the next box (walk of 057b65e07, picture 09; the start box
+    /// around 0/0 put the view in the Gulf of Guinea, picture 10).
+    #[test]
+    fn a_region_landing_never_moves_the_view() {
+        let dir = tempfile::tempdir().expect("maps");
+        let (mut app, maps) = window_over_empty(dir.path(), None);
+        let start = app.view;
+        for from in ["firenze.lmr", "berlin/wide.lmr", "morocco/merzouga.lmr"] {
+            land(dir.path(), &maps, from);
+            let mut seen = app.seen.clone();
+            seen.maps = maps.epoch();
+            app.apply(Message::Seen(Box::new(seen)));
+            assert_eq!(app.view, start, "{from} landed and moved the view");
+        }
+        assert_eq!(
+            app.setup.regions.len(),
+            3,
+            "the control: the regions landed"
+        );
+    }
+
+    /// 1819 (P0): the view the user moved stays the user's, also where
+    /// the input brought it back onto the start's view exactly (a key in
+    /// and a key out about the centre). The first pins that come after
+    /// any input fit nothing: `unmoved` compared the view with the last
+    /// fit's and read the user's way back as no input.
+    #[test]
+    fn the_first_pins_after_any_input_fit_nothing() {
+        let dir = tempfile::tempdir().expect("maps");
+        let (mut app, maps) = window_over_empty(dir.path(), None);
+        land(dir.path(), &maps, "firenze.lmr");
+        let start = app.view;
+        let _ = app.update(Message::Intent(Intent::Map(MapCmd::ZoomIn)));
+        assert_ne!(app.view, start, "the control: the key zoomed in");
+        let _ = app.update(Message::Intent(Intent::Map(MapCmd::ZoomOut)));
+        let back = app.view;
+        let mut seen = app.seen.clone();
+        seen.pins = vec![pin(1, "alice", 43.7752, 11.2640)];
+        seen.maps = maps.epoch();
+        app.apply(Message::Seen(Box::new(seen)));
+        assert_eq!(app.view, back, "pins came after input and moved the view");
+    }
+
+    /// 1819 (P0), the acceptance's soak on the window's real path: half
+    /// an hour of held clock with a scripted session, a `Seen` on every
+    /// minute's beat (`Sent::offer` sends one when the minute turns,
+    /// which with no pins re-fitted the view: the 60 s family of the
+    /// walk of 057b65e07, trace 435486 to 1755485, all at 15.49 s past
+    /// the minute), regions landing every few seconds as the autoload
+    /// lands them, the first pins after a while, the canvas sized again.
+    /// The view (centre, zoom, size, turn) changes only in a step that
+    /// is an input or the glide an input started; everything else leaves
+    /// it bit-identical. The wants the view sends the scheduler are the
+    /// view's own, never the start centre's. `VIEW_SOAK_TRACE=<file>`
+    /// writes the session's trace.
+    #[test]
+    fn the_view_moves_only_by_input_over_half_an_hour() {
+        use std::fmt::Write as _;
+        let dir = tempfile::tempdir().expect("maps");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut app, maps) = window_over_empty(dir.path(), Some(tx));
+        let base = Instant::now();
+        let mut trace = String::new();
+        let mut changes = 0usize;
+        let mut wants = 0usize;
+        let regions = [
+            "firenze.lmr",
+            "berlin/wide.lmr",
+            "berlin/mitte.lmr",
+            "frankfurt/roemer.lmr",
+            "morocco/merzouga.lmr",
+            "morocco/chegaga.lmr",
+        ];
+        let mut landed = 0usize;
+        let step_ms = 500u64;
+        for i in 0..(30 * 60 * 1000 / step_ms) {
+            let t = i * step_ms;
+            let now = base + Duration::from_millis(t);
+            let before = app.view;
+            // The session's input: at rest for the first two minutes,
+            // then the wheel over a place, ten notches in; at 20 min a
+            // drag; at 25 min a key in and a key out.
+            let input = match t {
+                120_000..=124_500 if t.is_multiple_of(500) => {
+                    app.apply(Message::Pointer(Pointer::Wheel(
+                        Point::new(300.0, 120.0),
+                        1_000,
+                    )));
+                    Some("wheel")
+                }
+                1_200_000 => {
+                    app.apply(Message::Pointer(Pointer::Down(Point::new(200.0, 200.0))));
+                    app.apply(Message::Pointer(Pointer::Move(Point::new(260.0, 180.0))));
+                    app.apply(Message::Pointer(Pointer::Up));
+                    Some("drag")
+                }
+                1_500_000 => {
+                    let _ = app.update(Message::Intent(Intent::Map(MapCmd::ZoomIn)));
+                    let _ = app.update(Message::Intent(Intent::Map(MapCmd::ZoomOut)));
+                    Some("keys")
+                }
+                _ => None,
+            };
+            // The glide the wheel started runs on the held clock.
+            let gliding = app.glide.is_some();
+            app.apply(Message::Frame(now));
+            // The background: the minute's beat, the regions every 6 s
+            // from 40 s and again from 3 min, the first pins at 10 min,
+            // the canvas sized again every 90 s.
+            let mut background = Vec::new();
+            if t % 60_000 == 15_490 - 15_490 % step_ms {
+                background.push("beat");
+            }
+            let lands = (40_000..76_000).contains(&t) || (180_000..216_000).contains(&t);
+            if lands && t.is_multiple_of(6_000) {
+                land(dir.path(), &maps, regions[landed % regions.len()]);
+                landed += 1;
+                background.push("region");
+            }
+            if t == 600_000 {
+                background.push("pins");
+            }
+            for what in &background {
+                let mut seen = app.seen.clone();
+                seen.maps = maps.epoch();
+                seen.now = Some(loquax::when::WallTime {
+                    unix_secs: 1_790_000_000 + i64::try_from(t / 1000).unwrap_or(0),
+                    offset_secs: 0,
+                });
+                if *what == "pins" || t >= 600_000 {
+                    seen.pins = vec![pin(1, "alice", 43.7752, 11.2640)];
+                }
+                app.apply(Message::Seen(Box::new(seen)));
+            }
+            if t % 90_000 == 45_000 {
+                app.apply(Message::MapSize(Size::new(480.0, 320.0)));
+                background.push("size");
+            }
+            app.apply(Message::WheelRest);
+            // `WheelRest` reads the wall clock, which this test does not
+            // wait for: the wheel's rest, half a second after its last
+            // notch on the held clock.
+            if t >= 125_000 {
+                app.wheel = None;
+            }
+            // A frame asked: the view shown to the scheduler.
+            app.drive_loads();
+            let screen = app.view.at_zoom(app.view.tile_zoom()).bounds();
+            while let Ok(want) = rx.try_recv() {
+                if let Want::MapView(view_wants) = want {
+                    for w in &view_wants.here {
+                        let b = w.bounds;
+                        let meets = b.west <= screen.east
+                            && screen.west <= b.east
+                            && b.south <= screen.north
+                            && screen.south <= b.north;
+                        assert!(meets, "t={t}: a want {b:?} off the view {screen:?}");
+                        wants += 1;
+                    }
+                }
+            }
+            let after = app.view;
+            if after != before {
+                changes += 1;
+                let _ = writeln!(
+                    trace,
+                    "{t} view z{} centre {},{} by {input:?} gliding={gliding} background={background:?}",
+                    after.zoom_milli(),
+                    after.centre.x,
+                    after.centre.y
+                );
+                assert!(
+                    input.is_some() || gliding,
+                    "t={t}: the view moved with no input: {before:?} -> {after:?} ({background:?})"
+                );
+            } else if !background.is_empty() {
+                let _ = writeln!(trace, "{t} kept z{} {background:?}", after.zoom_milli());
+            }
+        }
+        if let Some(path) = std::env::var_os("VIEW_SOAK_TRACE") {
+            std::fs::write(path, &trace).expect("trace");
+        }
+        assert!(landed >= 12, "the control: {landed} regions landed");
+        assert!(
+            changes >= 3,
+            "the control: the input moved the view ({changes})"
+        );
+        assert!(wants > 0, "the control: the view asked for its area");
     }
 
     /// Audit of 1818 condition 2, the window's half (1833's wording):
@@ -4839,8 +5060,9 @@ mod tests {
     /// Audit of 1818 condition 19: a resize between the empty fit and
     /// the first pins moves the view through `hold()` (a larger canvas
     /// has a deeper globe floor), and no input came. The first pins must
-    /// still fit: the D1 rule (`unmoved`) compares the exact centre and
-    /// zoom, so a hold that moved the view read as the user's move.
+    /// still fit: the D1 rule (`unmoved`) compared the exact centre and
+    /// zoom, so a hold that moved the view read as the user's move; since
+    /// 1819 only input counts (`touched`).
     #[test]
     fn the_first_pins_fit_after_a_resize_moved_the_empty_view() {
         // No region: the empty fit is the world at the globe's floor,
@@ -4851,8 +5073,8 @@ mod tests {
         app.screen = Screen::Map;
         app.apply(Message::MapSize(Size::new(480.0, 320.0)));
         app.apply(Message::Seen(Box::new(florence_seen(Vec::new(), maps))));
-        let empty = app.fitted_at.expect("the empty fit");
         let before = app.view;
+        let empty = (before.centre, before.zoom_milli());
         app.apply(Message::MapSize(Size::new(2400.0, 2400.0)));
         assert_ne!(
             (app.view.centre, app.view.zoom_milli()),
@@ -4865,8 +5087,6 @@ mod tests {
             maps,
         ))));
         assert!(app.fitted, "the first pins fit after the resize");
-        let fitted = app.fitted_at.expect("the pins' fit");
-        assert_eq!((app.view.centre, app.view.zoom_milli()), fitted);
         let (x, y) = app
             .view
             .to_screen(project(LatLon::from_degrees(43.7752, 11.2640)));

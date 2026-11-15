@@ -1399,6 +1399,11 @@ pub struct UiModel<B> {
     pub map_from: Pane,
     /// The left button held down on the map, a click or a drag.
     pub map_press: Option<map::MapPress>,
+    /// The place a "go to the place" command centred the map on, while
+    /// no input moved the map since (1819): its region landing fits the
+    /// view to it, the command's second half. Any key, drag or wheel on
+    /// the map ends it; a load that lands after that moves nothing.
+    pub map_place: Option<leviculum_map::mercator::World>,
     /// Whether going to a place loads its region by itself (`map_autoload`,
     /// on in the shell's config by default; off here until the shell says).
     pub map_autoload: bool,
@@ -1673,6 +1678,7 @@ impl<B: InputBuffer + Default> UiModel<B> {
             map_setup: map::MapSetup::default(),
             map_picture: None,
             map_press: None,
+            map_place: None,
             map_from: Pane::Messages,
             map_autoload: false,
             map_theme: None,
@@ -3959,9 +3965,9 @@ fn fold<B: InputBuffer + Default>(model: &mut UiModel<B>, event: UiEvent) -> Vec
         UiEvent::Rooms(event) => rooms::fold(model, event),
         UiEvent::Explore(event) => explore::fold(model, event),
         UiEvent::MapSetup(setup) => {
-            if let Some(state) = model.map.as_mut() {
-                state.zoom = state.zoom.clamp(setup.zooms.0, setup.zooms.1);
-            }
+            // The regions changed under the map: the view stays where the
+            // reader left it (1819), deeper than the regions reach drawn
+            // overzoomed; the next key steps from there.
             // The drawing changed under the reader: the title names it a
             // moment. The first setup changes nothing the reader chose.
             let old = &model.map_setup;
@@ -4849,11 +4855,13 @@ fn open_map_at<B: InputBuffer>(model: &mut UiModel<B>, fix: &Fix) {
         selected: Some(fix.peer),
     });
     model.map_press = None;
+    model.map_place = Some(at);
     model.remember_map_from();
     model.focus = Pane::Map;
     model.selection = None;
     // Going to a place loads its region (1089): the map is shown at once
-    // over what is there, and fitted again when the region lands.
+    // over what is there, and fitted again when the region lands, unless
+    // the reader moved the map meanwhile (`map_place`).
     if model.map_autoload {
         model
             .map_wants
@@ -4863,7 +4871,8 @@ fn open_map_at<B: InputBuffer>(model: &mut UiModel<B>, fix: &Fix) {
 
 /// A region load moved on: the title's word, a toast for a failure, and a
 /// place's map fitted again to the region that landed under it, unless the
-/// reader moved it meanwhile.
+/// reader moved it meanwhile: only the command's own fit, never another
+/// load's, and none after any input on the map (1819).
 fn map_load<B: InputBuffer>(model: &mut UiModel<B>, load: MapLoad) {
     match load {
         MapLoad::Started(_) => model.map_loading = Some(MAP_LOADING.to_string()),
@@ -4871,10 +4880,12 @@ fn map_load<B: InputBuffer>(model: &mut UiModel<B>, load: MapLoad) {
             model.map_loading = None;
             let area = model.map_area();
             let setup = model.map_setup.clone();
+            let pending = model.map_place;
             if let Some(state) = model.map.as_mut() {
-                if want.reason != map::LoadReason::Place || state.centre != want.centre {
+                if want.reason != map::LoadReason::Place || pending != Some(want.centre) {
                     return;
                 }
+                model.map_place = None;
                 let (centre, zoom) = map::fit_at(want.centre, area, &setup);
                 state.centre = centre;
                 state.zoom = zoom;
@@ -4904,6 +4915,7 @@ fn viewport_unit(view: &leviculum_map::viewport::Viewport) -> f64 {
 fn open_map<B: InputBuffer>(model: &mut UiModel<B>) {
     let pins = model.map_pins();
     let (centre, zoom) = map::fit(&pins, model.map_area(), &model.map_setup);
+    model.map_place = None;
     model.map = Some(map::MapState {
         centre,
         zoom,
@@ -4945,6 +4957,19 @@ fn pan_map(state: &mut map::MapState, area: Rect, setup: &map::MapSetup, dx: i8,
     map::settle(state, area, setup);
 }
 
+/// One zoom step in from `zoom`, no deeper than the regions' deepest of
+/// `setup`; a view the regions narrowed under (1819) stays where it is
+/// rather than stepping out.
+fn step_in(zoom: u8, setup: &map::MapSetup) -> u8 {
+    zoom.saturating_add(1).min(setup.zooms.1.max(zoom))
+}
+
+/// One zoom step out from `zoom`, no shallower than `setup`'s
+/// shallowest; a view below it stays where it is.
+fn step_out(zoom: u8, setup: &map::MapSetup) -> u8 {
+    zoom.saturating_sub(1).max(setup.zooms.0.min(zoom))
+}
+
 /// A key on the open map.
 fn map_key<B: InputBuffer>(model: &mut UiModel<B>, cmd: keys::MapCmd) -> Vec<UiEffect> {
     use keys::MapCmd;
@@ -4966,13 +4991,16 @@ fn map_key<B: InputBuffer>(model: &mut UiModel<B>, cmd: keys::MapCmd) -> Vec<UiE
         ))
     });
     let own = model.address;
+    // Every key on the map is the reader's: a place's load that lands
+    // after it moves nothing (1819).
+    model.map_place = None;
     let Some(state) = model.map.as_mut() else {
         return Vec::new();
     };
     match cmd {
-        MapCmd::ZoomIn => state.zoom = state.zoom.saturating_add(1).min(setup.zooms.1),
+        MapCmd::ZoomIn => state.zoom = step_in(state.zoom, &setup),
         MapCmd::ZoomOut => {
-            state.zoom = state.zoom.saturating_sub(1).max(setup.zooms.0);
+            state.zoom = step_out(state.zoom, &setup);
             map::settle(state, area, &setup);
         }
         MapCmd::Pan(dx, dy) => pan_map(state, area, &setup, dx, dy),
@@ -5456,6 +5484,7 @@ fn map_drag<B: InputBuffer>(model: &mut UiModel<B>, col: u16, row: u16) {
     let (Some(press), Some(state)) = (model.map_press.as_mut(), model.map.as_mut()) else {
         return;
     };
+    model.map_place = None;
     press.reach(col, row);
     state.centre = press.centre_at(col, row, state, &setup, area);
     map::settle(state, area, &setup);
@@ -5599,10 +5628,11 @@ fn wheel<B: InputBuffer>(model: &mut UiModel<B>, col: u16, row: u16, down: bool)
         // it rolls back.
         Some(Pane::Map) => {
             let (setup, area) = (model.map_setup.clone(), model.map_area());
+            model.map_place = None;
             if let Some(state) = model.map.as_mut() {
                 let zoom = match down {
-                    true => state.zoom.saturating_sub(1).max(setup.zooms.0),
-                    false => state.zoom.saturating_add(1).min(setup.zooms.1),
+                    true => step_out(state.zoom, &setup),
+                    false => step_in(state.zoom, &setup),
                 };
                 map::zoom_at(state, area, &setup, col, row, zoom);
             }
@@ -5621,6 +5651,7 @@ fn tilt<B: InputBuffer>(model: &mut UiModel<B>, col: u16, row: u16, right: bool)
     }
     if hit::pane_at(model, col, row) == Some(Pane::Map) {
         let (setup, area) = (model.map_setup.clone(), model.map_area());
+        model.map_place = None;
         if let Some(state) = model.map.as_mut() {
             pan_map(state, area, &setup, if right { 1 } else { -1 }, 0);
         }
@@ -18796,6 +18827,54 @@ pub(crate) mod tests {
         // The place again: held, nothing asked.
         update(&mut model, key(KeyCode::Esc));
         assert_eq!(update(&mut model, key(KeyCode::Enter)), []);
+    }
+
+    /// 1819 (P0), the core's half: the place's region landing fits the
+    /// view only while the place is the last thing that moved it. A key
+    /// zoomed out meanwhile, about the centre, so the centre is still the
+    /// place's: the load's fit took the view back to the region's zoom,
+    /// a background write after the reader's move.
+    #[test]
+    fn a_place_load_landing_after_the_reader_zoomed_keeps_the_zoom() {
+        let mut model = frankfurt(true);
+        let effects = update(&mut model, key(KeyCode::Enter));
+        let [UiEffect::LoadMap(want)] = effects.as_slice() else {
+            panic!("{effects:?}");
+        };
+        update(&mut model, UiEvent::MapLoad(MapLoad::Started(want.clone())));
+        let mut setup = model.map_setup.clone();
+        setup.zooms = (0, 20);
+        update(&mut model, UiEvent::MapSetup(setup.clone()));
+        update(&mut model, key(KeyCode::Char('-')));
+        let moved = model.map.expect("open");
+        assert_eq!(moved.centre, want.centre, "the control: about the centre");
+        setup.regions.push(landed(want));
+        update(&mut model, UiEvent::MapSetup(setup));
+        update(&mut model, UiEvent::MapLoad(MapLoad::Done(want.clone())));
+        assert_eq!(model.map.expect("open"), moved, "the load moved the view");
+    }
+
+    /// 1819 (P0): a region evicted or deleted narrows the regions' zooms;
+    /// the view the reader zoomed to stays where it is (drawn overzoomed)
+    /// instead of being clamped by the background.
+    #[test]
+    fn narrower_zooms_from_the_regions_never_move_the_view() {
+        let mut model = frankfurt(true);
+        update(&mut model, key(KeyCode::Enter));
+        let mut setup = model.map_setup.clone();
+        setup.zooms = (0, 20);
+        update(&mut model, UiEvent::MapSetup(setup.clone()));
+        for _ in 0..7 {
+            update(&mut model, key(KeyCode::Char('+')));
+        }
+        let deep = model.map.expect("open");
+        assert!(deep.zoom > 15, "the control: {}", deep.zoom);
+        setup.zooms = (0, 15);
+        update(&mut model, UiEvent::MapSetup(setup));
+        assert_eq!(model.map.expect("open"), deep);
+        // The next key in from past the deepest stays put, never out.
+        update(&mut model, key(KeyCode::Char('+')));
+        assert_eq!(model.map.expect("open").zoom, deep.zoom);
     }
 
     /// With `map_autoload = off` going to a place asks for nothing.

@@ -83,10 +83,10 @@ shows none: it maps the state to "sent" (`loquax-android/src/session.rs:1245`).
 
 | Where | What the user sees | New text |
 |---|---|---|
-| `loquax/src/ui.rs:2513` | `via mailbox` on a bubble | `via relay` |
-| `loquax/src/ui.rs:2534` | `in the mailbox` (state) | `waiting at a relay` |
-| `loquax/src/ui.rs:2574` | toast `fetching the mailbox` | `checking the relay` |
-| `loquax/src/ui.rs:3514-3543` | title `no mailbox`, `mailbox 9c31e0a2 adopted · synced 14:05 · next 14:20` and its shorter forms | `no relay`, `relay 9c31e0a2 ...` |
+| `loquax/src/ui.rs:2519` | `via mailbox` on a bubble | `via relay` |
+| `loquax/src/ui.rs:2540` | `in the mailbox` (state) | `waiting at a relay` |
+| `loquax/src/ui.rs:2580` | toast `fetching the mailbox` | `checking the relay` |
+| `loquax/src/ui.rs:3520-3549` | title `no mailbox`, `mailbox 9c31e0a2 adopted · synced 14:05 · next 14:20` and its shorter forms | `no relay`, `relay 9c31e0a2 ...` |
 | `loquax/src/keys.rs:687` | help line `fetch the mailbox` | `check the relay` |
 | `loquax/src/mailbox.rs:91-127` | the reasons an adoption gives (`no mailbox was selected ...`, `no mailbox chosen: ...`) | `relay` for `mailbox` |
 | `loquax/src/mailbox_state.rs:164-174` | `mailbox: 9c31e0a2 kept`, `... adopted: ...` on stderr | `relay: ...` |

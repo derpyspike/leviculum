@@ -5,6 +5,7 @@
 //! ran per event.
 
 use super::*;
+use leviculum_map::mercator::World;
 use std::sync::mpsc;
 
 /// What one replayed gesture cost.

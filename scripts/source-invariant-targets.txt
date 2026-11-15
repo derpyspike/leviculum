@@ -298,6 +298,7 @@ skip  loquax-android   profile                    # the profile's words through 
 skip  loquax-android   rooms_hub                  # the phone's session, its mailbox, a transport and a fake hub over loopback TCP (1384); subject is the hub link
 skip  loquax-android   schema_props               # property tests of the facade schema's codec; subject is the code
 skip  loquax-android   viewer                     # the photo viewer's zoom through the JNI query in Java's bytes (1269); subject is the code
+skip  loquax-android   view_owner                 # the phone's map view moves only by input (1819): frames through the facade, one against a loopback tile server; subject is the code
 run   loquax-android   strings                    # reads the app's res/values*/strings.xml and asserts the words of walk findings 27 to 30 (1283)
 run   loquax-android   icon                       # reads the icon PNGs, the adaptive icon, the manifest and the deb's desktop entry and asserts their sizes and names (1336)
 run   loquax-android   ui_thread                  # reads the app's Java sources, the manifest and Core.java's builders and asserts no command is called outside the engine's thread (1446)
