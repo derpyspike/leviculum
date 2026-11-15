@@ -90,7 +90,7 @@ the whole interface did, so every single-link carrier is unchanged and
 so is lnsd's BLE interface, whose peripheral role notifies its
 subscribed centrals as one group and cannot address a subset of them.
 The firmware implements it (`try_send_excluding_peer`,
-`leviculum-nrf/ble-link/src/link.rs:731`), where the decision is a pure
+`leviculum-nrf/ble-link/src/link.rs:739`), where the decision is a pure
 function of the registry (`TxAim`,
 `leviculum-nrf/ble-tx/src/registry.rs:919`). Without it a path request
 from the phone died at the board: one `InterfaceId` covered both links,
@@ -111,8 +111,9 @@ so both still send the announce to the whole interface.
 
 The firmware runs the same shape with fixed ids: serial 0, LoRa 1, BLE
 2, set once at startup (`set_interface_name`,
-`leviculum-nrf/src/node_loop.rs:438`) and hardcoded in the interface
-itself (`BleInterface`, `leviculum-nrf/ble-link/src/link.rs:692`), with the
+`leviculum-nrf/src/node_loop.rs:438`) and handed to the interface at
+construction (`BleInterface::new`, `leviculum-nrf/ble-link/src/link.rs:664`,
+called with `InterfaceId(2)` at `leviculum-nrf/src/node_loop.rs:701`), with the
 announce gate naming the same constant (`BLE_IFACE`,
 `leviculum-nrf/src/announce.rs:89`). The fan-out is a task that maps
 the hint onto a per-link queue (`tx_fanout_task`,
