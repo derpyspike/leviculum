@@ -1575,7 +1575,7 @@ tree-clean-selftest:
 #   run all still ahead of it. The `~3.5 min` in the recipe's own doc
 #   string is older than half the dependency list.
 [doc('The coder-pass gate: every guard in `fast` that costs under 10 s')]
-guards: tree-snapshot tree-clean-selftest check-submodules check-third-party check-trailers check-integ-bin-list check-ci-pipeline check-ci-secrets publish-selftest nightly-green-selftest check-publish-nightly-gate package-selftest site-publish-selftest site-unpack-docs-selftest deb-stamp-selftest version-guard lock-contention-selftest toolchain-status-selftest sweep-selftest tmp-leftovers-selftest window-bench-selftest dfu-exit-selftest m9-walk-selftest btvirt-selftest check-firmware-images check-plain-clone check-supervised-spawns check-core-lock-census check-env-knobs check-test-ports test-retry-guard no-printf-grep-pipes check-ignored-source check-just-docs check-guards-subset check-standard-integ check-python-test-prerequisites check-config-table-citations prepush-guard nrf-evt-max-size nrf-gap-device-name nrf-board-pins nrf-sd-guard nrf-uf2-volumes nrf-fw-readback rnode-chip-offsets nrf-shellcheck embassy-pins log-diff-mask-selftest firmware-no-hal firmware-no-chip-cfg nrf-module-reach check-fuzz-lock changelog-links loquax-name m0-build-gate lxmf-embedded-gate loquax-core-no-std map-core-no-std lnomad-core-no-std m9-render-no-std lnomad-core-no-tui-static ui-no-terminal-static check-source-invariant-census nessa-check
+guards: tree-snapshot tree-clean-selftest check-submodules check-third-party check-trailers check-integ-bin-list check-ci-pipeline check-ci-secrets publish-selftest nightly-green-selftest check-publish-nightly-gate package-selftest site-publish-selftest site-unpack-docs-selftest deb-stamp-selftest version-guard lock-contention-selftest toolchain-status-selftest sweep-selftest tmp-leftovers-selftest window-bench-selftest dfu-exit-selftest m9-walk-selftest btvirt-selftest check-firmware-images check-plain-clone check-supervised-spawns check-core-lock-census check-env-knobs check-test-ports test-retry-guard no-printf-grep-pipes check-ignored-source check-just-docs check-guards-subset check-standard-integ check-python-test-prerequisites check-config-table-citations prepush-guard nrf-evt-max-size nrf-gap-device-name nrf-board-pins nrf-sd-guard nrf-uf2-volumes nrf-fw-readback rnode-chip-offsets nrf-shellcheck embassy-pins log-diff-mask-selftest firmware-no-hal firmware-no-chip-cfg nrf-module-reach check-fuzz-lock changelog-links loquax-name m0-build-gate lxmf-embedded-gate loquax-core-no-std map-core-no-std lnomad-core-no-std m9-render-no-std lnomad-core-no-tui-static ui-no-terminal-static check-source-invariant-census nessa-check nessa-check-selftest
 
 # Tier 0 (~3.5 min, runs on every git push): submodule pins + commit-message
 # trailers + the single-integ-bin-list guard (#310)
@@ -1607,7 +1607,7 @@ guards: tree-snapshot tree-clean-selftest check-submodules check-third-party che
 # `check-all-targets` dependency compiles those targets but does not lint
 # them, which is exactly the gap.
 [doc('Tier 0 (~3.5 min): the gate every git push runs')]
-fast: tree-snapshot tree-clean-selftest check-submodules check-third-party check-trailers check-integ-bin-list check-ci-pipeline check-ci-secrets publish-selftest nightly-green-selftest check-publish-nightly-gate package-selftest site-publish-selftest site-unpack-docs-selftest deb-stamp-selftest version-guard lock-contention-selftest toolchain-status-selftest sweep-selftest tmp-leftovers-selftest window-bench-selftest dfu-exit-selftest m9-walk-selftest btvirt-selftest check-firmware-images check-plain-clone check-supervised-spawns check-core-lock-census check-env-knobs check-test-ports test-retry-guard no-printf-grep-pipes check-ignored-source check-just-docs check-guards-subset check-standard-integ check-python-test-prerequisites check-config-table-citations prepush-guard check-processor-seam mvr supervised-spawn lint-nrf lint-lr11xx nrf-stack-frames nrf-store-gap nrf-flash-budget m9-reproducible nrf-reproducible nrf-evt-max-size nrf-gap-device-name nrf-board-pins nrf-sd-guard nrf-uf2-volumes nrf-fw-readback rnode-chip-offsets nrf-shellcheck embassy-pins log-diff-mask-selftest firmware-no-hal firmware-no-chip-cfg nrf-module-reach hw-witness check-fuzz-lock fuzz-selftest fuzz-regress notices-guard doc-touched doc-gate changelog-links loquax-name core-no-tracing lnsd-minimal event-catalog m0-build-gate lxmf-embedded-gate loquax-core-no-std map-core-no-std lnomad-core-no-std m9-render-no-std lnomad-core-no-tui ui-no-terminal i686-usize-gate no-atomic64-gate check-all-targets deb-features-check deb-floor-check citation-guard source-invariant-tests tmp-leftovers nessa-check
+fast: tree-snapshot tree-clean-selftest check-submodules check-third-party check-trailers check-integ-bin-list check-ci-pipeline check-ci-secrets publish-selftest nightly-green-selftest check-publish-nightly-gate package-selftest site-publish-selftest site-unpack-docs-selftest deb-stamp-selftest version-guard lock-contention-selftest toolchain-status-selftest sweep-selftest tmp-leftovers-selftest window-bench-selftest dfu-exit-selftest m9-walk-selftest btvirt-selftest check-firmware-images check-plain-clone check-supervised-spawns check-core-lock-census check-env-knobs check-test-ports test-retry-guard no-printf-grep-pipes check-ignored-source check-just-docs check-guards-subset check-standard-integ check-python-test-prerequisites check-config-table-citations prepush-guard check-processor-seam mvr supervised-spawn lint-nrf lint-lr11xx nrf-stack-frames nrf-store-gap nrf-flash-budget m9-reproducible nrf-reproducible nrf-evt-max-size nrf-gap-device-name nrf-board-pins nrf-sd-guard nrf-uf2-volumes nrf-fw-readback rnode-chip-offsets nrf-shellcheck embassy-pins log-diff-mask-selftest firmware-no-hal firmware-no-chip-cfg nrf-module-reach hw-witness check-fuzz-lock fuzz-selftest fuzz-regress notices-guard doc-touched doc-gate changelog-links loquax-name core-no-tracing lnsd-minimal event-catalog m0-build-gate lxmf-embedded-gate loquax-core-no-std map-core-no-std lnomad-core-no-std m9-render-no-std lnomad-core-no-tui ui-no-terminal i686-usize-gate no-atomic64-gate check-all-targets deb-features-check deb-floor-check citation-guard source-invariant-tests tmp-leftovers nessa-check nessa-check-selftest
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings
     {{manifest}} workspace-lib -- cargo test --workspace --lib
@@ -3278,12 +3278,42 @@ check-allocator:
 # 1690: Nessa is the suite's logo (Lew, 2026-11-11), and every picture of her
 # is rendered from one SVG. This holds the tree to it: the script re-renders
 # every product into target/tmp and compares bytes, so a hand-edited PNG or a
-# forgotten re-run is red. On a host without resvg the SVG and vector-drawable
-# products are still compared and only the pictures are skipped, with a line
-# saying so: the renderer is an optional development dependency, and a guard
-# that fails outright on a missing tool teaches people to ignore guards
-# (scripts/install-ci.sh names it). ~2 s with resvg, no build. In `guards` and
-# `fast`; written at the end of this file so no cited Justfile line moves.
+# forgotten re-run is red. On a host without resvg the guard is RED: the
+# script still compares the SVG and vector-drawable text products, names each
+# one that differs, and then fails with "FAIL the pictures were not compared",
+# because a guard that could not compare the pictures has not held them to
+# the source, and a green there would let every host without resvg call the
+# icons and the M9 splash checked (the audit of order 1824). Install resvg
+# (scripts/install-ci.sh names it). ~2 s with resvg, no build. In `guards`
+# and `fast`, with `nessa-check-selftest` holding the no-resvg branch red;
+# written at the end of this file so no cited Justfile line moves.
 [doc('Check every icon and the splash match the Nessa SVG (1690)')]
 nessa-check:
     @python3 -I scripts/nessa-render.py --check
+
+# Order 1871: `nessa-check` on a host without resvg must be red, never a
+# silent pass. This runs `scripts/nessa-render.py --check` (or `script`) with
+# a PATH that holds python3 and nothing else, so resvg is not found whatever
+# the host has, and fails unless that run exits non-zero AND prints "FAIL the
+# pictures were not compared". Under a second, no build. In `guards` and
+# `fast` beside `nessa-check`.
+[doc('Check nessa-check is red on a host without resvg (1871)')]
+nessa-check-selftest script="scripts/nessa-render.py":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bin="$(mktemp -d)"
+    trap 'rm -rf "$bin"' EXIT
+    ln -s "$(command -v python3)" "$bin/python3"
+    status=0
+    out="$(PATH="$bin" python3 -I {{script}} --check 2>&1)" || status=$?
+    if [ "$status" -eq 0 ]; then
+        echo "nessa-check-selftest: FAIL the check without resvg exited 0" >&2
+        echo "$out" >&2
+        exit 1
+    fi
+    if ! grep -qF "FAIL the pictures were not compared" <<< "$out"; then
+        echo "nessa-check-selftest: FAIL exit $status but no 'FAIL the pictures were not compared' line" >&2
+        echo "$out" >&2
+        exit 1
+    fi
+    echo "nessa-check-selftest: ok, without resvg the check exits $status and says the pictures were not compared"
