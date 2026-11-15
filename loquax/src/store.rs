@@ -124,6 +124,7 @@ use crate::ui::groups::{GroupInfo, Standing};
 use crate::ui::history::{Draft, Flags, Restored, StoreWrite, StoredHit, LOAD_WINDOW};
 use crate::ui::listing::Listing;
 use crate::ui::share::{Report, Share, Span};
+use crate::ui::strings::{Lang, StrId};
 use crate::ui::{LedgerEntry, Message, Signature};
 use crate::when::WallTime;
 use leviculum_lxmf::telemetry::Location;
@@ -132,7 +133,7 @@ use leviculum_lxmf::telemetry::Location;
 pub const STORE_FILE: &str = "history.sqlite3";
 
 /// The schema this program writes, in SQLite's `user_version`.
-pub const SCHEMA_VERSION: i32 = 23;
+pub const SCHEMA_VERSION: i32 = 25;
 
 /// How long a write waits for another loquax holding the file.
 const BUSY_MS: u64 = 5_000;
@@ -534,8 +535,42 @@ CREATE INDEX home_names_by_last_seen ON home_names(identity, last_seen);
 /// and from which it is left. NULL, a row from before this schema,
 /// leaves every epoch unknown, and a member without epochs vouches for
 /// no group copy until the next membership comes.
+///
+/// Schema 23 was written twice, on two branches that met in schema 25:
+/// master's 23 is this column, homenode's 23 was [`SCHEMA_V24`]'s and
+/// its 24 was [`SCHEMA_V25`]'s. A store at 23 or 24 may be either, so
+/// [`Store::migrate`] adds each of the three columns where it is missing
+/// rather than by the version alone.
 const SCHEMA_V23: &str = "
 ALTER TABLE client_groups ADD COLUMN member_epochs BLOB;
+";
+
+/// What schema 24 adds (1728, [`GroupInfo::closed_at`]; homenode's schema
+/// 23): the membership epoch from which the reader was out of a group it
+/// had joined, NULL while it is in and for a group it never joined.
+///
+/// A joined group stays joined, whatever messages this device holds of
+/// it (1744): the reader's Join need not be among them (a device without
+/// a home sends it as a state, not as a line), and taking a group the
+/// reader is in back to invited made it ask again and drop every writer
+/// meanwhile. A group left or ended that the reader made or sent
+/// something (so one it was in) is closed from its newest membership,
+/// the one that said so; one it never sent anything was taken there by a
+/// rule that let an invited group's word do so (1702), and stays open.
+const SCHEMA_V24: &str = "
+ALTER TABLE client_groups ADD COLUMN closed_at INTEGER;
+UPDATE client_groups SET closed_at = epoch WHERE standing IN (2, 3) AND (ours = 1 OR EXISTS (
+    SELECT 1 FROM messages m WHERE m.identity = client_groups.identity
+    AND m.conversation = client_groups.address AND m.direction = 1));
+";
+
+/// What schema 25 adds (1744, [`Store::archive_vouch`]; homenode's schema
+/// 24): whether the home verified a received message's signature, 1
+/// where it did, 0 where it did not or a home from before kept it. A
+/// board that asks gets a vouched message as
+/// [`crate::home::KIND_VOUCHED`].
+const SCHEMA_V25: &str = "
+ALTER TABLE archive ADD COLUMN vouched INTEGER NOT NULL DEFAULT 0;
 ";
 
 pub mod groups;
@@ -653,6 +688,31 @@ impl fmt::Display for StoreError {
 }
 
 impl std::error::Error for StoreError {}
+
+impl StoreError {
+    /// What a person reads (1760): a store a later Loquax wrote is said in
+    /// plain words in `lang`, without the file or the schemas, on every
+    /// target that opens the store; the [`Display`](fmt::Display) text is
+    /// the detail (the phone's Details, the desktop's `--verbose`). The
+    /// other errors say what they said before.
+    pub fn brief(&self, lang: Lang) -> String {
+        match self {
+            Self::Newer { .. } => StrId::StoreNewer.text(lang).to_string(),
+            _ => self.to_string(),
+        }
+    }
+}
+
+/// The store at `path` when a later Loquax wrote it (1760), read only and
+/// the file untouched, so a start can refuse it before anything else runs.
+/// `None` when there is no file, when it is this Loquax's or an older one's,
+/// and when it cannot be read: the open that follows says why.
+pub fn written_later(path: &Path) -> Option<StoreError> {
+    match Store::open_read_only(path, [0; 16]) {
+        Err(error @ StoreError::Newer { .. }) => Some(error),
+        _ => None,
+    }
+}
 
 /// The open store, scoped to one of our addresses.
 pub struct Store {
@@ -785,7 +845,7 @@ impl Store {
              {SCHEMA_V6} {SCHEMA_V7} {SCHEMA_V8} {SCHEMA_V9} {SCHEMA_V10} {SCHEMA_V11} \
              {SCHEMA_V12} {SCHEMA_V13} {SCHEMA_V14} {SCHEMA_V15} {SCHEMA_V16} {SCHEMA_V17} \
              {SCHEMA_V18} {SCHEMA_V19} {SCHEMA_V20} {SCHEMA_V21} {SCHEMA_V22} {SCHEMA_V23} \
-             PRAGMA user_version = {SCHEMA_VERSION}; \
+             {SCHEMA_V24} {SCHEMA_V25} PRAGMA user_version = {SCHEMA_VERSION}; \
              COMMIT;"
         );
         self.conn
@@ -923,6 +983,16 @@ impl Store {
         Ok(())
     }
 
+    /// Whether `table` has `column` (the schema 23 to 25 steps, which two
+    /// branches numbered differently, [`SCHEMA_V23`]).
+    fn has_column(&self, table: &str, column: &str) -> rusqlite::Result<bool> {
+        self.conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+            params![table, column],
+            |row| row.get::<_, i64>(0).map(|n| n > 0),
+        )
+    }
+
     /// An older schema to this one: each later schema's tables, all or
     /// none. The version is read again under the write lock, so two loquax
     /// opening one old file at once migrate it once.
@@ -1005,7 +1075,16 @@ impl Store {
                 if version < 22 {
                     batch.push_str(SCHEMA_V22);
                 }
-                batch.push_str(SCHEMA_V23);
+                // 23 to 25: by column, not by version (see [`SCHEMA_V23`]).
+                for (table, column, step) in [
+                    ("client_groups", "member_epochs", SCHEMA_V23),
+                    ("client_groups", "closed_at", SCHEMA_V24),
+                    ("archive", "vouched", SCHEMA_V25),
+                ] {
+                    if !self.has_column(table, column)? {
+                        batch.push_str(step);
+                    }
+                }
                 batch.push_str(&format!("PRAGMA user_version = {SCHEMA_VERSION};"));
                 if let Err(error) = self.conn.execute_batch(&batch) {
                     let _ = self.conn.execute_batch("ROLLBACK");
@@ -1222,7 +1301,7 @@ impl Store {
             .conn
             .prepare(
                 "SELECT address, name, admin_name, inviter, ours, epoch, standing, members, \
-                 member_epochs FROM client_groups WHERE identity = ?1",
+                 member_epochs, closed_at FROM client_groups WHERE identity = ?1",
             )
             .map_err(|e| self.failed(e))?;
         let rows = statement
@@ -1237,13 +1316,26 @@ impl Store {
                     row.get::<_, i64>(6)?,
                     row.get::<_, Vec<u8>>(7)?,
                     row.get::<_, Option<Vec<u8>>>(8)?,
+                    row.get::<_, Option<i64>>(9)?,
                 ))
             })
             .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
             .map(|rows| self.read(rows))
             .map_err(|e| self.failed(e))?;
         let mut out = BTreeMap::new();
-        for (address, name, admin_name, inviter, ours, epoch, standing, members, epochs) in rows {
+        for (
+            address,
+            name,
+            admin_name,
+            inviter,
+            ours,
+            epoch,
+            standing,
+            members,
+            epochs,
+            closed_at,
+        ) in rows
+        {
             let address = self.address(&address)?;
             let corrupt = |what: &str| StoreError::Corrupt {
                 path: self.path.clone(),
@@ -1270,6 +1362,9 @@ impl Store {
                     epoch: u64::try_from(epoch).map_err(|_| corrupt("epoch"))?,
                     members,
                     standing,
+                    closed_at: closed_at
+                        .map(|at| u64::try_from(at).map_err(|_| corrupt("closing epoch")))
+                        .transpose()?,
                 },
             );
         }
@@ -1286,6 +1381,27 @@ impl Store {
         through: Option<u64>,
     ) -> Result<(Vec<Message>, usize), StoreError> {
         self.page(peer, before, through)
+    }
+
+    /// The received message `id` of `peer`'s conversation as the store
+    /// keeps it, its ledger left out (1744): what the screen reads of a
+    /// group's message whose verdict came while it did not hold it
+    /// ([`crate::ui::history::StoreRead::Settled`]). `None` where the
+    /// store keeps no such message.
+    pub fn settled(&self, peer: [u8; 16], id: [u8; 32]) -> Result<Option<Message>, StoreError> {
+        let message = self
+            .conn
+            .query_row(
+                "SELECT seq, id, direction, state, unproven, verification, last_leg, \
+                 received_at, utc_offset, size, content, fields, read_at FROM messages \
+                 WHERE identity = ?1 AND conversation = ?2 AND id = ?3 AND direction = 0 \
+                 ORDER BY seq DESC LIMIT 1",
+                params![&self.identity[..], &peer[..], &id[..]],
+                row_message,
+            )
+            .optional()
+            .map_err(|e| self.failed(e))?;
+        Ok(message.map(|row| self.read_one(row)))
     }
 
     fn page(
@@ -1721,6 +1837,8 @@ impl Store {
             let Some(fields) = unpack_fields(&packed) else {
                 continue;
             };
+            // Our own messages: a group's home stamps the copies it
+            // distributes, never the one its writer keeps here (1696).
             let read = crate::telemetry::read(self.identity, &fields, sent);
             if let Some(fix) = crate::telemetry::shown_fix(&read) {
                 let mut fix = fix.clone();
@@ -2119,6 +2237,24 @@ impl Store {
             .map_err(|e| failed(&path, e))?;
         tx.commit().map_err(|e| failed(&path, e))?;
         Ok(seq)
+    }
+
+    /// The home verified the signature of the received message `id` it
+    /// archived (1744): a board that asks for the home's verdicts is served
+    /// it as [`crate::home::KIND_VOUCHED`] from now on. Nothing for a
+    /// message the archive does not hold.
+    pub fn archive_vouch(&mut self, id: &[u8; 32]) -> Result<(), StoreError> {
+        self.conn
+            .execute(
+                "UPDATE archive SET vouched = 1 WHERE identity = ?1 AND kind = ?2 AND id = ?3",
+                params![
+                    &self.identity[..],
+                    i64::from(crate::home::KIND_RECEIVED),
+                    &id[..]
+                ],
+            )
+            .map(|_| ())
+            .map_err(|e| self.failed(e))
     }
 
     /// Append a name entry ([`crate::home::KIND_NAME`]) for the display
@@ -2527,8 +2663,8 @@ impl Store {
         let mut statement = self
             .conn
             .prepare(&format!(
-                "SELECT seq, kind, at, packed FROM archive WHERE identity = ?1 AND seq > ?2{} \
-                 ORDER BY seq",
+                "SELECT seq, kind, at, packed, vouched FROM archive WHERE identity = ?1 \
+                 AND seq > ?2{} ORDER BY seq",
                 fold_clause(fold)
             ))
             .map_err(|e| self.failed(e))?;
@@ -2548,9 +2684,18 @@ impl Store {
             bytes = bytes.saturating_add(packed.len());
             let seq: i64 = row.get(0).map_err(|e| self.failed(e))?;
             let kind: i64 = row.get(1).map_err(|e| self.failed(e))?;
+            let kind = u8::try_from(kind).unwrap_or(u8::MAX);
+            let vouched: bool = row.get(4).map_err(|e| self.failed(e))?;
+            // The home's verdict (1744), only to a board that asked for it.
+            let kind = match (fold, kind, vouched) {
+                (crate::home::wire::Fold::BoardVouched, crate::home::KIND_RECEIVED, true) => {
+                    crate::home::KIND_VOUCHED
+                }
+                (_, kind, _) => kind,
+            };
             entries.push(crate::home::wire::Entry {
                 seq: seq as u64,
-                kind: u8::try_from(kind).unwrap_or(u8::MAX),
+                kind,
                 at: row.get(2).map_err(|e| self.failed(e))?,
                 packed,
             });
@@ -3669,7 +3814,7 @@ fn fold_clause(fold: crate::home::wire::Fold) -> String {
     use crate::home::wire::{Fold, BOARD_ENTRY_MAX, BOARD_KINDS};
     match fold {
         Fold::All => String::new(),
-        Fold::Board => {
+        Fold::Board | Fold::BoardVouched => {
             let kinds: Vec<String> = BOARD_KINDS.iter().map(u8::to_string).collect();
             format!(
                 " AND kind IN ({}) AND length(packed) <= {BOARD_ENTRY_MAX}",
@@ -4005,12 +4150,13 @@ fn apply(
         StoreWrite::Group(group) => {
             tx.execute(
                 "INSERT INTO client_groups(identity, address, name, admin_name, inviter, ours, \
-                 epoch, standing, members, member_epochs) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
+                 epoch, standing, members, member_epochs, closed_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
                  ON CONFLICT(identity, address) DO UPDATE SET name = excluded.name, \
                  admin_name = excluded.admin_name, inviter = excluded.inviter, \
                  ours = excluded.ours, epoch = excluded.epoch, standing = excluded.standing, \
-                 members = excluded.members, member_epochs = excluded.member_epochs",
+                 members = excluded.members, member_epochs = excluded.member_epochs, \
+                 closed_at = excluded.closed_at",
                 params![
                     &identity[..],
                     &group.address[..],
@@ -4026,7 +4172,10 @@ fn apply(
                         Standing::Ended => 3,
                     },
                     group.members_bytes(),
-                    group.epochs_bytes()
+                    group.epochs_bytes(),
+                    group
+                        .closed_at
+                        .map(|at| i64::try_from(at).unwrap_or(i64::MAX))
                 ],
             )?;
         }
@@ -5008,6 +5157,46 @@ mod tests {
         ));
     }
 
+    /// A later Loquax's store is found before any open that writes (1760),
+    /// and said in plain words without the file or the schemas; the file
+    /// is left as it was. No file and this Loquax's own are not "later".
+    #[test]
+    fn a_later_store_is_found_read_only_and_said_plainly() {
+        let home = tempfile::tempdir().expect("home");
+        let path = home.path().join(STORE_FILE);
+        assert!(written_later(&path).is_none(), "no file");
+        written(home.path());
+        assert!(written_later(&path).is_none(), "this Loquax's own");
+        let conn = Connection::open(&path).expect("open");
+        conn.execute_batch(&format!("PRAGMA user_version = {}", SCHEMA_VERSION + 1))
+            .expect("bump");
+        drop(conn);
+        let before = std::fs::read(&path).expect("read");
+        let error = written_later(&path).expect("a later store");
+        assert!(matches!(error, StoreError::Newer { .. }), "{error}");
+        for lang in [Lang::En, Lang::De] {
+            let brief = error.brief(lang);
+            assert_eq!(brief, StrId::StoreNewer.text(lang));
+            assert!(
+                !brief.contains("sqlite3") && !brief.contains("schema"),
+                "{brief}"
+            );
+        }
+        assert!(error.to_string().contains(&path.display().to_string()));
+        // The full open refuses it as well, and neither touches the file.
+        assert!(matches!(
+            Store::open(&path, US),
+            Err(StoreError::Newer { .. })
+        ));
+        assert!(std::fs::read(&path).expect("read") == before, "touched");
+        // Another error keeps its own words.
+        let failed = StoreError::Failed {
+            path: path.clone(),
+            detail: "gone".to_string(),
+        };
+        assert_eq!(failed.brief(Lang::De), failed.to_string());
+    }
+
     /// A write is all or none: one that fails half way leaves the store as
     /// it was before it.
     #[test]
@@ -5669,7 +5858,7 @@ mod tests {
         let conn = Connection::open(old.path().join(STORE_FILE)).expect("raw");
         conn.execute_batch(
             "DROP TABLE owed_petnames; ALTER TABLE home_devices DROP COLUMN last_seen; \
-             DROP TABLE owed_peer_states; DROP TABLE home_names; ALTER TABLE client_groups DROP COLUMN member_epochs; PRAGMA user_version = 18;",
+             DROP TABLE owed_peer_states; DROP TABLE home_names; ALTER TABLE client_groups DROP COLUMN member_epochs; ALTER TABLE client_groups DROP COLUMN closed_at; ALTER TABLE archive DROP COLUMN vouched; PRAGMA user_version = 18;",
         )
         .expect("made schema 18");
         drop(conn);
@@ -5678,6 +5867,50 @@ mod tests {
             .write(&[StoreWrite::OwedPetnames(fewer.clone())])
             .expect("kept");
         assert_eq!(store.owed_petnames().expect("read"), fewer);
+    }
+
+    /// 1728: a schema 22 store gains `client_groups.closed_at`; its groups
+    /// come back with none, and a closing epoch written after is kept.
+    #[test]
+    fn a_schema_22_store_gains_the_closing_epoch_of_its_groups() {
+        use crate::ui::groups::{GroupInfo, Standing};
+        let old = tempfile::tempdir().expect("an older home");
+        let mut store = Store::open_in(old.path(), US).expect("create");
+        let group = GroupInfo {
+            name: "Chor".into(),
+            ours: true,
+            standing: Standing::Joined,
+            epoch: 3,
+            ..GroupInfo::new([0x25; 16])
+        };
+        store
+            .write(&[StoreWrite::Group(group.clone())])
+            .expect("write");
+        drop(store);
+        let conn = Connection::open(old.path().join(STORE_FILE)).expect("raw");
+        conn.execute_batch(
+            "ALTER TABLE client_groups DROP COLUMN member_epochs; ALTER TABLE client_groups DROP COLUMN closed_at; \
+             ALTER TABLE archive DROP COLUMN vouched; PRAGMA user_version = 22;",
+        )
+        .expect("made schema 22");
+        drop(conn);
+        let mut store = Store::open_in(old.path(), US).expect("migrated");
+        assert_eq!(
+            store.client_groups().expect("groups").get(&group.address),
+            Some(&group)
+        );
+        let left = GroupInfo {
+            standing: Standing::Left,
+            closed_at: Some(4),
+            ..group
+        };
+        store
+            .write(&[StoreWrite::Group(left.clone())])
+            .expect("left");
+        assert_eq!(
+            store.client_groups().expect("groups").get(&left.address),
+            Some(&left)
+        );
     }
 
     /// 1643: a schema 21 store gains `home_names` on open, empty, and its
@@ -5700,7 +5933,7 @@ mod tests {
             .expect("stamped");
         drop(store);
         let conn = Connection::open(old.path().join(STORE_FILE)).expect("raw");
-        conn.execute_batch("DROP TABLE home_names; ALTER TABLE client_groups DROP COLUMN member_epochs; PRAGMA user_version = 21;")
+        conn.execute_batch("DROP TABLE home_names; ALTER TABLE client_groups DROP COLUMN member_epochs; ALTER TABLE client_groups DROP COLUMN closed_at; ALTER TABLE archive DROP COLUMN vouched; PRAGMA user_version = 21;")
             .expect("made schema 21");
         drop(conn);
         let mut store = Store::open_in(old.path(), US).expect("migrated");
@@ -5741,7 +5974,7 @@ mod tests {
         let conn = Connection::open(old.path().join(STORE_FILE)).expect("raw");
         conn.execute_batch(
             "ALTER TABLE home_devices DROP COLUMN last_seen; DROP TABLE owed_peer_states; \
-             DROP TABLE home_names; ALTER TABLE client_groups DROP COLUMN member_epochs; PRAGMA user_version = 19;",
+             DROP TABLE home_names; ALTER TABLE client_groups DROP COLUMN member_epochs; ALTER TABLE client_groups DROP COLUMN closed_at; ALTER TABLE archive DROP COLUMN vouched; PRAGMA user_version = 19;",
         )
         .expect("made schema 19");
         drop(conn);
@@ -5808,7 +6041,7 @@ mod tests {
         drop(Store::open_in(old.path(), US).expect("create"));
         let conn = Connection::open(old.path().join(STORE_FILE)).expect("raw");
         conn.execute_batch(
-            "DROP TABLE owed_peer_states; DROP TABLE home_names; ALTER TABLE client_groups DROP COLUMN member_epochs; PRAGMA user_version = 20;",
+            "DROP TABLE owed_peer_states; DROP TABLE home_names; ALTER TABLE client_groups DROP COLUMN member_epochs; ALTER TABLE client_groups DROP COLUMN closed_at; ALTER TABLE archive DROP COLUMN vouched; PRAGMA user_version = 20;",
         )
         .expect("made schema 20");
         drop(conn);
@@ -5905,11 +6138,16 @@ mod tests {
                     left_from: Some(3),
                 },
             ],
-            standing: Standing::Joined,
+            // Left, with the epoch it was left at (1728, schema 23's
+            // `closed_at`). How the schema 23 migration takes the rows an
+            // older program wrote is the test after this one's.
+            standing: Standing::Left,
+            closed_at: Some(3),
         };
         store
             .write(&[StoreWrite::Group(GroupInfo {
                 epoch: 2,
+                closed_at: None,
                 ..group.clone()
             })])
             .expect("write");
@@ -5959,6 +6197,7 @@ mod tests {
             epoch: 3,
             members: vec![member.clone()],
             standing: Standing::Joined,
+            closed_at: None,
         };
         store
             .write(&[StoreWrite::Group(group.clone())])
@@ -5966,7 +6205,8 @@ mod tests {
         drop(store);
         let conn = Connection::open(home.path().join(STORE_FILE)).expect("raw");
         conn.execute_batch(
-            "ALTER TABLE client_groups DROP COLUMN member_epochs; PRAGMA user_version = 22;",
+            "ALTER TABLE client_groups DROP COLUMN member_epochs; ALTER TABLE client_groups DROP COLUMN closed_at; \
+             ALTER TABLE archive DROP COLUMN vouched; PRAGMA user_version = 22;",
         )
         .expect("made schema 22");
         drop(conn);
@@ -5984,6 +6224,76 @@ mod tests {
             .expect("write again");
         let groups = store.client_groups().expect("groups again");
         assert_eq!(groups[&group.address].members[0], member);
+    }
+
+    /// Schema 25 (order 1824, the merge of homenode): schema 23 was
+    /// written on two branches, master's with `member_epochs`, homenode's
+    /// with `closed_at` and then, as 24, `vouched`. A store from either
+    /// line opens at 25 with all three columns, and a store from before
+    /// both gains them all.
+    #[test]
+    fn a_store_from_either_schema_23_line_opens_with_every_column() {
+        let columns = |path: &Path| -> Vec<bool> {
+            let conn = Connection::open(path).expect("raw");
+            [
+                ("client_groups", "member_epochs"),
+                ("client_groups", "closed_at"),
+                ("archive", "vouched"),
+            ]
+            .iter()
+            .map(|(table, column)| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+                    params![table, column],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("table_info")
+                    > 0
+            })
+            .collect()
+        };
+        for (made, dropped) in [
+            // master's 23
+            (
+                23,
+                "ALTER TABLE client_groups DROP COLUMN closed_at; \
+                 ALTER TABLE archive DROP COLUMN vouched;",
+            ),
+            // homenode's 23
+            (
+                23,
+                "ALTER TABLE client_groups DROP COLUMN member_epochs; \
+                 ALTER TABLE archive DROP COLUMN vouched;",
+            ),
+            // homenode's 24
+            (24, "ALTER TABLE client_groups DROP COLUMN member_epochs;"),
+            // before both
+            (
+                22,
+                "ALTER TABLE client_groups DROP COLUMN member_epochs; \
+                 ALTER TABLE client_groups DROP COLUMN closed_at; \
+                 ALTER TABLE archive DROP COLUMN vouched;",
+            ),
+        ] {
+            let home = tempfile::tempdir().expect("home");
+            drop(Store::open_in(home.path(), US).expect("create"));
+            let path = home.path().join(STORE_FILE);
+            let conn = Connection::open(&path).expect("raw");
+            conn.execute_batch(&format!("{dropped} PRAGMA user_version = {made};"))
+                .expect("made the old schema");
+            drop(conn);
+            assert!(
+                columns(&path).iter().any(|c| !c),
+                "{dropped}: a column is gone"
+            );
+            drop(Store::open_in(home.path(), US).expect("migrated"));
+            assert_eq!(columns(&path), vec![true; 3], "{dropped}");
+            let conn = Connection::open(&path).expect("raw");
+            let version: i32 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .expect("version");
+            assert_eq!(version, SCHEMA_VERSION, "{dropped}");
+        }
     }
 
     /// A position row of `message` (the store's seq, as a model key) for
@@ -6076,6 +6386,105 @@ mod tests {
             rows[0].message,
             Some(key_of(1)),
             "the row is the genuine message's"
+        );
+    }
+
+    /// 1728, 1744: the groups a schema 22 program wrote, moved to 23.
+    /// Joined stays joined, with or without a message of the reader's. A
+    /// group left that the reader sent something keeps its history before
+    /// its newest membership; one it never sent anything keeps none.
+    #[test]
+    fn a_schema_22_store_takes_its_groups_again_by_the_readers_own_messages() {
+        use crate::ui::groups::{GroupInfo, Standing};
+        let old = tempfile::tempdir().expect("an older home");
+        let mut store = Store::open_in(old.path(), US).expect("open");
+        let group = |address: u8, standing: Standing, ours: bool| GroupInfo {
+            name: format!("g{address}"),
+            inviter: (!ours).then_some(BOB),
+            ours,
+            standing,
+            epoch: 4,
+            ..GroupInfo::new([address; 16])
+        };
+        let rows = [
+            group(0x23, Standing::Joined, false),
+            group(0x24, Standing::Joined, true),
+            group(0x26, Standing::Joined, false),
+            group(0x27, Standing::Joined, false),
+            group(0x28, Standing::Left, false),
+            group(0x29, Standing::Ended, false),
+        ];
+        store
+            .write(&rows.clone().map(StoreWrite::Group))
+            .expect("write");
+        put(&mut store, [0x26; 16], message(1, true, ""));
+        put(&mut store, [0x27; 16], message(2, false, "Bob: hi"));
+        put(&mut store, [0x28; 16], message(3, true, "bye"));
+        drop(store);
+        let conn = Connection::open(old.path().join(STORE_FILE)).expect("raw");
+        conn.execute_batch(
+            "ALTER TABLE client_groups DROP COLUMN member_epochs; ALTER TABLE client_groups DROP COLUMN closed_at; \
+             ALTER TABLE archive DROP COLUMN vouched; PRAGMA user_version = 22;",
+        )
+        .expect("made schema 22");
+        drop(conn);
+        let store = Store::open_in(old.path(), US).expect("migrated");
+        let groups = store.client_groups().expect("groups");
+        let taken: Vec<_> = rows
+            .iter()
+            .map(|g| {
+                let back = &groups[&g.address];
+                (g.address[0], back.standing, back.closed_at)
+            })
+            .collect();
+        assert_eq!(
+            taken,
+            vec![
+                (0x23, Standing::Joined, None),
+                (0x24, Standing::Joined, None),
+                (0x26, Standing::Joined, None),
+                (0x27, Standing::Joined, None),
+                (0x28, Standing::Left, Some(4)),
+                (0x29, Standing::Ended, None),
+            ]
+        );
+    }
+
+    /// 1744: the schema 23 migration never takes a joined group back to
+    /// invited. A group the reader joined on a device whose Join no
+    /// message here holds (a device without a home sends it as a state)
+    /// stays joined and keeps speaking for its members; only `closed_at`
+    /// is new, and NULL for it.
+    #[test]
+    fn a_schema_22_joined_group_stays_joined_without_a_message_of_the_readers() {
+        use crate::ui::groups::{GroupInfo, Standing};
+        let old = tempfile::tempdir().expect("an older home");
+        let mut store = Store::open_in(old.path(), US).expect("open");
+        let joined = GroupInfo {
+            name: "Familie".into(),
+            inviter: Some(BOB),
+            standing: Standing::Joined,
+            epoch: 4,
+            ..GroupInfo::new([0x31; 16])
+        };
+        store
+            .write(&[StoreWrite::Group(joined.clone())])
+            .expect("write");
+        put(&mut store, [0x31; 16], message(1, false, "Bob: hi"));
+        drop(store);
+        let conn = Connection::open(old.path().join(STORE_FILE)).expect("raw");
+        conn.execute_batch(
+            "ALTER TABLE client_groups DROP COLUMN member_epochs; ALTER TABLE client_groups DROP COLUMN closed_at; \
+             ALTER TABLE archive DROP COLUMN vouched; PRAGMA user_version = 22;",
+        )
+        .expect("made schema 22");
+        drop(conn);
+        let store = Store::open_in(old.path(), US).expect("migrated");
+        let back = &store.client_groups().expect("groups")[&joined.address];
+        assert_eq!(
+            (back.standing, back.closed_at, back.epoch),
+            (Standing::Joined, None, 4),
+            "the migration took a joined group back to invited"
         );
     }
 

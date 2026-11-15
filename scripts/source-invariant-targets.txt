@@ -256,6 +256,7 @@ skip  loquax           mailbox_census             # spawns `loquax mailbox run` 
 skip  loquax           mailbox_growth_soak        # a two-hour soak: spawns `loquax mailbox run` under announce load on a shared instance
 skip  loquax           rooms_hub                  # nodes, a daemon and a fake hub over sockets; subject is the hub link
 skip  loquax           mailbox_setup              # spawns the loquax binary over a temporary home; subject is the code; loquax-tui
+skip  loquax           store_newer                # spawns loquax tui over a temporary home; subject is the code; loquax-tui
 skip  loquax           python_interop             # drives Python over sockets; Tier 1
 skip  loquax           send_cli                   # spawns the loquax binary
 skip  loquax           stamp_timing               # tokio runtime around the stamp solver
@@ -274,6 +275,7 @@ skip  loquax-android   browse_first_link          # the first fetch behind a rel
 skip  loquax-android   device_walk_script         # starts python3 on the device walk's parser tests; subject is the script's code
 skip  loquax-android   explore                    # the Explore tab's verbs, order under a finger and server sheet through the facade in Java's bytes (1618); subject is the code
 skip  loquax-android   facade                     # the facade against an in-process home node and transport over a loopback TCP socket; subject is the code
+skip  loquax-android   first_start                # starts sessions with the phone's own mailbox daemon over loopback TCP (1798); subject is the code
 skip  loquax-android   fling                      # starts javac and java on Fling.java and its host test; subject is the code
 skip  loquax-android   glyph                      # Glyph.java against the core's mark shapes, and the shapes rasterised; subject is the code
 skip  loquax-android   home_reach                 # phone and mailbox through in-process relays over loopback TCP sockets (1196); subject is the code
@@ -297,6 +299,7 @@ skip  loquax-android   profile                    # the profile's words through 
 skip  loquax-android   rooms_hub                  # the phone's session, its mailbox, a transport and a fake hub over loopback TCP (1384); subject is the hub link
 skip  loquax-android   schema_props               # property tests of the facade schema's codec; subject is the code
 skip  loquax-android   viewer                     # the photo viewer's zoom through the JNI query in Java's bytes (1269); subject is the code
+skip  loquax-android   view_owner                 # the phone's map view moves only by input (1819): frames through the facade, one against a loopback tile server; subject is the code
 run   loquax-android   strings                    # reads the app's res/values*/strings.xml and asserts the words of walk findings 27 to 30 (1283)
 run   loquax-android   icon                       # reads the icon PNGs, the adaptive icon, the manifest and the deb's desktop entry and asserts their sizes and names (1336)
 run   loquax-android   ui_thread                  # reads the app's Java sources, the manifest and Core.java's builders and asserts no command is called outside the engine's thread (1446)

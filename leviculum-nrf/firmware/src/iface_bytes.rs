@@ -121,7 +121,16 @@ static COUNTERS: [Mutex<CriticalSectionRawMutex, Cell<InterfaceCounters>>; IFACE
     [const { Mutex::new(Cell::new(InterfaceCounters::new())) }; IFACE_COUNT];
 
 /// Read live totals and previous sampled speeds without changing the window.
+///
+/// The [`BLE`] row delegates to `leviculum_ble_link::traffic` (1715):
+/// the shared node side counts where the bytes change hands
+/// (`deliver`, the shared `BleInterface`), and this table reads it
+/// back so `/status` and the `[TRANSPORT]` lines keep one set of
+/// numbers for all three carriers.
 pub fn snapshot(iface: usize) -> InterfaceTraffic {
+    if iface == BLE {
+        return leviculum_ble_link::traffic::snapshot();
+    }
     COUNTERS
         .get(iface)
         .map_or_else(InterfaceTraffic::default, |counter| {
@@ -141,18 +150,28 @@ fn update(iface: usize, f: impl FnOnce(&mut InterfaceCounters)) {
 
 /// Count a completed receive ownership handoff.
 pub fn note_rx(iface: usize, bytes: usize) {
+    if iface == BLE {
+        return leviculum_ble_link::traffic::note_rx(bytes);
+    }
     update(iface, |counter| counter.note_rx(bytes));
 }
 
 /// Count accepted unframed bytes, not framing, retries or media-off discards.
 pub fn note_tx(iface: usize, bytes: usize) {
+    if iface == BLE {
+        return leviculum_ble_link::traffic::note_tx(bytes);
+    }
     update(iface, |counter| counter.note_tx(bytes));
 }
 
 /// Sample once before the periodic transport log.
 pub fn sample(now_ms: u64) {
     for iface in 0..IFACE_COUNT {
-        update(iface, |counter| counter.sample(now_ms));
+        if iface == BLE {
+            leviculum_ble_link::traffic::sample(now_ms);
+        } else {
+            update(iface, |counter| counter.sample(now_ms));
+        }
     }
 }
 

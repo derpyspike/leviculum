@@ -373,6 +373,18 @@ public class MainActivity extends Activity {
             detailsToggle.setVisibility(View.GONE);
             return;
         }
+        if (!JoinForm.offersJoin(need)) {
+            // 1760: a store a later Loquax wrote. No form, no Retry: the
+            // sentence says what helps, the file and schemas under Details.
+            form.setVisibility(View.GONE);
+            retry.setVisibility(View.GONE);
+            error.setText(Core.str(started, "error"));
+            String said = Core.str(started, "details");
+            details.setText(said);
+            detailsToggle.setVisibility(said.isEmpty() ? View.GONE : View.VISIBLE);
+            showDetails(false);
+            return;
+        }
         lastNeed = need;
         form.setVisibility(View.VISIBLE);
         showAdvanced();

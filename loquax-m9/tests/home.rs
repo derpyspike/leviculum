@@ -128,6 +128,12 @@ fn the_top_bar_says_the_way_to_the_mailbox() {
             hops,
         })
     };
+    let ble = |hops| {
+        Some(Way {
+            medium: Medium::Bluetooth,
+            hops,
+        })
+    };
     let fetched = Word::Fetched { taken: 3, of: None };
     // (word, way, [wide en, wide de], [narrow en, narrow de])
     let cases = [
@@ -185,6 +191,26 @@ fn the_top_bar_says_the_way_to_the_mailbox() {
                 "Postfach über WLAN · 2 Stationen",
             ],
             ["WiFi · 2 stations", "WLAN · 2 Stationen"],
+        ),
+        // 1480: the room rung, a mailbox or a relaying neighbour on the
+        // Columba BLE mesh.
+        (
+            Word::Connected,
+            ble(1),
+            [
+                "Mailbox over Bluetooth · 1 station",
+                "Postfach über Bluetooth · 1 Station",
+            ],
+            ["Bluetooth · 1 station", "Bluetooth · 1 Station"],
+        ),
+        (
+            Word::Connected,
+            ble(2),
+            [
+                "Mailbox over Bluetooth · 2 stations",
+                "Postfach über Bluetooth · 2 Stationen",
+            ],
+            ["Bluetooth · 2 stations", "Bluetooth · 2 Stationen"],
         ),
         (
             Word::Unreachable,
@@ -892,4 +918,198 @@ fn a_fault_is_a_word_in_the_top_bar() {
     };
     let top = row_text(&screen::lines(&scene, &clear, COLS, ROWS)[0]);
     assert!(!top.contains("Not saved"), "{top:?}");
+}
+
+/// What the board's group tests below fold: the reader `me` joined
+/// "Familie" through Lew's invitation, the group's membership names Anna,
+/// and the group's copy of Anna's line carries her position. `membership`
+/// and `copy` are the kinds the home served those two under: a message
+/// the home verified ([`loquax::home::KIND_VOUCHED`]) or one it did not
+/// ([`KIND_RECEIVED`]).
+fn board_group(
+    membership: u8,
+    copy: u8,
+) -> (
+    loquax::ui::UiModel<loquax_m9::field::Field>,
+    [u8; 16],
+    [u8; 16],
+) {
+    use leviculum_lxmf::lev::{
+        GroupCopy, Invite, Lev, Member, Members, CAP_GROUPS, MEMBER_ADMIN, MEMBER_JOINED,
+    };
+    use leviculum_lxmf::telemetry::{Location, Telemetry};
+    const ANNA: [u8; 16] = [0xa7; 16];
+    const T: i64 = 1_800_000_000;
+    let me = Identity::generate(&mut OsRng);
+    let lew = Identity::generate(&mut OsRng);
+    let group = Identity::generate(&mut OsRng);
+    let address = lxmf_address(&me.public_key_bytes()).expect("address");
+    let lews = lxmf_address(&lew.public_key_bytes()).expect("address");
+    let groups = lxmf_address(&group.public_key_bytes()).expect("address");
+    let packed = |from: &Identity, body: &str, lev: Lev, extra: Vec<(i64, Vec<u8>)>| {
+        let mut fields = extra;
+        lev.put_into(&mut fields);
+        Message::create(
+            address,
+            lxmf_address(&from.public_key_bytes()).expect("address"),
+            from,
+            T as f64,
+            Vec::new(),
+            body.as_bytes().to_vec(),
+            fields,
+            DeliveryMethod::Direct,
+        )
+        .expect("create")
+        .pack()
+    };
+    let entry = |seq, kind, packed| Entry {
+        seq,
+        kind,
+        at: T,
+        packed,
+    };
+    let mut model = home::model(address);
+    update(
+        &mut model,
+        UiEvent::Clock(loquax::when::WallTime {
+            unix_secs: T + 60,
+            offset_secs: 0,
+        }),
+    );
+    let invite = Lev {
+        capabilities: Some(CAP_GROUPS),
+        invite: Some(Invite {
+            group: groups,
+            public_key: group.public_key_bytes(),
+            name: "Familie".into(),
+            admin_name: "Lew".into(),
+            epoch: 1,
+        }),
+        ..Lev::default()
+    };
+    let invited = [entry(
+        1,
+        loquax::home::KIND_VOUCHED,
+        packed(&lew, "", invite, Vec::new()),
+    )];
+    home::take(&mut model, &invited, &address);
+    update(
+        &mut model,
+        UiEvent::Group(loquax::ui::groups::Verb::Join {
+            group: loquax::ui::intent::Target::Peer(groups),
+        }),
+    );
+    let member = |address: [u8; 16], name: &str, flags: u64| Member {
+        address,
+        name: name.into(),
+        flags,
+    };
+    let roster = Lev {
+        capabilities: Some(CAP_GROUPS),
+        members: Some(Members {
+            epoch: 1,
+            members: vec![
+                member(lews, "Lew", MEMBER_ADMIN | MEMBER_JOINED),
+                member(address, "Me", MEMBER_JOINED),
+                member(ANNA, "Anna", MEMBER_JOINED),
+            ],
+            ended: false,
+        }),
+        ..Lev::default()
+    };
+    let fix = Telemetry {
+        location: Some(Location {
+            latitude_e6: 52_520_000,
+            longitude_e6: 13_400_000,
+            altitude_e2: 4_210,
+            speed_e2: 0,
+            bearing_e2: 0,
+            accuracy_e2: 500,
+            last_update: T,
+        }),
+        ..Telemetry::default()
+    };
+    let annas = Lev {
+        capabilities: Some(CAP_GROUPS),
+        group_copy: Some(GroupCopy {
+            sender: ANNA,
+            sent_ms: T as u64 * 1000,
+            epoch: 1,
+        }),
+        ..Lev::default()
+    };
+    let page = [
+        entry(2, membership, packed(&group, "", roster, Vec::new())),
+        entry(
+            3,
+            copy,
+            packed(
+                &group,
+                "Anna: bin da",
+                annas,
+                vec![(
+                    leviculum_lxmf::constants::FIELD_TELEMETRY,
+                    fix.encode_field_value(),
+                )],
+            ),
+        ),
+    ];
+    home::take(&mut model, &page, &address);
+    (model, groups, ANNA)
+}
+
+/// The writers drawn over the group's bubbles.
+fn board_writers(
+    model: &loquax::ui::UiModel<loquax_m9::field::Field>,
+    group: [u8; 16],
+) -> Vec<Option<[u8; 16]>> {
+    let c = model
+        .conversations
+        .iter()
+        .position(|c| c.peer == group)
+        .expect("the group's chat");
+    loquax::ui::chat::bubbles(model, c)
+        .iter()
+        .map(|b| b.writer.as_ref().map(|w| w.0))
+        .collect()
+}
+
+/// 1744: a joined group's copy the home verified, passed through the
+/// board's own fold into its model, is drawn under its writer and moves
+/// the writer's pin: the board reads the home's verdict, not a constant.
+#[test]
+fn audit2_a_joined_groups_copy_from_the_home_archive_names_its_writer_on_the_board() {
+    let vouched = loquax::home::KIND_VOUCHED;
+    let (model, group, anna) = board_group(vouched, vouched);
+    assert_eq!(
+        model.group(&group).map(|g| g.standing),
+        Some(loquax::ui::groups::Standing::Joined)
+    );
+    assert_eq!(
+        board_writers(&model, group).last(),
+        Some(&Some(anna)),
+        "the copy is not drawn under Anna"
+    );
+    let pin = model.positions.get(&anna).expect("Anna's pin");
+    assert_eq!(pin.location.latitude_e6, 52_520_000);
+    assert_eq!(pin.via, group);
+}
+
+/// Its twins: a copy the home did not verify draws no writer and moves no
+/// pin; a membership it did not verify tells the board nothing of the
+/// group, so even a verified copy names nobody.
+#[test]
+fn an_entry_the_home_did_not_verify_draws_no_writer_on_the_board() {
+    let vouched = loquax::home::KIND_VOUCHED;
+    let (model, group, anna) = board_group(vouched, KIND_RECEIVED);
+    assert_eq!(board_writers(&model, group).last(), Some(&None));
+    assert!(!model.positions.contains_key(&anna), "Anna's pin moved");
+    let (model, group, anna) = board_group(KIND_RECEIVED, vouched);
+    assert_eq!(
+        model.group(&group).map(|g| g.members.len()),
+        Some(0),
+        "an unverified membership was taken"
+    );
+    assert_eq!(board_writers(&model, group).last(), Some(&None));
+    assert!(!model.positions.contains_key(&anna), "Anna's pin moved");
 }

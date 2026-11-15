@@ -25,6 +25,7 @@
 #[cfg(target_os = "android")]
 pub mod bitmap;
 pub mod browser;
+pub mod events;
 pub mod explore;
 pub mod friends;
 pub mod gesture;
@@ -111,6 +112,17 @@ pub fn start(request: &[u8]) -> Vec<u8> {
                 Some(session) => Ok(session),
                 None => Session::start(&start).map(Arc::new),
             };
+            match &running {
+                Ok(_) => events::first_start("ready", true, ""),
+                // The funnel every failed start passes (1798): whatever
+                // step died, its words reach the log here, so no first
+                // start ends silently again.
+                Err(error) => events::first_start(
+                    "failed",
+                    false,
+                    &format!("{} {}", error.text, error.details.as_deref().unwrap_or("-")),
+                ),
+            }
             match running {
                 Ok(session) => {
                     *SESSION

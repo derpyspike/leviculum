@@ -63,7 +63,18 @@ pub fn seed(dir: &Path) -> Result<Seeded, String> {
                 let id = Message::unpack(&entry.packed, None, None, DeliveryMethod::Direct)
                     .map_err(|e| format!("a fixture message: {e:?}"))?
                     .message_id;
-                store.archive_append(kind, &id, &entry.packed, entry.at, u64::MAX)
+                // A message the home verified (1744) is kept as received,
+                // with the home's word, as the daemon keeps it.
+                let vouched = kind == loquax::home::KIND_VOUCHED;
+                let kind = match vouched {
+                    true => loquax::home::KIND_RECEIVED,
+                    false => kind,
+                };
+                let kept = store.archive_append(kind, &id, &entry.packed, entry.at, u64::MAX);
+                if vouched && kept.is_ok() {
+                    store.archive_vouch(&id).map_err(|e| format!("{e:?}"))?;
+                }
+                kept
             }
         }
         .map_err(|e| format!("{e:?}"))?;
@@ -111,7 +122,7 @@ mod tests {
         let theirs = page
             .entries
             .iter()
-            .filter(|e| e.kind == loquax::home::KIND_RECEIVED)
+            .filter(|e| loquax::home::is_received(e.kind))
             .filter(|e| loquax::home::board::fold(e, &other).is_some())
             .count();
         assert_eq!(theirs, 0);

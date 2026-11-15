@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "ok": false,
+  "error": "Deine Chats wurden mit einer neueren Loquax-Version gespeichert. Installiere die neuere Version, dann ist alles wieder da. Deine Daten sind unverändert.",
+  "need": "newer",
+  "details": "the message store <dir>/history.sqlite3 was written by a later Loquax (schema <later>, this one knows <ours>); update Loquax",
+  "address": null,
+  "server": null,
+  "link": false,
+  "here": false
+}

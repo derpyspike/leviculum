@@ -120,9 +120,11 @@ pub struct Renderer {
     /// The clock a test holds instead of [`origin`](Self::origin)'s
     /// ([`tune_clock`]).
     held_ms: Option<u64>,
-    /// The view the last fit chose: a region that lands fits again while
-    /// the view is still there.
-    fitted_at: Option<(World, u32)>,
+    /// The view the last frame showed (1819): what a `MapView` made anew
+    /// (an Activity the device's rotation recreated, walk finding 10)
+    /// shows when it asks without a view, instead of the start's fit.
+    /// The position sheet's frames leave it alone.
+    last: Option<ExactView>,
     /// Whether a fit with pins asked for their places already.
     pins_asked: bool,
     /// The time zone view (1684), from the map menu.
@@ -171,7 +173,7 @@ impl Renderer {
             theme: config.map_theme,
             origin: Instant::now(),
             held_ms: None,
-            fitted_at: None,
+            last: None,
             pins_asked: false,
             time_zones: false,
             load_events: Vec::new(),
@@ -394,7 +396,6 @@ impl Renderer {
             tracing::info!("MAPLOAD deleted file={name}");
             self.maps.changed();
             self.frames.refresh();
-            self.fitted_at = None;
             self.loads.reset();
         }
         let (installed, _) = loquax::picture::load(&maps);
@@ -435,7 +436,6 @@ impl Renderer {
     pub fn delete_all(&mut self) -> Result<usize, String> {
         let gone = self.maps.delete_all();
         self.frames.refresh();
-        self.fitted_at = None;
         self.loads.reset();
         gone
     }
@@ -487,7 +487,8 @@ impl Renderer {
         let mut notice = None;
         let now = self.now_ms();
         let polled = self.loader.poll(now);
-        let landed = self.steps(polled, &mut notice);
+        // A region that landed is drawn; it never moves the view (1819).
+        self.steps(polled, &mut notice);
         let setup = screenmap::setup_for(self.frames.painter(), pins);
         let area = screenmap::area((request.w.max(1), request.h.max(1)));
         let scale = (request.density_milli.max(100) as f32) / 1000.0;
@@ -521,8 +522,6 @@ impl Renderer {
             _ => None,
         };
         let first = request.x.is_none() || request.y.is_none() || asked.is_none();
-        let fitted = |view: &ExactView| (view.centre, view.zoom_milli());
-        let refit = landed && self.fitted_at == Some(fitted(&view));
         let fit_to = |view: &mut ExactView, (centre, zoom): (World, u8)| {
             *view = ExactView::new(
                 centre,
@@ -556,7 +555,6 @@ impl Renderer {
                     view.size().1,
                 );
             }
-            self.fitted_at = None;
             if let Some(want) = want_place(at, &setup.regions) {
                 self.ask(want, &mut notice);
             }
@@ -566,10 +564,13 @@ impl Renderer {
                 .map(|session| session.map_inside())
                 .unwrap_or_default();
             fit_to(&mut view, fit(&in_window(pins, &inside), area, &setup));
-            self.fitted_at = Some(fitted(&view));
-        } else if first || request.fit || refit {
+        } else if let (true, false, Some(last)) = (first, request.fit, self.last) {
+            // A view made anew asks without one (finding 10): the view
+            // the user left, on the new screen.
+            view = ExactView::new(last.centre, last.zoom_milli(), view.size().0, view.size().1);
+        } else if first || request.fit {
+            // The start's fit, once, or "fit all" asked.
             fit_to(&mut view, fit(pins, area, &setup));
-            self.fitted_at = Some(fitted(&view));
             if selected.is_none() {
                 selected = pins.first().map(|p| p.peer);
             }
@@ -639,6 +640,9 @@ impl Renderer {
                 about_y,
             );
             view = held(view);
+        }
+        if !request.own_only {
+            self.last = Some(view);
         }
         // At most a screen on each side: a frame of nine screens is as
         // far as any gesture between two frames reaches. The margins are

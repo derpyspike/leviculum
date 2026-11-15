@@ -33,15 +33,16 @@ the two telemetry fields into positions (`telemetry::read`,
 `loquax/src/telemetry.rs:198`; a group's copy books its position under
 the writer, not the group, only where the signature was verified and a
 group the reader joined itself lists that writer at the copy's epoch,
-`copy_writer`, `loquax/src/ui.rs:6873` — a named writer the rule does
+`copy_writer`, `loquax/src/ui.rs:7070` — a named writer the rule does
 not credit makes the reading nobody's (Lew 2026-11-13,
-[the expedition map](loquax-expedition-map.md)); a collector's
+[the expedition map](loquax-expedition-map.md); the chat draws a copy's
+writer by the same rule, `groups::copy_writer`, 1696, 1702, 1728); a collector's
 stream row only where the reader chose that collector, and none can be
-chosen yet, `Writers`, `loquax/src/ui.rs:6901`), the screen model keeps
+chosen yet, `Writers`, `loquax/src/ui.rs:7099`), the screen model keeps
 each peer's latest and hands every one to the store (`take_telemetry`,
-`loquax/src/ui.rs:6798`), and the store keeps the fields whole in its
-`fields` column (`loquax/src/store.rs:3829`) and the positions in a table of
-their own (`SCHEMA_V2`, `loquax/src/store.rs:204`). The sender's timestamp
+`loquax/src/ui.rs:6973`), and the store keeps the fields whole in its
+`fields` column (`loquax/src/store.rs:3968`) and the positions in a table of
+their own (`SCHEMA_V2`, `loquax/src/store.rs:205`). The sender's timestamp
 is still not carried: `OutboxEvent`, the screen's `Message` and every type
 the model folds derive `Eq`, which an `f64` cannot, so carrying it is a
 change of its own and not the one line of plumbing the fields were.
@@ -211,6 +212,24 @@ and pan, `0` fits again. A fit goes no deeper than the region under its
 centre has data for (its max zoom, the outline's z10 where no region is),
 so one pin is not shown as a few metres of plain colour; `+` goes on into
 the overzoom.
+
+**Who moves the view** (1819, P0 after the desktop walk of 057b65e07
+saw the map change its zoom 26 times in 30 minutes with no input): the
+view (centre, zoom, the globe's turn) has one owner, the user's input.
+Anything else writes it only (a) once at the start, before the first
+input: the start's fit, and the first pins' fit while no input came;
+(b) on an explicit command: "fit all", "show where I am", a click on a
+pin or a peer, a message's place, and that place's region landing
+while the reader has not touched the map since (`map_place` in the
+core); (c) in a follow mode the user switched on. A region landing, a
+region evicted, a clock's beat, a resize, a screen made anew after a
+device rotation never move it; a deeper view than the regions reach
+stays put and is drawn overzoomed. The writers by frontend: the window
+`App::touched` (`loquax/src/gui.rs`), the core's `UiModel::map_place`
+and `step_in`/`step_out` (`loquax/src/ui.rs`), the phone's
+`Renderer::last` (`loquax-android/src/map.rs`), which a `MapView` made
+anew is shown instead of a fit. `just render-walk` checks it with the
+rule `view_only_by_input`.
 
 ## 2. The data path
 
@@ -1016,7 +1035,8 @@ config, #471) says the map works without a step. Decided 2026-10-27
   into its own box (1077's clip), the deepest last, so loaded patches
   join up (this replaces "one region or the outline" of section 7). A
   place's map is fitted again to the region when it lands, unless the
-  reader moved it.
+  reader touched the map since (1819: any key, drag or wheel ends it);
+  no other load moves the view.
 - *The screen first* (1292, Lew 2026-11-01: "the area he is looking at
   loads as fast as possible, always with the highest priority"). On the
   phone every frame, during a pan, a fling's coast and a pinch too, goes

@@ -656,6 +656,10 @@ pub enum Word {
     /// A pull took `taken` entries of the archive; `of` is how many there
     /// were in all when the home said so (`wire::Page::left`).
     Fetched { taken: u64, of: Option<u64> },
+    /// A first sync or a catch-up is being taken in (1697): the engine got
+    /// through `done` of the pull's `of` entries. The phone's and the
+    /// desktop's word while older messages load; the words say so.
+    CatchingUp { done: u64, of: u64 },
     /// The last ask got through and nothing is being pulled.
     Connected,
     /// The last ask found no path, no link or no answer.
@@ -682,6 +686,10 @@ impl Word {
             Self::Fetched { taken, of: None } => {
                 Text::Key(StrId::HomeFetchedSome, alloc::vec![Arg::Int(count(taken))])
             }
+            Self::CatchingUp { done, of } => Text::Key(
+                StrId::HomeCatchUp,
+                alloc::vec![Arg::Int(count(done)), Arg::Int(count(of))],
+            ),
             Self::Connected => Text::key(StrId::MailboxConnected),
             Self::Unreachable => Text::key(StrId::HomeUnreachable),
             Self::CodeRefused => Text::key(StrId::JoinRefused),
@@ -696,7 +704,7 @@ impl Word {
     pub fn bar(self) -> Text {
         Text::key(match self {
             Self::Joining => StrId::M9BarConnecting,
-            Self::Fetched { .. } => StrId::M9BarFetching,
+            Self::Fetched { .. } | Self::CatchingUp { .. } => StrId::M9BarFetching,
             Self::Connected => StrId::M9BarConnected,
             Self::Unreachable => StrId::M9BarDisconnected,
             Self::CodeRefused | Self::Refused => StrId::M9BarRefused,
@@ -760,6 +768,9 @@ pub enum Medium {
     /// The WLAN the board joined (1479): its AutoInterface, the LAN rung
     /// of the reachability ladder, a mailbox in the same network.
     Wifi,
+    /// Bluetooth (1480): the Columba BLE mesh, a mailbox's daemon or a
+    /// relaying neighbour in the same room.
+    Bluetooth,
 }
 
 /// The board's path to its home (1478): the medium of its first hop and
@@ -780,6 +791,8 @@ impl Way {
             (Medium::Cable, false) => StrId::M9BarWayCable,
             (Medium::Wifi, true) => StrId::M9BarWayWifiOne,
             (Medium::Wifi, false) => StrId::M9BarWayWifi,
+            (Medium::Bluetooth, true) => StrId::M9BarWayBleOne,
+            (Medium::Bluetooth, false) => StrId::M9BarWayBle,
         };
         Text::Key(id, alloc::vec![Arg::Int(i64::from(self.hops))])
     }
@@ -793,6 +806,8 @@ impl Way {
             (Medium::Cable, false) => StrId::M9BarCable,
             (Medium::Wifi, true) => StrId::M9BarWifiOne,
             (Medium::Wifi, false) => StrId::M9BarWifi,
+            (Medium::Bluetooth, true) => StrId::M9BarBleOne,
+            (Medium::Bluetooth, false) => StrId::M9BarBle,
         };
         Text::Key(id, alloc::vec![Arg::Int(i64::from(self.hops))])
     }
@@ -944,13 +959,15 @@ pub fn ask_verb(tag: u8, request: &[u8]) -> Option<ask::Verb> {
 /// its own), one of the home's devices sent, a mark one of them set, a
 /// name the home heard. `None` for the rest: their states and receipts
 /// change bubbles the board does not keep yet, and a kind from a later
-/// home the board cannot read. The board has not checked a received
-/// message's signature: it has no sender's identity, so it says
-/// `verified: false` and the model shows it so.
+/// home the board cannot read. The board checks no signature: it has no
+/// sender's identity. A received message is `verified` where the home
+/// verified it ([`super::KIND_VOUCHED`], 1744) and unverified otherwise,
+/// so a group's copy speaks for its writer, and a group's membership is
+/// taken, only on the home's word.
 pub fn fold(entry: &wire::Entry, address: &[u8; 16]) -> Option<OutboxEvent> {
     use leviculum_lxmf::{DeliveryMethod, Message};
     match entry.kind {
-        super::KIND_RECEIVED => {
+        super::KIND_RECEIVED | super::KIND_VOUCHED => {
             let message =
                 Message::unpack(&entry.packed, None, None, DeliveryMethod::Direct).ok()?;
             (message.destination_hash == *address).then_some(OutboxEvent::Received {
@@ -959,7 +976,7 @@ pub fn fold(entry: &wire::Entry, address: &[u8; 16]) -> Option<OutboxEvent> {
                 title: message.title,
                 body: message.content,
                 fields: message.fields,
-                verified: false,
+                verified: entry.kind == super::KIND_VOUCHED,
                 sent_at: message.timestamp as i64,
             })
         }

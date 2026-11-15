@@ -2,6 +2,8 @@
 title = "Leviculum"
 +++
 
+![Nessa, the suite's lioness](/docs/images/nessa-figure.png)
+
 by [Lew Palm](/about)
 
 Leviculum is a Rust implementation of the [Reticulum](https://reticulum.network/) network stack: encrypted mesh networking over LoRa, TCP, UDP, serial or Bluetooth, with no servers and no accounts.

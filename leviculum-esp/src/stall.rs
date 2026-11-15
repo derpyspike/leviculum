@@ -128,6 +128,9 @@ pub enum Stage {
     /// Core 0: the LR1110's task polled (1478b): its boot probe, a bus
     /// transaction on SPI2 between the panel's chunks.
     Radio = 15,
+    /// Core 0: the BLE host's tasks polled and their queues pumped
+    /// (1480).
+    Ble = 16,
     /// Core 1: the I/O core's messages folded.
     Drain = 20,
     /// Core 1: the key presses folded.
@@ -165,6 +168,7 @@ impl Stage {
             13 => "idle",
             14 => "dump",
             15 => "radio",
+            16 => "ble",
             20 => "drain",
             21 => "keys",
             22 => "draw",

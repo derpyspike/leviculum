@@ -1,6 +1,6 @@
 [package]
 name = "leviculum-esp"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 authors = ["Lew Palm"]
 license = "AGPL-3.0-or-later"
@@ -97,6 +97,29 @@ embassy-time-driver = "0.2"
 # as embedded-alloc enabled it.
 rlsf = { version = "0.2.3", default-features = false, features = ["unstable"] }
 
+# Columba over the TrouBLE host (1480): the M9's BLE carrier. Generic
+# over the HCI transport; `src/ble.rs` names esp-radio's BleConnector.
+leviculum-trouble = { path = "../leviculum-trouble" }
+# The node side of the BLE seam (1715): the channels the loop reads,
+# the carrier push, the BLE Interface the node sends through.
+leviculum-ble-link = { path = "../leviculum-nrf/ble-link" }
+# The BLE controller: the radio blobs behind an HCI connector. `ble`
+# alone — the WiFi radio is 1479's next step and adds `wifi` + `coex`
+# here when it powers on. `unstable` because BleConnector is.
+esp-radio = { version = "=1.0.0-beta.1", default-features = false, features = ["esp32s3", "ble", "unstable"] }
+# The preemptive scheduler the radio blobs' tasks run under. ONLY they
+# do: the image's own loops stay as they are — core 0's main becomes the
+# scheduler's main task and runs on unchanged, and the blob tasks
+# preempt it. Started right before the controller, never without it.
+esp-rtos = { version = "0.4.0", features = ["esp32s3", "esp-radio"] }
+# The radio blobs' C heap only (`malloc_internal`, ...), over one
+# internal-DRAM region `src/ble.rs` places; `default-features = false`
+# keeps its `global-allocator` off — the Rust global allocator stays the
+# rlsf pools in PSRAM, where the blobs must not land.
+esp-alloc = { version = "0.11", default-features = false, features = ["esp32s3", "compat"] }
+embassy-futures = "0.1"
+static_cell = "2"
+
 # The ThinkNode M9's Loquax image (order 1361): the renderer, the fixture
 # model, the keyboard decoder, the frame dump and the census, all `no_std`
 # and the same code the host pins its goldens with (`loquax-m9/tests/`).
@@ -123,6 +146,11 @@ leviculum-map = { path = "../leviculum-map" }
 # a macro-only dependency.
 [package.metadata.cargo-machete]
 ignored = ["esp-bootloader-esp-idf"]
+
+# The radio's hot paths (esp-radio's own recommendation); the rest of
+# the image stays size-optimised.
+[profile.release.package.esp-radio]
+opt-level = 3
 
 [profile.release]
 opt-level = "z"      # optimize for size

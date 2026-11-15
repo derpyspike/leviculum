@@ -335,7 +335,17 @@ pub enum Fold {
     /// and no entry over [`BOARD_ENTRY_MAX`], which is a photo or a file
     /// the board neither shows nor holds.
     Board,
+    /// [`Fold::Board`], and a received message the home verified is
+    /// served as [`super::KIND_VOUCHED`] (1744). Said on the wire as the
+    /// board's word and [`VOUCHED_WORD`] after it, which a home from before
+    /// it reads past: such a home serves [`Fold::Board`], every message as
+    /// [`super::KIND_RECEIVED`].
+    BoardVouched,
 }
+
+/// The fourth element of a `/sync` that asks for the home's verdicts
+/// ([`Fold::BoardVouched`]).
+pub const VOUCHED_WORD: &str = "vouched";
 
 /// The kinds a [`Fold::Board`] device keeps: the ones `board::fold` reads
 /// (`loquax/src/home/board.rs`).
@@ -359,7 +369,7 @@ impl Fold {
     pub fn word(self) -> Option<&'static str> {
         match self {
             Self::All => None,
-            Self::Board => Some(FOLD_BOARD),
+            Self::Board | Self::BoardVouched => Some(FOLD_BOARD),
         }
     }
 
@@ -377,6 +387,10 @@ impl Fold {
         match self {
             Self::All => true,
             Self::Board => BOARD_KINDS.contains(&kind) && len <= BOARD_ENTRY_MAX,
+            Self::BoardVouched => {
+                (BOARD_KINDS.contains(&kind) || kind == super::KIND_VOUCHED)
+                    && len <= BOARD_ENTRY_MAX
+            }
         }
     }
 }
@@ -387,11 +401,15 @@ pub fn sync_request_folded(cursor: u64, page_bytes: u64, fold: Fold) -> Vec<u8> 
     let Some(word) = fold.word() else {
         return sync_request_paged(cursor, page_bytes);
     };
+    let vouched = fold == Fold::BoardVouched;
     let mut out = Vec::new();
-    msgpack::array(&mut out, 3);
+    msgpack::array(&mut out, 3 + usize::from(vouched));
     msgpack::uint(&mut out, cursor);
     msgpack::uint(&mut out, page_bytes);
     msgpack::string(&mut out, word);
+    if vouched {
+        msgpack::string(&mut out, VOUCHED_WORD);
+    }
     out
 }
 
@@ -411,6 +429,14 @@ pub fn read_sync_asked(data: &[u8]) -> Result<(u64, Option<u64>, Fold), Malforme
     let fold = match len {
         0..=2 => Fold::All,
         _ => Fold::from_word(msgpack::read_str(data, &mut p)?),
+    };
+    // The home's verdicts (1744), for a board that asks them; a word this
+    // home does not know asks nothing.
+    let fold = match (fold, len) {
+        (Fold::Board, 4..) if msgpack::read_str(data, &mut p)? == VOUCHED_WORD => {
+            Fold::BoardVouched
+        }
+        (fold, _) => fold,
     };
     Ok((cursor, page, fold))
 }

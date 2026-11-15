@@ -349,6 +349,7 @@ pub fn group_info() -> GroupInfo {
         epoch: 3,
         members,
         standing: Standing::Joined,
+        closed_at: None,
     }
 }
 
@@ -536,13 +537,21 @@ pub fn fill_store_for(home: &Path, me: [u8; 16]) -> Store {
         if let Some(group) = &stored.group {
             writes.push(StoreWrite::Group(group.clone()));
         }
+        // The live path's rule (1702, under the one rule of 1816): the
+        // stored group, through the writer rule the screen reads with.
+        let groups: loquax::ui::groups::Groups = stored
+            .group
+            .iter()
+            .map(|group| (group.address, group.clone()))
+            .collect();
+        let collectors = std::collections::BTreeSet::new();
+        let writers = loquax::ui::Writers {
+            groups: &groups,
+            collectors: &collectors,
+        };
         for message in &stored.messages {
             if !message.outbound {
-                let read = loquax::telemetry::read(
-                    stored.peer,
-                    &message.fields,
-                    message.at.map(|at| at.unix_secs),
-                );
+                let read = writers.read(stored.peer, message);
                 writes.extend(read.fixes.into_iter().map(|fix| {
                     StoreWrite::Position(loquax::telemetry::Fix {
                         message: Some(message.activity),

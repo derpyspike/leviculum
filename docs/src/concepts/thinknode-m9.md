@@ -536,7 +536,7 @@ another firmware's header.
   the map measurement), 16 MB flash. How much SRAM is free beside the
   radio stack — and later WiFi or BLE — is unmeasured ("Open"). The
   `leviculum-esp` heap is a 64 KiB placeholder today (`HEAP_SIZE`,
-  `leviculum-esp/src/lib.rs:423`); the UI budgets on the messenger page
+  `leviculum-esp/src/lib.rs:424`); the UI budgets on the messenger page
   say what has to replace it.
 - **Radio.** The LR1110 through `leviculum-lr11xx`, usable ceiling about
   +17 dBm ("What the community port measured"). For the UI it is the
@@ -570,6 +570,74 @@ possible; [Loquax: one messenger on every target](loquax-targets.md),
 - **No file system a user can reach:** attachments are listed and small
   photos drawn, but "open with" and "save to" have no meaning; a file is
   fetched by a paired device instead.
+
+## The esp-rtos exception: a scheduler for the radio blobs (1480, decision for Lew)
+
+The M9's two cores run blocking loops and poll every future of ours
+with a no-op waker — the "no executor" rule, written after the
+community port's interrupt executor crashed this board (see
+"Executors" above). Order 1480 bent that rule without asking first:
+it brought BLE up over esp-radio, whose precompiled Espressif radio
+libraries refuse to run without a preemptive scheduler, and started
+`esp-rtos` 0.4.0 on core 0 to satisfy them. The pass then reworded
+the loop's "NO executor" comment to "NO executor OF OURS" after the
+fact, which is the wrong order: the exception is a design decision,
+it belongs on this page and before Lew. This section is that
+decision's file; until Lew confirms it, the scheduler stays what it
+is — a bench spike's necessity, not an adopted rule.
+
+**Why the blobs force it.** The BLE controller inside esp-radio is
+Espressif's closed firmware, linked as C libraries. They spawn and
+block their own tasks (controller scheduling, coexistence) through an
+RTOS interface; esp-radio 1.0.0-beta.1 names `esp-rtos` as that
+interface and its init refuses without a running scheduler. There is
+no cooperative or poll-driven mode in the published API; whether the
+blobs could run without preemption is unknowable from outside
+Espressif. The alternatives are: no BLE on the M9, a from-scratch
+open controller (nobody ships one for the S3), or this scheduler.
+
+**What it costs, measured on 1480's image** (the verbatim headroom
+lines live in the orders' reports; m9-gates prints them on every
+build):
+
+- Flash: the BLE stack as a whole — blobs, host, scheduler — took the
+  image from 3 862 736 B to 4 228 960 B used (+366 224 B), release.
+- Internal DRAM: 44 KiB as the blobs' C heap (`esp-alloc` behind
+  `malloc_internal`), a `.bss` region that is spent even when the
+  media record keeps BLE off — the region is handed over at link
+  time, though nothing allocates from it with the radio dark.
+- Scheduling: core 0's loop becomes the scheduler's main task. Only
+  the blobs' tasks can preempt it, and their stacks are paid from the
+  44 KiB heap, not from core 0's measured stack budget. The UI core
+  never sees the scheduler.
+- Boot: a board whose media record switches BLE off never calls
+  `esp_rtos::start` at all; the loop runs exactly as before 1480.
+
+**What stays executor-free.** Every future of ours: the Columba join
+(`leviculum_esp::ble`), the LoRa task, the client — all polled from
+core 0's loop with a no-op waker, one turn each. No task of ours is
+spawned on esp-rtos, and the rule for new work stays "poll it from
+the loop"; the scheduler exists for the blobs alone. The embassy time
+driver (`leviculum-esp/src/time_driver.rs`) keeps no wake queue for
+the same reason: a not-yet-due future is simply polled next turn.
+
+One trap follows from polling this way, and 1715 found it in the
+Columba scan window: an embassy `Timer` answers its first poll
+`Pending` however late it is, so a deadline rebuilt as a fresh
+`Timer::at` on every pass of a `select` loop never fires while the
+other arm is ready at every turn. A deadline in a loop is pinned once,
+outside the loop (`leviculum-trouble/src/ble/columba.rs`, the scan
+window's `window_end`; every link's keepalive deadline, armed once and
+polled before the queue, `leviculum-nrf/ble-link/src/keepalive.rs`,
+1726), and the scripted-controller test
+(`leviculum-trouble/src/ble/h4_tests.rs`) drives the backend the way
+the loop does, one no-op-waker poll a turn.
+
+**The decision before Lew:** accept the exception as scoped above
+(scheduler on core 0, blobs only, off with BLE off), or strike BLE
+from the M9 until an open controller exists. The bench criteria for
+the spike (boot proof, sniffer, Columba phone, five-node room, soak)
+are in order 1715's bank list and judge the first option on hardware.
 
 ## Decided
 
@@ -633,7 +701,7 @@ Nothing in this section is built yet, except where a dated note says otherwise.
      step for either.
    - The host toolchain pin stays at 1.97.1 until esp-rs ships a
      non-prerelease Xtensa toolchain of the same generation (decided
-     2026-10-05, `scripts/install-ci.sh:433-437`, `rust-toolchain.toml:17`).
+     2026-10-05, `scripts/install-ci.sh:435-439`, `rust-toolchain.toml:17`).
    - **2026-10-25, how the rig should recognise an M9 (#473).** USB
      cannot: the CH340K publishes `1a86:7522`, no manufacturer string and
      no serial number, so it looks like every other CH340, and periculum's

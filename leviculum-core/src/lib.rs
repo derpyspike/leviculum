@@ -128,6 +128,7 @@ pub mod interface_counters;
 pub mod known_destinations;
 pub mod link;
 pub mod media_profile_store;
+pub mod media_switches;
 pub mod memory_storage;
 pub mod mgmt_allow_store;
 /// The crate's one hand-rolled msgpack reader/writer. Top-level rather than

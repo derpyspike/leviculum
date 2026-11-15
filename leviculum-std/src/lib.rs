@@ -46,6 +46,7 @@ mod event_catalog_completeness;
 pub mod event_log;
 pub mod file_identity_store;
 pub(crate) mod file_known_destinations_store;
+pub mod file_lock;
 pub mod file_lxmf_store;
 pub(crate) mod file_packet_hash_store;
 pub mod file_peer_store;

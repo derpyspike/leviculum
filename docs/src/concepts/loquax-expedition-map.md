@@ -7,7 +7,8 @@ conversation and the three studies run beside it. [Loquax: the
 map](loquax-map.md) keeps the renderer, the region format and positions
 as they are today; this page is where the map goes next.
 
-Status words: **decided** is Lew's word of 2026-11-11, **proposed** is
+Status words: **decided** is Lew's word of 2026-11-11, or of the date
+given beside it (sections 3, 3b and 12 carry later ones), **proposed** is
 the reviewer's and not yet confirmed, **open** needs Lew or a study.
 Later orders cite this page by section number and by the K-numbers of
 the last section, so neither is renumbered. The draft it was made from
@@ -388,8 +389,187 @@ section 6b: Lew's CoMaps generator ported to Rust, golden tests against
 its tiles. The single sibling file of that draft becomes a pyramid
 served in pieces (section 5).
 
+**Two goals of the relief (decided, Lew 2026-11-12).** First,
+legibility: every terrain detail is seen at a glance, nothing sinks
+into shadow, as little detail as possible is lost. Second, beauty: one
+should enjoy looking at the map. Where the two conflict, the compromise
+is chosen and named, not left to chance.
+
+- **The model is MapOut (iOS),** as for the map picture in section 1.
+  Measured on a screenshot: shadows lifted (the darkest 5 % of terrain
+  at 152 of 255, the median at 202), contrast normalised to local
+  relief (the high Alps and the Swiss plateau show the same spread),
+  warm light and cool shadows, light base colours, several lights,
+  several scales, no cast shadows.
+- The images of the Morocco pilot (2026-11-11) were darker: a shade
+  floor of 0.35 to 0.45 and a dark brown class for mountains. A study
+  tests a MapOut-like style on desert data (`mapout-style/`; not
+  verified in the tree: the study's files were handed over beside the
+  draft and are not committed).
+- What the pilot found for desert relief (not verified in the tree, the
+  pilot report is not committed): CoMaps' flat-land damping, which
+  keeps plains clean, also removes the 20 to 80 m linear dunes of Erg
+  Chegaga, whose shade sits near the noise threshold. Normalising by
+  local relief makes a dune chain on a plain read as clearly as a
+  mountain spur.
+
+**The device gets elevation, not shade (proposed, from the pilot of
+2026-11-12).** Metres with a 2D predictor and zstd cost 1.16 times
+CoMaps' shade tiles; z12 alone, with the coarser levels derived on the
+device, 0.77 times (all 1,821 tiles z9 to z12 of the pilot box, measured
+there). Everything below is then computed on the device and needs
+nothing extra from the server.
+
+**Plasticity, CPU first** (study of 2026-11-12, `plastic/`, not verified
+in the tree: the study is not committed; times for one phone screen on
+one desktop core):
+
+- **Sky-view factor** (how much sky a point sees: valleys, wadis and
+  interdune lanes darker, crests lighter, independent of the light
+  direction): the most plasticity per cost, computed at z12 and
+  upsampled, 274 ms, once per tile. **Part of the default style R
+  (decided, Lew 2026-11-12).** Proposed beside it in the default:
+  aerial perspective (48 ms). (Style R is the study's name for the
+  default style; the study is not in the tree.)
+- **Specular sheen on dry lakes:** dropped, it suggests water.
+- **The CPU map gets no plastic mode and no switch for plasticity
+  (decided, Lew 2026-11-12).** Three looks the study tried move to the
+  GPU idea set of section 3b and are not CPU work: real sun position
+  with cast shadows (135 ms at z12; light from the south or south-east
+  inverts relief for many readers, dune shadows need exaggeration),
+  idea 5a; plan oblique (each point shifted north by its height, after
+  Jenny, 37 ms; every coordinate function would have to know the shift,
+  up to 1.8 km at Jbel Bani), idea 5b; and the tilted view by column
+  ray marching (217 to 596 ms), which the GPU builds as a real 3D view
+  instead.
+
+**Vectorisation: benchmark-driven on every platform (decided, Lew
+2026-11-12).**
+
+- The kernels are first written as plain loops over planes so the
+  compiler can vectorise them, each with a benchmark on x86-64
+  baseline, x86-64-v3 and aarch64, single core and all cores. The
+  benchmark table is part of the kernel's landing.
+- Hand-written vector code (a small own lane layer over `std::arch`,
+  NEON and AVX2, with a scalar fallback) follows only for kernels the
+  numbers show to be slow, and every variant and every tuning step is
+  measured against the others before it stays.
+- Each vector kernel has an equality test against its scalar form.
+
+**GPU later.** The same formulas as shaders; the CPU function stays the
+reference and a test compares both images. Lighting is then computed
+per frame, so sun, exaggeration and style move freely. The data format
+does not change. Section 3b holds the rules and the ideas.
+
 **Contour lines (decided):** low priority, later, behind a switch, off
 by default.
+
+### 3b. The GPU map (decided, Lew 2026-11-12)
+
+**When (decided).** Work on the GPU map begins once the CPU map is
+complete. From the idea set below some are picked and simply built.
+The pick, the discussion with Lew and the building enter the pipeline
+by themselves when the CPU map is done; nobody has to remember them.
+
+**Rules (decided):**
+
+- **The CPU map always works, as the fallback.** The device checks at
+  start whether a GPU is present and usable, and draws the CPU map if
+  not, or if the GPU path fails.
+- **Each GPU formula has its CPU form as the reference;** a test
+  compares both images.
+- **The map stays a map:** top down, usable, every look shows real data
+  only. Generalising is allowed, inventing detail is not: no network
+  that "upsamples" 30 m to 5 m and draws dunes that do not exist. A
+  fly-over is a gimmick, not the goal; the goal is a feel for the
+  ground at a glance and joy in the map's beauty (the two goals of
+  section 3).
+- **Still images before building:** every idea is first tried as a
+  study with still images offline, as the plasticity and MapOut studies
+  were, judged by Lew against the two goals, and only then built.
+- **Speed is measured on real devices** (desktop, Android phones)
+  before a default is set.
+
+**The idea set** (brainstorm of 2026-11-12). Ideas 1, 2, 4 and 8 are
+the **proposed** start; none of the ideas is decided. The numbers are
+stable, later orders cite them.
+
+*Light*
+
+- **1.** *(proposed start)* HDR with local tone mapping: light computed
+  linear with full range, then compressed locally like a good HDR
+  photograph. It serves both goals directly: no face sinks into shadow,
+  and the whole still reads strong.
+- **2.** *(proposed start, with 1)* Local light direction as in Swiss
+  relief art (Imhof, swisstopo): the light turns gently per ridge,
+  derived from the ridge orientation in the height field, so every
+  ridge gets contrast and no valley parallel to the light vanishes.
+- **3.** Sky light from hundreds of directions, warm sun and cool sky
+  blue: the soft painted light.
+- **4.** *(proposed start)* Raking light by finger: drag the sun low
+  across the ground; terraces, wadi edges and old track scars of 1 to
+  2 m show that normal light hides. A tool, not a toy.
+- **5.** Motion parallax from the tilt sensor: tilting the phone moves
+  the light a few degrees and nudges a hint of plan oblique; the relief
+  looks like a model under glass, the map stays registered.
+- **5a.** Real sun position with cast shadows, as a short look ("sun
+  now" with a time slider, back to the standard light on leaving), not
+  a lasting mode, because light from the south inverts relief.
+- **5b.** Plan oblique (after Jenny), at most an entry in the settings
+  menu, off by default; every coordinate function must know the shift.
+
+*Form*
+
+- **6.** Generalisation that follows the zoom: from a pyramid of the
+  height field each frame, stepless, coarse form and fine detail mixed
+  by scale (Patterson's "resolution bumping").
+- **7.** Neural relief shading (Jenny et al., "Eduard", trained on
+  Swiss manual relief): per tile on the GPU; its licence, and whether
+  to train our own, to be checked.
+
+*Surface*
+
+- **8.** *(proposed start)* Procedural textures per ground class:
+  ripples on dune sand aligned with the dune direction from the height
+  field, stones on hamada, gravel on reg, palm symbols on oases. Clearly
+  symbols, never a photo substitute (the ground classes are section
+  12).
+- **9.** Tanaka illuminated contours (light side bright, shadow side
+  dark): if contour lines are built, this way.
+- **10.** Hachures as in old maps (strokes along the fall line, width by
+  steepness), a "historic" look to try.
+
+*Colour*
+
+- **11.** Blending in a perceptual colour space (OKLab), computed
+  linear: no muddy transitions, shadows keep colour.
+- **12.** Hypsometric tint adapted to the visible elevation range, so
+  30 m in a flat desert shows; a switch with a live legend, since the
+  colours are no longer absolute.
+
+*Beauty that serves*
+
+- **13.** Viewshed: what is visible from here, from where my camp is
+  seen; a shadow computation from the observer, also for radio line of
+  sight (ties to the radio trail and line-of-sight effects of section
+  7).
+- **14.** Slope along the route: the planned track coloured by
+  gradient.
+- **15.** Weather and dust as real data: a haze from the dust forecast
+  received by message (the dust forecast itself is proposed only,
+  section 12).
+
+*Craft*
+
+- **16.** Text as signed distance fields, sharp at every size; lines
+  antialiased with correct gamma; stepless zoom without tile pops;
+  blended detail levels instead of hard switches.
+
+*The free 3D view*
+
+- **3D.** A free 3D view (rotate, tilt to the horizon) is built only on
+  the GPU, from a terrain mesh with levels of detail, not by ray
+  marching. It belongs to this idea set, not to the CPU map.
 
 ## 4. Points of interest, search, articles
 
@@ -692,7 +872,7 @@ Additions (decided):
      pin moves for the relay or for the member — the member's own
      signed message is the only word about the member's position
      outside a vouched group copy. The rule is one function in LXMF,
-     `Lev::reading_writer` (`copy_writer`, `loquax/src/ui.rs:6873`, the
+     `Lev::reading_writer` (`copy_writer`, `loquax/src/ui.rs:7070`, the
      audits of 1757, 1787 and 1808), which the node helper's telemetry
      report and the liveness judgement go through too (rule 5: one
      definition of "this message names a copy's writer", so filing and
@@ -702,6 +882,23 @@ Additions (decided):
      message — on the arrival path and on the verdict path alike: the
      early-copy refiling skips the message that carried the membership
      (`file_early_copies`, the second auditor's audit of 1828).
+     The chat, the info view and the reaction line draw a copy under its
+     writer by the same rule (`groups::copy_writer`; 1696, 1702, 1728): a
+     copy the rule does not credit is the group's own text under no
+     name. A group that names its own address as its inviter vouches for
+     nobody; an invitation naming a group the reader is in, left or saw
+     end renames nothing and names no other admin or inviter; and a
+     group the reader was only invited to says who is in it and nothing
+     of the reader, so its word that the reader left or that it ended
+     changes nothing of the reader's standing (1728). A group the reader
+     left or that ended keeps the epoch from which the reader was out
+     (`closed_at`, kept in the store), but vouches for no copy, earlier
+     ones included: only a joined group vouches (the reviewer's decision
+     D2 of order 1824). A verdict on a message the screen no longer holds
+     asks the store for it, and its claims are applied as on the screen
+     (`settled_elsewhere`, 1744). What stays: the home of a group the
+     reader joined can write anyone into its membership, and its copies
+     then speak for them; joining a group is trusting its home that far.
      **Nothing a message says is believed before its signature is
      VERIFIED** (reviewer decision 2026-11-14, order 1834, after rounds
      three to five of the take-back design each failed in the same
@@ -714,7 +911,7 @@ Additions (decided):
      in the conversation, marked as unverified, as LXMF shows it. The
      gate is one place, the single entry where a received message's
      position and group claims become state (`apply_message_claims`,
-     `loquax/src/ui.rs:6684`; the restore has the same gate at its own
+     `loquax/src/ui.rs:6779`; the restore has the same gate at its own
      entry, `learn_groups`); nothing behind the gate knows about
      verification. The held message is kept as received with its
      verdict pending: when the verdict says valid, its claims are
@@ -726,8 +923,7 @@ Additions (decided):
      (`take_back_fixes`, the store's keyed `ForgetPosition` delete) are
      gone. A store written by those rounds is cleaned at open: a
      position row filed by an inbound message that is not verified is
-     dropped (the schema step's companion rule; the 23 layout holds it,
-     so there is no schema 24).
+     dropped (the schema step's companion rule; the 23 layout holds it).
      ONE subsystem stays outside this gate on purpose: the read-receipt
      handshake (1230, 1233). The peer's receipt capability and the
      receipts it sends of OUR messages are a protocol exchange, not a
@@ -744,7 +940,7 @@ Additions (decided):
      named writer, for the source and for the group address — a group
      is not a place and gets no pin of its own. Nothing of it shows in
      the pin, the store, the bubble's position line or the Info
-     (`Writers`, `loquax/src/ui.rs:6901`); each refused reading is said
+     (`Writers`, `loquax/src/ui.rs:7099`); each refused reading is said
      in one structured `POSITION_REFUSED reason=…` event in `tui.log`,
      nothing on screen — exactly one, where the judging happens: at
      arrival for a verified message, at the valid verdict for a held
@@ -757,15 +953,15 @@ Additions (decided):
      1787: a copy that outruns its list would otherwise lose a member's
      position for good) — still held, though, while its signature is
      unverified.
-     The M9 board marks every received message unverified
-     (`loquax/src/home/board.rs:962`: the archive entry does not carry
-     the home's verification), so under this rule the board believes no
-     message at all: no positions and no group state from messages —
-     the map shows only the board's own fix and what the mesh
-     announced. The rule is not weakened for the board (Lew 2026-11-13,
-     rule 3); what the board would need to verify — the archive
-     carrying the home's verdict, or keys of its own — is its own
-     order.
+     The M9 board checks no signature (it holds no sender's key); it
+     takes the home's verdict instead (1744): the home keeps its own
+     verdict with each received archive entry (`archive.vouched`, schema
+     25 since the merge of order 1824), a board asks for it with the
+     `vouched` word of its `/sync`, and the home serves a message it
+     verified as `KIND_VOUCHED`. The board reads only that kind as
+     verified; every other message it believes no more than an
+     unverified one. The rule is not weakened for the board (Lew
+     2026-11-13, rule 3).
      A collector's `FIELD_TELEMETRY_STREAM` row names its measurer, a
      claim of the same kind. It is filed under that measurer only when the
      deliverer is a collector the reader chose (`UiModel::collectors`).
@@ -961,6 +1157,77 @@ Decided, removing choices the draft still had:
 - Cache limit, sharing map data, the source of a piece, the transport,
   the depth loaded on a slow link: all rules, with settings only for
   those who look for them.
+
+## 12. Desert and ground map
+
+Lew's decisions of 2026-11-11 and 2026-11-12 after two studies run
+beside the concept: a pilot from Merzouga to Iriqui in Morocco (relief,
+a ground map, its validation against OpenStreetMap tracks, costs) and a
+survey of the imagery the OpenStreetMap editors list for North Africa.
+Both reports were handed over beside the draft (not verified in the
+tree: neither is committed); the findings cited below are theirs.
+
+**a. What OpenStreetMap maps comes only from OpenStreetMap (decided,
+Lew 2026-11-11).** No machine-detected roads, no machine-detected
+buildings, no wells or names from GNS or any other non-OSM source for a
+kind of feature OpenStreetMap maps. Other sources are wanted only for
+what neither OpenStreetMap nor a classic map carries: slopes,
+landforms, ground, geology, imagery.
+
+**b. No mine, hazard or travel-advisory layer (decided, Lew
+2026-11-11/12).** An exclusion, not a postponement: such a layer is too
+unreliable and gives false safety, so it is not proposed again. (The
+Sahara study found no open geodata for mines at all.)
+
+**c. Terrain before satellite imagery (decided, Lew 2026-11-11/12).**
+Imagery is an option only. What is new is the ground map: ground
+classes built from radar, imagery and elevation (dune sand, sand sheet,
+gravel plain, rock plateau, mountain, dry lake, wadi bed, vegetation,
+and "uncertain" left untinted). Its legend never says "passable", nor
+any other word that promises a vehicle gets through.
+
+- The pilot found that the ground map reads at a glance (ergs, massifs,
+  wadi bands, oases, Lac Iriki) without the colour noise of a satellite
+  image on flat ground, and that it carries route information: OSM
+  tracks run on the gravel plain 1.54 times as often as its area
+  predicts, on dune sand 0.50 times. Its weakest split is rock plateau
+  against gravel plain, for want of ground truth.
+- For the box of about 91,000 km² the ground map cost about 3.4 MB for
+  z9 to z12; the Sahara is estimated at about 350 MB.
+- Hamada gets its own cooler grey with a fine stone signature, no
+  longer the dark brown of steep rock (Lew, 2026-11-12, on the pilot's
+  images). Whether the pastel or the strong style becomes the default
+  is open.
+- Why imagery cannot lead (the imagery survey): none of the sharp
+  imagery in the OpenStreetMap editors may be shipped by our server
+  (Bing, Esri, Mapbox, Maxar), and nothing sharper than 10 m is openly
+  redistributable for the open Sahara apart from declassified film of
+  the 1960s. This narrows item 6 of "Other data for travel" (section
+  4): in the desert the image is not the map, the ground map is.
+
+**d. The Sahara order (decided, Lew 2026-11-12, revised that evening).**
+
+1. First the desert relief (section 3, its two goals) and stage A of the
+   ground map.
+2. The satellite layer moves to the back, without a date: the app is
+   offline first, and imagery of Bing's class is not reachable from
+   free sources.
+3. A dust forecast is no Sahara item of its own. At most it is a
+   sub-point of weather and warnings by message (K12), also at the
+   back, and it is **proposed** only: Lew is sceptical, it is not
+   decided.
+
+**e. Search uses only the OpenStreetMap data on the device (decided,
+Lew 2026-11-11/12).** No GNS names. What place search covers is
+deferred ("first we make the map beautiful"); it stays open item 1 of
+section 10.
+
+**f. The map data source is a setting anyone can serve (decided, Lew
+2026-11-11/12).** Anyone may run their own service: decentralisation, no
+central provider. A server is any that speaks our format, addressed by
+its Reticulum address as the trust anchor, or by HTTP. This is the
+setting of section 9, and it does not mean foreign tile URLs (Esri and
+the like).
 
 ## See also
 

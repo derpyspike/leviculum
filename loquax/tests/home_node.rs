@@ -948,6 +948,177 @@ async fn a_leaf_with_its_own_tcp_interface_joins_pulls_and_marks() {
     mesh.daemon.stop().await.expect("stop the Rust daemon");
 }
 
+/// 1697: a fresh device against a mailbox holding a few hundred messages
+/// finishes its first sync in ONE pull and says where it stands along the
+/// way. On the clockworkpi the old pull threw its work away after a flat
+/// five seconds, never settled, and fetched the same archive again and
+/// again (six pulls from `cursor=0`, 5646 entries each). Now the pull
+/// fences chunk by chunk, waits while the engine shows life, and the
+/// watcher hears (done, total) per chunk; a second pull brings nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_first_sync_over_a_few_hundred_messages_comes_to_an_end() {
+    use loquax::engine::{attach_leaf, LeafConfig, Role};
+    use loquax::outbox::OutboxEvent;
+
+    let mut mesh = Mesh::start_serving(&[]).await;
+    let port = mesh.tcp_port.expect("the daemon's TCP server");
+    let home = mesh.home.path().to_path_buf();
+    let code = admit(&home, "phone");
+    let code = loquax::home::code::HomeCode::parse(&code).expect("the code parses");
+    let address = loquax::home::lxmf_address(&code.public_key).expect("the home address");
+
+    // Seed the archive before the daemon runs, as weeks of mail would
+    // have: a few hundred received messages, archived as delivery does.
+    let sender = leviculum_core::Identity::generate(&mut rand_core::OsRng);
+    let from = loquax::home::lxmf_address(&sender.public_key_bytes()).expect("sender address");
+    let seeded: usize = 400;
+    let mut payload_bytes = 0usize;
+    {
+        let mut store = loquax::store::Store::open_in(&home, address).expect("the home's store");
+        for i in 0..seeded {
+            let message = leviculum_lxmf::Message::create(
+                address,
+                from,
+                &sender,
+                1_700_000_000.0 + i as f64,
+                Vec::new(),
+                format!("zwei Wochen Post, Nachricht {i}").into_bytes(),
+                Vec::new(),
+                leviculum_lxmf::DeliveryMethod::Direct,
+            )
+            .expect("a message");
+            let packed = message.pack();
+            payload_bytes += packed.len();
+            store
+                .archive_append(
+                    loquax::home::KIND_RECEIVED,
+                    &message.message_id,
+                    &packed,
+                    1_700_000_000 + i as i64,
+                    64 * 1024 * 1024,
+                )
+                .expect("archived");
+        }
+    }
+    let node = HomeNode::start(&home, &mesh.instance).await;
+
+    let phone = tempfile::tempdir().expect("phone home");
+    let storage = phone.path().join("storage");
+    std::fs::create_dir_all(&storage).expect("storage dir");
+    let config = LeafConfig {
+        servers: vec![format!("127.0.0.1:{port}")],
+        home_destination: None,
+        timing: Default::default(),
+        storage_dir: storage,
+        identity: leviculum_core::Identity::generate(&mut rand_core::OsRng),
+        display_name: Vec::new(),
+        notices: loquax::effects::Terminal::new(std::env::temp_dir()),
+        tcp: Default::default(),
+        network: Default::default(),
+    };
+    let device = config.identity.clone();
+    let mut attached = attach_leaf(config, Role::Client { address })
+        .await
+        .expect("the leaf's node comes up");
+    let link = attached.node();
+    loquax::home::client::join(
+        &link,
+        &code.public_key,
+        &device,
+        &code.token,
+        "phone",
+        Duration::from_secs(40),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("join: {error}\nhome node:\n{}", node.log()));
+    loquax::home::client::save_client(phone.path(), &code.public_key).expect("client file");
+    assert!(
+        loquax::home::client::history_owed(phone.path()),
+        "a fresh client owes its history"
+    );
+
+    // The first sync: one pull, settled, every message collected, and the
+    // watcher told (done, total) as the chunks fence.
+    let mut heard: Vec<(u64, u64)> = Vec::new();
+    let started = std::time::Instant::now();
+    let pull = loquax::home::client::pull_into_watching(
+        &mut attached.outbox,
+        &link,
+        phone.path(),
+        &code.public_key,
+        &device,
+        Duration::from_secs(120),
+        &mut |done, total| heard.push((done, total)),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("pull: {error}\nhome node:\n{}", node.log()));
+    let elapsed = started.elapsed();
+    let received = pull
+        .received
+        .iter()
+        .filter(|event| matches!(event, OutboxEvent::Received { .. }))
+        .count();
+    eprintln!(
+        "FIRSTSYNC entries={} received={received} payload_bytes={payload_bytes} \
+         elapsed_ms={} chunks_heard={}",
+        pull.entries,
+        elapsed.as_millis(),
+        heard.len()
+    );
+    assert!(
+        pull.settled,
+        "the first sync settles in one pull: {pull:?}\nhome node:\n{}",
+        node.log()
+    );
+    assert_eq!(received, seeded, "every archived message came: {pull:?}");
+    let cursor = pull.cursor.expect("the cursor is named");
+    loquax::home::client::save_cursor(phone.path(), cursor).expect("cursor saved");
+    assert!(
+        !loquax::home::client::history_owed(phone.path()),
+        "history is no longer owed"
+    );
+    // The watcher heard the sync move: first (0, total), last (total,
+    // total), never backwards, with the fenced chunks between.
+    assert!(heard.len() >= 2, "{heard:?}");
+    assert_eq!(heard.first().map(|&(done, _)| done), Some(0), "{heard:?}");
+    assert!(
+        heard
+            .windows(2)
+            .all(|w| w[0].0 < w[1].0 && w[0].1 == w[1].1),
+        "{heard:?}"
+    );
+    let total = heard[0].1;
+    assert_eq!(heard.last().copied(), Some((total, total)), "{heard:?}");
+    assert!(
+        total >= seeded as u64,
+        "the total covers the archive: {heard:?}"
+    );
+
+    // The second pull starts from the cursor and brings nothing again:
+    // the archive is not fetched twice.
+    let again = loquax::home::client::pull_into(
+        &mut attached.outbox,
+        &link,
+        phone.path(),
+        &code.public_key,
+        &device,
+        Duration::from_secs(40),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("second pull: {error}\nhome node:\n{}", node.log()));
+    assert_eq!(
+        again.entries,
+        0,
+        "nothing is fetched twice: {again:?}\nhome node:\n{}",
+        node.log()
+    );
+
+    drop(link);
+    attached.stop().await;
+    drop(node);
+    mesh.daemon.stop().await.expect("stop the Rust daemon");
+}
+
 /// A leaf client of the home node, joined and keeping its watching link,
 /// as the phone is.
 struct Leaf {

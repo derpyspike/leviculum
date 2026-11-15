@@ -4821,6 +4821,51 @@ mod tests {
         assert!(model.profile_open, "a click on the title opens it");
     }
 
+    /// 1697: while a first sync or a catch-up runs, the profile's mailbox
+    /// state line counts it from the pull's own numbers — the quiet line
+    /// in the place the mailbox state already has, no second place and no
+    /// bare spinner. Pinned in `tests/fixtures/tui_profile_catchup.frames`.
+    #[test]
+    fn the_profile_counts_a_running_catch_up_in_the_mailboxs_state_line() {
+        use loquax::ui::profile::{Mailbox, ProfileFacts, Rung};
+        let (width, height) = (100, 24);
+        let profile_in = |lang| {
+            let mut model = Model::new(&[[0xab; 16]]);
+            model.lang = lang;
+            model.address = Some([0x4c; 16]);
+            model.home_client = true;
+            model.profile = ProfileFacts {
+                name: "Mia Sander".to_string(),
+                mailbox: Mailbox::Away {
+                    name: Some("Mia's computer".to_string()),
+                    rung: Some(Rung::Relayed),
+                    word: None,
+                },
+                ..Default::default()
+            };
+            update(&mut model, UiEvent::Resize { width, height });
+            // The pull's own numbers, as the fetch runner reports them.
+            update(
+                &mut model,
+                UiEvent::PullProgress {
+                    done: 343,
+                    total: 5646,
+                },
+            );
+            update(&mut model, UiEvent::Key(parse_key("P").expect("key")));
+            model
+        };
+        let shown = screen(&profile_in(Lang::En), width, height);
+        assert!(
+            shown.contains("Loading older messages: 343 of 5646"),
+            "{shown}"
+        );
+        same_frames("tui_profile_catchup.frames", &shown);
+        let german = screen(&profile_in(Lang::De), width, height);
+        says(&german, "Lade ältere Nachrichten: 343 von 5646");
+        same_frames(&german_name("tui_profile_catchup.frames"), &german);
+    }
+
     #[test]
     fn the_help_and_the_palette_draw_over_the_panes() {
         let mut model = Model::new(&[[0xab; 16]]);

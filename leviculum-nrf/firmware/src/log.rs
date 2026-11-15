@@ -224,6 +224,26 @@ pub fn log_fmt_critical(prefix: &str, args: core::fmt::Arguments) {
     LOG_SIGNAL.signal(());
 }
 
+/// Install this module as `leviculum-ble-link`'s log sink (1715): the
+/// shared node side of the BLE seam cannot name a family's log, so the
+/// family hands its lines over once at boot. The nRF's install point is
+/// `crate::ble_link::channels`, which every binary calls before any BLE
+/// task runs.
+pub(crate) fn hook_ble_link() {
+    leviculum_ble_link::log::set_sink(ble_link_sink);
+}
+
+fn ble_link_sink(
+    prefix: &'static str,
+    args: core::fmt::Arguments<'_>,
+    level: leviculum_ble_link::log::Level,
+) {
+    match level {
+        leviculum_ble_link::log::Level::Runtime => log_fmt(prefix, args),
+        leviculum_ble_link::log::Level::Critical => log_fmt_critical(prefix, args),
+    }
+}
+
 /// Display adapter that escapes CR/LF as `\r`/`\n` literals so a
 /// multi-line payload stays ONE log line. The SoftDevice fault panic
 /// message embeds a raw `\n` after the source location; replaying it

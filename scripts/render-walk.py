@@ -68,6 +68,7 @@ CONTROLS = {
     "disk-shift": ["globe_disk_fixed"],
     "zoom-drift": ["zoom_keeps_the_place"],
     "bare-frame": ["bare_paper"],
+    "stray-view": ["view_only_by_input"],
 }
 STEP = {"frame_p95": 15.0}
 # The walk's one variant, the globe (1809), and the cargo features its

@@ -1195,8 +1195,10 @@ impl Sprite {
     }
 
     /// [`of`](Self::of) as it was written first, every pixel of the reach
-    /// sampled: the reference the boxed loop is held to.
-    #[cfg(test)]
+    /// sampled: the reference the boxed loop is held to. Its callers —
+    /// the tests below and `mapframe`'s unkept path — exist only with
+    /// `screenmap`, so without it this would be dead test code.
+    #[cfg(all(test, feature = "screenmap"))]
     pub(crate) fn of_whole_reach(name: &PlacedName) -> Self {
         let at = (name, name.boxes.clone(), name.centre);
         Self::boxed(at, reach(&name.mask, name.centre), None, |x, y| {
@@ -1446,7 +1448,10 @@ fn blend_level(px: &mut [u8], colour: [u8; 3], a: u8) {
     }
 }
 
-#[cfg(test)]
+// Every test here drives the `Typesetter`, which 1565 put behind
+// `screenmap`; ungated they broke every default-feature `--all-targets`
+// build of this crate (1480 found it in its clippy gate).
+#[cfg(all(test, feature = "screenmap"))]
 mod tests {
     use super::*;
 

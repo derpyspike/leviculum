@@ -528,6 +528,8 @@
     <string name="app_connecting">Loquax (verbindet)</string>
     <string name="new_nothing">Es gibt nichts zum Einfügen. Kopiere zuerst den Code deines Kontakts.</string>
     <string name="join_no_answer">Das Postfach hat nicht geantwortet. Ist der Computer an?</string>
+    <string name="here_not_started">Dein Postfach konnte auf diesem Handy nicht starten.</string>
+    <string name="here_no_answer">Das Postfach auf diesem Handy hat nicht geantwortet.</string>
     <string name="join_slow">Das Postfach hat nicht rechtzeitig geantwortet. Versuch es noch einmal.</string>
     <string name="join_not_mailbox">Das ist kein Postfach-Code.</string>
     <string name="join_refused">Das Postfach hat den Code nicht angenommen. Mach am Computer einen neuen.</string>
@@ -536,9 +538,11 @@
     <string name="join_bad_where">Loquax kann nicht lesen, wo das Postfach ist. Das sieht so aus: 192.168.1.20:4242.</string>
     <string name="join_failed">Das Postfach ließ sich nicht verbinden.</string>
     <string name="join_other_mailbox">Dieses Handy liest schon ein anderes Postfach.</string>
+    <string name="store_newer">Deine Chats wurden mit einer neueren Loquax-Version gespeichert. Installiere die neuere Version, dann ist alles wieder da. Deine Daten sind unverändert.</string>
     <string name="home_joining">Verbinde mit deinem Postfach</string>
     <string name="home_fetched">%1$d von %2$d abgeholt</string>
     <string name="home_fetched_some">%1$d abgeholt</string>
+    <string name="home_catch_up">Lade ältere Nachrichten: %1$d von %2$d</string>
     <string name="home_unreachable">Postfach nicht erreichbar</string>
     <string name="link_on_computer">Dein Postfach ist auf einem Computer. Verbinde das andere Gerät dort.</string>
     <string name="move_on_computer">Dein Postfach ist auf einem Computer. Dein neues Handy verbindest du dort.</string>
@@ -635,6 +639,8 @@
     <string name="m9_bar_way_cable_one">Postfach über Kabel · %1$d Station</string>
     <string name="m9_bar_way_wifi">Postfach über WLAN · %1$d Stationen</string>
     <string name="m9_bar_way_wifi_one">Postfach über WLAN · %1$d Station</string>
+    <string name="m9_bar_way_ble">Postfach über Bluetooth · %1$d Stationen</string>
+    <string name="m9_bar_way_ble_one">Postfach über Bluetooth · %1$d Station</string>
     <string name="m9_bar_no_way">Kein Weg zum Postfach</string>
     <string name="m9_bar_radio">Funk · %1$d Stationen</string>
     <string name="m9_bar_radio_one">Funk · %1$d Station</string>
@@ -642,4 +648,6 @@
     <string name="m9_bar_cable_one">Kabel · %1$d Station</string>
     <string name="m9_bar_wifi">WLAN · %1$d Stationen</string>
     <string name="m9_bar_wifi_one">WLAN · %1$d Station</string>
+    <string name="m9_bar_ble">Bluetooth · %1$d Stationen</string>
+    <string name="m9_bar_ble_one">Bluetooth · %1$d Station</string>
 </resources>

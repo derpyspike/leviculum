@@ -144,7 +144,7 @@ pub fn entries(address: [u8; 16], arrival: Arrival, n: u32, seq: u64) -> Vec<Ent
 /// image does not fold.
 pub fn is_bench(entry: &Entry) -> bool {
     match entry.kind {
-        KIND_RECEIVED => {
+        kind if loquax::home::is_received(kind) => {
             entry.packed.get(SIGNED) == Some(&SIGNATURE[..])
                 || entry.packed.get(SOURCE) == Some(&BENCH_PEER[..])
         }
@@ -158,7 +158,7 @@ pub fn is_bench(entry: &Entry) -> bool {
 /// text starts with [`WORDS`]. A sender's signature is never all zero,
 /// so a real message is never taken for one.
 pub fn is_unflagged(entry: &Entry) -> bool {
-    if entry.kind != KIND_RECEIVED
+    if !loquax::home::is_received(entry.kind)
         || entry
             .packed
             .get(SIGNED)
@@ -200,7 +200,7 @@ impl Forgetting {
         if !bench && !unflagged {
             return false;
         }
-        if entry.kind == KIND_RECEIVED {
+        if loquax::home::is_received(entry.kind) {
             if let Ok(message) = Message::unpack(&entry.packed, None, None, DeliveryMethod::Direct)
             {
                 self.ids.insert(message.message_id);

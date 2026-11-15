@@ -11,15 +11,20 @@
 //! its census and restores its store (1476): nothing flushes until the
 //! UI's first redraw, which replaces it.
 //!
-//! The logo is one asset, [`LOGO`]: `loquax-m9/assets/splash-logo.rgba`,
-//! written by `loquax-android/scripts/render-icon.py` from the same
-//! geometry as every other picture of the jackdaw, so the next logo
-//! replaces this one at the script's next run. Raw RGBA, 8 bits a channel,
-//! not premultiplied, [`LOGO_PX`] square, row by row: the board has no PNG
-//! decoder, and the alpha lets the picture lie on whatever the ground is.
+//! The logo is one asset, [`LOGO`]: `loquax-m9/assets/splash-head.1bpp`,
+//! Nessa's head drawn for this panel (1690) — one bit a pixel, rows in
+//! order, the leftmost pixel of a byte in its high bit, set where the
+//! drawing is ink. A bit a pixel is what the drawing is: it is hand-made
+//! line art for the panel's black, not a scaled copy of the colour icon,
+//! whose cream muzzle and dark nose threshold into a bear's snout. It also
+//! costs 1,568 B of flash where the jackdaw's RGBA cost 50,176.
+//! `scripts/nessa-render.py` writes it from
+//! `loquax-m9/assets/splash-head.svg`; `just nessa-check` holds the tree to
+//! it. The bit is drawn in the theme's ink on the theme's ground, so the
+//! splash is the colour the UI then draws over it.
 
 use embedded_graphics::mono_font::MonoTextStyle;
-use embedded_graphics::pixelcolor::{Rgb565, Rgb888};
+use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
 use embedded_graphics::text::{Alignment, Baseline, Text, TextStyleBuilder};
 use mousefood::ColorTheme;
@@ -30,10 +35,13 @@ use crate::frame::{Frame, HEIGHT, WIDTH};
 /// The logo's side in panel pixels.
 pub const LOGO_PX: u32 = 112;
 
-/// The logo, raw RGBA (see the module's head).
-pub const LOGO: &[u8] = include_bytes!("../assets/splash-logo.rgba");
+/// The logo, one bit a pixel (see the module's head).
+pub const LOGO: &[u8] = include_bytes!("../assets/splash-head.1bpp");
 
-const _: () = assert!(LOGO.len() == (LOGO_PX * LOGO_PX * 4) as usize);
+const _: () = assert!(LOGO.len() == (LOGO_PX * LOGO_PX / 8) as usize);
+
+/// The bytes one row of the logo takes: a bit a pixel, packed.
+const ROW_BYTES: usize = (LOGO_PX / 8) as usize;
 
 /// The words under the logo, one line: the suite's name and the app's
 /// (Lew, 2026-11-07). Sixteen cells of the atlas are 160 of the panel's
@@ -60,26 +68,19 @@ fn theme() -> (Rgb565, Rgb565) {
     (theme.background.into(), theme.foreground.into())
 }
 
-/// `over` laid on `ground` at coverage `alpha` out of 255.
-fn blend(over: u8, ground: u8, alpha: u8) -> u8 {
-    let (o, g, a) = (u32::from(over), u32::from(ground), u32::from(alpha));
-    ((o * a + g * (255 - a) + 127) / 255) as u8
-}
-
 /// The splash, drawn into the whole of `frame`.
 pub fn draw(frame: &mut Frame) {
     let (ground, ink) = theme();
-    let ground888 = Rgb888::from(ground);
     let _ = frame.clear(ground);
     let at = logo_at();
-    let pixels = LOGO.chunks_exact(4).enumerate().map(|(i, px)| {
-        let colour = Rgb888::new(
-            blend(px[0], ground888.r(), px[3]),
-            blend(px[1], ground888.g(), px[3]),
-            blend(px[2], ground888.b(), px[3]),
-        );
-        let (x, y) = (i as u32 % LOGO_PX, i as u32 / LOGO_PX);
-        Pixel(at + Point::new(x as i32, y as i32), Rgb565::from(colour))
+    let pixels = LOGO.iter().enumerate().flat_map(move |(i, byte)| {
+        let (row, column) = (i / ROW_BYTES, (i % ROW_BYTES) * 8);
+        (0..8)
+            .filter(move |&bit| byte & (0x80 >> bit) != 0)
+            .map(move |bit| {
+                let (x, y) = ((column + bit) as i32, row as i32);
+                Pixel(at + Point::new(x, y), ink)
+            })
     });
     let _ = frame.draw_iter(pixels);
     let font = crate::font::atlas();
@@ -161,10 +162,23 @@ mod tests {
         assert!(WORD.len() as u32 * u32::from(CELL_PX.0) <= WIDTH);
     }
 
+    /// The logo's bit at `(x, y)`, read the way [`draw`] reads it.
+    fn bit(x: u32, y: u32) -> bool {
+        LOGO[y as usize * ROW_BYTES + (x / 8) as usize] & (0x80 >> (x % 8)) != 0
+    }
+
     #[test]
-    fn a_transparent_pixel_is_the_ground_and_an_opaque_one_itself() {
-        assert_eq!(blend(200, 10, 0), 10);
-        assert_eq!(blend(200, 10, 255), 200);
-        assert_eq!(blend(255, 0, 128), 128);
+    fn the_ink_sits_inside_the_drawing_and_the_margins_carry_none() {
+        // The drawing keeps a black margin all round. A stride or a row
+        // order off by one smears the ink into it, and the panel would
+        // show that before any golden did.
+        for x in 0..LOGO_PX {
+            assert!(!bit(x, 0) && !bit(x, LOGO_PX - 1), "row of column {x}");
+        }
+        for y in 0..LOGO_PX {
+            assert!(!bit(0, y) && !bit(LOGO_PX - 1, y), "row {y}");
+        }
+        assert!(bit(56, 34), "the forehead is fur");
+        assert!(!bit(39, 52), "the eye is a hole in it");
     }
 }

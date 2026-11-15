@@ -1737,16 +1737,18 @@ fn the_firmware_still_emits_the_dial_refused_line() {
          leviculum-nrf/ble-tx/src/admission.rs; parse_dial_refused above still \
          expects `{FORMAT}`"
     );
-    let columba = nrf_source("ble/columba.rs");
+    // The refusal helper lives in the shared session module since 1715
+    // (leviculum-ble-link), one copy for both firmware families.
+    let session = tree_source("leviculum-nrf/ble-link/src", "session.rs");
     let body = body_after(
-        &columba,
-        "ble/columba.rs",
-        "fn note_dial_refused(",
+        &session,
+        "../ble-link/src/session.rs",
+        "pub fn note_dial_refused(",
         "the refusal helper",
     );
     assert!(
         body.contains(r#""[BLE ] ""#) && body.contains("DialRefusedLine {"),
-        "leviculum-nrf/src/ble/columba.rs::note_dial_refused no longer writes \
+        "leviculum-ble-link/src/session.rs::note_dial_refused no longer writes \
          DialRefusedLine under the `[BLE ] ` tag"
     );
     let lnsd = leviculum_std::event_log::EVENT_CATALOG

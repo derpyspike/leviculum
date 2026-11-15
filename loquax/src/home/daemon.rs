@@ -766,9 +766,14 @@ pub async fn run(options: DaemonOptions) -> Result<(), String> {
                                 schedule.on(SyncEvent::Start, now_ms());
                             }
                         }
-                        OutboxEvent::Packed { message_id, packed, arrived } => {
-                            let Ok(new) = archive(&mut store, &message_id, &packed, archive_cap_bytes)
-                            else {
+                        OutboxEvent::Packed { message_id, packed, arrived, verified } => {
+                            let Ok(new) = archive_received(
+                                &mut store,
+                                &message_id,
+                                &packed,
+                                verified,
+                                archive_cap_bytes,
+                            ) else {
                                 // Not archived, so not proven: the sender
                                 // tries again, or propagates.
                                 continue;
@@ -800,6 +805,11 @@ pub async fn run(options: DaemonOptions) -> Result<(), String> {
                                 }
                                 learn_invited_key(&node, &packed);
                             }
+                        }
+                        // A sender's key came after its message (1744):
+                        // the archive keeps the verdict for the boards.
+                        OutboxEvent::Verified { message_id, valid: true, .. } => {
+                            vouch(&mut store, &message_id);
                         }
                         OutboxEvent::PnSelected { destination, .. } => {
                             selected_pn = Some(destination);
@@ -2022,6 +2032,36 @@ fn archive_name(store: &mut Store, peer: [u8; 16], name: &str, cap: u64) -> Opti
     }
 }
 
+/// Keep one received message in the archive ([`archive`]) with the home's
+/// verdict on its signature (1744): one that verified as it came is
+/// vouched for, so the home's boards draw it as verified.
+fn archive_received(
+    store: &mut Store,
+    message_id: &[u8; 32],
+    packed: &[u8],
+    verified: bool,
+    cap: u64,
+) -> Result<Option<u64>, ()> {
+    let new = archive(store, message_id, packed, cap)?;
+    if verified {
+        vouch(store, message_id);
+    }
+    Ok(new)
+}
+
+/// The home verified the signature of an archived message (1744): its
+/// boards are served it as [`crate::home::KIND_VOUCHED`]. A store that
+/// fails is said, and the board draws the message as unverified.
+fn vouch(store: &mut Store, message_id: &[u8; 32]) {
+    match store.archive_vouch(message_id) {
+        Ok(()) => tracing::info!(
+            "HOME vouched message={}",
+            crate::address::to_hex(message_id)
+        ),
+        Err(error) => tracing::warn!("HOME archive: {error}"),
+    }
+}
+
 /// Keep one received message in the archive: its sequence when it is new,
 /// `None` when the archive held it already, an error when it could not be
 /// kept (said here).
@@ -3114,6 +3154,47 @@ mod tests {
         );
     }
 
+    /// 1744: a message whose signature verified as it came is archived with
+    /// the home's word for it; one whose key came later gets it with its
+    /// verdict ([`vouch`]); a board that asks is served each by that word,
+    /// any other device as it came.
+    #[test]
+    fn the_archive_keeps_the_homes_verdict_for_its_boards() {
+        use crate::home::wire::Fold;
+        use crate::home::{KIND_RECEIVED, KIND_VOUCHED};
+        let home = tempfile::tempdir().expect("home");
+        let mut store = Store::open_in(home.path(), US).expect("open");
+        let kinds = |store: &Store, fold| -> Vec<u8> {
+            store
+                .archive_since_folded(0, usize::MAX, fold)
+                .expect("page")
+                .entries
+                .iter()
+                .map(|entry| entry.kind)
+                .collect()
+        };
+        archive_received(&mut store, &[1; 32], &[1; 120], true, u64::MAX).expect("verified");
+        archive_received(&mut store, &[2; 32], &[2; 120], false, u64::MAX).expect("unheard");
+        assert_eq!(
+            kinds(&store, Fold::BoardVouched),
+            [KIND_VOUCHED, KIND_RECEIVED]
+        );
+        vouch(&mut store, &[2; 32]);
+        assert_eq!(
+            kinds(&store, Fold::BoardVouched),
+            [KIND_VOUCHED, KIND_VOUCHED]
+        );
+        assert_eq!(kinds(&store, Fold::Board), [KIND_RECEIVED, KIND_RECEIVED]);
+        assert_eq!(kinds(&store, Fold::All), [KIND_RECEIVED, KIND_RECEIVED]);
+        // Archived again (a second copy of the same message): one entry,
+        // still vouched for.
+        archive_received(&mut store, &[1; 32], &[1; 120], false, u64::MAX).expect("again");
+        assert_eq!(
+            kinds(&store, Fold::BoardVouched),
+            [KIND_VOUCHED, KIND_VOUCHED]
+        );
+    }
+
     /// A peer's names are capped to its newest: a rename replaces the entry
     /// before it, and the relations at start come from the archive.
     #[test]
@@ -3235,6 +3316,7 @@ mod tests {
             message_id: original.message_id,
             packed: packed.clone(),
             arrived: crate::outbox::Arrived::Direct,
+            verified: true,
         };
         let mut engine = GroupEngine {
             hosted: hosted.clone(),
@@ -3378,6 +3460,7 @@ mod tests {
                 message_id: original.message_id,
                 packed: original.pack(),
                 arrived: crate::outbox::Arrived::Direct,
+                verified: true,
             }]),
             outgoing: Outgoing::new(Policy::default()),
             selected_pn: None,
@@ -3526,6 +3609,7 @@ mod tests {
                 message_id: original.message_id,
                 packed: original.pack(),
                 arrived: crate::outbox::Arrived::Direct,
+                verified: true,
             }]),
             outgoing: Outgoing::new(Policy::default()),
             selected_pn: Some(PN),
@@ -3679,6 +3763,7 @@ mod tests {
                 message_id: original.message_id,
                 packed: original.pack(),
                 arrived: crate::outbox::Arrived::Direct,
+                verified: true,
             }]),
             outgoing: Outgoing::new(Policy::default()),
             selected_pn: Some(PN),
@@ -3861,6 +3946,7 @@ mod tests {
                 message_id: original.message_id,
                 packed: original.pack(),
                 arrived: crate::outbox::Arrived::Direct,
+                verified: true,
             }]),
             outgoing: Outgoing::new(Policy::default()),
             selected_pn: None,
@@ -4078,6 +4164,7 @@ mod tests {
                 message_id: original.message_id,
                 packed: original.pack(),
                 arrived: crate::outbox::Arrived::Direct,
+                verified: true,
             }]),
             outgoing: Outgoing::new(Policy::default()),
             selected_pn: None,
@@ -4237,6 +4324,7 @@ mod tests {
                 message_id: original.message_id,
                 packed: original.pack(),
                 arrived: crate::outbox::Arrived::Direct,
+                verified: true,
             }]),
             outgoing: Outgoing::new(Policy::default()),
             selected_pn: Some(PN),

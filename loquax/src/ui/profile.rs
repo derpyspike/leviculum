@@ -485,6 +485,96 @@ mod tests {
         );
     }
 
+    /// 1697: while a catch-up runs, the mailbox's state line counts it
+    /// from the pull's own numbers; the pull's end clears it, and a
+    /// mailbox that stopped answering mid-sync says the words it always
+    /// had, in the same place.
+    #[test]
+    fn a_catch_up_counts_in_the_mailboxs_state_line_and_goes_with_the_pulls_end() {
+        use crate::ui::tests::Field;
+        use crate::ui::{update, UiEvent};
+        let mut model = UiModel::<Field>::new(&[]);
+        model.home_client = true;
+        model.profile.mailbox = Mailbox::Away {
+            name: Some(String::from("Lews Rechner")),
+            rung: None,
+            word: None,
+        };
+        let state = |model: &UiModel<Field>, lang| {
+            mailbox_words(&model.profile.mailbox)
+                .1
+                .map(|text| text.resolve(lang))
+        };
+        update(
+            &mut model,
+            UiEvent::PullProgress {
+                done: 343,
+                total: 5646,
+            },
+        );
+        assert_eq!(
+            state(&model, Lang::De).as_deref(),
+            Some("Lade ältere Nachrichten: 343 von 5646")
+        );
+        assert_eq!(
+            state(&model, Lang::En).as_deref(),
+            Some("Loading older messages: 343 of 5646")
+        );
+        // A facts refresh mid-sync (the shell rebuilds them from the
+        // link) does not stomp the count; one that says unreachable wins.
+        let facts = |word| {
+            UiEvent::ProfileFacts(Box::new(ProfileFacts {
+                mailbox: Mailbox::Away {
+                    name: Some(String::from("Lews Rechner")),
+                    rung: None,
+                    word,
+                },
+                ..ProfileFacts::default()
+            }))
+        };
+        update(&mut model, facts(Some(Word::Connected)));
+        assert_eq!(
+            state(&model, Lang::De).as_deref(),
+            Some("Lade ältere Nachrichten: 343 von 5646")
+        );
+        // Settled: the line is gone.
+        update(&mut model, UiEvent::FetchDone(Ok(0)));
+        assert_eq!(state(&model, Lang::De), None);
+        // A mailbox that stops answering mid-sync: the existing words.
+        update(
+            &mut model,
+            UiEvent::PullProgress {
+                done: 10,
+                total: 5646,
+            },
+        );
+        update(
+            &mut model,
+            UiEvent::FetchDone(Err(String::from("no route"))),
+        );
+        assert_eq!(
+            state(&model, Lang::De).as_deref(),
+            Some("Postfach nicht erreichbar")
+        );
+        // A failure with no catch-up running leaves the word alone.
+        model.profile.mailbox = Mailbox::Away {
+            name: None,
+            rung: None,
+            word: Some(Word::Connected),
+        };
+        update(
+            &mut model,
+            UiEvent::FetchDone(Err(String::from("still no"))),
+        );
+        assert!(matches!(
+            &model.profile.mailbox,
+            Mailbox::Away {
+                word: Some(Word::Connected),
+                ..
+            }
+        ));
+    }
+
     #[test]
     fn an_address_reads_in_groups_of_four() {
         let address: [u8; 16] = core::array::from_fn(|i| i as u8 * 17);

@@ -618,9 +618,14 @@ impl Engine {
                 // that did not verify here had no key to be checked against.
                 let held =
                     (!verified).then(|| (message.message_id, message.source_hash, message.pack()));
-                let packed = self
-                    .hands_out_packed
-                    .then(|| (message.message_id, message.pack(), message.method.into()));
+                let packed = self.hands_out_packed.then(|| {
+                    (
+                        message.message_id,
+                        message.pack(),
+                        message.method.into(),
+                        verified,
+                    )
+                });
                 let propagated = (message.method == DeliveryMethod::Propagated)
                     .then_some((message.message_id, message.source_hash));
                 self.emit(OutboxEvent::Received {
@@ -643,11 +648,12 @@ impl Engine {
                         packed,
                     });
                 }
-                if let Some((message_id, packed, arrived)) = packed {
+                if let Some((message_id, packed, arrived, verified)) = packed {
                     self.emit(OutboxEvent::Packed {
                         message_id,
                         packed,
                         arrived,
+                        verified,
                     });
                 }
             }

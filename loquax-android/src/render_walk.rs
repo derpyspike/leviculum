@@ -66,6 +66,10 @@
 //!   above the gesture's start.
 //! - [`VIEW_KEPT`]: a device rotation and back leaves the centre and zoom
 //!   where they were.
+//! - [`VIEW_ONLY_BY_INPUT`] (1819): a frame asked with no input shows the
+//!   view the last input left, bit for bit: every settle's frames, a
+//!   gesture's rest asked again for [`REST_HOLD_MS`] of held clock, and
+//!   the rotation's `MapView` made anew, which asks without a view.
 //!
 //! Host only: nothing of this is in the app.
 
@@ -383,6 +387,13 @@ pub fn bare_paper(moving: &PaperMask, rest: &PaperMask) -> Verdict {
         ),
     )
 }
+
+pub const VIEW_ONLY_BY_INPUT: &str = "view_only_by_input";
+
+/// Held-clock milliseconds a gesture's rest view is asked again with no
+/// input (1819): two minutes, past the window's minute beat that set the
+/// start view again on the desktop of 057b65e07.
+pub const REST_HOLD_MS: u64 = 120_000;
 
 /// Pixels the fitted disk's centre or radius may move between a
 /// gesture's frames at one zoom: the rim's smoothing, nothing a person
@@ -780,6 +791,37 @@ pub fn globe_disk_centred(now: (f64, f64, f64), reference: (f64, f64, f64)) -> V
 /// pinch focus is from it in this frame, screen pixels.
 pub fn zoom_keeps_the_place(off: f64, note: String) -> Verdict {
     Verdict::at_most(ZOOM_KEEPS_THE_PLACE, off, PLACE_MAX_PX, note)
+}
+
+/// [`VIEW_ONLY_BY_INPUT`] (1819): of the frames asked with no input after
+/// a view was left at `start` (a settle's, a rest held for
+/// [`REST_HOLD_MS`], a screen made anew after a rotation), how many showed
+/// another view. The view (its centre and its zoom to the thousandth) is
+/// the user's input's alone: a load landing, a clock's beat, a screen
+/// made anew leave it bit for bit, so the limit is none.
+pub fn view_only_by_input(
+    start: (u32, u32, u32),
+    shown: &[(u32, u32, u32)],
+    held_ms: u64,
+) -> Verdict {
+    let moved: Vec<&(u32, u32, u32)> = shown.iter().filter(|v| **v != start).collect();
+    Verdict::at_most(
+        VIEW_ONLY_BY_INPUT,
+        moved.len() as f64,
+        0.0,
+        format!(
+            "{} frames at rest over {} ms of held clock from x {} y {} z{}; {}",
+            shown.len(),
+            held_ms,
+            start.0,
+            start.1,
+            start.2,
+            match moved.first() {
+                Some(v) => format!("first moved to x {} y {} z{}", v.0, v.1, v.2),
+                None => "none moved".to_string(),
+            }
+        ),
+    )
 }
 
 /// What a gesture measured: its frame times and the live heap.
@@ -1216,6 +1258,23 @@ mod tests {
         let mut lost = good;
         lost.moved_px = Some(12.0);
         assert!(!verdict(&sequence_rules(&lost), VIEW_KEPT).pass);
+    }
+
+    /// [`VIEW_ONLY_BY_INPUT`] holds a still view and catches one frame
+    /// whose view moved, by its centre or by a thousandth of zoom.
+    #[test]
+    fn a_view_that_moves_at_rest_turns_the_input_rule_red() {
+        let start = (10, 20, 12_000);
+        let still = view_only_by_input(start, &[start; 13], REST_HOLD_MS);
+        assert!(still.pass, "{still:?}");
+        let mut zoomed = [start; 13];
+        zoomed[7].2 -= 1;
+        let v = view_only_by_input(start, &zoomed, REST_HOLD_MS);
+        assert!(!v.pass && v.value == 1.0, "{v:?}");
+        let mut moved = [start; 13];
+        moved[12].0 += 1;
+        assert!(!view_only_by_input(start, &moved, REST_HOLD_MS).pass);
+        assert!(view_only_by_input(start, &[], 0).pass);
     }
 
     /// A disk drawn into space is fitted to within a pixel; the same

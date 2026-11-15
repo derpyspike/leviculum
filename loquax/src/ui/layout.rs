@@ -85,6 +85,10 @@ pub struct Draw<'a> {
     /// The reader's names, for a relayed post's writer (1482); none draws
     /// a relay's posts as they came.
     pub names: Option<&'a crate::names::Names>,
+    /// The groups this device knows (1696): the conversation's peer looked
+    /// up here is what may vouch for a copy's writer, by the chat's own rule
+    /// ([`super::groups::copies_from`], 1702).
+    pub groups: Option<&'a super::groups::Groups>,
     /// The bubbles' bytes under way (1662); none draws no bar.
     pub transfers: Option<&'a super::transfer::Transfers>,
     /// The writer rule (the audits of 1757 and 1787): whose position a
@@ -561,8 +565,14 @@ fn block(
         }
         (false, mark) => {
             // A group's copy without words names its writer as every copy
-            // does here, not with the home's sentence (1388).
-            let body = super::groups::stand_in_line(&message.body, &message.fields)
+            // does here, not with the home's sentence (1388), by the
+            // chat's rule: `groups::copies_from`, an incoming copy from a
+            // joined group, whose writer the roster names
+            // (`groups::copy_writer`, 1702, 1728).
+            let body = draw
+                .groups
+                .and_then(|groups| super::groups::copy_writer(groups, &peer, message))
+                .and_then(|_| super::groups::stand_in_line(&message.body, &message.fields))
                 .or_else(|| {
                     relayed.and_then(|names| {
                         super::relayed::terminal_line(names, draw.lang, conversation, message)

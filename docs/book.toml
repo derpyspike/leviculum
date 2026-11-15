@@ -5,6 +5,11 @@ language = "en"
 src = "src"
 
 [output.html]
+# mdbook has no favicon key: it copies `favicon.svg` and `favicon.png` from
+# the book's source root when they are there, and prefers the SVG. Ours is
+# Nessa with the speech bubble, written there by scripts/nessa-render.py
+# from assets/nessa/nessa-R3-b.svg like every other copy of her (1690).
+
 # Served under https://leviculum.network/docs/ (scripts/build-docs-tarball.sh,
 # packaging/site/lev-unpack-docs). mdbook uses this only for 404.html, whose
 # links and assets must resolve from whatever path the miss happened at.

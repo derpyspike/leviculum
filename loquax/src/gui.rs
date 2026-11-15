@@ -73,7 +73,6 @@ use iced::{
 };
 use tokio::sync::oneshot;
 
-use leviculum_map::mercator::World;
 use leviculum_map::viewport::{ExactView, MILLI};
 use leviculum_mapfill::style::Style;
 use leviculum_ui::input::KeyCode;
@@ -98,8 +97,10 @@ use crate::shell::{self, local_now, Shell, ShellOptions, PUMP_MS, TICK_MS};
 /// The tabs' bar under a narrow window, in logical pixels: what the Browse
 /// tab's page leaves it (1369).
 const COMPACT_TABS: f32 = 72.0;
-/// The map bar's height: a line of 13 pixel text and its padding (1441).
-const MAP_BAR: f32 = 21.0;
+/// The map bar's height (1441): a line of 13 pixel text and its padding,
+/// and since 1699 the More button's hit area, as tall as the window's
+/// other buttons, with its padding.
+const MAP_BAR: f32 = 32.0;
 /// The window's size when it opens.
 const WINDOW: (f32, f32) = (1100.0, 720.0);
 /// From this width on the window is Wide (1218): the rail, the list and
@@ -125,8 +126,12 @@ pub struct Seen {
     /// Whether going to a place loads its region (`map_autoload`).
     pub autoload: bool,
     /// How the map is drawn: the PC's finish in the table `map_theme`
-    /// names, light for `auto`: the map keeps its own toggle (1133).
+    /// names, light for `auto`: the map keeps its own toggle (1133). The
+    /// window turns an `auto` map with its own theme ([`App::map_style`]).
     pub style: Style,
+    /// The config's `map_theme`, `None` when unset: `auto` follows the
+    /// window's theme, which the shell does not know (1699).
+    pub map_flag: Option<leviculum_ui::theme::ThemeFlag>,
     /// The list and the open chat (1218): the scene at
     /// [`LayoutClass::Wide`], which the window draws in the class its
     /// width gives ([`Scene::in_class`]).
@@ -234,6 +239,7 @@ impl Seen {
                 relief: model.map_relief,
                 ..Style::SCREEN.in_theme(map_theme(model.map_theme, None))
             },
+            map_flag: model.map_theme,
             scene: model.scene(LayoutClass::Wide),
             now: model.now,
             receipts: model.reading.on,
@@ -1002,8 +1008,11 @@ struct App {
     /// The core's scheduler over the map's frames (1527): the screen at its
     /// zoom loads first.
     loads: ViewLoads,
-    /// The view the last fit chose: a region landing under it fits again.
-    fitted_at: Option<(World, u32)>,
+    /// The user's input moved the view (1819): from then on the view is
+    /// theirs, and no background change (a `Seen`, a region landing, the
+    /// first pins, a resize) fits it again. Before the first input the
+    /// start fits once, and again only for the first pins.
+    touched: bool,
     frames: Arc<Mutex<Frames>>,
     setup: MapSetup,
     /// The map's view in screen pixels, at the zoom the wheel left.
@@ -1173,6 +1182,7 @@ impl App {
                 maps: 0,
                 autoload: false,
                 style: Style::SCREEN,
+                map_flag: None,
                 scene: empty.clone(),
                 now: None,
                 receipts: true,
@@ -1188,7 +1198,7 @@ impl App {
             },
             asks,
             track_cache: std::cell::RefCell::new(None),
-            fitted_at: None,
+            touched: false,
             frames: Arc::new(Mutex::new(frames)),
             view: ExactView::new(centre, u32::from(setup.zooms.0) * MILLI, 1, 1),
             setup,
@@ -1268,6 +1278,23 @@ impl App {
             true => Theme::Dark,
             false => Theme::Light,
         }
+    }
+
+    /// How the map is drawn in this window (1699): the shell's style,
+    /// whose `auto` is light for want of a screen, turned to the window's
+    /// theme. Unset follows the window as `auto` does, as the phone's
+    /// unset follows the phone (`loquax-android/src/map.rs`, 1730); the
+    /// config's `light` or `dark` still wins.
+    fn map_style(&self) -> Style {
+        let screen = match self.dark() {
+            true => leviculum_ui::theme::Theme::Dark,
+            false => leviculum_ui::theme::Theme::Light,
+        };
+        let flag = self
+            .seen
+            .map_flag
+            .or(Some(leviculum_ui::theme::ThemeFlag::Auto));
+        self.seen.style.in_theme(map_theme(flag, Some(screen)))
     }
 
     /// Hand `event` to the model.
@@ -1961,6 +1988,8 @@ impl App {
     /// pin's conversation, or close the map.
     fn map_cmd(&mut self, cmd: MapCmd) {
         self.settle();
+        // Every map key is the user's: the view is theirs from here.
+        self.touched = true;
         let (w, h) = self.view.size();
         let (cx, cy) = (f64::from(w) / 2.0, f64::from(h) / 2.0);
         let z = i64::from(self.view.zoom_milli());
@@ -2477,21 +2506,20 @@ impl App {
                 if landed {
                     self.regions_changed();
                 }
-                if !self.fitted && self.unmoved() {
+                if self.first_pins() {
                     self.fit();
                 }
             }
             Message::MapSize(size) => {
                 self.settle();
-                // Whether the view sits where the last fit left it BEFORE
-                // the canvas's hold: a resize that moves it (a larger
-                // canvas raises the globe's floor) is no input, so the
-                // first pins must still fit (audit of 1818, condition
-                // 19), and the fit is taken again at the new size.
-                let unmoved = self.unmoved();
+                // The start's fit, once the canvas has a size; after it a
+                // resize only holds the view to the canvas (a larger one
+                // raises the globe's floor), and the first pins still fit
+                // when they come (audit of 1818, condition 19).
+                let start = self.size.is_none();
                 self.size = Some(size);
                 self.hold();
-                if !self.fitted && unmoved {
+                if start || self.first_pins() {
                     self.fit();
                 }
             }
@@ -2523,6 +2551,8 @@ impl App {
             Message::Pointer(pointer) => self.pointer(pointer),
             Message::Select(peer) => {
                 self.settle();
+                // A click on a peer in the list is the user's command.
+                self.touched = true;
                 self.selected = Some(peer);
                 if let Some(pin) = self.seen.pins.iter().find(|p| p.peer == peer) {
                     self.view.centre = pin.at;
@@ -2630,7 +2660,7 @@ impl App {
             view: self.glide.map_or(self.view, |g| g.to),
             margin: (w / MARGIN_PART, h / MARGIN_PART),
             moving: self.moving(),
-            style: self.seen.style,
+            style: self.map_style(),
             scale: self.scale,
             pins,
             tracks: self.tracks(),
@@ -2796,15 +2826,16 @@ impl App {
         Task::batch(tasks)
     }
 
-    /// Whether the view still sits where the last fit left it, or none
-    /// ran yet: only then may a background change — the first pins, a
-    /// resize — fit anew. A `Seen` landing seconds after the wheel
-    /// stomped the view back to the start otherwise (D1, order 1818).
-    fn unmoved(&self) -> bool {
-        match self.fitted_at {
-            None => true,
-            Some(at) => at == (self.view.centre, self.view.zoom_milli()),
-        }
+    /// Whether the first pins are here to be fitted to (1819): no input
+    /// moved the view yet and no fit had pins. The only background fit
+    /// after the start's. With no pins the fit is the newest region's,
+    /// so a fit on every `Seen` moved the view to each region the
+    /// autoload landed and back to the start on every minute's `Seen`
+    /// (the walk of 057b65e07; D1 of order 1818); comparing the view
+    /// with the last fit's (`unmoved`, 1818) still read a user's way
+    /// back onto the start's view as no input.
+    fn first_pins(&self) -> bool {
+        !self.touched && !self.fitted && !self.seen.pins.is_empty()
     }
 
     /// Every pin in view, as `0` does; before the first pins and the
@@ -2817,7 +2848,6 @@ impl App {
         let (centre, zoom) = fit(&self.seen.pins, map::area(size), &self.setup);
         self.view = ExactView::new(centre, u32::from(zoom) * MILLI, size.0, size.1);
         self.hold();
-        self.fitted_at = Some((self.view.centre, self.view.zoom_milli()));
         let first = !self.fitted && !self.seen.pins.is_empty();
         self.fitted = !self.seen.pins.is_empty();
         if first && self.seen.autoload {
@@ -2852,7 +2882,7 @@ impl App {
     }
 
     /// A region landed or left: the regions read again, the setup with
-    /// them, and the fit again when the reader has not moved since it.
+    /// them. The view stays where it is (1819): a load never moves it.
     /// The tiles drop themselves on the new epoch.
     /// The maps directory the window draws from, as the shell's autoload
     /// shares it.
@@ -2866,11 +2896,6 @@ impl App {
             let mut frames = self.frames.lock().unwrap_or_else(PoisonError::into_inner);
             frames.refresh();
             self.setup = map::setup(frames.painter());
-        }
-        if self.fitted_at == Some((self.view.centre, self.view.zoom_milli())) {
-            let selected = self.selected;
-            self.fit();
-            self.selected = selected.or(self.selected);
         }
     }
 
@@ -2933,6 +2958,7 @@ impl App {
                 press.dragging |=
                     (x - press.from.0).abs() >= far || (y - press.from.1).abs() >= far;
                 if press.dragging {
+                    self.touched = true;
                     let (dx, dy) = (press.last.0 - x, press.last.1 - y);
                     // At globe zooms the drag turns the sphere (1762),
                     // holding the ground under the cursor through the
@@ -2968,6 +2994,7 @@ impl App {
                 let (x, y) = at(p);
                 let now = Instant::now();
                 self.wheel = Some(now);
+                self.touched = true;
                 let goal = self
                     .glide
                     .map_or(self.view.zoom_milli(), |g| g.to.zoom_milli());
@@ -3294,16 +3321,42 @@ impl App {
         // (1441): a notice or a credit too long for it wrapped to a second
         // line, which took the map 17 pixels of height while a pan loaded
         // its tiles, and the map's frame was drawn anew at the new size.
-        let line = |words: String| text(words).size(13).wrapping(text::Wrapping::None);
+        let t = self.tokens();
+        let line = |words: String| {
+            text(words)
+                .size(13)
+                .color(chat::colour(t.text))
+                .wrapping(text::Wrapping::None)
+        };
+        // The rail says Chats and Map on a wide window, so the bar does
+        // not say them again (1699); the compact window's tabs are below
+        // it, and it keeps them there as before.
+        let lead: Element<'_, Message> = match self.class() {
+            LayoutClass::Compact => row![
+                pressable(
+                    "Chats".to_string(),
+                    Message::Intent(Intent::Tab(TabId::Chats)),
+                    chat::colour(t.text),
+                    Color::TRANSPARENT,
+                    chat::colour(t.selected_row),
+                )
+                .padding([2, 6]),
+                // "Map", or "Map · This week" when the tracks' window is
+                // not the default (1419): why older lines show.
+                line(self.seen.track_window.title(self.lang)),
+                line("  ".to_string()),
+            ]
+            .align_y(iced::Alignment::Center)
+            .into(),
+            // Only the window, when it is not the default: why older
+            // lines show.
+            LayoutClass::Wide => match self.seen.track_window.title_word() {
+                Some(word) => line(format!("{}  ", word.text(self.lang))).into(),
+                None => Space::new().into(),
+            },
+        };
         let bar = row![
-            button(text("Chats").size(13))
-                .on_press(Message::Intent(Intent::Tab(TabId::Chats)))
-                .padding([0, 6])
-                .style(button::text),
-            // "Map", or "Map · This week" when the tracks' window is not
-            // the default (1419): why older lines show.
-            line(self.seen.track_window.title(self.lang)),
-            line("  ".to_string()),
+            lead,
             // Always on screen: the region's credit, or the outline's.
             line(credit),
             container(line(
@@ -3322,17 +3375,43 @@ impl App {
                 false => String::new(),
             }),
             // The map's menu (1419): the time window, rarely needed, is
-            // in it and not on the map.
-            button(text(StrId::Menu.text(self.lang)).size(13))
-                .on_press(Message::MapMenu)
-                .padding([0, 6])
-                .style(match self.map_menu {
-                    true => button::primary,
-                    false => button::text,
-                }),
+            // in it and not on the map. Its only door, so a button and
+            // not a word (1699): the window's ink on a ground of its own
+            // with a line round it, as tall as the window's other buttons;
+            // the chosen row's ground while the menu is open.
+            {
+                let (ink, hover) = (chat::colour(t.text), chat::colour(t.bar));
+                let ground = match self.map_menu {
+                    true => over_colour(t.selected_row, t.panel),
+                    false => chat::colour(t.panel),
+                };
+                pressable(
+                    StrId::Menu.text(self.lang).to_string(),
+                    Message::MapMenu,
+                    ink,
+                    ground,
+                    hover,
+                )
+                .padding([5, 16])
+                .style(move |_: &Theme, status| button::Style {
+                    border: iced::border::rounded(8)
+                        .color(chat::colour(t.dim))
+                        .width(1.0),
+                    ..press_style(ink, ground, hover, status)
+                })
+            },
         ]
+        .align_y(iced::Alignment::Center)
         .padding([2, 8])
         .height(MAP_BAR);
+        // The bar on the rail's ground (1699): before, it had none of its
+        // own and showed whatever was drawn under it.
+        let bar = container(bar)
+            .width(Length::Fill)
+            .style(move |_: &Theme| container::Style {
+                background: Some(iced::Background::Color(chat::colour(t.bar))),
+                ..container::Style::default()
+            });
         // The picture is a canvas of its own under the pins' canvas: iced
         // draws a canvas's images above its fills, which would hide the
         // markers. On a canvas it is drawn where the view moved it since
@@ -3399,45 +3478,45 @@ impl App {
             .color(chat::colour(t.text_secondary));
         // The locations list (1430): everyone with a position, over the
         // map's left edge, only on demand.
-        let locations = button(text(StrId::Locations.text(self.lang)).size(13))
-            .on_press(Message::Locations)
+        // A row (1699): the window's ink on the menu's ground, the
+        // chosen one on the selected row's ground as the rail's tab, the
+        // ink the same, so it reads as the others do.
+        let entry = |words: &str, on: Message, chosen: bool| {
+            pressable(
+                words.to_string(),
+                on,
+                chat::colour(t.text),
+                match chosen {
+                    true => over_colour(t.selected_row, t.background),
+                    false => Color::TRANSPARENT,
+                },
+                over_colour(t.selected_row, t.background),
+            )
             .padding([2, 8])
             .width(Length::Fill)
-            .style(button::text);
+        };
+        let locations = entry(StrId::Locations.text(self.lang), Message::Locations, false);
         let choices = TrackWindow::CHOICES
             .iter()
             .fold(column![locations, heading].spacing(2), |list, &w| {
-                let style = match self.seen.track_window == w {
-                    true => button::primary,
-                    false => button::text,
-                };
-                list.push(
-                    button(text(w.label().text(self.lang)).size(13))
-                        .on_press(Message::TrackWindow(w))
-                        .padding([2, 8])
-                        .width(Length::Fill)
-                        .style(style),
-                )
+                list.push(entry(
+                    w.label().text(self.lang),
+                    Message::TrackWindow(w),
+                    self.seen.track_window == w,
+                ))
             })
-            .push(
-                button(text(StrId::FitWindow.text(self.lang)).size(13))
-                    .on_press(Message::Intent(Intent::Map(MapCmd::FitWindow)))
-                    .padding([2, 8])
-                    .width(Length::Fill)
-                    .style(button::text),
-            )
+            .push(entry(
+                StrId::FitWindow.text(self.lang),
+                Message::Intent(Intent::Map(MapCmd::FitWindow)),
+                false,
+            ))
             // The time zone view (1684): one entry that turns it on and
             // off, marked while it is on.
-            .push(
-                button(text(StrId::TimeZones.text(self.lang)).size(13))
-                    .on_press(Message::TimeZones)
-                    .padding([2, 8])
-                    .width(Length::Fill)
-                    .style(match self.time_zones {
-                        true => button::primary,
-                        false => button::text,
-                    }),
-            )
+            .push(entry(
+                StrId::TimeZones.text(self.lang),
+                Message::TimeZones,
+                self.time_zones,
+            ))
             .width(Length::Fixed(200.0));
         // The background's ground with a line round it, so the menu
         // stands off the map under it.
@@ -3517,11 +3596,17 @@ impl App {
         ]
         .spacing(10)
         .align_y(iced::Alignment::Center);
+        // The actions in the accent, as the window's other links (1699):
+        // they act, and before they were drawn grey like disabled ones.
         let act = |id: StrId, on: Message| {
-            button(text(id.text(self.lang)).size(13))
-                .on_press(on)
-                .padding([2, 10])
-                .style(button::text)
+            pressable(
+                id.text(self.lang).to_string(),
+                on,
+                chat::colour(t.accent),
+                Color::TRANSPARENT,
+                over_colour(t.selected_row, t.background),
+            )
+            .padding([2, 10])
         };
         let actions = match (card.own, card.nearby) {
             (true, _) => row![],
@@ -3578,10 +3663,15 @@ impl App {
                 Some(d) => d.clone(),
                 None => card.age.clone(),
             };
-            let style = match Some(card.peer) == self.selected {
-                true => button::primary,
-                false => button::text,
+            // The selected one on the selected row's ground, as the menu's
+            // chosen row (1699): iced's primary put the window's dark ink
+            // on its blue, and drew both faded before a redraw event.
+            let ground = match Some(card.peer) == self.selected {
+                true => over_colour(t.selected_row, t.background),
+                false => Color::TRANSPARENT,
             };
+            let hover = over_colour(t.selected_row, t.background);
+            let ink = chat::colour(t.text);
             list.push(
                 button(
                     column![
@@ -3593,7 +3683,7 @@ impl App {
                 .on_press(Message::Located(card.peer))
                 .padding([3, 6])
                 .width(Length::Fill)
-                .style(style),
+                .style(move |_: &Theme, status| press_style(ink, ground, hover, status)),
             )
         });
         let body = column![heading, chat::soft(scrollable(rows))]
@@ -3621,6 +3711,51 @@ fn clipped<'a>(words: &str, size: f32, width: f32, ink: Color) -> Element<'a, Me
     .width(Length::Fixed(width))
     .clip(true)
     .into()
+}
+
+/// A button of `words` at 13 pixels (1699): `ink` on `ground`, `hover`'s
+/// ground under the pointer. Its look does not depend on iced's own
+/// styles, which draw a button whose status the widget has not yet set
+/// (a view drawn before its first redraw event, every headless render) as
+/// a disabled one: half its ink and half its ground
+/// (iced_widget 0.14.2 `button.rs`, `status.unwrap_or(Status::Disabled)`).
+/// These buttons always act, so they always look it.
+fn pressable<'a>(
+    words: String,
+    on: Message,
+    ink: Color,
+    ground: Color,
+    hover: Color,
+) -> button::Button<'a, Message> {
+    button(text(words).size(13).color(ink))
+        .on_press(on)
+        .style(move |_: &Theme, status| press_style(ink, ground, hover, status))
+}
+
+/// [`pressable`]'s style: `hover`'s ground under the pointer or a press,
+/// `ground` otherwise, whatever else the status says.
+fn press_style(ink: Color, ground: Color, hover: Color, status: button::Status) -> button::Style {
+    button::Style {
+        background: Some(iced::Background::Color(match status {
+            button::Status::Hovered | button::Status::Pressed => hover,
+            button::Status::Active | button::Status::Disabled => ground,
+        })),
+        text_color: ink,
+        border: iced::border::rounded(6),
+        ..button::Style::default()
+    }
+}
+
+/// The token `argb` laid over the opaque token `ground` by its alpha: a
+/// see-through token as the ground a word is read against.
+fn over_colour(argb: u32, ground: u32) -> Color {
+    let (top, under) = (chat::colour(argb), chat::colour(ground));
+    let a = top.a;
+    Color::from_rgb(
+        a * top.r + (1.0 - a) * under.r,
+        a * top.g + (1.0 - a) * under.g,
+        a * top.b + (1.0 - a) * under.b,
+    )
 }
 
 /// The frame on screen, where the view moved it.
@@ -3712,7 +3847,7 @@ impl canvas::Program<Message> for PictureCanvas<'_> {
         // Only the strips the frame leaves, a pixel into it against the
         // snapped edge, so the ground costs no second pass under the map.
         let [r, g, b] =
-            leviculum_mapfill::frame::rgb888(self.app.seen.style.theme.palette().background);
+            leviculum_mapfill::frame::rgb888(self.app.map_style().theme.palette().background);
         for strip in uncovered(whole, covered) {
             frame.fill_rectangle(strip.position(), strip.size(), Color::from_rgb8(r, g, b));
         }
@@ -3828,9 +3963,19 @@ impl canvas::Program<Message> for MapCanvas<'_> {
                 ((ty + k * f64::from(y)) / s) as f32,
             )
         };
+        // The names' ground and ink follow the map's own table, as the
+        // phone's frame draws them (`screenmap::pin_ink`, 1730).
+        let dark = app.map_style().theme == leviculum_mapfill::style::MapTheme::Dark;
+        let (label_ground, label_ink) = match dark {
+            true => (
+                Color::from_rgb8(0x18, 0x18, 0x18),
+                Color::from_rgb8(0xe6, 0xe6, 0xe6),
+            ),
+            false => (Color::WHITE, Color::from_rgb8(0x10, 0x10, 0x10)),
+        };
         for pin in &shown.placed {
             // A peer with a track in its hue, the name too (1385).
-            let hue = map::pin_hue(&shown.order.tracks, &pin.peer, false)
+            let hue = map::pin_hue(&shown.order.tracks, &pin.peer, dark)
                 .filter(|_| !pin.nearby)
                 .map(|[r, g, b]| Color::from_rgb8(r, g, b));
             let blue = hue.unwrap_or(Color::from_rgb8(0x20, 0x50, 0xc0));
@@ -3882,18 +4027,18 @@ impl canvas::Program<Message> for MapCanvas<'_> {
                 let text_ink = match (pin.stale, hue) {
                     (true, Some(hue)) => hue.scale_alpha(0.55),
                     (false, Some(hue)) => hue,
-                    (true, None) => Color::from_rgba8(0x20, 0x20, 0x20, 0.55),
-                    (false, None) => Color::from_rgb8(0x10, 0x10, 0x10),
+                    (true, None) => label_ink.scale_alpha(0.55),
+                    (false, None) => label_ink,
                 };
                 let at = to(*x, *y);
                 let width = pin.width / scale;
                 let line = map::LABEL * map::LINE;
-                // A light ground under the text, so a name reads on any
-                // street.
+                // A ground under the text, light or dark with the map, so
+                // a name reads on any street.
                 frame.fill_rectangle(
                     Point::new(at.x - 2.0, at.y),
                     Size::new(width + 4.0, line),
-                    Color::from_rgba8(0xff, 0xff, 0xff, 0.75),
+                    label_ground.scale_alpha(0.75),
                 );
                 frame.fill_text(canvas::Text {
                     content: words.clone(),
@@ -3980,6 +4125,7 @@ mod tests {
             maps,
             autoload: false,
             style: Style::SCREEN,
+            map_flag: None,
             scene: crate::shell::Model::new(&[]).scene(LayoutClass::Wide),
             now: None,
             receipts: true,
@@ -4559,22 +4705,18 @@ mod tests {
             Point::new(100.0, 80.0),
             -9_000,
         )));
+        let start = app.view;
         app.settle();
         let moved = app.view;
-        assert_ne!(
-            app.fitted_at,
-            Some((moved.centre, moved.zoom_milli())),
-            "the wheel moved the view off the fit"
-        );
+        assert_ne!(moved, start, "the wheel moved the view");
         // Seconds later a Seen lands, the same state again: nothing the
         // user did may move the view.
         app.apply(Message::Seen(Box::new(florence_seen(Vec::new(), maps))));
         assert_eq!(app.view, moved, "no input, the view stays");
-        // The control: while the view still sits where the last fit left
-        // it, the first pins do fit — the map zooms to the peers.
+        // The control: before any input the first pins do fit — the map
+        // zooms to the peers.
         let mut fresh = window_over_florence(Vec::new(), 12 * MILLI);
-        let (centre, zoom) = fresh.fitted_at.expect("the empty fit");
-        fresh.view = ExactView::new(centre, zoom, 480, 320);
+        let (centre, zoom) = (fresh.view.centre, fresh.view.zoom_milli());
         fresh.apply(Message::Seen(Box::new(florence_seen(
             vec![pin(1, "alice", 43.7752, 11.2640)],
             maps,
@@ -4585,6 +4727,229 @@ mod tests {
             (centre, zoom),
             "the fit went to the pins"
         );
+    }
+
+    /// The committed region `from` (under `leviculum-map/fixtures`)
+    /// written into `dir` and told to `maps`: a region landing as the
+    /// shell's loader lands one.
+    fn land(dir: &std::path::Path, maps: &loquax::picture::Maps, from: &str) {
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../leviculum-map/fixtures")
+            .join(from);
+        let name = from.replace('/', "-");
+        std::fs::copy(fixture, dir.join(name)).expect("the region");
+        maps.changed();
+    }
+
+    /// The window over a maps directory of its own with no region, 480 x
+    /// 320, the first `Seen` applied: the start, before any input.
+    fn window_over_empty(
+        dir: &std::path::Path,
+        asks: Option<Asks>,
+    ) -> (App, loquax::picture::Maps) {
+        let maps = loquax::picture::Maps::new(Some(dir.to_path_buf()));
+        let mut app = App::new(Frames::new(maps.clone()), asks);
+        app.screen = Screen::Map;
+        app.apply(Message::MapSize(Size::new(480.0, 320.0)));
+        let mut seen = florence_seen(Vec::new(), maps.epoch());
+        seen.autoload = app.asks.is_some();
+        app.apply(Message::Seen(Box::new(seen)));
+        (app, maps)
+    }
+
+    /// 1819 (P0), the load-time family: a region that lands never moves
+    /// the view, also before the first input. With no pins the fit is
+    /// the newest region's, so every region the autoload landed fitted
+    /// the view to that region (`regions_changed`, and `fit` on the next
+    /// `Seen`): from z20 over the Adriatic to the screen box's z9, then
+    /// to the next box (walk of 057b65e07, picture 09; the start box
+    /// around 0/0 put the view in the Gulf of Guinea, picture 10).
+    #[test]
+    fn a_region_landing_never_moves_the_view() {
+        let dir = tempfile::tempdir().expect("maps");
+        let (mut app, maps) = window_over_empty(dir.path(), None);
+        let start = app.view;
+        for from in ["firenze.lmr", "berlin/wide.lmr", "morocco/merzouga.lmr"] {
+            land(dir.path(), &maps, from);
+            let mut seen = app.seen.clone();
+            seen.maps = maps.epoch();
+            app.apply(Message::Seen(Box::new(seen)));
+            assert_eq!(app.view, start, "{from} landed and moved the view");
+        }
+        assert_eq!(
+            app.setup.regions.len(),
+            3,
+            "the control: the regions landed"
+        );
+    }
+
+    /// 1819 (P0): the view the user moved stays the user's, also where
+    /// the input brought it back onto the start's view exactly (a key in
+    /// and a key out about the centre). The first pins that come after
+    /// any input fit nothing: `unmoved` compared the view with the last
+    /// fit's and read the user's way back as no input.
+    #[test]
+    fn the_first_pins_after_any_input_fit_nothing() {
+        let dir = tempfile::tempdir().expect("maps");
+        let (mut app, maps) = window_over_empty(dir.path(), None);
+        land(dir.path(), &maps, "firenze.lmr");
+        let start = app.view;
+        let _ = app.update(Message::Intent(Intent::Map(MapCmd::ZoomIn)));
+        assert_ne!(app.view, start, "the control: the key zoomed in");
+        let _ = app.update(Message::Intent(Intent::Map(MapCmd::ZoomOut)));
+        let back = app.view;
+        let mut seen = app.seen.clone();
+        seen.pins = vec![pin(1, "alice", 43.7752, 11.2640)];
+        seen.maps = maps.epoch();
+        app.apply(Message::Seen(Box::new(seen)));
+        assert_eq!(app.view, back, "pins came after input and moved the view");
+    }
+
+    /// 1819 (P0), the acceptance's soak on the window's real path: half
+    /// an hour of held clock with a scripted session, a `Seen` on every
+    /// minute's beat (`Sent::offer` sends one when the minute turns,
+    /// which with no pins re-fitted the view: the 60 s family of the
+    /// walk of 057b65e07, trace 435486 to 1755485, all at 15.49 s past
+    /// the minute), regions landing every few seconds as the autoload
+    /// lands them, the first pins after a while, the canvas sized again.
+    /// The view (centre, zoom, size, turn) changes only in a step that
+    /// is an input or the glide an input started; everything else leaves
+    /// it bit-identical. The wants the view sends the scheduler are the
+    /// view's own, never the start centre's. `VIEW_SOAK_TRACE=<file>`
+    /// writes the session's trace.
+    #[test]
+    fn the_view_moves_only_by_input_over_half_an_hour() {
+        use std::fmt::Write as _;
+        let dir = tempfile::tempdir().expect("maps");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut app, maps) = window_over_empty(dir.path(), Some(tx));
+        let base = Instant::now();
+        let mut trace = String::new();
+        let mut changes = 0usize;
+        let mut wants = 0usize;
+        let regions = [
+            "firenze.lmr",
+            "berlin/wide.lmr",
+            "berlin/mitte.lmr",
+            "frankfurt/roemer.lmr",
+            "morocco/merzouga.lmr",
+            "morocco/chegaga.lmr",
+        ];
+        let mut landed = 0usize;
+        let step_ms = 500u64;
+        for i in 0..(30 * 60 * 1000 / step_ms) {
+            let t = i * step_ms;
+            let now = base + Duration::from_millis(t);
+            let before = app.view;
+            // The session's input: at rest for the first two minutes,
+            // then the wheel over a place, ten notches in; at 20 min a
+            // drag; at 25 min a key in and a key out.
+            let input = match t {
+                120_000..=124_500 if t.is_multiple_of(500) => {
+                    app.apply(Message::Pointer(Pointer::Wheel(
+                        Point::new(300.0, 120.0),
+                        1_000,
+                    )));
+                    Some("wheel")
+                }
+                1_200_000 => {
+                    app.apply(Message::Pointer(Pointer::Down(Point::new(200.0, 200.0))));
+                    app.apply(Message::Pointer(Pointer::Move(Point::new(260.0, 180.0))));
+                    app.apply(Message::Pointer(Pointer::Up));
+                    Some("drag")
+                }
+                1_500_000 => {
+                    let _ = app.update(Message::Intent(Intent::Map(MapCmd::ZoomIn)));
+                    let _ = app.update(Message::Intent(Intent::Map(MapCmd::ZoomOut)));
+                    Some("keys")
+                }
+                _ => None,
+            };
+            // The glide the wheel started runs on the held clock.
+            let gliding = app.glide.is_some();
+            app.apply(Message::Frame(now));
+            // The background: the minute's beat, the regions every 6 s
+            // from 40 s and again from 3 min, the first pins at 10 min,
+            // the canvas sized again every 90 s.
+            let mut background = Vec::new();
+            if t % 60_000 == 15_490 - 15_490 % step_ms {
+                background.push("beat");
+            }
+            let lands = (40_000..76_000).contains(&t) || (180_000..216_000).contains(&t);
+            if lands && t.is_multiple_of(6_000) {
+                land(dir.path(), &maps, regions[landed % regions.len()]);
+                landed += 1;
+                background.push("region");
+            }
+            if t == 600_000 {
+                background.push("pins");
+            }
+            for what in &background {
+                let mut seen = app.seen.clone();
+                seen.maps = maps.epoch();
+                seen.now = Some(loquax::when::WallTime {
+                    unix_secs: 1_790_000_000 + i64::try_from(t / 1000).unwrap_or(0),
+                    offset_secs: 0,
+                });
+                if *what == "pins" || t >= 600_000 {
+                    seen.pins = vec![pin(1, "alice", 43.7752, 11.2640)];
+                }
+                app.apply(Message::Seen(Box::new(seen)));
+            }
+            if t % 90_000 == 45_000 {
+                app.apply(Message::MapSize(Size::new(480.0, 320.0)));
+                background.push("size");
+            }
+            app.apply(Message::WheelRest);
+            // `WheelRest` reads the wall clock, which this test does not
+            // wait for: the wheel's rest, half a second after its last
+            // notch on the held clock.
+            if t >= 125_000 {
+                app.wheel = None;
+            }
+            // A frame asked: the view shown to the scheduler.
+            app.drive_loads();
+            let screen = app.view.at_zoom(app.view.tile_zoom()).bounds();
+            while let Ok(want) = rx.try_recv() {
+                if let Want::MapView(view_wants) = want {
+                    for w in &view_wants.here {
+                        let b = w.bounds;
+                        let meets = b.west <= screen.east
+                            && screen.west <= b.east
+                            && b.south <= screen.north
+                            && screen.south <= b.north;
+                        assert!(meets, "t={t}: a want {b:?} off the view {screen:?}");
+                        wants += 1;
+                    }
+                }
+            }
+            let after = app.view;
+            if after != before {
+                changes += 1;
+                let _ = writeln!(
+                    trace,
+                    "{t} view z{} centre {},{} by {input:?} gliding={gliding} background={background:?}",
+                    after.zoom_milli(),
+                    after.centre.x,
+                    after.centre.y
+                );
+                assert!(
+                    input.is_some() || gliding,
+                    "t={t}: the view moved with no input: {before:?} -> {after:?} ({background:?})"
+                );
+            } else if !background.is_empty() {
+                let _ = writeln!(trace, "{t} kept z{} {background:?}", after.zoom_milli());
+            }
+        }
+        if let Some(path) = std::env::var_os("VIEW_SOAK_TRACE") {
+            std::fs::write(path, &trace).expect("trace");
+        }
+        assert!(landed >= 12, "the control: {landed} regions landed");
+        assert!(
+            changes >= 3,
+            "the control: the input moved the view ({changes})"
+        );
+        assert!(wants > 0, "the control: the view asked for its area");
     }
 
     /// Audit of 1818 condition 2, the window's half (1833's wording):
@@ -4692,8 +5057,9 @@ mod tests {
     /// Audit of 1818 condition 19: a resize between the empty fit and
     /// the first pins moves the view through `hold()` (a larger canvas
     /// has a deeper globe floor), and no input came. The first pins must
-    /// still fit: the D1 rule (`unmoved`) compares the exact centre and
-    /// zoom, so a hold that moved the view read as the user's move.
+    /// still fit: the D1 rule (`unmoved`) compared the exact centre and
+    /// zoom, so a hold that moved the view read as the user's move; since
+    /// 1819 only input counts (`touched`).
     #[test]
     fn the_first_pins_fit_after_a_resize_moved_the_empty_view() {
         // No region: the empty fit is the world at the globe's floor,
@@ -4704,8 +5070,8 @@ mod tests {
         app.screen = Screen::Map;
         app.apply(Message::MapSize(Size::new(480.0, 320.0)));
         app.apply(Message::Seen(Box::new(florence_seen(Vec::new(), maps))));
-        let empty = app.fitted_at.expect("the empty fit");
         let before = app.view;
+        let empty = (before.centre, before.zoom_milli());
         app.apply(Message::MapSize(Size::new(2400.0, 2400.0)));
         assert_ne!(
             (app.view.centre, app.view.zoom_milli()),
@@ -4718,8 +5084,6 @@ mod tests {
             maps,
         ))));
         assert!(app.fitted, "the first pins fit after the resize");
-        let fitted = app.fitted_at.expect("the pins' fit");
-        assert_eq!((app.view.centre, app.view.zoom_milli()), fitted);
         let (x, y) = app
             .view
             .to_screen(project(LatLon::from_degrees(43.7752, 11.2640)));
@@ -4871,6 +5235,7 @@ mod tests {
             maps: 0,
             autoload: false,
             style: Style::SCREEN,
+            map_flag: None,
             scene: model.scene(LayoutClass::Wide),
             now: model.now,
             receipts: model.reading.on,
@@ -5115,6 +5480,79 @@ mod tests {
         }
         app.apply(Message::Seen(Box::new(seen_of(&model))));
         assert!(app.seen.info.is_none());
+    }
+
+    /// 1684 over 1457: the Info of a received position carries the
+    /// place's facts — the country, its emergency numbers, the driving
+    /// side, the currency, the magnetic declination and the altitude
+    /// above sea level (`telemetry::detail_rows`) — and the window shows
+    /// them under Advanced, as the phone does; pixel for pixel the
+    /// golden, Advanced open.
+    #[test]
+    fn a_received_positions_info_shows_the_places_facts() {
+        use leviculum_lxmf::telemetry::Location;
+        let (w, h) = (900, 560);
+        let mut model = chat_model();
+        let now = at(30, 9, 40);
+        update(
+            &mut model,
+            UiEvent::Engine(OutboxEvent::Received {
+                sent_at: now.unix_secs - 300,
+                message_id: [9; 32],
+                source: ANNA,
+                title: Vec::new(),
+                body: Vec::new(),
+                fields: loquax::ui::position_fields(Location {
+                    latitude_e6: 43_773_100,
+                    longitude_e6: 11_256_000,
+                    altitude_e2: 5_120,
+                    speed_e2: 0,
+                    bearing_e2: 0,
+                    accuracy_e2: 500,
+                    last_update: now.unix_secs - 300,
+                }),
+                verified: true,
+            }),
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(Frames::new(loquax::picture::Maps::default()), Some(tx));
+        app.window = Size::new(w as f32, h as f32);
+        app.apply(Message::Seen(Box::new(seen_of(&model))));
+        let key = app
+            .scene
+            .chat
+            .iter()
+            .flat_map(|c| &c.groups)
+            .flat_map(|g| &g.bubbles)
+            .find(|node| node.bubble.fix.is_some())
+            .map(|node| node.bubble.key)
+            .expect("the position bubble");
+        let _ = app.update(Message::Intent(Intent::Menu(Some(NodeId::Bubble(key)))));
+        let _ = app.update(Message::Intent(Intent::Details));
+        for event in told(&mut rx) {
+            update(&mut model, event);
+        }
+        app.apply(Message::Seen(Box::new(seen_of(&model))));
+        let info = app.seen.info.clone().expect("the Info");
+        let advanced = info.advanced.join("\n");
+        for row in [
+            "  country   Italy",
+            "  driving   on the right",
+            "  currency  EUR",
+            " of true north",
+            " m above sea level",
+        ] {
+            assert!(advanced.contains(row), "{row:?} in {advanced}");
+        }
+        assert!(
+            info.advanced
+                .iter()
+                .any(|r| r.trim_start().starts_with("emergency 112")),
+            "{advanced}"
+        );
+        let _ = app.update(Message::InfoAdvanced);
+        assert!(app.info_advanced);
+        map::tests::same_as("gui-info-position-light.png", &shoot(&app, w, h), w, h);
     }
 
     /// 1457: the list's fetch button raises Pull, which the window tells
@@ -7627,6 +8065,465 @@ mod tests {
         assert_eq!(moved, 0, "rail pixels the map's picture changed");
     }
 
+    /// The colour at `(x, y)` of `rgb`, rows `w` pixels wide.
+    fn colour_at(rgb: &[u8], w: u32, x: u32, y: u32) -> [u8; 3] {
+        let i = ((y * w + x) * 3) as usize;
+        [rgb[i], rgb[i + 1], rgb[i + 2]]
+    }
+
+    /// A token's colour as the renderer writes it.
+    fn rgb_of(argb: u32) -> [u8; 3] {
+        [(argb >> 16) as u8, (argb >> 8) as u8, argb as u8]
+    }
+
+    /// A token's colour laid over `ground` by its alpha.
+    fn over(argb: u32, ground: [u8; 3]) -> [u8; 3] {
+        let a = f64::from((argb >> 24) as u8) / 255.0;
+        let [r, g, b] = rgb_of(argb);
+        let mix =
+            |c: u8, under: u8| (a * f64::from(c) + (1.0 - a) * f64::from(under)).round() as u8;
+        [mix(r, ground[0]), mix(g, ground[1]), mix(b, ground[2])]
+    }
+
+    /// Whether two colours are the same but for the blend's rounding.
+    fn near(a: [u8; 3], b: [u8; 3]) -> bool {
+        a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 1)
+    }
+
+    /// The WCAG contrast of two sRGB colours, 1 to 21.
+    fn contrast(a: [u8; 3], b: [u8; 3]) -> f64 {
+        let lum = |c: [u8; 3]| {
+            let ch = |v: u8| {
+                let v = f64::from(v) / 255.0;
+                match v <= 0.04045 {
+                    true => v / 12.92,
+                    false => ((v + 0.055) / 1.055).powf(2.4),
+                }
+            };
+            0.2126 * ch(c[0]) + 0.7152 * ch(c[1]) + 0.0722 * ch(c[2])
+        };
+        let (x, y) = (lum(a), lum(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    /// What `rect` of `rgb` shows: its ground, the colour most of its
+    /// pixels have, and its ink's contrast against that ground, the
+    /// strongest pixel's; `None` for the ink where all is ground.
+    fn ground_and_ink(rgb: &[u8], w: u32, rect: Rectangle) -> ([u8; 3], Option<f64>) {
+        let mut counts = std::collections::HashMap::new();
+        // The whole pixels inside it, none of its neighbour's edge.
+        let (x0, y0) = (rect.x.ceil() as u32, rect.y.ceil() as u32);
+        let (x1, y1) = (
+            (rect.x + rect.width).floor() as u32,
+            (rect.y + rect.height).floor() as u32,
+        );
+        let pixels: Vec<[u8; 3]> = (y0..y1)
+            .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+            .map(|(x, y)| colour_at(rgb, w, x, y))
+            .collect();
+        for p in &pixels {
+            *counts.entry(*p).or_insert(0u32) += 1;
+        }
+        let ground = counts
+            .into_iter()
+            .max_by_key(|&(_, n)| n)
+            .map(|(c, _)| c)
+            .expect("a rectangle with pixels");
+        let ink = pixels
+            .iter()
+            .filter(|p| **p != ground)
+            .map(|p| contrast(*p, ground))
+            .fold(None, |best: Option<f64>, c| {
+                Some(best.map_or(c, |b| b.max(c)))
+            });
+        (ground, ink)
+    }
+
+    /// The bounds of the node at `path` from the window's layout root.
+    fn node_at(node: &iced::advanced::layout::Node, path: &[usize]) -> Rectangle {
+        use iced::advanced::Layout;
+        let mut at = Layout::new(node);
+        for &i in path {
+            at = at.children().nth(i).expect("the node on the path");
+        }
+        at.bounds()
+    }
+
+    /// The bounds of the children of the node at `path`.
+    fn children_at(node: &iced::advanced::layout::Node, path: &[usize]) -> Vec<Rectangle> {
+        use iced::advanced::Layout;
+        let mut at = Layout::new(node);
+        for &i in path {
+            at = at.children().nth(i).expect("the node on the path");
+        }
+        at.children().map(|c| c.bounds()).collect()
+    }
+
+    /// 1699: the map frame is drawn an eighth past every edge of its
+    /// canvas, and before the fix its picture was not clipped to the
+    /// canvas, so the frame covered the rail and the map's bar beside
+    /// it. Read from the pixels, not a golden: the rail's ground is the
+    /// bar token, the Map tab's pill is the selected row's, every tab's
+    /// icon stands on its own ground in ink, and the map's bottom bar has
+    /// the bar token's ground.
+    #[test]
+    fn the_windows_map_keeps_its_rail_and_its_bar() {
+        let (w, h) = (900, 560);
+        let (mut app, _rx) = florence_two("Anna", None, w, h);
+        app.apply(Message::Select(ANNA));
+        let (shown, _) = run(&mut app);
+        assert!(shown.is_some(), "a frame of Florence at rest");
+        let rgb = shoot(&app, w, h);
+        let t = app.tokens();
+        let bar = rgb_of(t.bar);
+        for (x, y) in [(5, 300), (66, 300), (5, h - 5), (66, 230)] {
+            assert_eq!(
+                colour_at(&rgb, w, x, y),
+                bar,
+                "the rail's ground at {x},{y}"
+            );
+        }
+        let node = leviculum_ui_iced::headless::layout(app.view(), w, h).expect("a renderer");
+        let tabs = children_at(&node, &[0, 0]);
+        assert_eq!(tabs.len(), 3, "Chats, Map, Explore");
+        for (i, tab) in tabs.iter().enumerate() {
+            let ground = match i {
+                1 => over(t.selected_row, bar),
+                _ => bar,
+            };
+            let pill = colour_at(&rgb, w, tab.x as u32 + 4, tab.center_y() as u32);
+            assert!(
+                near(pill, ground),
+                "tab {i}'s ground: {pill:?}, not {ground:?}"
+            );
+            let icon = Rectangle::new(Point::new(tab.x, tab.y + 8.0), Size::new(tab.width, 26.0));
+            let (under, ink) = ground_and_ink(&rgb, w, icon);
+            assert!(
+                near(under, ground),
+                "tab {i}'s icon on {under:?}, not {ground:?}"
+            );
+            assert!(ink.is_some_and(|c| c >= 3.0), "tab {i}'s icon: {ink:?}");
+        }
+        let bottom = node_at(&node, &[1, 1]);
+        let (ground, _) = ground_and_ink(&rgb, w, bottom);
+        assert_eq!(ground, bar, "the map's bottom bar's ground");
+    }
+
+    /// The minimal case of 1699: a picture a canvas draws past its own
+    /// edge stays inside the canvas; the box beside it keeps its ground.
+    #[test]
+    fn a_canvas_picture_stays_inside_its_canvas() {
+        struct Past;
+        impl canvas::Program<Message> for Past {
+            type State = ();
+            fn draw(
+                &self,
+                _state: &(),
+                renderer: &Renderer,
+                _theme: &Theme,
+                bounds: Rectangle,
+                _cursor: mouse::Cursor,
+            ) -> Vec<Geometry> {
+                let mut frame = Frame::new(renderer, bounds.size());
+                let blue: Vec<u8> = [0u8, 0, 255, 255].repeat(100 * 100);
+                frame.draw_image(
+                    Rectangle::new(Point::new(-30.0, -10.0), Size::new(100.0, 100.0)),
+                    canvas::Image::new(Handle::from_rgba(100, 100, blue)),
+                );
+                vec![frame.into_geometry()]
+            }
+        }
+        let side: Element<'_, Message> = container(Space::new())
+            .width(Length::Fixed(40.0))
+            .height(Length::Fill)
+            .style(|_: &Theme| container::Style {
+                background: Some(iced::Background::Color(Color::from_rgb8(255, 0, 0))),
+                ..container::Style::default()
+            })
+            .into();
+        let past = Canvas::new(Past).width(Length::Fill).height(Length::Fill);
+        let (w, h) = (120, 60);
+        let rgb = leviculum_ui_iced::headless::render(
+            row![side, past].into(),
+            &Theme::Light,
+            Color::BLACK,
+            Color::WHITE,
+            w,
+            h,
+        )
+        .expect("a renderer");
+        for y in [0, 30, 59] {
+            assert_eq!(colour_at(&rgb, w, 5, y), [255, 0, 0], "the box at 5,{y}");
+            assert_eq!(colour_at(&rgb, w, 39, y), [255, 0, 0], "the box at 39,{y}");
+            assert_eq!(
+                colour_at(&rgb, w, 41, y),
+                [0, 0, 255],
+                "the picture at 41,{y}"
+            );
+        }
+        // The picture ends 70 pixels into the canvas, at 110.
+        assert_eq!(
+            colour_at(&rgb, w, 115, 30),
+            [255, 255, 255],
+            "past the picture"
+        );
+    }
+
+    /// 1699 3a: `map_theme = auto` follows the window, as the terminal
+    /// follows its own: a dark window asks a dark frame, a light one a
+    /// light frame; `light` stays light in a dark window, and unset
+    /// follows the window as on the phone (1730).
+    #[test]
+    fn an_auto_map_follows_the_windows_theme() {
+        use leviculum_mapfill::style::MapTheme;
+        use leviculum_ui::theme::ThemeFlag;
+        let (w, h) = (900, 560);
+        let (mut app, _rx) = florence_two("Anna", None, w, h);
+        let theme = |app: &App| app.order().expect("an order").style.theme;
+        for (flag, dark, want) in [
+            (Some(ThemeFlag::Auto), true, MapTheme::Dark),
+            (Some(ThemeFlag::Auto), false, MapTheme::Light),
+            // Unset follows the window, as the phone's unset follows the
+            // phone (1730).
+            (None, true, MapTheme::Dark),
+            (None, false, MapTheme::Light),
+            (Some(ThemeFlag::Light), true, MapTheme::Light),
+            (Some(ThemeFlag::Dark), false, MapTheme::Dark),
+        ] {
+            app.seen.map_flag = flag;
+            app.system_dark = dark;
+            assert_eq!(app.dark(), dark);
+            assert_eq!(theme(&app), want, "{flag:?} in a dark window: {dark}");
+        }
+        // The window's toggle turns an auto map with it.
+        app.seen.map_flag = Some(ThemeFlag::Auto);
+        app.system_dark = false;
+        let _ = app.update(Message::Intent(Intent::Theme));
+        assert!(app.dark());
+        assert_eq!(theme(&app), MapTheme::Dark);
+    }
+
+    /// 1730: a pin's name stands on the ground of the map's own theme,
+    /// as the phone's frame draws it (`screenmap::pin_ink`): with
+    /// `map_theme = auto` a dark window grounds the name in 0x18 at 0.75,
+    /// a light one in white at 0.75. Read from the rendered pixels in the
+    /// two pixels of ground left of the name.
+    #[test]
+    fn a_pins_name_stands_on_the_maps_own_ground() {
+        use leviculum_ui::theme::ThemeFlag;
+        let (w, h) = (900, 560);
+        for dark in [false, true] {
+            let (mut app, _rx) = florence_two("Anna", None, w, h);
+            app.seen.map_flag = Some(ThemeFlag::Auto);
+            app.system_dark = dark;
+            let _ = run(&mut app);
+            let rgb = shoot(&app, w, h);
+            let pane = map_pane(&app, w, h);
+            let (shown, tx, ty, k) = app.onto().expect("a frame");
+            let s = f64::from(app.scale);
+            let mut read = 0;
+            for pin in &shown.placed {
+                let Some((x, y, _)) = &pin.label else {
+                    continue;
+                };
+                let lx = ((tx + k * f64::from(*x)) / s) as f32 + pane.x;
+                let ly = ((ty + k * f64::from(*y)) / s) as f32 + pane.y;
+                let line = map::LABEL * map::LINE;
+                let at = colour_at(
+                    &rgb,
+                    w,
+                    (lx - 1.0).floor() as u32,
+                    (ly + line / 2.0).floor() as u32,
+                );
+                // 0.75 of the ground over whatever the map has there.
+                let (lo, hi) = match dark {
+                    true => (0x12u8, 0x12 + 0x40),
+                    false => (0xbf, 0xff),
+                };
+                assert!(
+                    at.iter().all(|c| (lo..=hi).contains(c)),
+                    "the ground left of a name in dark {dark}: {at:?}, want {lo}..={hi}"
+                );
+                read += 1;
+            }
+            assert!(read >= 2, "Anna's and Ben's names: {read}");
+        }
+    }
+
+    /// 1730: More's word reads inside its own border, the rectangle inset
+    /// by 4 px on every side, with the menu open and closed, in both
+    /// themes; and every word of the compact window's bar (Chats, the
+    /// title, More) reads against its ground at 4.5:1 at least.
+    #[test]
+    fn mores_word_and_the_compact_bar_read_against_their_ground() {
+        let (w, h) = (900, 560);
+        for dark in [false, true] {
+            for open in [false, true] {
+                let (mut app, _rx) = florence_two("Anna", None, w, h);
+                app.system_dark = dark;
+                let _ = run(&mut app);
+                if open {
+                    let _ = app.update(Message::MapMenu);
+                }
+                assert_eq!(app.map_menu, open);
+                let rgb = shoot(&app, w, h);
+                let node =
+                    leviculum_ui_iced::headless::layout(app.view(), w, h).expect("a renderer");
+                let words = children_at(&node, &[1, 1, 0]);
+                let more = *words.last().expect("More");
+                let inside = Rectangle::new(
+                    Point::new(more.x + 4.0, more.y + 4.0),
+                    Size::new(more.width - 8.0, more.height - 8.0),
+                );
+                let (_, ink) = ground_and_ink(&rgb, w, inside);
+                assert!(
+                    ink.is_some_and(|c| c >= 4.5),
+                    "More inside its border, dark {dark}, menu {open}: {ink:?} at {inside:?}"
+                );
+            }
+        }
+        let (w, h) = (600u32, 700u32);
+        for dark in [false, true] {
+            let (mut app, _rx) = chat_window();
+            app.system_dark = dark;
+            app.window = Size::new(w as f32, h as f32);
+            let _ = app.update(Message::Intent(Intent::ShowMap { peer: None }));
+            assert_eq!(app.screen, Screen::Map);
+            assert_eq!(app.class(), LayoutClass::Compact);
+            let rgb = shoot(&app, w, h);
+            let node = leviculum_ui_iced::headless::layout(app.view(), w, h).expect("a renderer");
+            // The bar's row: the lead (Chats, the title, a gap), the
+            // credit, the notices, the zoom, More last.
+            let bar = children_at(&node, &[0, 1, 0]);
+            let lead = children_at(&node, &[0, 1, 0, 0]);
+            let words = [
+                ("Chats", lead[0]),
+                ("the title", lead[1]),
+                ("More", *bar.last().expect("More")),
+            ];
+            for (what, word) in words {
+                let (_, ink) = ground_and_ink(&rgb, w, word);
+                assert!(
+                    ink.is_some_and(|c| c >= 4.5),
+                    "{what} on the compact bar, dark {dark}: {ink:?} at {word:?}"
+                );
+            }
+        }
+    }
+
+    /// 1699 3b, 3c, 3e: every word of the map's bottom bar, every row of
+    /// its menu (the chosen one too) and every action of the pin card is
+    /// read against its own ground at 4.5:1 at least, measured from the
+    /// rendered pixels, in both themes; More is a button with its own
+    /// ground and a hit area like the window's other buttons, not a word.
+    #[test]
+    fn the_maps_words_read_against_their_ground() {
+        let (w, h) = (900, 560);
+        for dark in [false, true] {
+            let (mut app, _rx) = florence_two("Anna", None, w, h);
+            app.system_dark = dark;
+            app.apply(Message::Select(ANNA));
+            let _ = run(&mut app);
+            let _ = app.update(Message::MapMenu);
+            assert!(app.map_menu);
+            let rgb = shoot(&app, w, h);
+            let node = leviculum_ui_iced::headless::layout(app.view(), w, h).expect("a renderer");
+            let read = |what: &str, rect: Rectangle| {
+                let (_, ink) = ground_and_ink(&rgb, w, rect);
+                if let Some(c) = ink {
+                    assert!(c >= 4.5, "{what} in dark {dark}: {c:.2}:1 at {rect:?}");
+                }
+                ink
+            };
+            let bar = node_at(&node, &[1, 1]);
+            // The bar is its ground's container over the row of words.
+            let words = children_at(&node, &[1, 1, 0]);
+            let inked = words
+                .iter()
+                .filter(|r| r.width >= 1.0)
+                .filter_map(|r| read("a word of the bar", *r))
+                .count();
+            assert!(inked >= 2, "the credit and More at least: {inked}");
+            let more = *words.last().expect("More");
+            let (more_ground, more_ink) = ground_and_ink(&rgb, w, more);
+            assert!(more_ink.is_some(), "More has words");
+            let (bar_ground, _) = ground_and_ink(&rgb, w, bar);
+            assert_ne!(
+                more_ground, bar_ground,
+                "More stands on a ground of its own"
+            );
+            assert!(
+                more.height >= 26.0 && more.width >= 56.0,
+                "More's hit area: {more:?}"
+            );
+            let stack = children_at(&node, &[1, 0, 0]);
+            let menu_path = [1, 0, 0, stack.len() - 1, 0, 0];
+            let rows = children_at(&node, &menu_path);
+            assert!(rows.len() >= 9, "the menu's rows: {}", rows.len());
+            for (i, row) in rows.iter().enumerate() {
+                assert!(
+                    read("a row of the menu", *row).is_some(),
+                    "row {i} has words"
+                );
+            }
+            // The card is the stack's fifth layer since the merge of order
+            // 1824 (master's map stack has one layer more under it).
+            let card = children_at(&node, &[1, 0, 0, 4, 0, 0]);
+            let actions = children_at(&node, &[1, 0, 0, 4, 0, 0, card.len() - 1]);
+            assert_eq!(actions.len(), 3, "Chat, Navigate, Share mine");
+            for action in actions {
+                assert!(read("an action of the card", action).is_some());
+            }
+            // The locations list over the map's left edge, Anna's row
+            // selected: each row's words read on its ground.
+            let _ = app.update(Message::MapMenu);
+            let _ = app.update(Message::Locations);
+            assert!(app.locations);
+            let rgb = shoot(&app, w, h);
+            let node = leviculum_ui_iced::headless::layout(app.view(), w, h).expect("a renderer");
+            let rows = children_at(&node, &[1, 0, 0, 5, 0, 0, 1]);
+            assert_eq!(rows.len(), 1, "the list's scrollable");
+            let rows = children_at(&node, &[1, 0, 0, 5, 0, 0, 1, 0]);
+            assert_eq!(rows.len(), 2, "Anna and Ben");
+            for row in rows {
+                // The name, at the row's top, against the row's ground.
+                let name = Rectangle::new(row.position(), Size::new(row.width, 20.0));
+                let (_, ink) = ground_and_ink(&rgb, w, name);
+                assert!(
+                    ink.is_some_and(|c| c >= 4.5),
+                    "a row of the list in dark {dark}: {ink:?}"
+                );
+            }
+        }
+    }
+
+    /// 1699 3d: on a wide window the rail says Chats and Map, so the
+    /// map's bar does not say them again; on a compact one, whose tabs
+    /// are elsewhere, it keeps them.
+    #[test]
+    fn the_maps_bar_says_chats_and_map_only_when_compact() {
+        for (w, h, said) in [(900u32, 560u32, false), (600, 700, true)] {
+            let (mut app, _rx) = chat_window();
+            app.window = Size::new(w as f32, h as f32);
+            let _ = app.update(Message::Intent(Intent::ShowMap { peer: None }));
+            assert_eq!(app.screen, Screen::Map);
+            let rgb = shoot(&app, w, h);
+            let node = leviculum_ui_iced::headless::layout(app.view(), w, h).expect("a renderer");
+            let bar_path: &[usize] = match app.class() {
+                LayoutClass::Wide => &[1, 1],
+                LayoutClass::Compact => &[0, 1],
+            };
+            let bar = node_at(&node, bar_path);
+            let lead = Rectangle::new(bar.position(), Size::new(110.0, bar.height));
+            let (_, ink) = ground_and_ink(&rgb, w, lead);
+            assert_eq!(
+                ink.is_some(),
+                said,
+                "{w} x {h}: words at the bar's start {ink:?}"
+            );
+        }
+    }
+
     /// A click on a pin selects it and opens its card, a click on the
     /// empty map deselects it and the card goes, a drag keeps it (1430);
     /// the keys step the pins as before.
@@ -7945,7 +8842,8 @@ mod tests {
     fn a_map_half_off_its_frame_shows_its_ground_not_black() {
         let (w, h) = (480u32, 320u32);
         let mut app = window_over_florence(Vec::new(), 16 * MILLI);
-        app.seen.style = Style::SCREEN.in_theme(leviculum_mapfill::style::MapTheme::Dark);
+        // The config's `dark`: unset follows the window, light here (1730).
+        app.seen.map_flag = Some(leviculum_ui::theme::ThemeFlag::Dark);
         let _ = run(&mut app);
         assert!(app.shown.is_some(), "a frame at rest");
         app.view.pan(i32::try_from(w / 2).expect("small"), 0);

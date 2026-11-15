@@ -1059,7 +1059,7 @@ fn a_fitted_pull_asks_the_page_its_link_carries() {
         .home
         .folds
         .iter()
-        .all(|fold| *fold == wire::Fold::Board));
+        .all(|fold| *fold == wire::Fold::BoardVouched));
 
     let mut bench = Bench::on(archive(), 500);
     let record = bench.join();
@@ -1079,6 +1079,94 @@ fn a_fitted_pull_asks_the_page_its_link_carries() {
         Some(Ok(Outcome::Pulled { entries: 30, .. }))
     ));
     assert_eq!(bench.home.asked.len(), 15, "unfitted: the LoRa page");
+}
+
+/// 1744: a received message the home vouched for folds verified, the same
+/// bytes as a plain one unverified: the board checks no signature, the
+/// home's word is the one it reads.
+#[test]
+fn a_message_the_home_vouched_for_folds_verified() {
+    use leviculum_lxmf::{DeliveryMethod, Message};
+    let me = Identity::generate(&mut OsRng);
+    let friend = Identity::generate(&mut OsRng);
+    let address = crate::home::lxmf_address(&me.public_key_bytes()).expect("address");
+    let theirs = crate::home::lxmf_address(&friend.public_key_bytes()).expect("address");
+    let packed = Message::create(
+        address,
+        theirs,
+        &friend,
+        1_762_000_000.0,
+        std::vec::Vec::new(),
+        b"hallo".to_vec(),
+        std::vec::Vec::new(),
+        DeliveryMethod::Direct,
+    )
+    .expect("create")
+    .pack();
+    let verified = |kind| {
+        let entry = wire::Entry {
+            seq: 1,
+            kind,
+            at: 1_762_000_000,
+            packed: packed.clone(),
+        };
+        match fold(&entry, &address) {
+            Some(OutboxEvent::Received {
+                verified, source, ..
+            }) => {
+                assert_eq!(source, theirs);
+                verified
+            }
+            other => panic!("{other:?}"),
+        }
+    };
+    assert!(
+        verified(crate::home::KIND_VOUCHED),
+        "the home's word was not read"
+    );
+    assert!(
+        !verified(KIND_RECEIVED),
+        "a message the home did not vouch for verified"
+    );
+    let entry = wire::Entry {
+        seq: 1,
+        kind: crate::home::KIND_VOUCHED,
+        at: 0,
+        packed: packed.clone(),
+    };
+    assert_eq!(super::rows::wire_peer(&entry), Some(theirs));
+}
+
+/// 1744: the board asks the home's verdicts after its word; a home from
+/// before reads the word and serves the board's fold, every message as it
+/// came; a fourth word this home does not know asks nothing.
+#[test]
+fn the_board_asks_the_homes_verdicts_and_an_older_home_reads_past_them() {
+    use leviculum_lxmf::msgpack;
+    let data = wire::sync_request_folded(5, 412, wire::Fold::BoardVouched);
+    assert_eq!(
+        wire::read_sync_asked(&data),
+        Ok((5, Some(412), wire::Fold::BoardVouched))
+    );
+    // A home before 1744 reads the array's first three and its word.
+    let mut p = 0;
+    assert_eq!(msgpack::array_len(&data, &mut p), Ok(4));
+    assert_eq!(msgpack::read_uint(&data, &mut p), Ok(5));
+    assert_eq!(msgpack::read_uint(&data, &mut p), Ok(412));
+    assert_eq!(msgpack::read_str(&data, &mut p), Ok("board"));
+    let mut unknown = std::vec::Vec::new();
+    msgpack::array(&mut unknown, 4);
+    msgpack::uint(&mut unknown, 5);
+    msgpack::uint(&mut unknown, 412);
+    msgpack::string(&mut unknown, "board");
+    msgpack::string(&mut unknown, "toaster");
+    assert_eq!(
+        wire::read_sync_asked(&unknown),
+        Ok((5, Some(412), wire::Fold::Board))
+    );
+    assert!(wire::Fold::BoardVouched.keeps(crate::home::KIND_VOUCHED, 64));
+    assert!(!wire::Fold::Board.keeps(crate::home::KIND_VOUCHED, 64));
+    assert_eq!(wire::Fold::BoardVouched.word(), Some("board"));
 }
 
 /// 1439: the board's word names exactly the kinds `fold` reads; an entry

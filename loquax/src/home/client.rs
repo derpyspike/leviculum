@@ -992,9 +992,15 @@ pub struct Pull {
     /// store takes them before the cursor passes them.
     pub imported: Vec<Vec<u8>>,
     /// The cursor to save once what came is kept: `None` when nothing came,
-    /// or when the engine did not get through it in time, so the next pull
-    /// asks for the same entries again.
+    /// or when the engine took not even the first chunk in time, so the
+    /// next pull asks for the same entries again. A pull the engine fell
+    /// behind on midway names the last fenced chunk here (1697), so the
+    /// next pull goes on from there instead of starting over.
     pub cursor: Option<u64>,
+    /// Whether the engine got through everything this pull brought: only
+    /// then is a first sync over ([`history_owed`] stays owed on a partial
+    /// pull, whose cursor still moves).
+    pub settled: bool,
 }
 
 impl Pull {
@@ -1014,9 +1020,19 @@ impl Pull {
     }
 }
 
-/// How long a pull waits for the engine to take the entries it was handed:
-/// the engine takes commands every 200 ms.
+/// How long a pull waits for the engine between two signs of life: the
+/// engine takes commands every 200 ms, and while it chews a chunk its
+/// events keep coming. Only this long with no event at all means the
+/// engine stalled; a slow engine that still moves is waited for (1697:
+/// a flat deadline here threw a whole first sync away on a slow device,
+/// and the next pull started over from zero, without end).
 const SETTLE: Duration = Duration::from_secs(5);
+
+/// How many entries go to the engine between two fences (1697): each
+/// fence the engine answers names a cursor the caller may save, so a
+/// first sync of thousands of entries moves forward chunk by chunk
+/// instead of standing at the start until everything settled at once.
+const FENCE_EVERY: usize = 256;
 
 /// One pull into the engine: everything after the saved cursor, handed to
 /// `outbox` in sequence order, a received message as
@@ -1037,17 +1053,56 @@ pub async fn pull_into(
     device: &Identity,
     budget: Duration,
 ) -> Result<Pull, HomeError> {
-    let cursor = load_cursor(home);
-    let pulled = pull(node, public_key, device, cursor, budget).await?;
-    take_in(outbox, cursor, pulled).await
+    pull_into_watching(
+        outbox,
+        node,
+        home,
+        public_key,
+        device,
+        budget,
+        &mut |_, _| {},
+    )
+    .await
 }
 
-/// The engine's half of [`pull_into`]: hand on what came after `cursor`,
-/// fence it, and wait for the fence. Moves no cursor.
+/// [`pull_into`], telling `progress` how far the engine got through what
+/// the pull brought (1697): entries taken in so far of the pull's total,
+/// once before the first chunk and after every fenced one. A first sync
+/// of a big archive runs for minutes, and the screen says where it stands.
+pub async fn pull_into_watching(
+    outbox: &mut impl crate::outbox::Outbox,
+    node: &ReticulumNode,
+    home: &std::path::Path,
+    public_key: &[u8; 64],
+    device: &Identity,
+    budget: Duration,
+    progress: &mut (dyn FnMut(u64, u64) + Send),
+) -> Result<Pull, HomeError> {
+    let cursor = load_cursor(home);
+    let pulled = pull(node, public_key, device, cursor, budget).await?;
+    take_in_watching(outbox, cursor, pulled, progress).await
+}
+
+/// [`take_in_watching`] without a watcher: the tests' form.
+#[cfg(test)]
 async fn take_in(
     outbox: &mut impl crate::outbox::Outbox,
     cursor: u64,
     pulled: Pulled,
+) -> Result<Pull, HomeError> {
+    take_in_watching(outbox, cursor, pulled, &mut |_, _| {}).await
+}
+
+/// The engine's half of [`pull_into`]: hand on what came after `cursor`
+/// in chunks of [`FENCE_EVERY`], fence each chunk, and wait for its
+/// fence. Moves no cursor itself; [`Pull::cursor`] names the last fenced
+/// chunk, which the caller saves once it kept what came, so a stall in
+/// the middle re-pulls only the rest (1697).
+async fn take_in_watching(
+    outbox: &mut impl crate::outbox::Outbox,
+    cursor: u64,
+    pulled: Pulled,
+    progress: &mut (dyn FnMut(u64, u64) + Send),
 ) -> Result<Pull, HomeError> {
     use crate::outbox::{Command, OutboxEvent};
     if pulled.first > cursor.saturating_add(1) && cursor > 0 {
@@ -1058,176 +1113,193 @@ async fn take_in(
         );
     }
     let gone = |gone: crate::outbox::OutboxGone| HomeError::Transfer(gone.to_string());
+    let total = pulled.entries.len();
     let mut pull = Pull {
-        entries: pulled.entries.len(),
+        entries: total,
         ..Pull::default()
     };
     let mut last = cursor;
-    for entry in &pulled.entries {
-        last = last.max(entry.seq);
-        if entry.kind == super::KIND_RECEIVED {
-            outbox
-                .submit(Command::Ingest {
-                    packed: entry.packed.clone(),
-                })
-                .map_err(gone)?;
-            continue;
-        }
-        if entry.kind == super::KIND_MARK {
-            match wire::read_mark(&entry.packed) {
-                Ok(mark) => outbox.submit(Command::HomeMark { mark }).map_err(gone)?,
-                Err(_) => tracing::warn!("HOME pull: entry {} is no mark", entry.seq),
-            }
-            continue;
-        }
-        if entry.kind == super::KIND_PETNAME {
-            match wire::read_petname_entry(&entry.packed) {
-                Ok((destination, petname)) => outbox
-                    .submit(Command::HomePetname {
-                        destination,
-                        petname,
-                        at: entry.at,
-                    })
-                    .map_err(gone)?,
-                Err(_) => tracing::warn!("HOME pull: entry {} is no petname", entry.seq),
-            }
-            continue;
-        }
-        if entry.kind == super::KIND_PEERSTATE {
-            match wire::read_peer_state_entry(&entry.packed) {
-                Ok((destination, state)) => outbox
-                    .submit(Command::HomePeerState {
-                        destination,
-                        state,
-                        at: entry.at,
-                    })
-                    .map_err(gone)?,
-                Err(_) => tracing::warn!("HOME pull: entry {} is no peer state", entry.seq),
-            }
-            continue;
-        }
-        if entry.kind == super::KIND_NAME {
-            match wire::read_name_entry(&entry.packed) {
-                Ok((destination, name)) => {
-                    pull.names.push((destination, name.clone()));
-                    outbox
-                        .submit(Command::HomeName { destination, name })
-                        .map_err(gone)?
-                }
-                Err(_) => tracing::warn!("HOME pull: entry {} is no name", entry.seq),
-            }
-            continue;
-        }
-        if entry.kind == super::KIND_HUB {
-            // A hub the home heard (1599): every device lists it.
-            // Its rooms when the home asked it (1643): the sheet lists
-            // them before this device links to it.
-            match wire::read_hub_entry_rooms(&entry.packed) {
-                Ok((hub, rooms)) => {
-                    let hash = hub.hash;
-                    outbox.submit(Command::HomeHub { hub }).map_err(gone)?;
-                    if let Some(rooms) = rooms {
-                        outbox
-                            .submit(Command::HomeHubRooms { hub: hash, rooms })
-                            .map_err(gone)?;
-                    }
-                }
-                Err(_) => tracing::warn!("HOME pull: entry {} is no hub", entry.seq),
-            }
-            continue;
-        }
-        if entry.kind == super::KIND_IMPORTED {
-            pull.imported.push(entry.packed.clone());
-            continue;
-        }
-        if entry.kind == super::KIND_PN_STATUS {
-            // What the propagation node said of messages the home sent
-            // (1409): every device folds it as one that asked itself.
-            match wire::read_pn_status_entry(&entry.packed) {
-                Ok(answers) => outbox
-                    .submit(Command::HomePnStatus { answers })
-                    .map_err(gone)?,
-                Err(_) => tracing::warn!("HOME pull: entry {} is no pn status", entry.seq),
-            }
-            continue;
-        }
-        if entry.kind == super::KIND_GROUP {
-            // The home's own record of a group it hosts; the owner's copy
-            // came as a received message.
-            continue;
-        }
-        let id = match entry.kind {
-            super::KIND_SENT => leviculum_lxmf::Message::unpack(
-                &entry.packed,
-                None,
-                None,
-                leviculum_lxmf::DeliveryMethod::Direct,
-            )
-            .ok()
-            .map(|message| message.message_id),
-            _ => <[u8; 32]>::try_from(entry.packed.as_slice()).ok(),
-        };
-        let Some(id) = id else {
-            tracing::warn!(
-                "HOME pull: entry {} of kind {} names no message",
-                entry.seq,
-                entry.kind
-            );
-            continue;
-        };
-        if super::sent_word(entry.kind).is_none() {
-            // A kind from a later home node: nothing this client can show.
-            continue;
-        }
-        pull.sent.push((id, entry.kind));
-        if entry.kind == super::KIND_SENT {
-            // The bubble itself, on a device that does not have it yet.
-            outbox
-                .submit(Command::HomeSent {
-                    packed: entry.packed.clone(),
-                })
-                .map_err(gone)?;
-        } else if entry.kind == super::KIND_STALLED {
-            outbox
-                .submit(Command::HomeStalled { message_id: id })
-                .map_err(gone)?;
-        } else if let Some(state) = super::shown_state(entry.kind) {
-            outbox
-                .submit(Command::HomeState {
-                    message_id: id,
-                    state,
-                })
-                .map_err(gone)?;
-        }
-    }
-    if last == cursor {
+    if pulled.entries.is_empty() {
         tracing::info!("HOME pull cursor={cursor} entries=0");
+        pull.settled = true;
         return Ok(pull);
     }
-    outbox
-        .submit(Command::Fence { token: last })
-        .map_err(gone)?;
-    let deadline = tokio::time::Instant::now() + SETTLE;
-    while tokio::time::Instant::now() < deadline {
-        match outbox.try_next_event().map_err(gone)? {
-            Some(OutboxEvent::Fenced { token }) if token == last => {
-                pull.cursor = Some(last);
-                break;
+    progress(0, total as u64);
+    let mut done = 0usize;
+    'chunks: for chunk in pulled.entries.chunks(FENCE_EVERY) {
+        for entry in chunk {
+            last = last.max(entry.seq);
+            if entry.kind == super::KIND_RECEIVED {
+                outbox
+                    .submit(Command::Ingest {
+                        packed: entry.packed.clone(),
+                    })
+                    .map_err(gone)?;
+                continue;
             }
-            Some(event @ OutboxEvent::Received { .. }) => pull.received.push(event),
-            Some(_) => {}
-            None => tokio::time::sleep(Duration::from_millis(20)).await,
+            if entry.kind == super::KIND_MARK {
+                match wire::read_mark(&entry.packed) {
+                    Ok(mark) => outbox.submit(Command::HomeMark { mark }).map_err(gone)?,
+                    Err(_) => tracing::warn!("HOME pull: entry {} is no mark", entry.seq),
+                }
+                continue;
+            }
+            if entry.kind == super::KIND_PETNAME {
+                match wire::read_petname_entry(&entry.packed) {
+                    Ok((destination, petname)) => outbox
+                        .submit(Command::HomePetname {
+                            destination,
+                            petname,
+                            at: entry.at,
+                        })
+                        .map_err(gone)?,
+                    Err(_) => tracing::warn!("HOME pull: entry {} is no petname", entry.seq),
+                }
+                continue;
+            }
+            if entry.kind == super::KIND_PEERSTATE {
+                match wire::read_peer_state_entry(&entry.packed) {
+                    Ok((destination, state)) => outbox
+                        .submit(Command::HomePeerState {
+                            destination,
+                            state,
+                            at: entry.at,
+                        })
+                        .map_err(gone)?,
+                    Err(_) => tracing::warn!("HOME pull: entry {} is no peer state", entry.seq),
+                }
+                continue;
+            }
+            if entry.kind == super::KIND_NAME {
+                match wire::read_name_entry(&entry.packed) {
+                    Ok((destination, name)) => {
+                        pull.names.push((destination, name.clone()));
+                        outbox
+                            .submit(Command::HomeName { destination, name })
+                            .map_err(gone)?
+                    }
+                    Err(_) => tracing::warn!("HOME pull: entry {} is no name", entry.seq),
+                }
+                continue;
+            }
+            if entry.kind == super::KIND_HUB {
+                // A hub the home heard (1599): every device lists it.
+                // Its rooms when the home asked it (1643): the sheet lists
+                // them before this device links to it.
+                match wire::read_hub_entry_rooms(&entry.packed) {
+                    Ok((hub, rooms)) => {
+                        let hash = hub.hash;
+                        outbox.submit(Command::HomeHub { hub }).map_err(gone)?;
+                        if let Some(rooms) = rooms {
+                            outbox
+                                .submit(Command::HomeHubRooms { hub: hash, rooms })
+                                .map_err(gone)?;
+                        }
+                    }
+                    Err(_) => tracing::warn!("HOME pull: entry {} is no hub", entry.seq),
+                }
+                continue;
+            }
+            if entry.kind == super::KIND_IMPORTED {
+                pull.imported.push(entry.packed.clone());
+                continue;
+            }
+            if entry.kind == super::KIND_PN_STATUS {
+                // What the propagation node said of messages the home sent
+                // (1409): every device folds it as one that asked itself.
+                match wire::read_pn_status_entry(&entry.packed) {
+                    Ok(answers) => outbox
+                        .submit(Command::HomePnStatus { answers })
+                        .map_err(gone)?,
+                    Err(_) => tracing::warn!("HOME pull: entry {} is no pn status", entry.seq),
+                }
+                continue;
+            }
+            if entry.kind == super::KIND_GROUP {
+                // The home's own record of a group it hosts; the owner's copy
+                // came as a received message.
+                continue;
+            }
+            let id = match entry.kind {
+                super::KIND_SENT => leviculum_lxmf::Message::unpack(
+                    &entry.packed,
+                    None,
+                    None,
+                    leviculum_lxmf::DeliveryMethod::Direct,
+                )
+                .ok()
+                .map(|message| message.message_id),
+                _ => <[u8; 32]>::try_from(entry.packed.as_slice()).ok(),
+            };
+            let Some(id) = id else {
+                tracing::warn!(
+                    "HOME pull: entry {} of kind {} names no message",
+                    entry.seq,
+                    entry.kind
+                );
+                continue;
+            };
+            if super::sent_word(entry.kind).is_none() {
+                // A kind from a later home node: nothing this client can show.
+                continue;
+            }
+            pull.sent.push((id, entry.kind));
+            if entry.kind == super::KIND_SENT {
+                // The bubble itself, on a device that does not have it yet.
+                outbox
+                    .submit(Command::HomeSent {
+                        packed: entry.packed.clone(),
+                    })
+                    .map_err(gone)?;
+            } else if entry.kind == super::KIND_STALLED {
+                outbox
+                    .submit(Command::HomeStalled { message_id: id })
+                    .map_err(gone)?;
+            } else if let Some(state) = super::shown_state(entry.kind) {
+                outbox
+                    .submit(Command::HomeState {
+                        message_id: id,
+                        state,
+                    })
+                    .map_err(gone)?;
+            }
         }
+        outbox
+            .submit(Command::Fence { token: last })
+            .map_err(gone)?;
+        // Wait for this chunk's fence. Every event is a sign of life and
+        // starts the wait anew: a slow engine that still moves is waited
+        // for, only SETTLE of silence means it stalled, and what was
+        // fenced before the stall stays won (its cursor is named).
+        let mut deadline = tokio::time::Instant::now() + SETTLE;
+        loop {
+            match outbox.try_next_event().map_err(gone)? {
+                Some(OutboxEvent::Fenced { token }) if token == last => {
+                    pull.cursor = Some(last);
+                    break;
+                }
+                Some(event @ OutboxEvent::Received { .. }) => {
+                    pull.received.push(event);
+                    deadline = tokio::time::Instant::now() + SETTLE;
+                }
+                Some(_) => deadline = tokio::time::Instant::now() + SETTLE,
+                None if tokio::time::Instant::now() >= deadline => break 'chunks,
+                None => tokio::time::sleep(Duration::from_millis(20)).await,
+            }
+        }
+        done += chunk.len();
+        progress(done as u64, total as u64);
     }
+    pull.settled = pull.cursor == Some(last);
     tracing::info!(
         "HOME pull cursor={cursor} entries={} messages={} states={} names={} imported={} \
-         through={last} settled={}",
+         through={last} fenced={done} settled={}",
         pull.entries,
         pull.messages(),
         pull.states(),
         pull.names.len(),
         pull.imported.len(),
-        pull.cursor.is_some()
+        pull.settled
     );
     Ok(pull)
 }
@@ -1287,6 +1359,142 @@ mod tests {
     use crate::outbox::fake::FakeOutbox;
     use crate::outbox::{Command, OutboxEvent};
     use leviculum_lxmf::router::MessageState;
+
+    /// An engine that takes a fixed time per command, as a slow device's
+    /// does (1697): each command costs `cost` of the (paused) clock, an
+    /// `Ingest` emits its `Received` once its time passed, and a `Fence`
+    /// answers behind everything before it. After `dies_after` events it
+    /// goes silent for good, like an engine that stalled.
+    struct SlowEngine {
+        queue: std::cell::RefCell<std::collections::VecDeque<(tokio::time::Instant, OutboxEvent)>>,
+        busy_until: core::cell::RefCell<tokio::time::Instant>,
+        cost: Duration,
+        dies_after: usize,
+        handed: usize,
+    }
+
+    impl SlowEngine {
+        fn new(cost: Duration) -> Self {
+            Self::dying(cost, usize::MAX)
+        }
+
+        fn dying(cost: Duration, dies_after: usize) -> Self {
+            Self {
+                queue: std::cell::RefCell::new(std::collections::VecDeque::new()),
+                busy_until: std::cell::RefCell::new(tokio::time::Instant::now()),
+                cost,
+                dies_after,
+                handed: 0,
+            }
+        }
+    }
+
+    impl crate::outbox::Outbox for SlowEngine {
+        fn submit(&self, command: Command) -> Result<(), crate::outbox::OutboxGone> {
+            let mut busy = self.busy_until.borrow_mut();
+            let ready = (*busy).max(tokio::time::Instant::now()) + self.cost;
+            *busy = ready;
+            match command {
+                Command::Ingest { packed } => {
+                    let n = packed.first().copied().unwrap_or(0);
+                    self.queue.borrow_mut().push_back((
+                        ready,
+                        OutboxEvent::Received {
+                            message_id: [n; 32],
+                            source: [7; 16],
+                            title: Vec::new(),
+                            body: packed,
+                            fields: Vec::new(),
+                            verified: true,
+                            sent_at: 0,
+                        },
+                    ));
+                }
+                Command::Fence { token } => self
+                    .queue
+                    .borrow_mut()
+                    .push_back((ready, OutboxEvent::Fenced { token })),
+                _ => {}
+            }
+            Ok(())
+        }
+
+        fn try_next_event(&mut self) -> Result<Option<OutboxEvent>, crate::outbox::OutboxGone> {
+            if self.handed >= self.dies_after {
+                return Ok(None);
+            }
+            let mut queue = self.queue.borrow_mut();
+            match queue.front() {
+                Some((ready, _)) if *ready <= tokio::time::Instant::now() => {
+                    self.handed += 1;
+                    Ok(queue.pop_front().map(|(_, event)| event))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+
+    fn received_entries(n: u64) -> Pulled {
+        Pulled {
+            entries: (1..=n)
+                .map(|seq| entry(seq, super::super::KIND_RECEIVED, vec![seq as u8]))
+                .collect(),
+            first: 1,
+        }
+    }
+
+    /// 1697: a slow device's engine needs longer than one [`SETTLE`] for a
+    /// big first sync, but it moves the whole time. The pull fences chunk
+    /// by chunk, waits while life shows, and the cursor comes out at the
+    /// end. Before the fix a flat five-second deadline threw the whole
+    /// pull away: the cursor stayed at zero, and the next pull fetched the
+    /// same archive again, without end (the clockworkpi's six pulls from
+    /// `cursor=0`, every one `settled=false`).
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_engine_still_settles_a_big_first_sync_chunk_by_chunk() {
+        // 30 ms a message: 600 take 18 s, over three settle windows.
+        let mut outbox = SlowEngine::new(Duration::from_millis(30));
+        let pull = take_in(&mut outbox, 0, received_entries(600))
+            .await
+            .expect("pull");
+        assert_eq!(pull.cursor, Some(600), "the cursor names the whole pull");
+        assert!(pull.settled);
+        assert_eq!(pull.received.len(), 600, "every message was collected");
+    }
+
+    /// An engine that goes silent mid-sync loses only the chunk it was on
+    /// (1697): the fenced chunks' cursor is named, not settled, and the
+    /// next pull goes on from there instead of starting over at zero.
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_engine_keeps_the_chunks_already_fenced() {
+        // The first chunk's 256 messages and its fence come, 43 more
+        // messages come, then silence.
+        let mut outbox = SlowEngine::dying(Duration::from_millis(1), 300);
+        let pull = take_in(&mut outbox, 0, received_entries(600))
+            .await
+            .expect("pull");
+        assert_eq!(
+            pull.cursor,
+            Some(FENCE_EVERY as u64),
+            "the fenced chunk stays won"
+        );
+        assert!(!pull.settled, "the rest is still owed");
+    }
+
+    /// The watcher hears where the sync stands (1697): once before the
+    /// first chunk, then after every fenced one, as entries of the total.
+    #[tokio::test(start_paused = true)]
+    async fn the_watcher_hears_each_fenced_chunk() {
+        let mut outbox = SlowEngine::new(Duration::from_millis(1));
+        let mut heard = Vec::new();
+        let pull = take_in_watching(&mut outbox, 0, received_entries(600), &mut |done, total| {
+            heard.push((done, total))
+        })
+        .await
+        .expect("pull");
+        assert!(pull.settled);
+        assert_eq!(heard, [(0, 600), (256, 600), (512, 600), (600, 600)]);
+    }
 
     fn entry(seq: u64, kind: u8, packed: Vec<u8>) -> Entry {
         Entry {

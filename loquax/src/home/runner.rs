@@ -100,8 +100,13 @@ pub struct PullEnd {
     /// never entries: a pull that brought only names, marks, states or the
     /// user's own sent message brought nothing new (1136).
     pub result: Result<usize, String>,
-    /// For [`settle_pull`].
+    /// For [`settle_pull`]. Moves on a partial pull too (1697): what was
+    /// fenced stays won, and the next pull goes on from it.
     pub cursor: Option<u64>,
+    /// Whether the engine got through everything the pull brought
+    /// ([`super::client::Pull::settled`]): only then is a first sync's
+    /// history over.
+    pub settled: bool,
     /// The imported history rows ([`crate::home::KIND_IMPORTED`]) new to
     /// the store, which the runner wrote there itself: the frontend shows
     /// them with [`show_imported`] when there are any (1159). Not counted in
@@ -120,33 +125,50 @@ pub async fn pull(
     home: &Path,
     budget: Duration,
 ) -> PullEnd {
-    let ended = |result, cursor, imported| PullEnd {
+    pull_watching(outbox, client, home, budget, &mut |_| {}).await
+}
+
+/// [`pull`], telling `progress` how far the engine got through what the
+/// pull brought (1697), as the event the screen folds
+/// ([`UiEvent::PullProgress`]): a first sync of a big archive runs for
+/// minutes, and the bar with the mailbox's state says where it stands.
+pub async fn pull_watching(
+    outbox: &mut impl Outbox,
+    client: &HomeClient,
+    home: &Path,
+    budget: Duration,
+    progress: &mut (dyn FnMut(UiEvent) + Send),
+) -> PullEnd {
+    let ended = |result, cursor, settled, imported| PullEnd {
         result,
         cursor,
+        settled,
         imported,
     };
-    match super::client::pull_into(
+    let mut moved = |done: u64, total: u64| progress(UiEvent::PullProgress { done, total });
+    match super::client::pull_into_watching(
         outbox,
         &client.node,
         home,
         &client.public_key,
         &client.device,
         budget * 2,
+        &mut moved,
     )
     .await
     {
         Ok(pull) => {
             if pull.imported.is_empty() {
-                return ended(Ok(pull.messages()), pull.cursor, 0);
+                return ended(Ok(pull.messages()), pull.cursor, pull.settled, 0);
             }
             // Imported history goes to the store before the cursor may pass
             // it: one that cannot be kept is pulled again next time.
             match keep_imported(home, &client.public_key, &pull.imported) {
-                Ok(new) => ended(Ok(pull.messages()), pull.cursor, new),
-                Err(error) => ended(Err(error), None, 0),
+                Ok(new) => ended(Ok(pull.messages()), pull.cursor, pull.settled, new),
+                Err(error) => ended(Err(error), None, false, 0),
             }
         }
-        Err(error) => ended(Err(error.to_string()), None, 0),
+        Err(error) => ended(Err(error.to_string()), None, false, 0),
     }
 }
 

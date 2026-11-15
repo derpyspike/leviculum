@@ -49,6 +49,17 @@ members = [
     # no host binary links it, only the nRF firmware does, through the
     # `[patch.crates-io]` in leviculum-nrf/Cargo.toml.
     "vendor/nmea0183",
+    # Columba over the TrouBLE host (1480): the ESP32-S3's BLE backend,
+    # generic over the HCI transport. A member so `cargo test --workspace`
+    # compiles the port and runs its host tests; not a default member —
+    # only the ESP firmware links it.
+    "leviculum-trouble",
+    # The patched TrouBLE 0.8.0 it builds on (vendor/trouble-host/
+    # LEVICULUM-PATCH.md). A member for the nmea0183 reason: the patch's
+    # regressions are unit tests in its library, and `cargo test
+    # --workspace` is what runs them. Its upstream hardware suites are
+    # not carried (the patch file's vendoring delta says why).
+    "vendor/trouble-host",
 ]
 
 # leviculum-ffi is a gnu-target cdylib (built via the `build-ffi` alias). It is
@@ -133,6 +144,12 @@ exclude = ["leviculum-nrf", "leviculum-esp", "leviculum-lr11xx", "leviculum-mapf
 # glyph blended in place in tiny-skia's arithmetic without a pipeline,
 # the same bytes tiny-skia writes, held to it by leviculum-ui-iced's
 # `fast_paths` tests.
+# Since 1699 `Renderer::draw` in `src/lib.rs` clips every image, in its
+# images loop, to the image's own clip bounds intersected with the
+# layer's; upstream clipped an image to the layer's bounds alone. That
+# covers `image` widgets as well as a canvas's pictures: the map's frame,
+# drawn an eighth past each edge of its canvas, covered the rail and the
+# bar beside the map before it.
 [patch.crates-io]
 crossterm = { path = "vendor/crossterm" }
 termbg = { path = "vendor/termbg" }
