@@ -262,6 +262,15 @@ final class MapView extends View {
     private float askedX;
     private float askedY;
     /**
+     * The pinch share and the scale when the last request went: with
+     * askedX/Y they say how much of the drag share the frame absorbed, so
+     * place() keeps the drag made since out of a turning globe's pinch
+     * share (order 1883, MapFrame.dragSince).
+     */
+    private float askedPinchX;
+    private float askedPinchY;
+    private float askedScale = 1f;
+    /**
      * The about point and the pan the request carried, the pan in full
      * float precision (the request carries its fraction as thousandths):
      * the ground drawn at (about + pan) of the then-current frame is the
@@ -1115,6 +1124,9 @@ final class MapView extends View {
                 int panY = Math.round(panYf);
                 askedX = offX;
                 askedY = offY;
+                askedPinchX = pinchX;
+                askedPinchY = pinchY;
+                askedScale = scale;
                 askedAboutX = px;
                 askedAboutY = py;
                 askedPanX = panXf;
@@ -1339,7 +1351,14 @@ final class MapView extends View {
             // behind, hundreds of pixels over a fast pinch with frames
             // landing mid-gesture (order 1833).
             float sigma = (float) (scale * a);
-            if (shown.get("held_x_micro") instanceof Number) {
+            // The drag the finger made while this frame rendered: the
+            // next frame's turn, never a slide of this one (order 1883).
+            float dragX = MapFrame.dragSince(offX, pinchX, scale, askedX, askedPinchX, askedScale);
+            float dragY = MapFrame.dragSince(offY, pinchY, scale, askedY, askedPinchY, askedScale);
+            // A pure turn is drawn in place: the held ground anchors only
+            // a frame that answers a zoom (order 1883).
+            boolean turnsOnly = MapFrame.turnsOnly(Core.bool(shown, "turns"), askedScale, scale, zoomMilli, z1);
+            if (!turnsOnly && shown.get("held_x_micro") instanceof Number) {
                 float heldX = Core.num(shown, "held_x_micro") / 1e6f;
                 float heldY = Core.num(shown, "held_y_micro") / 1e6f;
                 float heldOldX = askedAboutX + askedPanX;
@@ -1350,8 +1369,10 @@ final class MapView extends View {
                 offX -= sigma * askedX;
                 offY -= sigma * askedY;
             }
-            pinchX = offX;
-            pinchY = offY;
+            // The pinch share is what is left without that drag: a
+            // turning globe is drawn there, in place under a turn.
+            pinchX = offX - dragX;
+            pinchY = offY - dragY;
             scale = sigma;
             return;
         }
