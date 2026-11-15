@@ -25,6 +25,7 @@
 //! (their bytes on the interface's rx counter, which counts exactly what
 //! the decoder hands on). Red if the
 //! decoder mirrored the reference's state machine.
+#![cfg(feature = "serial")]
 
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};

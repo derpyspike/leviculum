@@ -28,6 +28,7 @@
 //! and this test is the mechanism half of that pair: proof that the
 //! channel route can never produce an ack on such a boot, so the stored
 //! route is not an optimisation but the only answerable one.
+#![cfg(feature = "serial")]
 
 use core::future::Future;
 use core::pin::pin;

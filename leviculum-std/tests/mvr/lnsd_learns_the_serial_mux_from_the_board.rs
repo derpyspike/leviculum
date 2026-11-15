@@ -21,6 +21,7 @@
 //! Red before: with `bring_up` not consulting the report (the 1242 state, mux
 //! off unless configured), the fact-stating board comes back `Silent` and
 //! halted, as `a_plain_line_halts_the_board` shows for 1242.
+#![cfg(feature = "serial")]
 
 use leviculum_core::envelope;
 use leviculum_core::framing::hdlc::{frame, DeframeResult, Deframer};
