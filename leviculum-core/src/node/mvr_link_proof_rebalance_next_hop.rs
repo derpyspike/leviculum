@@ -25,7 +25,7 @@
 //! (`transport.rs::rebalance_path_hops`, terminus adoption in
 //! `node/link_management.rs`) wrote `hops = 1` into the path entry while
 //! `next_hop` still named bravo. `PathEntry::needs_relay()` is
-//! `hops > 1 && next_hop.is_some()` (`leviculum-core/src/storage_types.rs#PathEntry::needs_relay`), so from that
+//! `hops > 1 && next_hop.is_some()` (`storage_types.rs:60`), so from that
 //! moment on the entry claims a direct neighbour: `connect` stops putting a
 //! transport header on the request (`link_management.rs::connect`, the
 //! `needs_relay()` arm) and `send_to_destination` sends it as a final-hop

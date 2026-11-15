@@ -31,7 +31,7 @@
 //! That last one is a deliberate divergence from the daemon. `lnsd` and
 //! Python's `rnsd` register the handler even with an empty
 //! `remote_management_allowed` and consult the list per request
-//! (`leviculum-std/src/config.rs#ReticulumConfig` carries Python's key names and
+//! (`leviculum-std/src/config.rs:88-96` carries Python's key names and
 //! Python's semantics). **A board must not**, and the reason is the
 //! deployment, not the protocol: a daemon sits on a machine with an
 //! operator, a config file and a login, while a board is handed to

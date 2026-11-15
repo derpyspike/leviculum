@@ -58,7 +58,7 @@ wrong value, and it fails silently — see
   — `lxmf-node`, `loquax`, `lnomad`, every `ln*` tool — keeps its own
   known-destination table rather than delegating it, so a peer it has
   used stays recallable for `KNOWN_DEST_USED_LINGER_MS`
-  (`leviculum-core/src/constants.rs#KNOWN_DEST_USED_LINGER_MS`) after the daemon stops
+  (`leviculum-core/src/constants.rs:176`) after the daemon stops
   offering a path to it, instead of being forgotten on the next sweep
   (Codeberg #389).
 - **The config-file format.** `lnsd` parses the same INI-style config
@@ -67,7 +67,7 @@ wrong value, and it fails silently — see
   on are parsed for compatibility — for example `shared_instance_type`
   and `shared_instance_socket` are read and honoured per RNS 1.3.x
   semantics so an existing `rnsd` config works unchanged
-  (`leviculum-std/src/config.rs#ReticulumConfig`).
+  (`leviculum-std/src/config.rs:121-127`).
 
 This drop-in property is a deliberate design goal, not an accident.
 It is also what makes honest A/B testing possible: the test harness
@@ -118,13 +118,13 @@ grounds: an application pinned it, it was used within
 `UNUSED_DESTINATION_LINGER` — 6 minutes
 (`reference/Reticulum/RNS/Identity.py:349-352`, the two timeouts at
 `Transport.py:91-92`). We implement the first two and not the third
-(`leviculum-core/src/memory_storage.rs#MemoryStorage::clean_announce_cache`): our announce cache stores
+(`leviculum-core/src/memory_storage.rs:1466`): our announce cache stores
 the raw announce, not the moment we heard it, so there is no age to
 compare against. The third arm only ever protects a destination nothing
 has asked about, so dropping it a few minutes early costs a path request
 rather than a fact, and clause 3 of the rule is satisfied by the smaller
 resident set. `EmbeddedStorage` goes one further and implements only the
-first (`leviculum-core/src/embedded_storage.rs#EmbeddedStorage::clean_announce_cache`), because a board
+first (`leviculum-core/src/embedded_storage.rs:1113`), because a board
 tracks no use-state at all.
 
 ### Pinned deviation: ingress-control default on dial-out links
@@ -136,7 +136,7 @@ Leviculum defaults it **off** on dial-out point-to-point links —
 `TCPClientInterface`, `BackboneClientInterface`, `UDPInterface`, and an
 `I2PInterface` without `connectable` — and leaves it **on** everywhere
 else, including every listener
-(`ingress_control_default_for_type`, `leviculum-std/src/config.rs#ingress_control_default_for_type`).
+(`ingress_control_default_for_type`, `leviculum-std/src/config.rs:1438`).
 
 Against the rule: the flag decides only whether *we* hold incoming
 announces, so no wire byte and no behaviour a peer observes changes
@@ -166,11 +166,11 @@ e.r.p. limit for the configured frequency**: 22 dBm — the ceiling of
 the SX1262 high-power PA and the highest value an RNode-firmware board
 takes before clamping — or the sub-band's limit from ERC 70-03,
 whichever is lower (`rnode::resolve_tx_power` and
-`DEFAULT_TX_POWER_DBM`, `leviculum-core/src/rnode.rs#DEFAULT_TX_POWER_DBM`, capped by
+`DEFAULT_TX_POWER_DBM`, `leviculum-core/src/rnode.rs:788`, capped by
 `lawful_erp_dbm`, applied in both interface builders and in the
 `SerialInterface` LNode path). The standalone LNode firmware's
 compiled profile carries the uncapped board maximum
-(`RadioConfig::eu_medium`, `leviculum-nrf/src/lora.rs#RadioConfig::eu_medium`), which
+(`RadioConfig::eu_medium`, `leviculum-nrf/src/lora.rs:641-680`), which
 is the capped resolution's own result at that profile's 869.463 MHz.
 
 Against the rule: TX power is a local modem setting. It is never on the
@@ -188,7 +188,7 @@ whose maximum is lower answers by clamping and echoing the clamped
 value (`RNode_Firmware/RNode_Firmware.ino:861-879` — 17 dBm on an
 SX127x, `PA_MAX_OUTPUT` on an SX1262 with an external PA). Confirmation
 is otherwise an exact match on both stacks (ours at
-`leviculum-std/src/interfaces/rnode.rs#validate_radio_config`, the reference at
+`leviculum-std/src/interfaces/rnode.rs:2091`, the reference at
 `RNodeInterface.py:677`), so the derived default — and only the derived
 default — accepts a confirmation *below* what it asked for, logs the
 board's ceiling, and runs. An explicitly configured power keeps the
@@ -318,13 +318,13 @@ The reference behaves this way on every forwarding path:
 Loop-freedom never came from interface suppression. It comes from
 transport_id addressing (only the addressed relay processes a Type2
 transport packet), the hop-count limit, and packet-hash dedup —
-`has_packet_hash` (`leviculum-core/src/transport.rs#Transport::process_incoming_inner`) drops a
+`has_packet_hash` (`leviculum-core/src/transport.rs:4717`) drops a
 repeated copy, `add_packet_hash`
-(`leviculum-core/src/transport.rs#Transport::process_incoming_inner`) records it.
+(`leviculum-core/src/transport.rs:4764`) records it.
 
 The forwarding decision lives in the media-agnostic core
 (`forward_on_interface_from`,
-`leviculum-core/src/transport.rs#Transport::forward_on_interface_from`). Whether the relayed echo
+`leviculum-core/src/transport.rs:9983`). Whether the relayed echo
 needs TX spacing on a half-duplex channel is the interface's business
 — see [Interface Isolation](interface-isolation.md).
 

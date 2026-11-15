@@ -29,17 +29,17 @@ the slices.
 ## 1. What exists
 
 Today a region is cut on the device: the autoload (`Loader`,
-`loquax/src/mapload.rs#Loader`) reads a PMTiles archive by HTTP range
+`loquax/src/mapload.rs:293`) reads a PMTiles archive by HTTP range
 requests — the newest Protomaps daily build (`PROTOMAPS_BUILDS`,
-`leviculum-mapcut/src/http.rs#PROTOMAPS_BUILDS`) or the archive `map_source` names
-(`Source::of`, `loquax/src/mapload.rs#Source::of`) — and writes an `.lmr`
+`leviculum-mapcut/src/http.rs:17`) or the archive `map_source` names
+(`Source::of`, `loquax/src/mapload.rs:146`) — and writes an `.lmr`
 region into the maps directory. One request's whole budget is 60 s
-(`TIMEOUT`, `leviculum-mapcut/src/http.rs#TIMEOUT`); a load fetches at most
-64 MB of archive (`LOAD_CAP`, `loquax/src/mapload.rs#LOAD_CAP`); a failed box
+(`TIMEOUT`, `leviculum-mapcut/src/http.rs:21`); a load fetches at most
+64 MB of archive (`LOAD_CAP`, `loquax/src/mapload.rs:77`); a failed box
 backs off 30 s doubling to an hour (`BACKOFF_FIRST_MS`,
-`loquax/src/mapload.rs#BACKOFF_FIRST_MS`); autoloaded regions are a cache under
-500 MB by default (`CACHE_DEFAULT_MB`, `loquax/src/mapload.rs#CACHE_DEFAULT_MB`),
-evicted least recently viewed (`evict`, `loquax/src/mapload.rs#evict`).
+`loquax/src/mapload.rs:81`); autoloaded regions are a cache under
+500 MB by default (`CACHE_DEFAULT_MB`, `loquax/src/mapload.rs:79`),
+evicted least recently viewed (`evict`, `loquax/src/mapload.rs:953`).
 None of the Reticulum side below is built.
 
 The sizes, measured 2026-11-01 from the Protomaps build of 2026-10-28
@@ -54,9 +54,9 @@ Internet material, full stop.
 bzip2 (36 % smaller), `berlin/mitte.lmr` 181,205 → 119,970 (34 %) —
 the flat geometry inside is not pre-compressed the way gzipped MVT
 tiles are. So the Resource's own compression (`bz2_compress`,
-`leviculum-core/src/resource/compression.rs#bz2_compress`), automatic below
+`leviculum-core/src/resource/compression.rs:18`), automatic below
 64 MB (`RESOURCE_AUTO_COMPRESS_MAX`,
-`leviculum-core/src/constants.rs#RESOURCE_AUTO_COMPRESS_MAX`), carries every piece, and
+`leviculum-core/src/constants.rs:467`), carries every piece, and
 pieces stay plain on disk and on the HTTP side: the transfer
 compresses, the artefact does not.
 
@@ -64,7 +64,7 @@ compresses, the artefact does not.
 
 **The destination is `lev.maps`**: our own `lev` app name, as the
 position beacon already uses it (`APP_NAME`,
-`leviculum-lxmf/src/lev_position.rs#APP_NAME`), a SINGLE destination,
+`leviculum-lxmf/src/lev_position.rs:66`), a SINGLE destination,
 announced on the propagation node's cadence. Not an `lxmf.*` name —
 this is not LXMF traffic. Every Loquax holds a `lev.maps` destination
 of its own as well (rule 2); what tells the server apart is the
@@ -96,8 +96,8 @@ signed and are never shared.
 
 **The request API**, over a Link on `lev.maps`, with handlers
 registered per path (`register_request_handler`,
-`leviculum-core/src/node/mod.rs#NodeCore::register_request_handler`) and every answer a Resource
-(`send_response_resource`, `leviculum-core/src/node/mod.rs#NodeCore::send_response_resource`):
+`leviculum-core/src/node/mod.rs:1548`) and every answer a Resource
+(`send_response_resource`, `leviculum-core/src/node/mod.rs:2030`):
 
 - `/index` — no request data; the signed index as msgpack: per piece
   its id, bounds, zoom range, bytes and SHA-256 hash; the server's
@@ -160,7 +160,7 @@ every frontend only renders its progress.
 5. **Nothing automatic over LoRa.** About 400 bytes a second before
    duty cycle; 100 KB is over four minutes of airtime on a shared
    channel. A radio-class link — the class the board's page fit
-   already discriminates (`LinkClass`, `loquax/src/home/board.rs#LinkClass`)
+   already discriminates (`LinkClass`, `loquax/src/home/board.rs:115`)
    — never starts a map fetch by itself, not even a tiny one. A power
    user may allow it in the settings, off by default, with a fixed
    ceiling per fetch.
@@ -185,7 +185,7 @@ A piece over LoRa occupies the channel, and the pacing lives where
 [interface isolation](interface-isolation.md) puts it: the LoRa
 interface's airtime rules space the parts, and the Resource's part
 size follows the link's class and MTU, as the board's sync pages
-already do (`Executor::fitted`, `loquax/src/home/board.rs#fn:Executor::fitted`; the
+already do (`Executor::fitted`, `loquax/src/home/board.rs:223`; the
 1439 table in [The handheld messenger](handheld-messenger.md)). No
 map-awareness enters transport. And map pieces are link traffic
 between one device and one holder, the server or a neighbour, never

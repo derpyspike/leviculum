@@ -234,7 +234,7 @@ mod tests {
     #[test]
     fn the_bindings_version_is_seven_zero_one_not_seven_zero_zero() {
         // SD_VERSION = 7000001 in the nrf-softdevice-s140 bindings. Misread
-        // as 7.0.0 in docs/ble5-broadcast-protocol3-spike.md#environment-probed.
+        // as 7.0.0 in docs/ble5-broadcast-protocol3-spike.md:39.
         assert_eq!(Version::from_word(7_000_001), Version::new(7, 0, 1));
     }
 

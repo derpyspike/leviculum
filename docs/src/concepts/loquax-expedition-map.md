@@ -65,7 +65,7 @@ the tree on 2026-11-11; a statement the tree does not support carries
 Today the far zooms show Natural Earth land and country borders only
 (`leviculum-map/data/ne_50m_land.lwo`, 159,357 bytes, and the boundary
 lines `leviculum-map/data/ne_50m_admin_0_boundary_lines_land.lwl`,
-49,512 bytes), up to z10 (`MAX_ZOOM` (`leviculum-map/src/outline.rs#MAX_ZOOM`)).
+49,512 bytes), up to z10 (`MAX_ZOOM` (`leviculum-map/src/outline.rs:111`)).
 
 **Decided:** more Natural Earth on z0 to z9, public domain, version
 5.1.2, baked by the existing script (`scripts/bake-world-outline.py`).
@@ -105,8 +105,8 @@ not in the tree). Total about 166 KB beside today's 209 KB.
   the draw scratch in RAM is not measured.
 - Desktop users never see Protomaps' own Natural Earth zooms, since the
   autoload starts at z7 at the earliest: nothing is asked for below
-  `MIN_ZOOM` (`loquax/src/ui/viewload.rs#MIN_ZOOM`), z10, and a view loads
-  `VIEW_BELOW` (`loquax/src/ui/map.rs#VIEW_BELOW`), three zooms above its own.
+  `MIN_ZOOM` (`loquax/src/ui/viewload.rs:57`), z10, and a view loads
+  `VIEW_BELOW` (`loquax/src/ui/map.rs:127`), three zooms above its own.
   The world view is ours alone.
 
 ### The world as a globe, flowing into Mercator
@@ -848,7 +848,7 @@ Additions (decided):
      itself, and it is the path Columba and Sideband members share
      through 1307g. The copy keeps the writer: the group's copy carries
      every field of the original but the custom ones verbatim, the
-     telemetry field included (`copy` (`loquax/src/home/group.rs#copy`),
+     telemetry field included (`copy` (`loquax/src/home/group.rs:1397`),
      the field loop at lines 1407 to 1426), and its LXMF source is the
      group, so the reader books a plain telemetry field under the writer
      `lev.group_copy` names, not under the group the copy came from
@@ -872,7 +872,7 @@ Additions (decided):
      pin moves for the relay or for the member — the member's own
      signed message is the only word about the member's position
      outside a vouched group copy. The rule is one function in LXMF,
-     `Lev::reading_writer` (`copy_writer`, `loquax/src/ui.rs#copy_writer`, the
+     `Lev::reading_writer` (`copy_writer`, `loquax/src/ui.rs:7069`, the
      audits of 1757, 1787 and 1808), which the node helper's telemetry
      report and the liveness judgement go through too (rule 5: one
      definition of "this message names a copy's writer", so filing and
@@ -953,7 +953,7 @@ Additions (decided):
      in the conversation, marked as unverified, as LXMF shows it. The
      gate is one place, the single entry where a received message's
      position and group claims become state (`apply_message_claims`,
-     `loquax/src/ui.rs#apply_message_claims`; the restore has the same gate at its own
+     `loquax/src/ui.rs:6775`; the restore has the same gate at its own
      entry, `learn_groups`); nothing behind the gate knows about
      verification. The held message is kept as received with its
      verdict pending: when the verdict says valid, its claims are
@@ -982,7 +982,7 @@ Additions (decided):
      named writer, for the source and for the group address — a group
      is not a place and gets no pin of its own. Nothing of it shows in
      the pin, the store, the bubble's position line or the Info
-     (`Writers`, `loquax/src/ui.rs#Writers`); each refused reading is said
+     (`Writers`, `loquax/src/ui.rs:7091`); each refused reading is said
      in one structured `POSITION_REFUSED reason=…` event in `tui.log`,
      nothing on screen — exactly one, where the judging happens: at
      arrival for a verified message, at the valid verdict for a held
@@ -1096,7 +1096,7 @@ It becomes a precondition, not a follow-up: loading by looking, signed
 pieces, shading and points of interest all need pieces cut and served
 by our own server. Today there is none in operation: the default source
 is the Protomaps daily build (`PROTOMAPS_BUILDS`
-(`leviculum-mapcut/src/http.rs#PROTOMAPS_BUILDS`)), which that project discourages as
+(`leviculum-mapcut/src/http.rs:17`)), which that project discourages as
 hotlinking ([Loquax: the map](loquax-map.md), "The autoload"); `lnmapd`
 is designed ([map data over Reticulum](loquax-map-over-reticulum.md))
 and not built, and `leviculum.network/maps/` answered 404 on

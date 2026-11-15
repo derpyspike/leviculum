@@ -17,9 +17,9 @@
 # rnsd_interop suites spawn the vendored Python at RUN time, so a missing
 # submodule costs those tests and nothing else. It does cost them: measured
 # 2026-09-22, exactly one test in that suite skips itself when the vendored
-# RNS is absent (`leviculum-std/tests/rnsd_interop/reverse_rpc_interop_tests.rs#test_lns_rpc_query_against_python_rnsd`, guarded by its own
+# RNS is absent (`reverse_rpc_interop_tests.rs:128`, guarded by its own
 # `python_rns_available()`); every other test there FAILS, because
-# `leviculum-std/tests/rnsd_interop/harness.rs#ensure_reticulum_submodule` hands a missing `reference/Reticulum` on to
+# `harness.rs:136` hands a missing `reference/Reticulum` on to
 # scripts/test_daemon.py and lets it error out. That is a deliberate
 # difference in kind, not a second bug: a failing test is a test that ran and
 # said something, while a compile-time `include_str!` into `reference/` takes

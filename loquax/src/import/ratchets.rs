@@ -23,7 +23,7 @@
 //!   first. Both values are msgpack `bin`. The signature is the identity's
 //!   Ed25519 over `packed`.
 //! - **Ratspeak** (rsReticulum's `RatchetRing::save`, `rns-identity`
-//!   `leviculum-core/src/ratchet.rs#tests`): `identities/<identity hash>/ratchets/ring`, the
+//!   `ratchet.rs:129`): `identities/<identity hash>/ratchets/ring`, the
 //!   struct `{signature: Vec<u8>, ratchets: Vec<u8>, last_rotation: f64}`
 //!   through `rmp_serde::to_vec`, which writes a struct as an ARRAY of its
 //!   fields in order and a `Vec<u8>` as an array of integers, not `bin`;

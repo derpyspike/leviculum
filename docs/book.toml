@@ -4,15 +4,6 @@ authors = ["Lew Palm"]
 language = "en"
 src = "src"
 
-# A name citation (`<path>#<Item>`) becomes a link to the item's current
-# lines; the page stores no line number (scripts/mdbook-citations.py).
-# mdbook runs the command from the directory it was started in, so the book
-# is built from the repository root (`mdbook build docs`, as
-# scripts/build-docs-tarball.sh does); `just book-citation-links` checks the
-# links landed.
-[preprocessor.citations]
-command = "python3 scripts/mdbook-citations.py"
-
 [output.html]
 # mdbook has no favicon key: it copies `favicon.svg` and `favicon.png` from
 # the book's source root when they are there, and prefers the SVG. Ours is

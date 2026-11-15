@@ -183,7 +183,7 @@ fn measure(case: &Case, linked_base: u32) -> Reading {
     }
 
     // All conn_cfgs land under tag 1, the tag nrf-softdevice opens every
-    // connection on (APP_CONN_CFG_TAG, lnflash/src/softdevice.rs#Version::from_str).
+    // connection on (APP_CONN_CFG_TAG, softdevice.rs:68).
     let conn_gap = raw::ble_cfg_t {
         conn_cfg: raw::ble_conn_cfg_t {
             conn_cfg_tag: 1,

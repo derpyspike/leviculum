@@ -14,7 +14,7 @@
 //! worked prints nothing at all; errors go to stderr. It never starts a
 //! Reticulum stack of its own, and it never claims a message was delivered.
 //!
-//! Exit codes extend `lnomad`'s convention (`lnomad/src/main.rs#<ColorFlag as From>`, `:188`,
+//! Exit codes extend `lnomad`'s convention (`lnomad/src/main.rs:174`, `:188`,
 //! `:222`): 0 success, 1 operational failure, 2 argument error — plus 3,
 //! "a propagation node holds the message", which `--via auto`'s fallback and
 //! `--via propagated` return so a script can tell the two successes apart

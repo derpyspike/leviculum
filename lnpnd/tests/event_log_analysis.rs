@@ -54,7 +54,7 @@ fn the_analysis_reads_what_the_writer_writes() {
     let dir = tempfile::tempdir().expect("temp dir");
     let log = dir.path().join("events.log");
     // Before the first event: the sink is a process-wide OnceLock filled on
-    // first use (`event_log_file`, leviculum-std/src/event_log.rs#EVENT_CATALOG).
+    // first use (`event_log_file`, leviculum-std/src/event_log.rs:668-684).
     std::env::set_var("LEVICULUM_EVENT_LOG", &log);
     std::env::set_var("LEVICULUM_EVENT_NODE", "analysis");
     leviculum_std::event_log::install_global_subscriber("debug");

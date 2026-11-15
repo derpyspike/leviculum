@@ -42,7 +42,7 @@ the vocabulary it is expressed in; the firmware supplies the I/O and the
 clock and does what it is told. `leviculum-rx-arming` is the sharpest
 example already in the tree — it holds the order in which the receive
 path re-arms and hands a frame up, and `src/sx1262.rs` supplies a chip to
-drive (`stand_down_for_rx`, `leviculum-nrf/src/sx1262.rs#Sx1262::disarm_rx_for_rx`).
+drive (`stand_down_for_rx`, `leviculum-nrf/src/sx1262.rs:984`).
 
 ## Where the seam runs today
 
@@ -55,10 +55,10 @@ every one of them pure and host-testable: `screen`, `sd-policy`,
 `battery-scale`, `settle-budget`, `drop-budget`, `heap-budget`,
 `node-name`, `sync-batch`, `upload-proof`, `mute-lease`, `qspi-selftest`,
 `qspi-boot`, `usb-policy`, `time-floor`, `motion`, `feedback`,
-`serial-mux`, `rtc-pcf8563` and `firmware` (`members`, `leviculum-nrf/Cargo.toml#workspace.members`). Before
+`serial-mux`, `rtc-pcf8563` and `firmware` (`members`, `leviculum-nrf/Cargo.toml:14`). Before
 `heap-budget` and `node-name` joined them they carried **806 host assertions across 61 test targets** —
 measured 2026-09-25 by the host-triple lines of `lint-nrf`
-(`Justfile#lint-nrf`). `mute-lease` is the
+(`Justfile:80`). `mute-lease` is the
 newest and the rule's own case twice over: the deadline on a host's
 transmit mute (Codeberg #410) is a decision that would have been
 unassertable inside `src/lora.rs`, and the `LORA_MUTE_EXPIRED` line that
@@ -162,9 +162,9 @@ this page singled out first, in the order it is cheap to move:
 
 **1. The `[TRANSPORT]` ticker.** The re-arm deliberately drops missed
 periods so a busy loop does not then emit a burst of catch-up lines
-(`poll`, `leviculum-nrf/src/transport_stats.rs#Ticker::poll`), and the line is
+(`poll`, `leviculum-nrf/src/transport_stats.rs:108`), and the line is
 byte-exact because capture consumers grep it (`log`,
-`leviculum-nrf/src/transport_stats.rs#Ticker::poll`). `leviculum-log-line` already
+`leviculum-nrf/src/transport_stats.rs:116`). `leviculum-log-line` already
 exists for the second half.
 
 See also: [Checks that are actually

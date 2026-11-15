@@ -580,7 +580,7 @@ fn a_receiver_cancelled_resource_is_rejected_and_keeps_the_link() {
 /// the router a `ResourceFailed` it built itself, so it keeps passing no
 /// matter which error the core puts on the RCL arm. `273c259b` moved that arm
 /// from `ResourceError::Cancelled` to `ResourceError::RejectedByRemote`
-/// (`leviculum-core/src/node/link_management.rs#NodeCore::handle_resource_cancel`) and both LXMF
+/// (`leviculum-core/src/node/link_management.rs:3791-3801`) and both LXMF
 /// sites still matched on `Cancelled`, so a receiver's rejection silently
 /// became a retryable failure: the link was torn down and the message went
 /// back to `Outbound` to be sent to a peer that had just refused it.
@@ -757,7 +757,7 @@ fn deferring_config() -> RouterConfig {
 }
 
 /// Assert the message really takes the Resource path. `DIRECT_PACKET_MDU` is
-/// 431 bytes (`leviculum-lxmf/src/node.rs#DIRECT_PACKET_MDU`), so the 2 KiB bodies below are
+/// 431 bytes (`leviculum-lxmf/src/node.rs:40`), so the 2 KiB bodies below are
 /// `DirectResource` — but only an assertion says so.
 fn assert_direct_resource(message: &Message) {
     assert_eq!(

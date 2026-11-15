@@ -56,7 +56,7 @@ sudo usermod -aG leviculum "$USER"
 The tools find the daemon's directory, `/etc/reticulum`, without flags
 because it comes first in the lookup order the installation guide
 states in its "Configuration directory" section
-(`docs/src/guide/installation.md#configuration-directory`). If you also run a daemon of your own on
+(`docs/src/guide/installation.md:104-117`). If you also run a daemon of your own on
 `~/.reticulum`, the tools still take `/etc/reticulum` while its
 `config` exists; a tool that then fails says so and prints the
 `--config` that selects the other directory.
