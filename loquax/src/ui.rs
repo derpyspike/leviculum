@@ -5397,7 +5397,7 @@ fn map_drag<B: InputBuffer>(model: &mut UiModel<B>, col: u16, row: u16) {
         return;
     };
     press.reach(col, row);
-    state.centre = press.centre_at(col, row, state, &setup);
+    state.centre = press.centre_at(col, row, state, &setup, area);
     map::settle(state, area, &setup);
 }
 

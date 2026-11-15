@@ -47,6 +47,7 @@ use leviculum_map::draw::{
     attach_buildings, draw_in_relief, draw_in_warped, draw_tiles, draws_buildings, Ink,
 };
 use leviculum_map::labels::ViewLabel;
+use leviculum_map::mercator::World;
 use leviculum_map::outline;
 use leviculum_map::region::{Header, Region, TileId};
 use leviculum_map::timezones;
@@ -633,6 +634,7 @@ impl Painter {
         let Ok(_) = outline::draw_world_view(&outline::WORLD, blend, ink, style.theme, frame);
         let mut pending = 0;
         let (aux, warp) = blend_grid(blend);
+        let rings = blend_rings(blend);
         let order = drawn(
             self.regions
                 .iter()
@@ -649,7 +651,7 @@ impl Painter {
             if let Some(owed) = region_into_warped(
                 &installed.region,
                 &aux,
-                &warp,
+                &rings,
                 area,
                 ink,
                 style,
@@ -904,10 +906,9 @@ impl Painter {
 /// The Mercator-linear grid a blended view's region tiles are placed on
 /// (1799 item 0): a viewport at the blend's nearest whole zoom, centred
 /// as the blend and sized for the blend's own coverage (whose unit
-/// carries the globe's shrink), and the warp that takes a sub-pixel
-/// placed on that grid to its place on the blended screen — the grid
-/// point's ground, projected through the blend.
-fn blend_grid(blend: &Blend) -> (Viewport, impl Fn(Point) -> Point + '_) {
+/// carries the globe's shrink), and the ground of a sub-pixel placed on
+/// that grid.
+fn grid_of(blend: &Blend) -> (Viewport, impl Fn(Point) -> World + Copy) {
     const WORLD_F: f64 = 4_294_967_296.0;
     let (w, h) = blend.size();
     let zt = blend.zoom().round().clamp(0.0, f64::from(MAX_VIEW_ZOOM)) as u8;
@@ -918,22 +919,122 @@ fn blend_grid(blend: &Blend) -> (Viewport, impl Fn(Point) -> Point + '_) {
     let (acx, acy) = (f64::from(aw) / 2.0, f64::from(ah) / 2.0);
     let sub = f64::from(leviculum_mapfill::SUBPIXEL);
     let centre = blend.centre();
-    let warp = move |p: Point| -> Point {
+    let ground = move |p: Point| -> World {
         let gx = f64::from(centre.x) + (f64::from(p.x) / sub - acx) * unit_t;
         let gy = f64::from(centre.y) + (f64::from(p.y) / sub - acy) * unit_t;
         let wrapped = gx.rem_euclid(WORLD_F);
-        let ground = leviculum_map::mercator::World {
+        World {
             x: if wrapped >= WORLD_F {
                 0
             } else {
                 wrapped as u32
             },
             y: gy.clamp(0.0, WORLD_F - 1.0) as u32,
-        };
-        let (x, y) = blend.to_screen_sub(ground);
+        }
+    };
+    (aux, ground)
+}
+
+/// [`grid_of`]'s grid, and the warp that takes a sub-pixel placed on it
+/// to its place on the blended screen: the grid point's ground,
+/// projected through the blend. A point's place only, for what has no
+/// ring: a region's box, a name's anchor and line.
+fn blend_grid(blend: &Blend) -> (Viewport, impl Fn(Point) -> Point + '_) {
+    let (aux, ground) = grid_of(blend);
+    let warp = move |p: Point| -> Point {
+        let (x, y) = blend.to_screen_sub(ground(p));
         Point::new(x as i32, y as i32)
     };
     (aux, warp)
+}
+
+/// Where [`blend_rings`] hands each drawn ring: `false` when the work
+/// storage is full.
+type RingOut<'o> = dyn FnMut(&[Point]) -> bool + 'o;
+
+/// The rings of a region's features through the blend
+/// ([`leviculum_mapfill::render::Warp`]), cut at the globe's horizon as
+/// the outline's are (audit of 1818, condition 5). A ring wholly in
+/// front is its points' places, as [`blend_grid`]'s warp gives them. One
+/// that reaches behind goes through [`Blend::globe_ring`], which drops
+/// the far part and closes the near one along the limb, for an area;
+/// for a line, each run in front, broken where it crosses the horizon
+/// ([`Blend::horizon_sub`]). Warped point by point the far points were
+/// pushed onto the limb at their own bearing, and an edge from the last
+/// near point to one crossed the disk as a chord, folding ground the
+/// feature does not cover into it (80,759 pixels of the condition's
+/// test).
+fn blend_rings(
+    blend: &Blend,
+) -> impl Fn(&[Point], leviculum_mapfill::fixture::Kind, &mut RingOut<'_>) -> bool + '_ {
+    use core::cell::RefCell;
+    use leviculum_mapfill::fixture::Kind;
+    let (_, ground) = grid_of(blend);
+    let grounds: RefCell<Vec<World>> = RefCell::new(Vec::new());
+    let drawn: RefCell<Vec<Point>> = RefCell::new(Vec::new());
+    let cut: RefCell<Vec<Vec<(i64, i64)>>> = RefCell::new(Vec::new());
+    let at = |(x, y): (i64, i64)| Point::new(x as i32, y as i32);
+    move |placed: &[Point], kind: Kind, out: &mut RingOut<'_>| {
+        let (mut grounds, mut drawn) = (grounds.borrow_mut(), drawn.borrow_mut());
+        grounds.clear();
+        grounds.extend(placed.iter().map(|&p| ground(p)));
+        drawn.clear();
+        if grounds.iter().all(|&g| blend.facing(g)) {
+            drawn.extend(grounds.iter().map(|&g| at(blend.to_screen_sub(g))));
+            return out(&drawn);
+        }
+        match kind {
+            Kind::Area => {
+                let mut cut = cut.borrow_mut();
+                blend.globe_ring(&grounds, &mut cut);
+                // `globe_ring` writes for an even-odd fill; a region's
+                // areas fill non-zero. Its second ring, the whole limb,
+                // stands for "the disk without the first": turned
+                // against the first, non-zero fills the same.
+                let area = |r: &[(i64, i64)]| {
+                    r.iter()
+                        .zip(r.iter().cycle().skip(1))
+                        .map(|(a, b)| (a.0 as i128) * (b.1 as i128) - (b.0 as i128) * (a.1 as i128))
+                        .sum::<i128>()
+                };
+                let first = cut.first().map(|r| area(r)).unwrap_or(0);
+                for (k, ring) in cut.iter_mut().enumerate() {
+                    if k > 0 && (area(ring) > 0) == (first > 0) {
+                        ring.reverse();
+                    }
+                    drawn.clear();
+                    drawn.extend(ring.iter().map(|&p| at(p)));
+                    if !out(&drawn) {
+                        return false;
+                    }
+                }
+                true
+            }
+            Kind::Line => {
+                let mut before: Option<(World, bool)> = None;
+                for &g in grounds.iter() {
+                    let facing = blend.facing(g);
+                    if let Some((b, was)) = before {
+                        if was != facing {
+                            if let Some(c) = blend.horizon_sub(b, g) {
+                                drawn.push(at(c));
+                            }
+                        }
+                    }
+                    if facing {
+                        drawn.push(at(blend.to_screen_sub(g)));
+                    } else {
+                        if drawn.len() >= 2 && !out(&drawn) {
+                            return false;
+                        }
+                        drawn.clear();
+                    }
+                    before = Some((g, facing));
+                }
+                drawn.len() < 2 || out(&drawn)
+            }
+        }
+    }
 }
 
 /// Where the grid rectangle `on_grid` (the region's box on the blend's
@@ -986,7 +1087,7 @@ where
 fn region_into_warped<D>(
     region: &Region<File>,
     aux: &Viewport,
-    warp: &dyn Fn(Point) -> Point,
+    warp: &leviculum_mapfill::render::Warp<'_>,
     area: Rectangle,
     ink: Ink,
     style: Style,
@@ -1105,6 +1206,140 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Audit of 1818 condition 5: a region's features are cut at the
+    /// limb in the warped path, as the outline cuts its rings
+    /// ([`Blend::globe_ring`]). A ground behind the horizon has no place
+    /// on the sphere: warped point by point it is pushed out onto the
+    /// limb at its own bearing, and the straight edge from the last near
+    /// point to it crosses the disk as a chord, folding the far part of
+    /// the feature over ground it does not cover. An area along the
+    /// meridian at 89 degrees east of the centre of a `t = 0` globe whose
+    /// view reaches past the limb, its far corners at 150 degrees east,
+    /// through the region tiles' own grid and pass: no pixel of it
+    /// outside the disk, and none deeper in the disk than 5 % of the
+    /// radius, while its near part (all of it within 0.02 % of the limb's
+    /// radius) is drawn.
+    #[test]
+    fn a_region_is_cut_at_the_limb_of_the_sphere() {
+        use leviculum_map::mercator::{project, LatLon};
+        use leviculum_mapfill::fixture::{write, Fixture, Kind};
+        use leviculum_mapfill::render::{Look, Pass, Placement};
+        use leviculum_mapfill::style::Class;
+        let (w, h) = (900u32, 700u32);
+        let centre = project(LatLon::from_degrees(0.0, 0.0));
+        let zoom = libm::log2(300.0 * core::f64::consts::TAU / 256.0);
+        let blend = Blend::with_t(centre, zoom, w, h, 0.0);
+        let r = blend.radius();
+        assert!(2.0 * r < f64::from(w), "the view reaches past the limb");
+        let (aux, _) = blend_grid(&blend);
+        let warp = blend_rings(&blend);
+        let (aw, ah) = aux.size();
+        let unit_t = libm::exp2(24.0 - f64::from(aux.zoom()));
+        let sub = f64::from(leviculum_mapfill::SUBPIXEL);
+        // A ground's place on the grid, in sub-pixels from the grid's
+        // middle: the inverse of the grid's own placement.
+        let placed = |lat: f64, lon: f64| {
+            let g = project(LatLon::from_degrees(lat, lon));
+            let dx = f64::from(g.x.wrapping_sub(centre.x) as i32) / unit_t * sub;
+            let dy = (f64::from(g.y) - f64::from(centre.y)) / unit_t * sub;
+            (dx.round() as i16, dy.round() as i16)
+        };
+        // The near meridian densely, a vertex a degree; the far edges
+        // as a tile's clipped edges come, straight from corner to corner.
+        let mut ring: Vec<(i16, i16)> = (-60..=0).map(|lat| placed(f64::from(lat), 89.0)).collect();
+        ring.push(placed(80.0, 150.0));
+        ring.push(placed(-60.0, 150.0));
+        let bytes = write::fixture(
+            w as u16,
+            h as u16,
+            0,
+            &[(0, 0)],
+            &[
+                write::Feature {
+                    kind: Kind::Area,
+                    class: Class::Park,
+                    flags: 0,
+                    tile: 0,
+                    rings: vec![ring.clone()],
+                },
+                // The same edges as a line: broken at the horizon, not
+                // drawn on to the far corner's place on the limb.
+                write::Feature {
+                    kind: Kind::Line,
+                    class: Class::MajorRoad,
+                    flags: 0,
+                    tile: 0,
+                    rings: vec![ring[ring.len() - 3..].to_vec()],
+                },
+            ],
+        );
+        let fx = Fixture::parse(&bytes).expect("the fixture");
+        let at = Placement {
+            shift: 0,
+            origin: Point::new(
+                (f64::from(aw) / 2.0 * sub) as i32,
+                (f64::from(ah) / 2.0 * sub) as i32,
+            ),
+        };
+        let mut rgba = vec![0u8; (w * h * 4) as usize];
+        let mut edges = vec![Edge::EMPTY; 4096];
+        let mut heads = vec![0u16; h as usize];
+        let mut active = vec![0u16; 4096];
+        let mut scratch = Scratch {
+            edges: &mut edges,
+            heads: &mut heads,
+            active: &mut active,
+        };
+        let mut points = vec![Point::zero(); 4096];
+        let mut ends = vec![0u16; 64];
+        let mut work = Work {
+            points: &mut points,
+            ring_ends: &mut ends,
+        };
+        {
+            let mut frame = RgbaFrame::new(&mut rgba, w, h).expect("the frame");
+            let mut pass =
+                Pass::begin(&mut frame, &mut scratch, Look::DEFAULT, &mut NoClock).expect("a pass");
+            for f in fx.features() {
+                pass.feature_warped(
+                    &f,
+                    at,
+                    Some(&warp),
+                    Profile::Full,
+                    &mut frame,
+                    &mut work,
+                    &mut NoClock,
+                )
+                .expect("drawn");
+            }
+        }
+        let background = rgba[..4].to_vec();
+        let (cx, cy) = (f64::from(w) / 2.0, f64::from(h) / 2.0);
+        let (mut outside, mut folded, mut near) = (0usize, 0usize, 0usize);
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                if rgba[i..i + 4] == background[..] {
+                    continue;
+                }
+                let d = (f64::from(x) + 0.5 - cx).hypot(f64::from(y) + 0.5 - cy);
+                match d {
+                    // A line ending on the limb reaches past it by its
+                    // half width (the major road's 2 px) and its cap.
+                    d if d > r + 3.5 => outside += 1,
+                    d if d < 0.95 * r => folded += 1,
+                    _ => near += 1,
+                }
+            }
+        }
+        assert_eq!(
+            (outside, folded),
+            (0, 0),
+            "region pixels outside the disk, at the folded place ({near} at the limb)"
+        );
+        assert!(near > 20, "the near sliver is drawn: {near} pixels");
+    }
 
     /// 1799 item 0: a region's tiles draw through the blend the caller
     /// holds, warped point by point onto the curved picture, instead of

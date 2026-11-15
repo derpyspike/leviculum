@@ -431,6 +431,9 @@ unicode-segmentation = "1"
 # The wire's property tests (1173), the workspace's version; in the lock
 # already, through leviculum-core.
 proptest.workspace = true
+# The limb-cut test of the picture (audit of 1818, condition 5) writes its
+# feature with the map filler's fixture writer, its `std` feature.
+leviculum-mapfill = { path = "../leviculum-mapfill", features = ["std"] }
 
 [lib]
 name = "loquax"

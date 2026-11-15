@@ -24,7 +24,7 @@ use leviculum_map::labels::{self as names, Candidate, LabelKind, ViewLabel};
 use leviculum_map::mercator::{project, unproject, LatLon, World};
 use leviculum_map::pins::{self, Mark, Metrics, Pin, Side};
 use leviculum_map::region::{Bounds, Header};
-use leviculum_map::viewport::{Viewport, MILLI};
+use leviculum_map::viewport::{ExactView, Viewport, MILLI};
 use leviculum_ui::Rect;
 
 use crate::telemetry;
@@ -834,16 +834,31 @@ impl MapPress {
     /// moved the other way by the pointer's distance in the backend's
     /// pixels, so the point under the pointer when the button went down is
     /// under it again. The press's own centre while it is not a drag.
-    pub fn centre_at(&self, col: u16, row: u16, state: &MapState, setup: &MapSetup) -> World {
+    pub fn centre_at(
+        &self,
+        col: u16,
+        row: u16,
+        state: &MapState,
+        setup: &MapSetup,
+        area: Rect,
+    ) -> World {
         if !self.dragging {
             return self.centre;
         }
         let cells = |to: u16, from: u16| i32::from(to) - i32::from(from);
-        let mut view = Viewport::new(self.centre, state.zoom, 1, 1);
-        view.pan(
+        let (dx, dy) = (
             -cells(col, self.from.0) * i32::from(setup.cell_px.0.max(1)),
             -cells(row, self.from.1) * i32::from(setup.cell_px.1.max(1)),
         );
+        // Through the blend the terminal draws (audit of 1818, condition
+        // 2): the ground under the cell the button went down on follows
+        // the pointer, as on the phone and in the window. At `t = 1` this
+        // is Mercator's whole-pixel pan.
+        let mut press = *state;
+        press.centre = self.centre;
+        let mut view = ExactView::from(viewport(&press, area, setup));
+        let (x, y) = cell_centre(area, setup, col, row);
+        crate::mapgesture::drag_about(&mut view, f64::from(dx), f64::from(dy), x, y);
         view.centre
     }
 }
@@ -860,19 +875,32 @@ pub fn zoom_at(state: &mut MapState, area: Rect, setup: &MapSetup, col: u16, row
         settle(state, area, setup);
         return;
     }
+    let (x, y) = cell_centre(area, setup, col, row);
+    // Through the blend the terminal draws (audit of 1818, condition 8):
+    // the GEOGRAPHIC point drawn at the cell stays under it. Mercator's
+    // `zoom_about` kept the Mercator point, which in a blended view is
+    // not the drawn one (99 px off at 32 N 6 W z4 on a sixel screen). At
+    // `t = 1` both ends this is Mercator's rule, unchanged.
+    let mut view = ExactView::from(viewport(state, area, setup));
+    crate::mapgesture::zoom_about(&mut view, u32::from(zoom) * MILLI, x, y);
+    let view = view.one_world();
+    state.centre = view.centre;
+    state.zoom = zoom;
+    // Past the world's floor (1796) the zoom stops there, about the centre.
+    settle(state, area, setup);
+}
+
+/// The backend pixel at the middle of the cell `(col, row)` of `area`,
+/// in the picture's own pixels: what the wheel and the drag hold.
+fn cell_centre(area: Rect, setup: &MapSetup, col: u16, row: u16) -> (f64, f64) {
     let (cw, ch) = (
         i32::from(setup.cell_px.0.max(1)),
         i32::from(setup.cell_px.1.max(1)),
     );
-    let x = i32::from(col - area.x) * cw + cw / 2;
-    let y = i32::from(row - area.y) * ch + ch / 2;
-    let mut view = viewport(state, area, setup);
-    view.zoom_about(zoom, x, y);
-    let view = view.one_world();
-    state.centre = view.centre;
-    state.zoom = view.zoom();
-    // Past the world's floor (1796) the zoom stops there, about the centre.
-    settle(state, area, setup);
+    (
+        f64::from(i32::from(col.saturating_sub(area.x)) * cw + cw / 2),
+        f64::from(i32::from(row.saturating_sub(area.y)) * ch + ch / 2),
+    )
 }
 
 /// The pin drawn at a cell, its marker or its name, the topmost where
@@ -1437,5 +1465,102 @@ mod tests {
         let view = viewport(&state, phone, &setup);
         assert_eq!(view.top_left_sub().1, 0, "stopped at the north edge");
         assert_eq!(view.centre, state.centre);
+    }
+
+    /// The ground under the backend pixel `(x, y)` of the picture the
+    /// terminal draws for `state` over `area`: through the view's blend,
+    /// the mapping the tui paints a world view with
+    /// (`Painter::world_blend`).
+    fn ground_at(state: &MapState, area: Rect, setup: &MapSetup, x: f64, y: f64) -> Option<World> {
+        let v = viewport(state, area, setup);
+        let (w, h) = v.size();
+        leviculum_map::blend::Blend::new(v.centre, f64::from(v.zoom()), w, h).to_world(x, y)
+    }
+
+    fn drawn_at(state: &MapState, area: Rect, setup: &MapSetup, g: World) -> (f64, f64) {
+        let v = viewport(state, area, setup);
+        let (w, h) = v.size();
+        leviculum_map::blend::Blend::new(v.centre, f64::from(v.zoom()), w, h).to_screen(g)
+    }
+
+    /// Audit of 1818 condition 8 and the terminal's half of condition 2
+    /// (1833's wording): in a view the terminal draws blended — the
+    /// globe and the handover band — a wheel step at an off-centre cell
+    /// keeps that cell's geographic point under it within one cell, and
+    /// a pointer drag keeps the ground under the pointer within 2 px.
+    /// Mercator's `zoom_about` and pixel pan kept the Mercator point,
+    /// which is not the one drawn there.
+    #[test]
+    fn the_terminals_wheel_and_drag_keep_the_ground_under_the_pointer_in_the_blend() {
+        let setup = MapSetup {
+            cell_px: (9, 19),
+            zooms: (0, 20),
+            ..MapSetup::default()
+        };
+        let area = Rect::new(0, 0, 120, 40);
+        let (cw, ch) = (9.0f64, 19.0f64);
+        let centre_of = |col: u16, row: u16| {
+            (
+                f64::from(col) * cw + (cw / 2.0).floor(),
+                f64::from(row) * ch + (ch / 2.0).floor(),
+            )
+        };
+        let (mut wheels, mut drags) = (0usize, 0usize);
+        for (lat, lon) in [(32.0, -6.0), (51.0, 10.0), (-30.0, 140.0)] {
+            for zoom in 0u8..=12 {
+                let mut state = MapState {
+                    centre: project(LatLon::from_degrees(lat, lon)),
+                    zoom,
+                    selected: None,
+                };
+                settle(&mut state, area, &setup);
+                let v = viewport(&state, area, &setup);
+                let (w, h) = v.size();
+                let blended = |z: u8| {
+                    leviculum_map::blend::Blend::new(v.centre, f64::from(z), w, h).t() < 1.0
+                };
+                if !blended(state.zoom) && !blended(state.zoom.saturating_add(1)) {
+                    continue;
+                }
+                // The wheel, one step in at the cell (30, 10).
+                let (col, row) = (30u16, 10u16);
+                let (x, y) = centre_of(col, row);
+                if let Some(g) = ground_at(&state, area, &setup, x, y) {
+                    let mut s = state;
+                    zoom_at(&mut s, area, &setup, col, row, state.zoom + 1);
+                    let (px, py) = drawn_at(&s, area, &setup, g);
+                    assert!(
+                        (px - x).abs() <= cw && (py - y).abs() <= ch,
+                        "{lat},{lon} z{}: the wheel left the cell's ground at ({px:.1}, {py:.1}), the cell at ({x}, {y})",
+                        state.zoom
+                    );
+                    wheels += 1;
+                }
+                // The drag, from the cell (30, 10) to (36, 13).
+                let (to_col, to_row) = (36u16, 13u16);
+                if blended(state.zoom) {
+                    if let Some(g) = ground_at(&state, area, &setup, x, y) {
+                        let mut s = state;
+                        let mut press = MapPress::new((col, row), s.centre, None);
+                        press.reach(to_col, to_row);
+                        s.centre = press.centre_at(to_col, to_row, &s, &setup, area);
+                        settle(&mut s, area, &setup);
+                        let (tx, ty) = centre_of(to_col, to_row);
+                        let (px, py) = drawn_at(&s, area, &setup, g);
+                        let off = (px - tx).hypot(py - ty);
+                        assert!(
+                            off <= 2.0,
+                            "{lat},{lon} z{}: the drag left the pointer {off:.1} px off its ground",
+                            state.zoom
+                        );
+                        drags += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            wheels >= 6 && drags >= 6,
+            "{wheels} wheel steps, {drags} drags judged"
+        );
     }
 }

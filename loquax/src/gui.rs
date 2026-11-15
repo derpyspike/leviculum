@@ -2483,9 +2483,15 @@ impl App {
             }
             Message::MapSize(size) => {
                 self.settle();
+                // Whether the view sits where the last fit left it BEFORE
+                // the canvas's hold: a resize that moves it (a larger
+                // canvas raises the globe's floor) is no input, so the
+                // first pins must still fit (audit of 1818, condition
+                // 19), and the fit is taken again at the new size.
+                let unmoved = self.unmoved();
                 self.size = Some(size);
                 self.hold();
-                if !self.fitted && self.unmoved() {
+                if !self.fitted && unmoved {
                     self.fit();
                 }
             }
@@ -2928,8 +2934,18 @@ impl App {
                     (x - press.from.0).abs() >= far || (y - press.from.1).abs() >= far;
                 if press.dragging {
                     let (dx, dy) = (press.last.0 - x, press.last.1 - y);
-                    // At globe zooms the drag turns the sphere (1762).
-                    loquax::mapframe::drag(&mut self.view, dx, dy);
+                    // At globe zooms the drag turns the sphere (1762),
+                    // holding the ground under the cursor through the
+                    // blend (audit of 1818, condition 2): the
+                    // finger-less drag turns it about the disk's centre
+                    // and slid an off-centre cursor 11 px off its ground.
+                    loquax::mapframe::drag_about(
+                        &mut self.view,
+                        f64::from(dx),
+                        f64::from(dy),
+                        f64::from(x),
+                        f64::from(y),
+                    );
                     self.motion.pan(f64::from(dx), f64::from(dy), self.now_ms());
                     press.last = (x, y);
                     self.hold();
@@ -4569,6 +4585,201 @@ mod tests {
             (centre, zoom),
             "the fit went to the pins"
         );
+    }
+
+    /// Audit of 1818 condition 2, the window's half (1833's wording):
+    /// a mouse drag in a view the globe draws — the disk and the
+    /// handover band — keeps the geographic point under the cursor
+    /// within 2 px of the cursor after a drag of at least 20 px. The
+    /// finger-less [`loquax::mapframe::drag`] turns the sphere about its
+    /// centre, so an off-centre cursor slid off its ground.
+    #[test]
+    fn a_window_drag_keeps_the_ground_under_the_cursor() {
+        use leviculum_map::blend::Blend;
+        let mut judged = 0usize;
+        let mut worst = 0.0f64;
+        for (lat, lon) in [(43.7752, 11.2660), (32.0, -6.0), (-30.0, 140.0)] {
+            for zm in (1_000u32..=11_000).step_by(250) {
+                let mut app = window_over_florence(Vec::new(), 12 * MILLI);
+                app.view = ExactView::new(project(LatLon::from_degrees(lat, lon)), zm, 480, 320);
+                app.hold();
+                if !loquax::mapframe::blends(&app.view) {
+                    continue;
+                }
+                let (from, to) = ((330.0f32, 210.0f32), (306.0f32, 198.0f32));
+                let Some(ground) =
+                    loquax::mapframe::ground_under(&app.view, f64::from(from.0), f64::from(from.1))
+                else {
+                    continue;
+                };
+                app.apply(Message::Pointer(Pointer::Down(Point::new(from.0, from.1))));
+                app.apply(Message::Pointer(Pointer::Move(Point::new(to.0, to.1))));
+                app.apply(Message::Pointer(Pointer::Up));
+                let v = app.view;
+                let (w, h) = v.size();
+                let (x, y) = Blend::new(v.centre, v.zoom(), w, h).to_screen(ground);
+                let off = (x - f64::from(to.0)).hypot(y - f64::from(to.1));
+                worst = worst.max(off);
+                assert!(
+                    off <= 2.0,
+                    "{lat},{lon} z{zm}: the ground under the cursor is {off:.2} px from it"
+                );
+                judged += 1;
+            }
+        }
+        assert!(judged > 20, "only {judged} blended views judged");
+        eprintln!("window drag: {judged} views, worst {worst:.3} px");
+    }
+
+    /// Audit of 1818 condition 9: the wheel's glide over a blended view
+    /// holds the geographic point under the wheel's focus on every step
+    /// between the notch and the goal, within 2 px. Mercator's fixed
+    /// point (`onto`'s) is not the drawn one there, so a glide whose
+    /// blended branch fell back to it walked the view off its place
+    /// while the zoom moved.
+    #[test]
+    fn a_wheel_glide_over_the_blend_keeps_the_place_under_the_pointer_every_step() {
+        use leviculum_map::blend::Blend;
+        let mut judged = 0usize;
+        for (lat, lon) in [(43.7752, 11.2660), (32.0, -6.0), (-30.0, 140.0)] {
+            for zm in (2_000u32..=8_000).step_by(500) {
+                let mut app = window_over_florence(Vec::new(), 12 * MILLI);
+                app.view = ExactView::new(project(LatLon::from_degrees(lat, lon)), zm, 480, 320);
+                app.hold();
+                let focus = (360.0f32, 230.0f32);
+                let from = app.view;
+                let Some(ground) =
+                    loquax::mapframe::ground_under(&from, f64::from(focus.0), f64::from(focus.1))
+                else {
+                    continue;
+                };
+                app.apply(Message::Pointer(Pointer::Wheel(
+                    Point::new(focus.0, focus.1),
+                    700,
+                )));
+                let glide = app.glide.expect("the notch starts a glide");
+                // Judged by the blend's own `t`, not by `blends`, whose
+                // answer the glide's branch is.
+                let t = |v: &ExactView| {
+                    let (w, h) = v.size();
+                    Blend::new(v.centre, v.zoom(), w, h).t()
+                };
+                if t(&glide.from) >= 1.0 && t(&glide.to) >= 1.0 {
+                    continue;
+                }
+                let mut steps = 0;
+                for i in 1..=6u64 {
+                    let now = glide.start + Duration::from_millis(GLIDE_MS * i / 7);
+                    let (v, over) = glide.at(now);
+                    assert!(!over, "step {i} is before the glide's end");
+                    let (w, h) = v.size();
+                    let (x, y) = Blend::new(v.centre, v.zoom(), w, h).to_screen(ground);
+                    let off = (x - f64::from(focus.0)).hypot(y - f64::from(focus.1));
+                    assert!(
+                        off <= 2.0,
+                        "{lat},{lon} z{zm} step {i} z{}: the ground under the wheel is {off:.2} px from it",
+                        v.zoom_milli()
+                    );
+                    steps += 1;
+                }
+                assert!(steps >= 5);
+                judged += 1;
+            }
+        }
+        assert!(judged >= 6, "only {judged} blended glides judged");
+    }
+
+    /// Audit of 1818 condition 19: a resize between the empty fit and
+    /// the first pins moves the view through `hold()` (a larger canvas
+    /// has a deeper globe floor), and no input came. The first pins must
+    /// still fit: the D1 rule (`unmoved`) compares the exact centre and
+    /// zoom, so a hold that moved the view read as the user's move.
+    #[test]
+    fn the_first_pins_fit_after_a_resize_moved_the_empty_view() {
+        // No region: the empty fit is the world at the globe's floor,
+        // which a larger canvas raises.
+        let frames = Frames::new(loquax::picture::Maps::new(None));
+        let maps = frames.painter().epoch();
+        let mut app = App::new(frames, None);
+        app.screen = Screen::Map;
+        app.apply(Message::MapSize(Size::new(480.0, 320.0)));
+        app.apply(Message::Seen(Box::new(florence_seen(Vec::new(), maps))));
+        let empty = app.fitted_at.expect("the empty fit");
+        let before = app.view;
+        app.apply(Message::MapSize(Size::new(2400.0, 2400.0)));
+        assert_ne!(
+            (app.view.centre, app.view.zoom_milli()),
+            empty,
+            "the control: the resize's hold moved the view"
+        );
+        assert_ne!(app.view, before);
+        app.apply(Message::Seen(Box::new(florence_seen(
+            vec![pin(1, "alice", 43.7752, 11.2640)],
+            maps,
+        ))));
+        assert!(app.fitted, "the first pins fit after the resize");
+        let fitted = app.fitted_at.expect("the pins' fit");
+        assert_eq!((app.view.centre, app.view.zoom_milli()), fitted);
+        let (x, y) = app
+            .view
+            .to_screen(project(LatLon::from_degrees(43.7752, 11.2640)));
+        let (w, h) = app.view.size();
+        assert!(
+            (x - f64::from(w) / 2.0).abs() < 2.0 && (y - f64::from(h) / 2.0).abs() < 2.0,
+            "the fit went to the pin: ({x:.1}, {y:.1}) of {w}x{h}"
+        );
+    }
+
+    /// Lew on the desktop build fcb3785e5 (order 1799, P0): fully
+    /// zoomed out, dragging the globe, "it shifts a bit while turning
+    /// and then jumps back. It wobbles." The window kept showing its
+    /// last frame through a drag (`covers`: the frame is drawn larger
+    /// than the screen, by its margins) and placed it by the centres'
+    /// Mercator offset, the flat map's placement, while the core turned
+    /// the globe about its fixed centre, so the disk moved with the
+    /// pointer and snapped back when the turned frame landed. Driven
+    /// here through the window's own path (audit of 1818, condition 4,
+    /// replacing an arithmetic-only test of `onto`): a drag over the
+    /// globe at its floor, and after every pointer event, before and
+    /// after the worker's jobs, the frame on screen sits centre on
+    /// centre, so the disk does not move. The control: on the flat map
+    /// the frame on screen pans with the pointer.
+    #[test]
+    fn a_globe_drag_on_the_window_never_moves_the_disk() {
+        let mut app = window_over_florence(Vec::new(), 0);
+        let (rest, _) = run(&mut app);
+        let rest = rest.expect("a frame at rest");
+        let (fw, fh) = rest.view.size();
+        assert!(
+            fw > 480 && fh > 320,
+            "the frame is drawn larger than the screen: {fw}x{fh}"
+        );
+        let centred = |app: &App, what: &str| {
+            let (shown, x, y, k) = app.onto().expect("a frame on screen");
+            let (w, h) = shown.view.size();
+            let (cx, cy) = (x + f64::from(w) * k / 2.0, y + f64::from(h) * k / 2.0);
+            assert!(
+                (cx - 240.0).abs() < 0.5 && (cy - 160.0).abs() < 0.5,
+                "{what}: the disk's centre is at ({cx:.1}, {cy:.1}), the screen's at (240, 160)"
+            );
+        };
+        app.apply(Message::Pointer(Pointer::Down(Point::new(300.0, 200.0))));
+        for step in 1..=12 {
+            let p = Point::new(300.0 - 6.0 * step as f32, 200.0 - 3.0 * step as f32);
+            app.apply(Message::Pointer(Pointer::Move(p)));
+            centred(&app, &format!("step {step}, before its frame"));
+            run(&mut app);
+            centred(&app, &format!("step {step}, after its frame"));
+        }
+        app.apply(Message::Pointer(Pointer::Up));
+        // The control: on the flat map the frame pans with the pointer.
+        let mut flat = window_over_florence(Vec::new(), 16 * MILLI);
+        run(&mut flat);
+        let (_, x0, _, _) = flat.onto().expect("a frame");
+        flat.apply(Message::Pointer(Pointer::Down(Point::new(200.0, 150.0))));
+        flat.apply(Message::Pointer(Pointer::Move(Point::new(160.0, 150.0))));
+        let (_, x1, _, _) = flat.onto().expect("a frame");
+        assert!((x1 - (x0 - 40.0)).abs() < 1e-6, "{x0} {x1}");
     }
 
     use leviculum_ui_iced::select::Pick;
