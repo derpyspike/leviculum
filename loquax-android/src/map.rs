@@ -61,13 +61,14 @@ use leviculum_map::viewport::{ExactView, MILLI};
 use leviculum_mapfill::style::{MapTheme, Style};
 use leviculum_ui::theme::{Theme, ThemeFlag};
 use loquax::mapframe::{frame_size, hold, Ask, DrawnName, Framed, Frames, PlaceCost};
-use loquax::mapload::{Loader, Source, Step, StepKind, CACHE_DEFAULT_MB};
+use loquax::mapload::{Loader, Source, Step, StepKind, Watch, CACHE_DEFAULT_MB};
 use loquax::picture::{map_theme, Maps};
 use loquax::screenmap;
 use loquax::tiles::Stats;
 use loquax::ui::map::{
     fit, fit_at, in_window, want_pins, want_place, want_view, zoom_floor, MapPin, MapWant,
 };
+use loquax::ui::maploading::{self, Loads, Look};
 use loquax::ui::radar;
 use loquax::ui::strings::Lang;
 use loquax::ui::tracks::TrackWindow;
@@ -107,6 +108,8 @@ pub struct Renderer {
     maps: Maps,
     frames: Frames,
     loader: Loader,
+    /// The loader's report as the map shows it (1812).
+    watch: Watch,
     /// What the screen needs from the loader, decided frame by frame
     /// (1292).
     loads: ViewLoads,
@@ -166,6 +169,7 @@ impl Renderer {
             maps: maps.clone(),
             frames: Frames::new(maps.clone()),
             loader: Loader::new(maps, source, cache).with_heights(heights),
+            watch: Watch::default(),
             loads: ViewLoads::new(),
             autoload: config.map_autoload.unwrap_or(true),
             fling: config.map_fling.unwrap_or(true),
@@ -446,8 +450,9 @@ impl Renderer {
     /// One frame for `request` over `pins`, in a buffer of its own.
     pub fn frame(&mut self, request: &MapRequest, pins: &[MapPin]) -> (MapShown, Vec<u8>) {
         let mut rgba = Vec::new();
-        let shown = self.draw(request, pins, |frames, ask| {
-            let (pixels, framed) = frames.frame(ask).split();
+        let shown = self.draw(request, pins, |frames, ask, treat| {
+            let (mut pixels, framed) = frames.frame(ask).split();
+            treat.paint(&mut pixels, &framed.view);
             rgba = pixels;
             Ok(framed)
         });
@@ -463,12 +468,14 @@ impl Renderer {
         pins: &[MapPin],
         canvas: &mut dyn Canvas,
     ) -> MapShown {
-        self.draw(request, pins, |frames, ask| {
+        self.draw(request, pins, |frames, ask, treat| {
             let (w, h) = frame_size(ask);
             let pixels = canvas.pixels(w, h)?;
-            frames
+            let framed = frames
                 .frame_into(ask, pixels)
-                .ok_or_else(|| format!("map: the pixels are not {w}x{h}"))
+                .ok_or_else(|| format!("map: the pixels are not {w}x{h}"))?;
+            treat.paint(pixels, &framed.view);
+            Ok(framed)
         })
     }
 
@@ -478,7 +485,7 @@ impl Renderer {
         &mut self,
         request: &MapRequest,
         pins: &[MapPin],
-        draw: impl FnOnce(&mut Frames, &Ask<'_>) -> Result<Framed, String>,
+        draw: impl FnOnce(&mut Frames, &Ask<'_>, &Treat) -> Result<Framed, String>,
     ) -> MapShown {
         // The position sheet's map (1448, walk finding 16) shows the own
         // dot alone: nobody else's pin, cluster or track.
@@ -767,7 +774,17 @@ impl Renderer {
                 .then(loquax::zoneclock::unix_minute)
                 .filter(|_| !request.own_only),
         };
-        let shot = match draw(&mut self.frames, &ask) {
+        // What of the view is still to come (1812), drawn over the frame
+        // in place; the stripes move with the frames Java asks while a
+        // load runs for the screen (`loading_here`, four a second).
+        let loads = self.watch.loads(&self.loader, now);
+        let treat = Treat {
+            phase: loads.phase(now),
+            loads,
+            dark: table == MapTheme::Dark,
+            scale,
+        };
+        let shot = match draw(&mut self.frames, &ask, &treat) {
             Ok(shot) => shot,
             Err(error) => return failed(error),
         };
@@ -861,6 +878,7 @@ impl Renderer {
             tapped_name: tapped.and_then(name),
             loading: self.loader.busy(),
             loading_here: self.loader.loading_here(),
+            load_line: treat.loads.line(lang),
             filling: shot.filling > 0,
             // A box waits to retry (1821): the instant of the loader's
             // next own move, so Java posts a frame for it and a box that
@@ -947,6 +965,30 @@ impl Renderer {
     /// The names the last frame at rest placed, as text.
     pub fn names(&self) -> Vec<String> {
         self.frames.names()
+    }
+}
+
+/// What of the view is still to come as one frame draws it (1812).
+pub struct Treat {
+    pub loads: Loads,
+    /// The stripes' step ([`Loads::phase`]).
+    pub phase: u32,
+    pub dark: bool,
+    pub scale: f32,
+}
+
+impl Treat {
+    /// The treatment over `rgba`, which `view` drew.
+    pub fn paint(&self, rgba: &mut [u8], view: &ExactView) {
+        maploading::paint(
+            rgba,
+            view,
+            &self.loads,
+            self.phase,
+            self.dark,
+            self.scale,
+            Look::default(),
+        );
     }
 }
 

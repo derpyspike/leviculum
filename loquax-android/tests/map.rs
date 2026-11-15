@@ -585,6 +585,13 @@ fn a_missing_region_loads_by_itself_and_the_frame_says_so() {
         shown.loading && shown.notice.is_none(),
         "still loading: {shown:?}"
     );
+    // 1812: the chip's one line says how far the view is, here nothing
+    // of nothing planned yet; the picture shows where.
+    assert_eq!(
+        shown.load_line.as_deref(),
+        Some("Loading the map · 0 %"),
+        "{shown:?}"
+    );
 
     let home = self::home();
     source(home.path(), refused_port);
@@ -626,6 +633,12 @@ fn a_missing_region_loads_by_itself_and_the_frame_says_so() {
         assert!(last.notice.is_none(), "no internet said once: {last:?}");
     }
     assert!(last.offline && !last.loading_here, "{last:?}");
+    // 1812: offline is said once for the view, in the chip's line.
+    assert_eq!(
+        last.load_line.as_deref(),
+        Some("Offline · the map loads when the network is back"),
+        "{last:?}"
+    );
 }
 
 /// A tap on a pin's marker selects it and names it; the selected pin is

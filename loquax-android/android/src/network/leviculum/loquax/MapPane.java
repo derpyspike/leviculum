@@ -546,6 +546,16 @@ final class MapPane implements MapView.Listener {
         if (shown == null) {
             return;
         }
+        // What of the view is still to come, in one line (1812): how far
+        // it loads, stalled, when a failed area tries again, offline. The
+        // map itself shows where.
+        Object line = shown.get("load_line");
+        if (line instanceof String && !((String) line).isEmpty()) {
+            chip.removeCallbacks(hide);
+            chip.setText((String) line);
+            chip.setVisibility(View.VISIBLE);
+            return;
+        }
         int words;
         if (Core.bool(shown, "loading_here")) {
             words = R.string.map_loading;

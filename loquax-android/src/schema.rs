@@ -3197,6 +3197,13 @@ pub struct MapShown {
     /// area the view left, which the chip does not name.
     #[serde(default)]
     pub loading_here: bool,
+    /// What of the view is still to come, in one line in the phone's
+    /// language (1812): how far it loads, that no data came for a while,
+    /// when a failed area tries again, offline. The map shows where in
+    /// the picture; the chip says this line in place of "Loading the map
+    /// of this area". Absent when all of the view is there.
+    #[serde(default)]
+    pub load_line: Option<String>,
     /// The frame shows tiles of a region still arriving (1291): ask again
     /// in [`FILLING_MS`], when more of it may be there.
     #[serde(default)]
