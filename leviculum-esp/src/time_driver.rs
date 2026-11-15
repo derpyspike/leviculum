@@ -1,4 +1,6 @@
-//! embassy-time on the ESP firmware without an executor of ours (1478b).
+//! embassy-time on the ESP firmware: no executor polls our futures
+//! (1478b); see `docs/src/concepts/thinknode-m9.md`, "The esp-rtos
+//! exception", pending decision.
 //!
 //! `leviculum-lr11xx` is async on `embassy-time` (its `Timer` and
 //! `with_timeout`), and the ESP images run no executor for our own
