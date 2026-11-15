@@ -409,19 +409,68 @@ expired one was set outranks the expiry and nothing is marked: on
 miauhaus the first of two requests expired 1.6 s after the second one's
 proof came back over the same next hop.
 
-**A local client's path is never marked.** A path whose interface is a
-connected local client's (the hops-0 entry the client's own announce
-installs) is exempt from every unresponsive mark (order 1881,
-`PATH_KEPT_LOCAL`). The reference marks it when the initiator was one
-hop away (`Transport.py:746-753`), and then the next relayed copy of
-the client's own emission takes the path at any length
-(`Transport.py:1819-1824`): on miauhaus on 2026-11-15 the Loquax home on
-the same host was reached over a 7-hop backbone route for two hours and
-every phone's link request left the box. A client on the IPC socket
-cannot have moved; an expired request says it did not answer, not that
-the route is wrong. The path leaves the client when the client
-disconnects or a newer emission places it elsewhere. The wire is
-unchanged.
+**A local client's own path is not marked.** A path a connected local
+client owns is exempt from the unresponsive mark (order 1881, bounded by
+order 1898; `PATH_KEPT_LOCAL reason=local_client_owns`). The reference
+marks it when the initiator was one hop away (`Transport.py:746-753`),
+and then the next relayed copy of the client's own emission takes the
+path at any length (`Transport.py:1819-1824`): on miauhaus on 2026-11-15
+the Loquax home on the same host was reached over a 7-hop backbone route
+for two hours and every phone's link request left the box. A client on
+the IPC socket cannot have moved; an expired request says it did not
+answer, not that the route is wrong.
+
+The exemption covers only a path the client is known to own, so a client
+cannot hold the path of a destination it does not host. Owned means all
+of:
+
+- the path runs over a connected, online local client's interface, at
+  hops 0 with no next hop (the client's own announce; a HEADER_2 copy
+  another transport node relayed to the client installs a path with a
+  next hop and stays markable);
+- and either the client installed the path before any copy of that
+  emission was heard here (the path's random blobs hold every copy heard,
+  taken or not), or a link proof for the destination, its signature
+  checked against the destination's cached key, came back over the
+  client's interface (the client answered for it). A proof the transport
+  could not check (no announce cached when the link request passed)
+  proves nothing.
+
+The hold ends when the client disconnects (`set_local_client(id, false)`)
+or an announce installs the destination from anywhere else. Every writer
+of the unresponsive state goes through `mark_path_unresponsive`, the two
+offline-interface writers (`distrust_offline_path`,
+`reoriginate_toward_peer_links`) included; an offline interface never
+holds an owned path, so those always mark. Sub-case 4 of the link-table
+expiry refuses the next hop only when the mark was taken, so a kept path
+logs no `PATH_UNRESPONSIVE`.
+
+Against the reference: Python never lets a local client's copy of an
+emission it has already heard from the network displace that path.
+Its equal-or-fewer-hops branch wants an unseen random blob AND a strictly
+newer emission (`Transport.py:1765-1776`, the test at `:1772`), so a
+same-emission copy at hops 0 is refused however short it is. Here the
+same-emission fewer-hops clause (`same_emission_fewer_hops`, Codeberg
+#231) lets the client's hops-0 copy take the path, which is how the
+08:38 field case (the backbone echo landed before the home's own copy)
+put the path back on the box. Without a bound, that clause plus the
+exemption gave a permanent hold to any destination a local client
+replays: the network's copy of the same emission could never win the
+path back. The ownership rule is what keeps that from being a hijack: a
+replay of a destination the network announced first owns nothing until
+a link proof comes back over the client, which only the holder of the
+destination's key can produce. What remains a deviation under the
+deviation rule is the hold on an owned path: the wire is unchanged (a
+path entry and its state are ours alone), the semantics a Python peer
+sees are unchanged (link requests still reach the destination, over the
+shorter route), and it measurably serves Priority 1 (the two hours of
+miauhaus traffic leaving the box). Tests: the transport units
+`a_local_clients_replay_of_a_network_destination_is_not_pinned`,
+`a_disconnected_clients_path_is_markable_again`,
+`a_relayed_announce_from_a_local_client_stays_markable`,
+`a_proof_over_the_client_makes_its_path_its_own`,
+`a_kept_local_path_gets_no_next_hop_refusal`, and
+`leviculum-std/tests/local_client_path_ownership.rs`.
 
 The mvr is `leviculum-core/src/node/mvr_path_answer_through_us.rs`: the
 three-node loop (a neighbour that routes the destination through us

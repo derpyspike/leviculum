@@ -448,6 +448,16 @@ pub struct MemoryStorage {
     /// time the client is seen.
     local_client_known_dests: BoundedMap<[u8; TRUNCATED_HASHBYTES], u64>,
 
+    // Local client path ownership (order 1898)
+    /// Destination to the local client interface that owns its path
+    /// (`Storage::set_local_path_owner`). Removal: an announce that
+    /// installs the destination from elsewhere, the client's disconnect.
+    ///
+    /// **Eviction: oldest first.** Same population as
+    /// `local_client_dest_map`; an owner dropped early only makes its path
+    /// markable again, the behaviour of every path that is not owned.
+    local_path_owners: BoundedMap<[u8; TRUNCATED_HASHBYTES], usize>,
+
     // Discovery path requests
     /// Pending discovery path requests: dest_hash → (requesting_interface, timeout_ms)
     /// Removal: expire_discovery_path_requests() or remove_discovery_path_request()
@@ -530,6 +540,7 @@ impl MemoryStorage {
             known_ratchets: BoundedMap::new(caps.destination_cap),
             local_client_dest_map: BoundedMap::new(caps.local_dest_cap),
             local_client_known_dests: BoundedMap::new(caps.local_dest_cap),
+            local_path_owners: BoundedMap::new(caps.local_dest_cap),
             discovery_path_requests: BoundedMap::new(caps.path_cap),
             dest_ratchet_keys: BoundedMap::new(caps.local_dest_cap),
             known_dest_use: BoundedMap::new(caps.destination_cap),
@@ -624,6 +635,7 @@ impl MemoryStorage {
         self.known_ratchets.clear();
         self.local_client_dest_map.clear();
         self.local_client_known_dests.clear();
+        self.local_path_owners.clear();
         self.discovery_path_requests.clear();
         self.dest_ratchet_keys.clear();
         self.known_dest_use.clear();
@@ -958,6 +970,18 @@ impl MemoryStorage {
         let _ = writeln!(
             s,
             "local_client_dest_map: {} dest entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
+            n, raw, est
+        );
+
+        // local_path_owners: BTreeMap<[u8; 16], usize>, 3x (order 1898)
+        let n = self.local_path_owners.len();
+        let raw =
+            (n * (HASH_ORDER_BYTES + TRUNCATED_HASHBYTES + core::mem::size_of::<usize>())) as u64;
+        let est = raw * 3;
+        total += est;
+        let _ = writeln!(
+            s,
+            "local_path_owners: {} entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
             n, raw, est
         );
 
@@ -1680,6 +1704,11 @@ impl Storage for MemoryStorage {
                 self.local_client_known_dests.capacity(),
             ),
             CollectionCount::bounded(
+                "local_path_owners",
+                self.local_path_owners.len(),
+                self.local_path_owners.capacity(),
+            ),
+            CollectionCount::bounded(
                 "discovery_path_requests",
                 self.discovery_path_requests.len(),
                 self.discovery_path_requests.capacity(),
@@ -1743,6 +1772,22 @@ impl Storage for MemoryStorage {
     fn remove_local_client_dests(&mut self, iface_id: usize) {
         self.local_client_dest_map
             .retain(|(i, _), _| *i != iface_id);
+    }
+
+    fn set_local_path_owner(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], iface_id: usize) {
+        self.local_path_owners.insert(dest_hash, iface_id);
+    }
+
+    fn local_path_owner(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<usize> {
+        self.local_path_owners.get(dest_hash).copied()
+    }
+
+    fn clear_local_path_owner(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) {
+        self.local_path_owners.remove(dest_hash);
+    }
+
+    fn clear_local_path_owners_of(&mut self, iface_id: usize) {
+        self.local_path_owners.retain(|_, i| *i != iface_id);
     }
 
     // Local Client Known Destinations
@@ -3016,6 +3061,7 @@ mod diagnostic_model_tests {
         s.set_path_request_time(hash(6), 0);
         s.remember_known_ratchet(hash(7), [0u8; RATCHET_SIZE], 0);
         s.set_local_client_known_dest(hash(8), 0);
+        s.set_local_path_owner(hash(8), 0);
         s.set_discovery_path_request(hash(9), 0, 0);
 
         let (dump, _) = s.diagnostic_dump_non_packet_cache();
@@ -3063,6 +3109,10 @@ mod diagnostic_model_tests {
         assert_eq!(
             raw_bytes_of(&dump, "local_client_known_dests"),
             (HASH_ORDER_BYTES + TRUNCATED_HASHBYTES + size_of::<u64>()) as u64,
+        );
+        assert_eq!(
+            raw_bytes_of(&dump, "local_path_owners"),
+            (HASH_ORDER_BYTES + TRUNCATED_HASHBYTES + size_of::<usize>()) as u64,
         );
         assert_eq!(
             raw_bytes_of(&dump, "discovery_path_requests"),

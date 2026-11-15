@@ -1467,6 +1467,22 @@ impl leviculum_core::traits::Storage for Storage {
     fn remove_local_client_dests(&mut self, iface_id: usize) {
         self.inner.remove_local_client_dests(iface_id)
     }
+
+    fn set_local_path_owner(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], iface_id: usize) {
+        self.inner.set_local_path_owner(dest_hash, iface_id)
+    }
+
+    fn local_path_owner(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<usize> {
+        self.inner.local_path_owner(dest_hash)
+    }
+
+    fn clear_local_path_owner(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) {
+        self.inner.clear_local_path_owner(dest_hash)
+    }
+
+    fn clear_local_path_owners_of(&mut self, iface_id: usize) {
+        self.inner.clear_local_path_owners_of(iface_id)
+    }
     // Local Client Known Destinations
     fn set_local_client_known_dest(
         &mut self,
@@ -1574,6 +1590,25 @@ mod tests {
             .tempdir()
             .unwrap();
         (Storage::new(&path).unwrap(), path)
+    }
+
+    /// Order 1898: lnsd's store keeps a local client's path ownership. The
+    /// trait's default keeps nothing, so a missing delegation here would
+    /// leave every local client's path markable without a test going red.
+    #[test]
+    fn local_path_ownership_is_kept_and_cleared() {
+        use leviculum_core::traits::Storage as _;
+        let (mut s, _dir) = temp_storage();
+        let a = [0xA1; TRUNCATED_HASHBYTES];
+        let b = [0xB2; TRUNCATED_HASHBYTES];
+        s.set_local_path_owner(a, 3);
+        s.set_local_path_owner(b, 4);
+        assert_eq!(s.local_path_owner(&a), Some(3));
+        s.clear_local_path_owner(&a);
+        assert_eq!(s.local_path_owner(&a), None);
+        assert_eq!(s.local_path_owner(&b), Some(4));
+        s.clear_local_path_owners_of(4);
+        assert_eq!(s.local_path_owner(&b), None);
     }
 
     /// Codeberg #336: the names come off the filesystem, so `hex_decode`
