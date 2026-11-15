@@ -336,7 +336,7 @@ fn opt_int(v: Option<i64>) -> Value {
 ///     `r_battery_state != 0x00`).
 ///   - `last_rssi` (int dBm) / `last_snr` (float dB) -> only once the device
 ///     has reported a received packet via `apply_radio_stat`
-///     (interfaces/rnode.rs:2157-2165). These two are ours: Python does not
+///     (leviculum-std/src/interfaces/rnode.rs#apply_radio_stat). These two are ours: Python does not
 ///     place them in the dict (its RSSI feeds per-packet reporting), so they
 ///     are emitted as additive keys and omitted while `None` — rnstatus
 ///     renders by key lookup (rnstatus.py:475-533) and ignores them.
@@ -4177,11 +4177,11 @@ mod tests {
 
     // Codeberg #140: the reported interface type must come from the transport
     // the interface was built over, not from its name. The driver names a
-    // configured RNode `rnode_<idx>` (driver/interface_build/rnode.rs:82) —
+    // configured RNode `rnode_<idx>` (leviculum-std/src/driver/interface_build/rnode.rs#build) —
     // a peer/instance label that matches none of `interface_type`'s name
     // prefixes, so a LoRa radio is reported as the generic "Interface". That
     // is not only a wrong medium column in rnstatus: `itype` also picks the
-    // bitrate guess (handlers.rs:829-838), so the radio is advertised at 10 Mbps.
+    // bitrate guess (leviculum-std/src/rpc/handlers.rs#default_bitrate), so the radio is advertised at 10 Mbps.
     #[test]
     fn interface_type_comes_from_the_transport_not_the_name() {
         use crate::clock::SystemClock;

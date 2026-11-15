@@ -806,15 +806,35 @@ check-submodules:
 check-processor-seam:
     @bash scripts/check-processor-compile-fail.sh
 
-# Guarantee C step 3: `path:line` citations in docs/src/** and in the Rust
-# sources of leviculum-core/-lxmf/-std must still point at what they claim.
-# ~3 s, and the leviculum-std test deps are already built by `mvr`, so it is
-# nearly free here. No tier ran this suite before — `fast` runs `--lib` only
-# and `standard` names leviculum-std suites one by one — which is the
-# Guarantee-B-masking-C shape the concept page warns about.
-[doc('Check that path:line citations still point at what they claim')]
+# Guarantee C step 3: citations must still point at what they claim.
+# Living texts cite code by name (`<path>#<Item>`, order 1848,
+# docs/src/concepts/checks-and-citations.md "Citations name items"):
+# scripts/check-name-citations.py resolves every one of them and refuses a
+# `file:line` citation outside the shrinking list of files not converted
+# yet (scripts/line-citations-pending.txt); its selftest is the positive
+# control (a renamed item, an ambiguous name, a deleted anchor and a line
+# citation fail, a moved item stays green). The two take about 5 s. The
+# line citations still standing in the pending files, and the ones into the
+# pinned references, stay under the cargo test, which reads the old form.
+# No tier ran this suite before — `fast` runs `--lib` only and `standard`
+# names leviculum-std suites one by one — which is the Guarantee-B-masking-C
+# shape the concept page warns about.
+[doc('Check that citations still point at what they claim')]
 citation-guard:
+    python3 scripts/citations-selftest.py
+    python3 scripts/check-name-citations.py
     {{manifest}} citation-guard -- cargo test -p leviculum-std --test doc_citations -- --nocapture
+
+# Order 1848: the book turns each name citation into a link to the item's
+# current lines (scripts/mdbook-citations.py). mdbook only warns when a
+# preprocessor fails, so this builds the book and checks a sample of 30 links
+# against the tree, and that no citation span went unlinked. Needs mdbook,
+# which the gate hosts have (scripts/install-ci.sh); about 3 s.
+[doc('Build the book and check its citation links land')]
+book-citation-links:
+    rm -rf target/book-citation-links
+    mdbook build docs -d {{justfile_directory()}}/target/book-citation-links
+    python3 scripts/check-book-citation-links.py --book target/book-citation-links
 
 # Codeberg #205: no commit since the pinned baseline may carry a machine-
 # authorship trailer. ~20 ms — one `git log` over the range and one `awk`.

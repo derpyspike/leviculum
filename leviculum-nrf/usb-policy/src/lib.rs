@@ -171,12 +171,12 @@ pub const DEFAULT_MODULATION: Modulation = Modulation {
 };
 
 /// lnflash's answer window for a radio-config frame
-/// (`ACK_WITHIN`, `lnflash/src/radio.rs:57`).
+/// (`ACK_WITHIN`, `lnflash/src/radio.rs#ACK_WITHIN`).
 pub const LNFLASH_ACK_WITHIN_MS: u64 = 3_500;
 
 /// The tightest host answer window: lnsd's legacy config sender waits this
 /// long per attempt (`CONFIG_ACK_TIMEOUT`,
-/// `leviculum-std/src/interfaces/serial.rs:504`).
+/// `leviculum-std/src/interfaces/serial.rs#drain_stale_input`).
 pub const LNSD_CONFIG_ACK_TIMEOUT_MS: u64 = 2_000;
 
 /// How long a radio config may wait for the LoRa task to drain the previous

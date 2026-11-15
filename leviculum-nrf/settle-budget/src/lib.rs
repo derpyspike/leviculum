@@ -12,7 +12,7 @@
 //! nothing drains `LORA_INCOMING`.
 //!
 //! That channel holds four frames and its producer is a **blocking** send
-//! (`leviculum-nrf/src/lora.rs:106`): a LoRa task that finds it full parks in
+//! (`leviculum-nrf/src/lora.rs#note_frame_decoded`): a LoRa task that finds it full parks in
 //! the hand-off with no receive window standing. The board is then deaf, and
 //! the night run measured exactly that — `SX_RX_ARM site=ack dark_ms=10284`
 //! and `dark_ms=17870` on the serving T114 while `lnode_b` logged ten
@@ -100,7 +100,7 @@ pub const FRAME_BUDGET_US: u32 = 166_000;
 /// two are made to agree.
 pub const GRIND_SLICE_ROUNDS: u32 = 20;
 
-/// Slots in `LORA_INCOMING` (`leviculum-nrf/src/lora.rs:106`). The producer
+/// Slots in `LORA_INCOMING` (`leviculum-nrf/src/lora.rs#note_frame_decoded`). The producer
 /// blocks when they are full, which is what turns a busy main loop into a dark
 /// receiver rather than a dropped packet.
 pub const HANDOFF_SLOTS: u32 = 4;

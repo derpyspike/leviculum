@@ -441,7 +441,7 @@ fn decode_announce(
     // Two verdicts, because one would hide the interesting case. `valid` is
     // what a peer decides: the reference and our own stack both call the
     // permissive Ed25519 verifier (`identity.verify`,
-    // `leviculum-core/src/identity.rs:226`), so that is what determines
+    // `leviculum-core/src/identity.rs#Identity::verify`), so that is what determines
     // whether this announce is accepted on the mesh. `strict_valid`
     // additionally rejects a small-order public key and a non-canonical R —
     // the shape where an all-zero key and an all-zero signature verify

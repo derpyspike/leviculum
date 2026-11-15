@@ -392,7 +392,7 @@ pub async fn run_listen(
     // makes it early enough: a sender's identify and advertisement leave back
     // to back, so an advertisement can reach the core before the event has
     // crossed the channel, and an `AcceptNone` link discards it silently
-    // (link_management.rs:2508-2513).
+    // (leviculum-core/src/node/link_management.rs#NodeCore::handle_request_payload).
     dest.set_resource_strategy(leviculum_core::resource::ResourceStrategy::AcceptApp);
     let dest_hash = *dest.hash();
     node.register_destination(dest);

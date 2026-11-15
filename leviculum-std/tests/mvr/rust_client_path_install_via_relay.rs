@@ -54,7 +54,7 @@ async fn rust_client_installs_path_via_relay_hops2() {
     // Daemon B: will relay announces from A to the Rust client.
     // Spawn second, then wire its TCPClientInterface to daemon A via
     // the existing harness `add_client_interface` JSON-RPC method
-    // (see `add_client_interface`, `leviculum-std/tests/rnsd_interop/harness.rs:1878`).
+    // (see `add_client_interface`, `leviculum-std/tests/rnsd_interop/harness.rs#TestDaemon::add_client_interface`).
     let daemon_b = TestDaemon::start().await.expect("start daemon B");
     daemon_b
         .add_client_interface("127.0.0.1", daemon_a.rns_port(), Some("relay_to_A"))
@@ -62,7 +62,7 @@ async fn rust_client_installs_path_via_relay_hops2() {
         .expect("wire daemon B → daemon A");
 
     // Let the TCP peering settle. `TestDaemon::start_chain` at
-    // harness.rs:1918 uses a 500 ms sleep after the wire-up for the
+    // leviculum-std/tests/rnsd_interop/harness.rs#TestDaemon::add_client_interface_rate_limited uses a 500 ms sleep after the wire-up for the
     // same reason.
     tokio::time::sleep(Duration::from_millis(500)).await;
 

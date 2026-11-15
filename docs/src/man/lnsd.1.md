@@ -90,7 +90,7 @@ Sending SIGUSR1 prints a diagnostic dump of internal state to stderr.
 *<config_dir>/storage/*
 :   Storage directory for identities, known destinations, and cached path state.
 
-The three configuration directories are tried in that order, the lookup order of Python-Reticulum, stated once in the installation guide, section "Configuration directory" (`docs/src/guide/installation.md:104-117`).
+The three configuration directories are tried in that order, the lookup order of Python-Reticulum, stated once in the installation guide, section "Configuration directory" (`docs/src/guide/installation.md#configuration-directory`).
 
 ## CONFIGURATION DIRECTORY
 

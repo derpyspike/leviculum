@@ -37,7 +37,7 @@ interaction model across all three?
 | keyboard first: the palette, no modes, `Enter` sends | [Loquax: the user interface](loquax-ui.md), section 1 |
 | the delivery glyphs (since 1232 the tick ladder `◷ ✓ ✓✓ ✔✔ !`) and the braille spinner, with an ASCII fallback | [Loquax: the user interface](loquax-ui.md), section 2 |
 | one palette: the GUI takes its colours from the token table of `leviculum-ui/src/tokens.rs`, the truecolor values of each theme, as both terminal programs do | [keys, mouse and layout](loquax-keys-and-layout.md), section 5, "Colour" |
-| licence compatible with `AGPL-3.0-or-later` | `Cargo.toml:89`, [Licensing and third-party notices](licensing-and-notices.md) |
+| licence compatible with `AGPL-3.0-or-later` | `Cargo.toml#workspace.default-members`, [Licensing and third-party notices](licensing-and-notices.md) |
 | German and Polish text, in the UI and in received messages | Lew, 2026-10-25 |
 | Rust only, no webview | Lew, 2026-10-25 |
 | the M9 builds on the esp Xtensa toolchain | [The ThinkNode M9](thinknode-m9.md) |
@@ -127,7 +127,7 @@ Licences that would ship (count of crates per licence expression):
 - **iced**: MIT or Apache-2.0 variants, BSD, Zlib, ISC, one
   `Apache-2.0 OR GPL-2.0-only` (taken as Apache-2.0), one
   `(MIT OR Apache-2.0) AND Unicode-3.0`. Nothing our `about.toml`
-  `accepted` list (`about.toml:44`) lacks.
+  `accepted` list (`about.toml#accepted`) lacks.
 
 ### The M9 path, at the desk
 
@@ -226,7 +226,7 @@ M9 through mousefood, sharing the terminal frontend's view code.
 
 - The M9 and the terminal are the same renderer and the same widget
   model. ratatui 0.30.2 is what `lnomad` already uses
-  (`lnomad/Cargo.toml:157`). Only the desktop GUI is a renderer of its
+  (`lnomad/Cargo.toml#dependencies.ratatui`). Only the desktop GUI is a renderer of its
   own.
 - One interaction model then lives where [Loquax: the user
   interface](loquax-ui.md) already put it: the one keymap table and the
@@ -242,7 +242,7 @@ M9 through mousefood, sharing the terminal frontend's view code.
 *Moot since the decision for B (2026-10-25, Lew), kept as the record.
 If Slint ever came back, this would need a human legal read first.*
 
-Our work is `AGPL-3.0-or-later` (`Cargo.toml:89`). Slint offers three
+Our work is `AGPL-3.0-or-later` (`Cargo.toml#workspace.default-members`). Slint offers three
 licences ([Slint's LICENSE.md, v1.18.1](https://github.com/slint-ui/slint/blob/v1.18.1/LICENSE.md)):
 
 > 1. Royalty-free License - Permits use in **proprietary** desktop,
@@ -292,7 +292,7 @@ The questions for the legal read:
    used the Royalty-free option and the M9 the GPLv3 option, the two
    builds would ship under different Slint licences.
 3. The notices: `GPL-3.0-only` is not in `about.toml`'s `accepted` list
-   (`about.toml:44`), so `just notices-guard` would refuse the graph
+   (`about.toml#accepted`), so `just notices-guard` would refuse the graph
    until it is added, and every package would carry the GPLv3 text
    beside our AGPL.
 

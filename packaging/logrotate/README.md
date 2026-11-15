@@ -60,7 +60,7 @@ next section says what that costs.
 
 The writer opens the log **once per process** and caches the handle for the
 life of the daemon — `event_log_file`,
-`leviculum-std/src/event_log.rs:668-684`, a `OnceLock<Option<Mutex<File>>>`
+`leviculum-std/src/event_log.rs#EVENT_CATALOG`, a `OnceLock<Option<Mutex<File>>>`
 filled on first use. There is no reopen: no SIGHUP handler, no retry. That
 is deliberate (a failing `open(2)` on the tracing hot path is worse than a
 log that stopped), and it decides the rotation mechanism.

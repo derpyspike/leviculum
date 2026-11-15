@@ -39,13 +39,13 @@
 /// Per-thread arming was necessary and not sufficient. libtest gives each
 /// test its own thread, so no other test's *own* allocations land in this
 /// window — but `tracing` dispatch runs on the thread that emits the event,
-/// and `EventLogLayer::emit`, under `on_event` (`leviculum-std/src/event_log.rs:2495`)
+/// and `EventLogLayer::emit`, under `on_event` (`leviculum-std/src/event_log.rs#EventLogLayer::emit`)
 /// pushes one `String` into the buffer of EVERY capture handle any test has
 /// registered, "regardless of which test emitted it" (that module's own doc).
 /// So the code under test emitting `PKT_TX`
-/// (`leviculum-core/src/transport.rs:5062`) inside the window made THIS
+/// (`leviculum-core/src/transport.rs#Transport::push_broadcast`) inside the window made THIS
 /// thread pay another test's `Vec<String>` growth step: on 2026-09-25,
-/// `link_failure_recovery_silent_resume.rs:520` held the only handle in this
+/// `leviculum-std/tests/mvr/link_failure_recovery_silent_resume.rs#link_failure_recovery_silent_resume_with_forced_announce` held the only handle in this
 /// binary, its buffer crossed 256 -> 512 entries during the calibration
 /// serve, and `512 * size_of::<String>()` = 12 288 B landed in a window whose
 /// whole budget is 4 096 B. Deterministic, and invisible under
@@ -53,9 +53,9 @@
 /// starts. Hence [`Probe::armed`] holds this thread's dispatch at
 /// `NoSubscriber` for the life of the window: the journey the dispatch feeds
 /// is host-only anyway — the firmware takes `leviculum-core` with
-/// `default-features = false` (`leviculum-nrf/Cargo.toml:17`), so
-/// `crate::tracing::enabled!` is the `false` shim at
-/// `leviculum-core/src/lib.rs:83` and the whole `PKT_TX` block is dead code
+/// `default-features = false` (`leviculum-nrf/Cargo.toml#dependencies.leviculum-core`), so
+/// `crate::tracing::enabled!` is the `false` shim
+/// `leviculum-core/src/lib.rs#tracing::noop_enabled` and the whole `PKT_TX` block is dead code
 /// on a board. Muting it measures the board's path, not this host's
 /// observability.
 pub mod alloc_probe {
@@ -64,7 +64,7 @@ pub mod alloc_probe {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// The board heap the measurement is for
-    /// (`HEAP_SIZE`, `leviculum-nrf/heap-budget/src/lib.rs:49`). A single block
+    /// (`HEAP_SIZE`, `leviculum-nrf/heap-budget/src/lib.rs#HEAP_SIZE`). A single block
     /// bigger than this is host-only by construction; see the module
     /// doc.
     pub const BLOCK_CEILING_BYTES: usize = 32 * 1024;

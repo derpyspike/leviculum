@@ -42,7 +42,7 @@
 //! duller than the async API. It is **not** primarily
 //! `futures::executor::block_on` over a smuggled [`super::PacketSender`]: that
 //! sender takes the core lock only after its `.await` has reserved room in
-//! the channel (`leviculum-std/src/driver/sender.rs:89-101`), so whenever the
+//! the channel (`leviculum-std/src/driver/sender.rs#PacketSender::send`), so whenever the
 //! channel has room, which is nearly always, such a call gets past the
 //! channel and deadlocks on the mutex.
 //!
@@ -115,14 +115,14 @@
 //! Both consumers in this tree already do exactly that, which is why the rule
 //! is written here rather than rediscovered a third time:
 //!
-//! * `absorb_core` (leviculum-std/tests/rnsd_interop/lxmf_interop_tests.rs:177)
+//! * `absorb_core` (leviculum-std/tests/rnsd_interop/lxmf_interop_tests.rs#LxmfClient::absorb_core)
 //!   walks a work queue of `TickOutput`s, routing every event through
 //!   `LxmfRouter::handle_event` and pushing the output that produces back onto
 //!   the queue.
-//! * `absorb` (leviculum-lxmf-node/src/processor.rs:544) is the same loop
+//! * `absorb` (leviculum-lxmf-node/src/processor.rs#LxmfHelperProcessor::absorb) is the same loop
 //!   inside a real hook: it re-feeds each event to the router *and* forwards
 //!   it on the returned `TickOutput`, under a round cap —
-//!   `MAX_ABSORB_ROUNDS` (leviculum-lxmf-node/src/processor.rs:94).
+//!   `MAX_ABSORB_ROUNDS` (leviculum-lxmf-node/src/processor.rs#MAX_ABSORB_ROUNDS).
 //!
 //! # Registration happens before the channel exists
 //!
@@ -175,7 +175,7 @@ use super::StdNodeCore;
 /// (0.8 ms) and unpacking one with signature verification (3.2 ms) are listed
 /// as costs that explicitly do *not* justify phasing. The failure mode it
 /// names is `LxmfRouter::tick`
-/// (`docs/src/concepts/core-lock-budget.md:147`) at 126.6 ms for 8 due 256 KiB
+/// (`docs/src/concepts/core-lock-budget.md#what-the-payload-class-was-worth-as-a-number`) at 126.6 ms for 8 due 256 KiB
 /// messages, against the 141 ms measured `send_resource` stall. 5 ms
 /// therefore sits just above everything the page calls acceptable and ~25x
 /// below what it calls the defect, which is the widest gap available that
@@ -253,7 +253,7 @@ pub const PROCESSOR_TICK_BUDGET: Duration = Duration::from_millis(5);
 ///
 /// # The one call on `core` that must not be made
 ///
-/// `NodeCore::send_resource` (`leviculum-core/src/node/mod.rs:1893`) is `pub`
+/// `NodeCore::send_resource` (`leviculum-core/src/node/mod.rs#NodeCore::send_resource`) is `pub`
 /// and reachable on the handle. It is the composed single call that
 /// `docs/src/concepts/core-lock-budget.md` was written about: 141 ms under the
 /// lock for a 1 MiB payload, a 32 % inbound-throughput stall (Codeberg #152).
