@@ -1255,9 +1255,11 @@ pub const EVENT_CATALOG: &[EventSchema] = &[
         name: "PATH_UNRESPONSIVE",
         required_keys: &["dst", "next_hop", "iface", "path_hops"],
     },
-    // Order 1881: an unresponsive mark was refused because the path runs
-    // through a connected local client's interface (`iface`); the client
-    // cannot have moved, so the path stays on the box.
+    // Order 1881, bounded by order 1898: an unresponsive mark was refused
+    // because the path is a connected local client's own (`iface`, reason
+    // `local_client_owns`: hops 0, no next hop, installed by the client
+    // first or proven over it); the client cannot have moved, so the path
+    // stays on the box.
     EventSchema {
         name: "PATH_KEPT_LOCAL",
         required_keys: &["dst", "iface", "reason"],

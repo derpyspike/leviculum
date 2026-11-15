@@ -3354,7 +3354,6 @@ impl Inner {
                 self.sending = true;
                 let mut tap = self.fanout.tap();
                 let client = self.client.clone();
-                let home = self.home.clone();
                 let done = self.finished_tx.clone();
                 let wake = Arc::clone(&self.wake);
                 let (told, woken) = (self.finished_tx.clone(), Arc::clone(&self.wake));
@@ -3368,7 +3367,6 @@ impl Inner {
                     let event = runner::send_home(
                         &mut tap,
                         &client,
-                        &home,
                         to,
                         body,
                         fields,

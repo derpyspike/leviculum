@@ -804,7 +804,7 @@ bytes, and its MDU is 431 (`LORA_LINK_MDU`,
 `loquax/src/home/ask.rs:139`). A response longer than that goes as a
 resource (`leviculum-core/src/node/mod.rs:1843`), which is an
 advertisement, its parts and a proof. The home's own page bound is
-64 KiB of messages (`SYNC_PAGE_BYTES`, `loquax/src/home.rs:387`). So
+64 KiB of messages (`SYNC_PAGE_BYTES`, `loquax/src/home.rs:385`). So
 the client asks smaller pages: `/sync [cursor, page]`, a second element
 that a home from before reads past. The board asks `LORA_PAGE_BYTES`
 (`loquax/src/home/ask.rs:146`), 412 B, the longest answer that still fits
@@ -1642,7 +1642,7 @@ phone pulls from; the bench line is lnsd on schneckenschreck, the
 rendezvous, the home behind it. lnsd's serial interface to the M9 needs
 `interface_mode = gateway`: in the default full mode a path request
 from the board for the home is not discovered onwards
-(`leviculum-core/src/transport.rs:12979`, only access point, gateway
+(`leviculum-core/src/transport.rs:13036`, only access point, gateway
 and roaming re-originate), and the join ends in `NoPath`. The M9 sets
 its own end to Gateway already (`leviculum-esp/src/handheld.rs:245`).
 

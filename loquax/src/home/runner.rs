@@ -13,9 +13,6 @@ use leviculum_core::Identity;
 use leviculum_lxmf::Field;
 use leviculum_std::ReticulumNode;
 
-use super::ask::HomeError;
-use super::pending::{hand_leftovers, hand_until_taken, Hand, Pending};
-use super::wire::Submission;
 use crate::outbox::{Command, Outbox, OutboxEvent, OutboxGone};
 use crate::store::Store;
 use crate::ui::UiEvent;
@@ -33,28 +30,6 @@ pub struct HomeClient {
     pub node: Arc<ReticulumNode>,
 }
 
-/// The network's [`Hand`]: one `/send` ask of the home node, its upload
-/// progress told to `moved` (1662).
-struct Network<'a> {
-    client: &'a HomeClient,
-    budget: Duration,
-    moved: &'a mut (dyn FnMut(f32) + Send),
-}
-
-impl Hand for Network<'_> {
-    async fn hand(&mut self, submission: &Submission) -> Result<[u8; 32], HomeError> {
-        super::client::send_watching(
-            &self.client.node,
-            &self.client.public_key,
-            &self.client.device,
-            submission,
-            self.budget,
-            &mut *self.moved,
-        )
-        .await
-    }
-}
-
 /// One compose send on a client: handed to the home node with `/send`,
 /// which delivers it. The bubble is named after the id the home node gave
 /// it, and takes its later states from the archive's entries on each pull.
@@ -63,18 +38,10 @@ impl Hand for Network<'_> {
 /// arrive before this runner's end does. `progress` hears how far a
 /// submission that goes as a resource has gone (1662), as the event the
 /// screen folds ([`UiEvent::SendProgress`]).
-///
-/// The submission is kept under `home` ([`Pending`]) before it is first
-/// asked, and asked again while the home node is out of reach (order
-/// 1881): the bubble stays sending and the runner waits, rather than
-/// ending in an error after three tries. Only a refusal ends it with an
-/// error; a run that ends first leaves the file for [`pull_watching`] of
-/// the next run to hand over.
 #[allow(clippy::too_many_arguments)]
 pub async fn send_home(
     tap: &mut impl Outbox,
     client: &HomeClient,
-    home: &Path,
     to: [u8; 16],
     body: String,
     fields: Vec<Field>,
@@ -82,36 +49,27 @@ pub async fn send_home(
     settle: Duration,
     progress: &mut (dyn FnMut(UiEvent) + Send),
 ) -> UiEvent {
-    let submission = Submission {
+    let submission = super::wire::Submission {
         client_id: super::client::client_id(),
         destination: to,
         title: Vec::new(),
         content: body.into_bytes(),
         fields,
     };
-    let pending = Pending::at(home);
-    if let Err(error) = pending.keep(&submission) {
-        // Not kept is no reason not to send: it is asked again as long as
-        // this run lasts, and only a restart in that time loses it.
-        tracing::warn!("HOME send not kept: {error}");
-    }
     let mut moved = |share: f32| {
         progress(UiEvent::SendProgress(
             crate::ui::transfer::Transfer::permille(share),
         ))
     };
-    let mut network = Network {
-        client,
+    let accepted = super::client::send_watching(
+        &client.node,
+        &client.public_key,
+        &client.device,
+        &submission,
         budget,
-        moved: &mut moved,
-    };
-    let mut waiting = |error: &HomeError, wait: Duration| {
-        tracing::info!(
-            "HOME send waits {} s for the mailbox: {error}",
-            wait.as_secs()
-        );
-    };
-    let accepted = hand_until_taken(&pending, &mut network, &submission, &mut waiting).await;
+        &mut moved,
+    )
+    .await;
     let message_id = match accepted {
         Ok(id) => id,
         Err(error) => return UiEvent::SendDone(Err(format!("mailbox: {error}"))),
@@ -187,18 +145,6 @@ pub async fn pull_watching(
         settled,
         imported,
     };
-    // Sends an earlier run kept and never saw taken go first (order 1881),
-    // so this pull brings them back as the user's own sent messages.
-    let mut no_progress = |_: f32| {};
-    let mut network = Network {
-        client,
-        budget,
-        moved: &mut no_progress,
-    };
-    let handed = hand_leftovers(&Pending::at(home), &mut network).await;
-    if handed > 0 {
-        tracing::info!("HOME pending sends handed over: {handed}");
-    }
     let mut moved = |done: u64, total: u64| progress(UiEvent::PullProgress { done, total });
     match super::client::pull_into_watching(
         outbox,
