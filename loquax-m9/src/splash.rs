@@ -12,15 +12,14 @@
 //! UI's first redraw, which replaces it.
 //!
 //! The logo is one asset, [`LOGO`]: `loquax-m9/assets/splash-head.1bpp`,
-//! Nessa's head drawn for this panel (1690) — one bit a pixel, rows in
+//! Nessa's head for this panel (1690, 1698) — one bit a pixel, rows in
 //! order, the leftmost pixel of a byte in its high bit, set where the
-//! drawing is ink. A bit a pixel is what the drawing is: it is hand-made
-//! line art for the panel's black, not a scaled copy of the colour icon,
-//! whose cream muzzle and dark nose threshold into a bear's snout. It also
-//! costs 1,568 B of flash where the jackdaw's RGBA cost 50,176.
-//! `scripts/nessa-render.py` writes it from
-//! `loquax-m9/assets/splash-head.svg`; `just nessa-check` holds the tree to
-//! it. The bit is drawn in the theme's ink on the theme's ground, so the
+//! drawing is ink. A bit a pixel is what the drawing is: the source's own
+//! head and face, each shape drawn as white fur, a black cut or a black
+//! outline, not a threshold of the colour icon, whose cream muzzle and dark
+//! nose threshold into a bear's snout. It also costs 1,568 B of flash where
+//! the jackdaw's RGBA cost 50,176. `scripts/nessa-render.py` writes it from
+//! `assets/nessa/nessa-R3-b.svg`; `just nessa-check` holds the tree to it. The bit is drawn in the theme's ink on the theme's ground, so the
 //! splash is the colour the UI then draws over it.
 
 use embedded_graphics::mono_font::MonoTextStyle;

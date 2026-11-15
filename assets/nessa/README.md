@@ -30,9 +30,12 @@ once.
 | `#c4502f` | terracotta: the nose, and the signs |
 | `#f0b860` behind the foreground | the adaptive icon's background (`android/res/values/ic_launcher.xml`) |
 
-The M9's splash is the exception: it is hand-drawn line art in one bit
-(`loquax-m9/assets/splash-head.svg`), because her cream muzzle and dark nose
-threshold into a bear's snout at 112 pixels on black.
+The M9's splash is one bit a pixel, so it takes no colour from this table:
+the script draws the source's head and face in one-bit roles
+(`SPLASH_ROLES` in `scripts/nessa-render.py`), white fur with the eyes, the
+nose and the face's lines cut out and the muzzle one outline, and writes it
+as `loquax-m9/assets/splash-head.svg`. A threshold of the colour head would
+turn her cream muzzle and dark nose into a bear's snout at 112 pixels.
 
 ## What is rendered, and where it lives
 
@@ -56,7 +59,7 @@ first line says which mode ran. `just nessa-check` runs the check, in
 | desktop icons, 256 px | head + speech bubble, head + sign | `packaging/loquax/loquax.png`, `packaging/lnomad/lnomad.png`, `packaging/lnflash/lnflash.png` |
 | the window icon, 128 px | head + speech bubble | `leviculum-ui-iced/assets/window-icon.png` |
 | the handbook's pictures and its tab | head, figure, the round mark | `docs/src/images/nessa-{head,figure}.png`, `docs/src/favicon.svg` |
-| the M9's splash, 1 bit a pixel | `loquax-m9/assets/splash-head.svg` | `loquax-m9/assets/splash-head.{png,1bpp}` |
+| the M9's splash, 1 bit a pixel | head + face in one-bit roles | `loquax-m9/assets/splash-head.{svg,png,1bpp}` |
 
 The website's pages (`site/pages/`) link the handbook's copies at
 `/docs/images/...`, because lblogd serves images only from the operator's file
@@ -67,7 +70,9 @@ area and ships no static assets of its own.
 Nessa is our own work, drawn by Lew Palm for Leviculum, and she ships under
 the same AGPL-3.0 as the rest of the tree (see `LICENSE` at the root). No
 third-party artwork is involved, which is why there is nothing to add to
-`THIRD-PARTY-NOTICES`.
+`THIRD-PARTY-NOTICES`. That holds for every file the script writes, the
+M9's `splash-head.1bpp` included: each is derived from `nessa-R3-b.svg` by
+our own script.
 
 ## Redrawing her
 
@@ -77,9 +82,9 @@ third-party artwork is involved, which is why there is nothing to add to
 2. Run `python3 -I scripts/nessa-render.py`.
 3. Look at `head-256.png` and the smallest launcher PNG. Four pixels of
    muzzle at 48 px is where a face stops being her.
-4. If the splash needs the change, edit
-   `loquax-m9/assets/splash-head.svg` by hand and run the script again; it
-   also writes the `.1bpp` the board burns.
+4. If the source's head or face gained, lost or reordered a shape, the
+   script refuses it until `SPLASH_ROLES` names each shape's one-bit role;
+   then look at `loquax-m9/assets/splash-head.png`.
 5. `just nessa-check`, then commit the SVG, every generated file, and the
    goldens the pictures moved (`loquax-m9/tests/golden/`, the GUI and TUI
    snapshots).
