@@ -210,7 +210,7 @@ const WORLD_UNITS: u64 = 1 << 32;
 
 /// The longitude, degrees, of world x `v` (2^32 units, `v` up to the
 /// world's east edge inclusive: 180).
-fn lon_at(v: u64) -> f64 {
+pub(crate) fn lon_at(v: u64) -> f64 {
     if v >= WORLD_UNITS {
         return 180.0;
     }
@@ -219,17 +219,17 @@ fn lon_at(v: u64) -> f64 {
 
 /// The latitude, degrees, of world y `v` (2^32 units, clamped to the
 /// projection's south edge).
-fn lat_at(v: u64) -> f64 {
+pub(crate) fn lat_at(v: u64) -> f64 {
     f64::from(mercator::lat_of_y(v.min(WORLD_UNITS - 1) as u32)) / 1e7
 }
 
 /// World units per tile at zoom `z`, and per pixel.
-fn tile_units(z: u8) -> u64 {
+pub(crate) fn tile_units(z: u8) -> u64 {
     WORLD_UNITS >> z
 }
 
 /// The tile at zoom `z` holding a longitude; 180 is the last column.
-fn tile_x(lon: f64, z: u8) -> u32 {
+pub(crate) fn tile_x(lon: f64, z: u8) -> u32 {
     let x = if lon >= 180.0 {
         WORLD_UNITS - 1
     } else {
@@ -241,7 +241,7 @@ fn tile_x(lon: f64, z: u8) -> u32 {
 }
 
 /// The tile at zoom `z` holding a latitude, clamped to the projection.
-fn tile_y(lat: f64, z: u8) -> u32 {
+pub(crate) fn tile_y(lat: f64, z: u8) -> u32 {
     let y = mercator::y_of_lat(mercator::LatLon::from_degrees(lat, 0.0).lat_e7);
     (u64::from(y) / tile_units(z)) as u32
 }

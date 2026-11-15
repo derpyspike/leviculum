@@ -11,6 +11,9 @@ use leviculum_map::draw::{draw_in, draw_tiles, Ink};
 use leviculum_map::mercator::{project, LatLon};
 use leviculum_map::region::{Bounds, Region};
 use leviculum_map::viewport::Viewport;
+use leviculum_map_tool::ground::rules::Rules;
+use leviculum_map_tool::ground::sources::{DirFetch, Geomad, Heights, HttpFetch, Kell, LocalFirst};
+use leviculum_map_tool::ground::{cut_ground, GroundOptions};
 use leviculum_map_tool::heights::{cut_heights, DemSource, DirSource, HeightOptions, HttpSource};
 use leviculum_mapcut::cut::{cut, CutOptions, ZoomStats};
 use leviculum_mapcut::http::HttpRange;
@@ -111,6 +114,58 @@ enum Cmd {
         #[arg(long)]
         absent_is_sea: bool,
     },
+    /// Cut a ground pack (1743): ground classes from Kellndorfer's
+    /// Sentinel-1 coherence and backscatter, GeoMAD and the heights of a
+    /// height pack over the same box, z11 tiles in z9 blocks.
+    Ground {
+        #[arg(short, long)]
+        output: PathBuf,
+        /// west,south,east,north in degrees.
+        #[arg(long, allow_hyphen_values = true)]
+        bbox: String,
+        /// The height pack the slopes, relief and wadis come from (a
+        /// `heights` cut over at least the box).
+        #[arg(long)]
+        heights: PathBuf,
+        /// A local directory laid out as the buckets are (`kell/...`,
+        /// `geomad/...`, `geomad/stac.json`), read first; the public
+        /// buckets for what it lacks.
+        #[arg(long)]
+        source: Option<PathBuf>,
+        /// The pilot's rules, without stage A's erg guard: the comparison
+        /// the order's report gives.
+        #[arg(long)]
+        pilot_rules: bool,
+        /// Window reach past a block, z11 pixels.
+        #[arg(long, default_value_t = 512)]
+        halo: usize,
+        /// zstd level of the tile frames.
+        #[arg(long, default_value_t = 19)]
+        level: i32,
+        /// Worker threads; the output does not depend on it.
+        #[arg(long)]
+        threads: Option<usize>,
+    },
+    /// Validate a ground pack against OpenStreetMap's tracks (1743): track
+    /// share per class and slope against area share, both halves of the
+    /// box, and the dry lake at Lac Iriki.
+    GroundValidate {
+        pack: PathBuf,
+        /// The height pack the cut read.
+        #[arg(long)]
+        heights: PathBuf,
+        /// A Protomaps archive: a file or an `http(s)://` URL.
+        #[arg(long)]
+        tracks: String,
+        /// west,south,east,north in degrees.
+        #[arg(long, allow_hyphen_values = true)]
+        bbox: String,
+        /// The zoom the tracks are read at: z13 holds the same tracks as
+        /// z14 (313 against 314 km over Erg Chebbi, Protomaps 2026-11-14)
+        /// in a third of the tiles.
+        #[arg(long, default_value_t = 13)]
+        zoom: u8,
+    },
     /// Check a height pack whole and time its decode: every stored tile,
     /// and every derived tile from the block zoom down.
     HeightsInfo { pack: PathBuf },
@@ -199,6 +254,145 @@ fn cmd_heights(output: &Path, bbox: &str, source: &str, mut options: HeightOptio
         s.largest_fetch,
         s.encode_seconds,
         t0.elapsed().as_secs_f64()
+    );
+    Ok(())
+}
+
+fn degrees(bbox: &str) -> Res<[f64; 4]> {
+    let b = parse_bbox(bbox)?;
+    let deg = |v: i32| f64::from(v) / 1e7;
+    Ok([deg(b.west), deg(b.south), deg(b.east), deg(b.north)])
+}
+
+fn cmd_ground(
+    output: &Path,
+    bbox: &str,
+    heights: &Path,
+    source: Option<&Path>,
+    mut options: GroundOptions,
+) -> Res<()> {
+    use leviculum_map_tool::ground::sources::{geomad_items, Fetch};
+    options.bbox = degrees(bbox)?;
+    let fetch: Box<dyn Fetch> = match source {
+        Some(dir) => Box::new(LocalFirst(
+            DirFetch(dir.to_path_buf()),
+            HttpFetch::default(),
+        )),
+        None => Box::new(HttpFetch::default()),
+    };
+    let t0 = Instant::now();
+    let heights = Heights::open(heights)?;
+    let [w, s, e, n] = options.bbox;
+    // The halo reaches past the box: ask for the imagery a degree around.
+    let stac = fetch
+        .stac([w - 1.0, s - 1.0, e + 1.0, n + 1.0])?
+        .ok_or("the source holds no GeoMAD catalogue")?;
+    let items = geomad_items(&stac)?;
+    // The pilot's: the coarsest overview whose pixel is at most three
+    // quarters of a z11 pixel at the box's middle latitude.
+    let mid = ((s + n) / 2.0).to_radians().cos();
+    let want = 0.75 * 40_075_016.686 * mid / (256.0 * 2048.0);
+    let kell = Kell::new(fetch.as_ref());
+    let geomad = Geomad::new(fetch.as_ref(), items, want);
+    let mut out = BufWriter::new(File::create(output)?);
+    let st = cut_ground(&heights, &kell, &geomad, &options, &mut out)?;
+    std::io::Write::flush(&mut out)?;
+    let total: u64 = st.generalised[1..].iter().sum();
+    let share = |a: &[u64; 10]| -> String {
+        let t: u64 = a[1..].iter().sum::<u64>().max(1);
+        (1..10)
+            .map(|k| format!("{:.1}", 100.0 * a[k] as f64 / t as f64))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    println!(
+        "MAPTOOL ground blocks={} tiles={} bytes={} pixels={} rules={} raw_pct={} generalised_pct={} no_radar={} no_imagery={} radar_bytes={} imagery_bytes={} wall_s={:.1}",
+        st.blocks,
+        st.tiles,
+        st.bytes,
+        total,
+        if options.rules == Rules::PILOT { "pilot" } else { "stage-a" },
+        share(&st.raw),
+        share(&st.generalised),
+        st.no_radar,
+        st.no_imagery,
+        st.radar_bytes,
+        st.imagery_bytes,
+        t0.elapsed().as_secs_f64()
+    );
+    Ok(())
+}
+
+fn cmd_ground_validate(pack: &Path, heights: &Path, tracks: &str, bbox: &str, zoom: u8) -> Res<()> {
+    use leviculum_map::ground::Class;
+    use leviculum_map_tool::ground::validate::{validate, GroundPack, Shares, SLOPE_EDGES};
+    let bbox = degrees(bbox)?;
+    let mut ground = GroundPack::open(pack)?;
+    let heights = Heights::open(heights)?;
+    let input = if tracks.starts_with("http://") || tracks.starts_with("https://") {
+        Input::Http(HttpRange::new(tracks))
+    } else {
+        Input::File(File::open(tracks)?)
+    };
+    let archive = Archive::from_source(input)?;
+    let t0 = Instant::now();
+    let v = validate(&mut ground, &heights, &archive, zoom, bbox)?;
+    let line = |name: &str, s: &Shares, keys: &[(usize, String)]| {
+        let parts: Vec<String> = keys
+            .iter()
+            .map(|(k, label)| {
+                let (t, a, r) = s.ratio(*k);
+                format!("{label}={:.1}/{:.1}/{:.2}", 100.0 * t, 100.0 * a, r)
+            })
+            .collect();
+        println!(
+            "MAPTOOL ground-validate {name} track%/area%/ratio {}",
+            parts.join(" ")
+        );
+    };
+    let classes: Vec<(usize, String)> = Class::ALL
+        .iter()
+        .map(|c| (*c as usize, format!("{c:?}")))
+        .collect();
+    println!(
+        "MAPTOOL ground-validate track_km={:.0} tiles={} bytes={} wall_s={:.1}",
+        v.km,
+        v.tiles,
+        v.bytes,
+        t0.elapsed().as_secs_f64()
+    );
+    line("classes", &v.classes, &classes);
+    line("west", &v.west, &classes);
+    line("east", &v.east, &classes);
+    let mut slopes = Vec::new();
+    let mut lo = 0.0;
+    for (k, e) in SLOPE_EDGES.iter().enumerate() {
+        slopes.push((k, format!("{lo}-{e}deg")));
+        lo = *e;
+    }
+    slopes.push((SLOPE_EDGES.len(), format!(">{lo}deg")));
+    line("slopes", &v.slopes, &slopes);
+    let total: u64 = v.chebbi[1..].iter().sum::<u64>().max(1);
+    let shares: Vec<String> = Class::ALL
+        .iter()
+        .map(|c| {
+            format!(
+                "{c:?}={:.1}",
+                100.0 * v.chebbi[*c as usize] as f64 / total as f64
+            )
+        })
+        .collect();
+    println!(
+        "MAPTOOL ground-validate chebbi pixels={total} mountain_px={} pct {}",
+        v.chebbi[Class::Mountain as usize],
+        shares.join(" ")
+    );
+    let (osm, lake, both) = v.lake;
+    println!(
+        "MAPTOOL ground-validate iriki osm_px={osm} dry_lake_px={lake} both_px={both} recall={:.3} precision={:.3} lake_over_osm={:.2}",
+        both as f64 / osm.max(1) as f64,
+        both as f64 / lake.max(1) as f64,
+        lake as f64 / osm.max(1) as f64
     );
     Ok(())
 }
@@ -651,6 +845,40 @@ fn main() -> Res<()> {
                 absent_is_sea,
             },
         ),
+        Cmd::Ground {
+            output,
+            bbox,
+            heights,
+            source,
+            pilot_rules,
+            halo,
+            level,
+            threads,
+        } => cmd_ground(
+            &output,
+            &bbox,
+            &heights,
+            source.as_deref(),
+            GroundOptions {
+                bbox: [0.0; 4],
+                rules: if pilot_rules {
+                    Rules::PILOT
+                } else {
+                    Rules::STAGE_A
+                },
+                halo,
+                level,
+                threads: threads
+                    .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get())),
+            },
+        ),
+        Cmd::GroundValidate {
+            pack,
+            heights,
+            tracks,
+            bbox,
+            zoom,
+        } => cmd_ground_validate(&pack, &heights, &tracks, &bbox, zoom),
         Cmd::HeightsInfo { pack } => cmd_heights_info(&pack),
         Cmd::HeightsCatalogue { output, packs } => {
             let catalogue = leviculum_map_tool::heights::write_catalogue(&packs, &output)?;
