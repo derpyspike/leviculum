@@ -33,3 +33,33 @@ pub fn channels() -> BleChannels {
     crate::log::hook_ble_link();
     leviculum_ble_link::channels()
 }
+
+#[cfg(test)]
+mod tests {
+    /// Audit 1715: the family's one install point puts the firmware's log
+    /// under the shared crate. Before the call a `leviculum_ble_link` line
+    /// goes nowhere (no sink); after it, the same line is in `LOG_RING`.
+    #[test]
+    fn channels_installs_the_firmware_log_as_the_shared_crates_sink() {
+        crate::log::open_runtime_drain();
+        let ring_text = || {
+            let mut out = alloc::string::String::new();
+            let mut chunk = [0u8; 256];
+            loop {
+                let n = crate::log::LOG_RING.read(&mut chunk);
+                if n == 0 {
+                    return out;
+                }
+                out.push_str(&alloc::string::String::from_utf8_lossy(&chunk[..n]));
+            }
+        };
+        let _ = ring_text();
+        let _channels = super::channels();
+        leviculum_ble_link::session::note_dead_end(0x00c0_ffee_1715, "sink-proof");
+        let text = ring_text();
+        assert!(
+            text.contains("[BLE ] BLE_DIAL_DEAD_END addr=00c0ffee1715 reason=sink-proof"),
+            "the shared crate's line did not reach the firmware ring: {text:?}"
+        );
+    }
+}

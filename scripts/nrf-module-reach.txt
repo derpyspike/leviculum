@@ -59,7 +59,7 @@ src/transport_stats.rs (169): log lora
 src/usb.rs (1586): banner ble boards chtm heap_census log lora media mgmt name pn position postmortem_query radio_store record_store remote_dfu reset_stack_watermark telemetry
 src/vext.rs (87): boards log
 firmware/src/battery.rs (468): board_state fakes log seams
-firmware/src/ble_link.rs (35): log
+firmware/src/ble_link.rs (65): log
 firmware/src/board_state.rs (138): display
 firmware/src/boot_count.rs (203): fakes log seams
 firmware/src/boot_trace.rs (152): log
