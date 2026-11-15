@@ -3156,7 +3156,7 @@ mod tests {
         );
     }
 
-    /// Audit 1821: the phone wakes at `next_due_ms` (MapView.java:1252-1264,
+    /// Audit 1821: the phone wakes at `next_due_ms` (loquax-android/android/src/network/leviculum/loquax/MapView.java#MapView.drawFrames,
     /// at least 50 ms). When the earliest due box is an off-screen one that
     /// cannot start because an on-screen box ahead of it still waits
     /// (start_next's screen_waits), a wake of 0 makes the phone redraw

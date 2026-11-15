@@ -71,6 +71,7 @@
 //! and what is measured is the sequence of frames the interface hands it.
 //!
 //! Sans-hardware, deterministic, a few seconds.
+#![cfg(feature = "serial")]
 
 use std::sync::Arc;
 use std::sync::Mutex;

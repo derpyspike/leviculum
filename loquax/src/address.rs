@@ -3,7 +3,7 @@
 //! An address on the wire is a 16-byte destination hash, so on a command line
 //! it is 32 hex characters. The one accepted decoration is the `lxmf@` prefix
 //! `lnomad` puts on the clipboard when a page links a correspondent
-//! (`follow_link`, `lnomad/src/app/event.rs:1597-1606`): that handoff exists
+//! (`follow_link`, `lnomad/src/app/event.rs#toggle_identify`): that handoff exists
 //! precisely so the address can be pasted here, and refusing the form the
 //! browser produces would break it for the sake of strictness. The other is
 //! a whole contact code, `lxma://<address>:<key>` ([`crate::lxma`]), which

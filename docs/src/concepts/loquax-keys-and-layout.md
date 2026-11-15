@@ -27,7 +27,7 @@ colour part of section 5 ("Colour") is proposed, not decided.
 `lnomad` is operable with the mouse like a classic browser, with the
 browser's keyboard, and with the typical Emacs and vi commands, all at
 once: one keymap whose rows carry the vi, Emacs and arrow spellings of the
-same motion side by side (`SCROLL_ROWS`, `leviculum-ui/src/keymap.rs:666`,
+same motion side by side (`SCROLL_ROWS`, `leviculum-ui/src/keymap.rs#SCROLL_ROWS`,
 which were `lnomad`'s own `SCROLL_KEYS` until the keymap slice;
 the mechanism is described under [architecture](loquax-architecture.md),
 section 1). `loquax` takes the principle over, with three substitutions:
@@ -313,7 +313,7 @@ and the palette finds the action by the chat program's word too (`new
 chat`, `find`).
 
 **`:q` quits for free.** The palette's fuzzy match is a subsequence test
-(`fuzzy_match`, `leviculum-ui/src/commands.rs:256`), and `quit` is the only
+(`fuzzy_match`, `leviculum-ui/src/commands.rs#fuzzy_match`), and `quit` is the only
 palette name containing a `q`, so `:`, `q`, `Enter` quits as a vi user
 expects. That stays true only while it is tested, so the keymap slice
 pins it.
@@ -814,7 +814,7 @@ or fills a gap it leaves:
   blank row under the last of them when an unpinned one follows. No key and
   no mouse target, as the element text has it.
 - **The palette ranks** a name typed whole and then one it begins before
-  the scattered matches (`leviculum-ui/src/commands.rs:268`); without it
+  the scattered matches (`leviculum-ui/src/commands.rs#filter`); without it
   `:pin` and `Enter` ran `previous conversation`, whose letters hold
   `p`, `i`, `n` in order.
 - **The unread count** and the `new` rule survive a restart: a conversation
@@ -832,7 +832,7 @@ foreground colours can carry the two sides in a terminal the way Signal
 and WhatsApp do on the phone. They can. This part says how; Lew took all
 five proposals of part 6 as they stood, and "Built" after it names where
 the build differs from the text. The table is `leviculum-ui/src/tokens.rs`
-(`tokens`, `leviculum-ui/src/tokens.rs:304`).
+(`tokens`, `leviculum-ui/src/tokens.rs#tokens`).
 
 The model is the desktop apps': Signal Desktop and WhatsApp Desktop tint
 our own blocks in the app's accent and draw the other side's in a neutral
@@ -896,7 +896,7 @@ xterm palette; over the cyan one the red (1) is 3.0:1 and the green (2)
 1.1:1. The glyph carries the state on its own (rule 3 below).
 
 The 256 tier names its own indexes rather than sending the truecolor
-values through `rgb_to_ansi256` (`leviculum-ui/src/color.rs:240`). The
+values through `rgb_to_ansi256` (`leviculum-ui/src/color.rs#rgb_to_ansi256`). The
 nearest index does not keep contrast: the dark own time `#a9c1e6` on
 `#1d3f6e` is 5.8:1, its nearest pair 146 on 23 is 3.6:1, and the light one
 falls from 5.9:1 to 4.3:1.
@@ -905,8 +905,8 @@ falls from 5.9:1 to 4.3:1.
 
 1. `--no-color`, or `NO_COLOR` set and not empty: monochrome.
 2. `--color truecolor|256|16`: that tier. `lnomad` had the flag with two
-   values (`lnomad/src/main.rs:71`); `loquax` has it now
-   (`loquax/src/main.rs:454`), and both have `16`.
+   values (`lnomad/src/main.rs#Args::color`); `loquax` has it now
+   (`loquax/src/main.rs#TuiArgs::color`), and both have `16`.
 3. `COLORTERM` is `truecolor` or `24bit`: truecolor (the rule
    `resolve_depth` had before 1042).
 4. `TERM` contains `256color`: 256. `xterm-256color`, `tmux-256color` and
@@ -917,7 +917,7 @@ falls from 5.9:1 to 4.3:1.
 Before 1042 steps 4 to 6 did not exist and every terminal without
 `COLORTERM` got 256, which the Linux console and a bare `xterm` render as
 their own nearest guess. The ladder is `resolve_tier`
-(`leviculum-ui/src/color.rs:138`), pure over a snapshot of the
+(`leviculum-ui/src/color.rs#resolve_tier`), pure over a snapshot of the
 environment. A terminfo lookup of the `colors` capability would be
 exact where `TERM` is a name the heuristic does not know; the only
 terminfo reader in `Cargo.lock` arrives with `termwiz`, outside the
@@ -929,7 +929,7 @@ toast, no colour at all. The snapshot frames pin it, and it is the one
 look every test frame shows. One gap was fixed with it: until 1042
 `NO_COLOR` reached the screen only because crossterm drops colour
 sequences on output when it is set
-(`vendor/crossterm/src/style/types/colored.rs:76`), while `loquax`'s own
+(`vendor/crossterm/src/style/types/colored.rs#Colored::ansi_color_disabled`), while `loquax`'s own
 `no_color` came from the flag alone and `lnomad`'s from the flag and a
 non-tty. So under `NO_COLOR` alone the colour was gone but the reverse
 video that `no_color` chooses instead never came, and a toast drew as
@@ -939,23 +939,23 @@ first rung it is.
 #### 2. Light or dark
 
 `loquax` asks the terminal for its background before raw mode
-(`loquax/src/tui.rs:251`), the same query `lnomad` makes: OSC 11, with
+(`loquax/src/tui.rs#run_terminal`), the same query `lnomad` makes: OSC 11, with
 `COLORFGBG` as the fallback, 100 ms to answer
-(`leviculum-ui-ratatui/src/background.rs:12`), decided by
-`resolve_theme` (`leviculum-ui/src/theme.rs:73`). It was hardcoded to
+(`leviculum-ui-ratatui/src/background.rs#BG_QUERY_TIMEOUT`), decided by
+`resolve_theme` (`leviculum-ui/src/theme.rs#resolve_theme`). It was hardcoded to
 `auto` there until 1042. Built as proposed:
 
 - a key `theme = auto|dark|light` in `loquax`'s config file
-  (`loquax/src/config.rs:415`, which holds `key = value` lines), `auto` the
+  (`loquax/src/config.rs#parse`, which holds `key = value` lines), `auto` the
   default;
 - `--theme auto|dark|light` on the command line over the key, as `lnomad`
-  has it (`lnomad/src/main.rs:63`);
+  has it (`lnomad/src/main.rs#Args::theme`);
 - a terminal that does not answer in time and sets no `COLORFGBG` gives
   dark, as in `lnomad`;
 - a palette action `theme` toggles for the session, the way `t` calls
-  `toggle_theme` in lnomad (`lnomad/src/app/intent.rs:352`); no key, the
+  `toggle_theme` in lnomad (`lnomad/src/app/intent.rs#apply`); no key, the
   keymap is decided. Its toast names the theme it turned to
-  (`loquax/src/ui.rs:6247`).
+  (`loquax/src/ui.rs#run`).
 
 #### 3. What colour carries and what it must not carry alone
 
@@ -1152,7 +1152,7 @@ to 8.6:1 in 256; the ladder's three tones are among the values measured.
 #### 5. Tests the layout slice will carry
 
 - **The frames stay plain text.** The `frame` step of the key script
-  (`loquax/src/tui.rs:1329`) writes characters only, and the existing
+  (`loquax/src/tui.rs#parse_script`) writes characters only, and the existing
   snapshot frames keep pinning the monochrome look.
 - **A script step `styles <name>`** writes one frame's per-cell style as a
   map in the letters above: `.` `,` `=` for the three tints, `s` for a
@@ -1172,7 +1172,7 @@ to 8.6:1 in 256; the ladder's three tones are among the values measured.
   256 uses the xterm-256 values of the indexes; 16 is checked on the
   xterm default palette and the VGA palette of the Linux console, and only
   for the text pairs, since the marks there are text. The ratio is the
-  WCAG 2.x one, sRGB linearised: `luminance` in `leviculum-ui/src/theme.rs:66`
+  WCAG 2.x one, sRGB linearised: `luminance` in `leviculum-ui/src/theme.rs#luminance`
   is a linear approximation that serves the light or dark decision and
   must not be reused for it.
 - **The tier ladder** gains unit tests over its pure decision, as
@@ -1215,7 +1215,7 @@ these differences from the text above:
   for a selected block and `r` for reverse video; the build writes `^`
   for both, because a selected block in 16 colours and in monochrome is
   reverse video and a map of styles cannot tell the two apart. The
-  letters (`style_letter`, `loquax/src/tui.rs:1484`): `.` ours, `,`
+  letters (`style_letter`, `loquax/src/tui.rs#style_letter`): `.` ours, `,`
   theirs, `=` the date pill, `!` the unread rule, `^` a selected block's
   tint or reverse video, `t` the toast, `e` the error colour, blank for
   the pane. Where two tokens share their colours the earlier letter wins:

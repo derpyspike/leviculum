@@ -94,7 +94,7 @@ pub struct Queued {
 /// distinguishes the three outcomes a script has to tell apart: the message
 /// was handed on towards the recipient directly (0), it is waiting in a
 /// propagation node's mailbox (3), or neither happened (1). 2 stays the
-/// argument-error code, per `lnomad`'s convention (`lnomad/src/main.rs:174`).
+/// argument-error code, per `lnomad`'s convention (`lnomad/src/main.rs#<ColorFlag as From>`).
 pub const EXIT_DIRECT: u8 = 0;
 /// Neither direct delivery nor a mailbox took the message.
 pub const EXIT_FAILURE: u8 = 1;

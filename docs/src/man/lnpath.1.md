@@ -33,7 +33,7 @@ The tool implements the path-query verb of Python's **rnpath** -- query, wait, d
 
 ## CONFIGURATION DIRECTORY
 
-Without **--config**, **lnpath** takes the first directory of the lookup order **rnsd** uses, stated once in the installation guide, section "Configuration directory" (`docs/src/guide/installation.md:104-117`); the order is what lets Python clients find the system daemon without flags. When **lnpath** cannot reach or authenticate to the daemon, it names the directory it took and why, the socket it dialled, and every other candidate directory that holds a `config`, with the **--config** that selects it.
+Without **--config**, **lnpath** takes the first directory of the lookup order **rnsd** uses, stated once in the installation guide, section "Configuration directory" (`docs/src/guide/installation.md#configuration-directory`); the order is what lets Python clients find the system daemon without flags. When **lnpath** cannot reach or authenticate to the daemon, it names the directory it took and why, the socket it dialled, and every other candidate directory that holds a `config`, with the **--config** that selects it.
 
 ## EXIT STATUS
 

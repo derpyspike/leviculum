@@ -156,18 +156,18 @@ counted without comments and tests: 286 lines of SAM client (`sam.rs`),
 them. It reads the SAM socket directly instead of proxying through a
 second local TCP socket, which changes no byte on the I2P stream. Same
 HDLC, same `HW_MTU` (`I2P_HW_MTU`,
-`leviculum-std/src/interfaces/i2p/mod.rs:61`), same 10 s keepalive and
+`leviculum-std/src/interfaces/i2p/mod.rs#I2P_HW_MTU`), same 10 s keepalive and
 110 s read timeout (`I2P_KEEPALIVE`,
-`leviculum-std/src/interfaces/i2p/mod.rs:76`; `I2P_READ_TIMEOUT`,
-`leviculum-std/src/interfaces/i2p/mod.rs:87`), same 20 s stale mark
-(`I2P_STALE_AFTER`, `leviculum-std/src/interfaces/i2p/mod.rs:99`, since
+`leviculum-std/src/interfaces/i2p/mod.rs#I2P_KEEPALIVE`; `I2P_READ_TIMEOUT`,
+`leviculum-std/src/interfaces/i2p/mod.rs#I2P_READ_TIMEOUT`), same 20 s stale mark
+(`I2P_STALE_AFTER`, `leviculum-std/src/interfaces/i2p/mod.rs#I2P_STALE_AFTER`, since
 1588), same 15 s reconnect
 (`I2P_DEFAULT_RECONNECT_WAIT`,
-`leviculum-std/src/interfaces/i2p/mod.rs:64`), same session nick shape,
+`leviculum-std/src/interfaces/i2p/mod.rs#I2P_DEFAULT_RECONNECT_WAIT`), same session nick shape,
 same `I2P_SAM_ADDRESS` variable
-(`leviculum-std/src/driver/interface_build/i2p.rs:29`), and on top a
+(`leviculum-std/src/driver/interface_build/i2p.rs#build`), and on top a
 120 s bound on every SAM command the reference does not have
-(`SAM_COMMAND_TIMEOUT`, `leviculum-std/src/interfaces/i2p/sam.rs:73`).
+(`SAM_COMMAND_TIMEOUT`, `leviculum-std/src/interfaces/i2p/sam.rs#SAM_COMMAND_TIMEOUT`).
 
 The differences, each measured on the bed below. The first two are closed
 since 1576, the third and fourth since 1588:
@@ -178,7 +178,7 @@ since 1576, the third and fourth since 1588:
    where the same request with `SIGNATURE_TYPE=7` gave `cert_type=5
    sig_type=7`, as rnsd's key does. Since 1576 every TRANSIENT session
    asks for type 7 (`session_create`,
-   `leviculum-std/src/interfaces/i2p/sam.rs:365`), the endpoint logs the
+   `leviculum-std/src/interfaces/i2p/sam.rs#session_create`), the endpoint logs the
    type of the key it serves, and `just i2p-live` checks the type of a
    fresh destination. A key stored before stays what it is: a stored key
    goes to SAM without a type, so no running node changes its address.
@@ -187,7 +187,7 @@ since 1576, the third and fourth since 1588:
    the file, so an rnsd user who switched to lnsd on the same config
    directory got a new address. Since 1576 the key file is named as the
    reference names it, old format first (`resolve_keyfile`,
-   `leviculum-std/src/interfaces/i2p/mod.rs:845`), and an existing
+   `leviculum-std/src/interfaces/i2p/mod.rs#resolve_keyfile`), and an existing
    `i2p_iface_<index>.i2p` is renamed to the new name once, logged, so no
    lnsd user loses an address either. Measured on the bed: a DSA key left
    as `i2p_iface_0.i2p` was adopted (`I2P key adopted: .../i2p_iface_0.i2p
@@ -219,7 +219,7 @@ since 1576, the third and fourth since 1588:
    prints what rnstatus prints against lnsd.
 4. **Discovery, closed.** A `discoverable` I2P interface was skipped with
    "is not discoverable" (`descriptor_from_config`,
-   `leviculum-std/src/discovery.rs:64`). Since 1588 a connectable one
+   `leviculum-std/src/discovery.rs#descriptor_from_config`). Since 1588 a connectable one
    publishes its b32, bare as the reference sends it, as `reachable_on`.
    The announce **waits for the endpoint**: its job is not due until the b32
    is known and the payload stamped off the event loop, because an I2P

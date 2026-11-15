@@ -116,7 +116,7 @@
 //! appended to that handle's buffer:
 //!
 //! ```text
-//! EVENT_SCHEMA_VIOLATION event=PKT_RX missing=[hops,len] caller=transport.rs:1074 t=<rel-ms>
+//! EVENT_SCHEMA_VIOLATION event=PKT_RX missing=[hops,len] caller=leviculum-core/src/transport.rs#PathChoice::Hops t=<rel-ms>
 //! ```
 //!
 //! ## Field-value validation (per-event, per-handle)
@@ -128,7 +128,7 @@
 //! into every active buffer:
 //!
 //! ```text
-//! EVENT_FIELD_VIOLATION event=PKT_RX field=note value_problem=whitespace caller=transport.rs:1074 t=<rel-ms>
+//! EVENT_FIELD_VIOLATION event=PKT_RX field=note value_problem=whitespace caller=leviculum-core/src/transport.rs#PathChoice::Hops t=<rel-ms>
 //! ```
 //!
 //! `value_problem` ∈ {`whitespace`, `equals`, `non_printable`}.
@@ -1255,14 +1255,16 @@ pub const EVENT_CATALOG: &[EventSchema] = &[
         name: "PATH_UNRESPONSIVE",
         required_keys: &["dst", "next_hop", "iface", "path_hops"],
     },
-    // Order 1881, bounded by order 1898: an unresponsive mark was refused
-    // because the path is a connected local client's own (`iface`, reason
-    // `local_client_owns`: hops 0, no next hop, installed by the client
-    // first or proven over it); the client cannot have moved, so the path
-    // stays on the box.
+    // Order 1881, bounded by orders 1898 and 1905: an unresponsive mark was
+    // refused because the path is a connected local client's own (`iface`,
+    // reason `local_client_owns`: hops 0, no next hop, installed by the
+    // client first or proven over it) and fewer than
+    // LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT consecutive unproven expiries
+    // (`unproven`, counting this one) were held against it; the path stays
+    // on the box. At the limit the mark is taken.
     EventSchema {
         name: "PATH_KEPT_LOCAL",
-        required_keys: &["dst", "iface", "reason"],
+        required_keys: &["dst", "iface", "reason", "unproven"],
     },
     // Remaining `leviculum-core` transport events.
     EventSchema {
@@ -2007,7 +2009,7 @@ enum SinkMode {
 /// hundred lines apart in `handle_announce`, and nothing between them
 /// can take seconds.  What can is the emission itself: the driver's
 /// event loop calls `tracing::debug!` while it holds the core mutex
-/// (`apply_inbound`, `leviculum-std/src/driver/mod.rs:5123`), the layer
+/// (`apply_inbound`, `leviculum-std/src/driver/mod.rs#run_event_loop`), the layer
 /// wrote the line with a blocking `write(2)` on that very thread, and a
 /// `write(2)` to a USB disk under writeback throttling blocks for
 /// seconds.  Every other task then queued behind the core mutex, so the

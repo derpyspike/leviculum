@@ -1,0 +1,9 @@
+# Append-only registries merge by union (order 1848). Two branches that each
+# add a line next to the other's used to conflict on every landing; git's
+# built-in `union` driver keeps both sides' lines instead. Only for files
+# whose entries are one self-contained line each and whose order carries no
+# meaning; what a duplicate would break is caught by the build or the
+# file's own check. `python3 scripts/registry-merge-selftest.py` merges two
+# such branches with and without this file.
+leviculum-std/tests/mvr/main.rs merge=union
+scripts/source-invariant-targets.txt merge=union

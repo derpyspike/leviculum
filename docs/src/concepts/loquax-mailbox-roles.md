@@ -27,23 +27,23 @@ one process.
 What enforces it today:
 
 - The Mailbox's node is built with transport off, for every way it can
-  reach the network: `ReticulumNodeBuilder` (`loquax/src/engine/shell.rs:902`)
+  reach the network: `ReticulumNodeBuilder` (`loquax/src/engine/shell.rs#attach_through`)
   takes `enable_transport(false)` before the shared instance, the TCP leaf
   and the own-node mode are chosen.
 - The Mailbox is a propagation client and nothing more:
-  `enable_propagation_client` (`loquax/src/engine.rs:1899`). Loquax does not
+  `enable_propagation_client` (`loquax/src/engine.rs#register`). Loquax does not
   link the propagation node's crate, `leviculum-lxmf-node`, except as a
   dev-dependency for its tests (`loquax/Cargo.toml`, under
   `[dev-dependencies]`); the propagation node on a home host is `lnpnd`,
   under an identity of its own.
 - Beside a running lnsd the Mailbox is a client of its shared instance;
-  `decide` (`loquax/src/home/upstream.rs:39`) picks that way whenever the
+  `decide` (`loquax/src/home/upstream.rs#decide`) picks that way whenever the
   daemon answers.
 
 **O1, the own-node mode.** Without an answering lnsd, or with
 `mailbox_upstream = mesh`, the Mailbox runs on a node of its own: it dials
 the entry servers and serves the phones' port itself
-(`Upstream::Mesh`, `loquax/src/engine/shell.rs:929`). Transport stays off,
+(`Upstream::Mesh`, `loquax/src/engine/shell.rs#attach_through`). Transport stays off,
 so M1 holds, but nothing is a full node beside it and M2 does not. It is
 the phone's mailbox case on a computer. Whether a computer keeps that mode
 or always starts an lnsd beside its Mailbox is open.
@@ -57,7 +57,7 @@ the two servers, discovery, BLE, and transport on. The user who wants
 Bluetooth only, or the mailbox only, opts out per medium.
 
 What enforces it today: lnsd's transport default is on when the config does
-not name the key, `enable_transport` (`leviculum-std/src/config.rs:75`); the
+not name the key, `enable_transport` (`leviculum-std/src/config.rs#ReticulumConfig::enable_transport`); the
 other defaults are the zero-config page's.
 
 **O2, the cost of transport on a metered link.** Before the transport
@@ -78,20 +78,20 @@ What enforces it today:
 
 - Every request on `loquax.home` but `/join` is refused with status 2
   (`NotAdmitted`) before it is read when the link's identity is not an
-  admitted device: the gate in `route` (`loquax/src/home/server.rs:151`),
-  through `refuse_unless_admitted` (`loquax/src/home/server.rs:222`), which
-  asks `is_admitted` (`loquax/src/store.rs:3142`). A link that was not
+  admitted device: the gate in `route` (`loquax/src/home/server.rs#route`),
+  through `refuse_unless_admitted` (`loquax/src/home/server.rs#refuse_unless_admitted`), which
+  asks `is_admitted` (`loquax/src/store.rs#Store::is_admitted`). A link that was not
   identified gets status 1 before that. Each handler keeps its own check
   as a second line.
 - Every refusal says so in the log with the device's hash: the free-text
   `HOME <ask> refused device=<hash> reason=not-admitted` and the structured
-  event `home_refuse` (`loquax/src/events.rs:242`), `HOME_REFUSE device=
+  event `home_refuse` (`loquax/src/events.rs#home_refuse`), `HOME_REFUSE device=
   ask= reason=`, in the catalogue. A path the Mailbox does not serve is
   logged as `ask=unknown`, so a stranger's text never reaches the log. A
   join with an unknown or expired token is `HOME_REFUSE ask=join
   reason=token` or `reason=expired`.
 - The test `an_unpaired_device_gets_nothing_whatever_it_asks`
-  (`loquax/src/home/server.rs:2600`) asks every path the Mailbox serves,
+  (`loquax/src/home/server.rs#an_unpaired_device_gets_nothing_whatever_it_asks`) asks every path the Mailbox serves,
   well formed, malformed and empty, and one it does not, as a device that
   never paired: every answer is `NotAdmitted`, nothing is accepted,
   watched or learned, and the archive, the device list and the outbox are
@@ -101,7 +101,7 @@ What enforces it today:
   refusal in the log: the handlers read the request before they checked
   the device.
 - The phones' port is an access point listener, `block`
-  (`loquax/src/home/phone_server.rs:30`), on port 4243 unless setup names
+  (`loquax/src/home/phone_server.rs#block`), on port 4243 unless setup names
   another: it keeps the mesh's announces from the phones and is no part of
   the admission.
 
@@ -120,7 +120,7 @@ leaf anywhere, port 4343 of leviculum.network being one such door (an access
 point that floods no announces), and reaches its Mailbox by path and link.
 The home's own access point port serves the LAN. The ladder and the
 rendezvous are [reaching the mailbox from anywhere](loquax-reachability.md);
-the shipped entry list is `DEFAULT` (`loquax/src/home/rendezvous.rs:56`).
+the shipped entry list is `DEFAULT` (`loquax/src/home/rendezvous.rs#DEFAULT`).
 
 ## M5. The expedition is the same software without TCP
 
@@ -139,7 +139,7 @@ mail):
   receipts and positions. Pictures and files wait for a fast medium, and
   the client says so ("3 Bilder warten aufs Auto"). The core knows the
   path's next-hop bitrate, `next_hop_interface_bitrate`
-  (`leviculum-core/src/node/mod.rs:4386`).
+  (`leviculum-core/src/node/mod.rs#NodeCore::next_hop_interface_bitrate`).
 - **The Mailbox's announces over LoRa follow the slow cadence**: 5 minutes
   while moving, an hour while still ([announce cadence](announce-cadence.md)).
 
@@ -151,7 +151,7 @@ cannot read yet.
 
 **O5, the LoRa cadence for the Mailbox's announces, not built.** The
 Mailbox announces at start and every 360 minutes on every interface,
-`ANNOUNCE_EVERY` (`loquax/src/home/daemon.rs:74`), whatever moves.
+`ANNOUNCE_EVERY` (`loquax/src/home/daemon.rs#ANNOUNCE_EVERY`), whatever moves.
 
 ## M6. Every Loquax is a home; an external Mailbox is a second one
 

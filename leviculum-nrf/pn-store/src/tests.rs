@@ -2067,7 +2067,7 @@ fn a_store_full_board_refuses_peer_batches_and_not_client_uploads() {
 ///
 /// The late `incoming_full` cannot be produced on the wire (a link with a
 /// parked advertisement ignores every other one,
-/// `leviculum-core/src/node/mvr_incoming_resource_list.rs:582-585`), so the
+/// `leviculum-core/src/node/mvr_incoming_resource_list.rs#both_refusal_paths_record_outbound_in_milliseconds`), so the
 /// refusal here is the other one the public verdict carries: a second
 /// accept on a link whose advertisement the first one already took. The
 /// arm is the same `Err`; the first transfer's entry is the one that must

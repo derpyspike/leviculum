@@ -25,10 +25,10 @@ the transmit queue on it — `if (!airtime_lock && queue_height > 0)`
 *enforcement* never leaves the device.
 
 Our LNode firmware enforces the same way: `AirtimeTracker`
-(`leviculum-core/src/rnode.rs:1844`) mirrors the RNode ledger, and
+(`leviculum-core/src/rnode.rs#AirtimeTracker`) mirrors the RNode ledger, and
 the nRF TX path holds a queued frame instead of keying the radio
 while the tracker is locked (`is_locked`,
-`leviculum-nrf/src/lora.rs:2210-2307`), continuing to listen so RX is
+`leviculum-nrf/src/lora.rs#lora_task`), continuing to listen so RX is
 not starved — until the frame has waited so long that keying it would
 be pointless, which is
 [the age rule below](#a-hold-ages-traffic-it-does-not-thin-it).
@@ -45,11 +45,11 @@ nothing may treat it as one.
 A node that is not told otherwise obeys the band it is on. When no
 `airtime_limit_long` is configured, the host derives the lawful
 long-term limit from the TX frequency (`resolve_lt_alock`,
-`leviculum-std/src/driver/mod.rs:546-580`) and sends it to the modem; a
+`leviculum-std/src/driver/mod.rs#resolve_lt_alock`) and sends it to the modem; a
 standalone LNode whose host never sent one derives it in the firmware
 from its own frequency (`firmware_default_lt_alock`,
-`leviculum-core/src/rnode.rs:1650`). Both read the same table,
-`etsi_eu868_duty_cycle` (`leviculum-core/src/rnode.rs:1536`), which
+`leviculum-core/src/rnode.rs#firmware_default_lt_alock`). Both read the same table,
+`etsi_eu868_duty_cycle` (`leviculum-core/src/rnode.rs#etsi_eu868_duty_cycle`), which
 carries the EU 863-870 MHz sub-bands with their 0.1 % / 1 % / 10 %
 duty cycles and the 433.05-434.79 MHz band at 10 %. An explicit
 configured value always wins — including an explicit `0`, which the
@@ -59,7 +59,7 @@ firmware reads as unlimited.
 firmware states the settings it applied and the limits it loaded into
 the tracker on the boot-critical log path — the one that bypasses the
 debug port's runtime drain gate (`airtime_limits`,
-`leviculum-nrf/log-line/src/facts.rs:421`) — and states them again on
+`leviculum-nrf/log-line/src/facts.rs#airtime_limits`) — and states them again on
 every runtime reconfiguration. Until 2026-08 both were ordinary
 runtime lines: a board that came up before a reader attached dropped
 them with everything else, so the two facts a compliance question is
@@ -99,7 +99,7 @@ operator who most needs it not to be. Supply the citation and the
 table grows.
 
 TX power follows the same lawful-by-default shape (`resolve_tx_power`
-capped by `lawful_erp_dbm`, `leviculum-core/src/rnode.rs:1582`): an
+capped by `lawful_erp_dbm`, `leviculum-core/src/rnode.rs#lawful_erp_dbm`): an
 absent `txpower` asks for the board maximum, capped by the sub-band's
 e.r.p. limit — 25 mW everywhere in the European SRD spectrum except
 500 mW in 869.4-869.65 MHz and 10 mW in 433.05-434.79 MHz. An
@@ -109,7 +109,7 @@ narrowband bands *between* the wideband sub-bands (868.6-868.7 MHz
 and its four siblings, alarms, ≤ 25 kHz channel spacing) fit no LoRa
 bandwidth this stack configures, so a carrier that overlaps one is
 warned about by name at interface build (`erp_band_gap`,
-`leviculum-core/src/rnode.rs:1525`) — falling through to "no known
+`leviculum-core/src/rnode.rs#etsi_eu868_duty_cycle`) — falling through to "no known
 limit, board maximum" without a word would be the most permissive
 outcome exactly where the operator most needs to be told. The
 carrier is then honoured; see [No radio configuration is
@@ -158,13 +158,13 @@ them is not a judgement about anybody's licence.
 Prose alone has drifted twice here — the code once, this page once —
 so both halves are mechanical now. The code is pinned behaviourally
 by `no_radio_configuration_is_refused_for_a_regulatory_reason`
-(`leviculum-std/src/driver/interface_build/mod.rs:1287`), which drives
+(`leviculum-std/src/driver/interface_build/mod.rs#no_radio_configuration_is_refused_for_a_regulatory_reason`), which drives
 the known regulatory edge cases through the config-building entry
 point and asserts each one builds *and* warns at WARN, with a second
 half pinning the capability refusals so the first cannot be satisfied
 by deleting every check. This page is pinned by
 `the_book_describes_the_band_gap_as_a_warning_never_a_refusal`
-(`leviculum-std/tests/doc_radio_policy.rs:198`).
+(`leviculum-std/tests/doc_radio_policy.rs#the_book_describes_the_band_gap_as_a_warning_never_a_refusal`).
 
 ## Disabling is an operator act, not a test convenience
 

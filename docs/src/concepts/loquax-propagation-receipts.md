@@ -54,9 +54,9 @@ The **recipient** acknowledges, inside the `lev` namespace
 ([read receipts](loquax-read-receipts.md), section 1), and only
 
 - messages that **arrived by propagation**: our router hands them on as
-  `DeliveryMethod::Propagated` (`leviculum-lxmf/src/message.rs:25-30`,
+  `DeliveryMethod::Propagated` (`leviculum-lxmf/src/message.rs#DeliveryMethod::Propagated`,
   set where a collected message is unpacked,
-  `leviculum-lxmf/src/router/propagation_runtime.rs:1717`), as the
+  `leviculum-lxmf/src/router/propagation_runtime.rs#deliver_unstamped`), as the
   reference does with `method=LXMessage.PROPAGATED`
   (`LXMRouter.py:2508`); and
 - whose sender set **capability bit 2**.
@@ -128,29 +128,29 @@ fields[0xFC] = map {
   would. Waiting for the first device to pull it, as the study proposed,
   would make the receipt depend on a phone being online, which a
   transport proof does not. A client of a home node acknowledges nothing
-  (`loquax/src/ui/arrival.rs:282`, `arrival_step`, returns at
+  (`loquax/src/ui/arrival.rs#UiModel::arrival_step`, `arrival_step`, returns at
   `home_client`); the devices take the receipt that comes back from the
   peer as any device does.
 
 ### Where it is built (1395)
 
 - **Bit 2 on every send**: `groups::client_caps`
-  (`loquax/src/ui/groups.rs:77`), which `mark_sends` puts on every
-  message (`loquax/src/ui.rs:3924-3928`); not switchable.
+  (`loquax/src/ui/groups.rs#client_caps`), which `mark_sends` puts on every
+  message (`loquax/src/ui.rs#step`); not switchable.
 - **The arrival**: the router hands a collected message on as
   `DeliveryMethod::Propagated`; the engine says so after the message
-  with `OutboxEvent::Propagated` (`loquax/src/engine.rs:641`).
-- **The rule**: `arrival::acknowledges` (`loquax/src/ui/arrival.rs:182`):
+  with `OutboxEvent::Propagated` (`loquax/src/engine.rs#Engine::report`).
+- **The rule**: `arrival::acknowledges` (`loquax/src/ui/arrival.rs#acknowledges`):
   bit 2 in the message's own mark (since 1462 however it came), and not a
   bare receipt of either kind; an answer a receipt rides on is a message
   and is acknowledged (1486), and so is a group's copy (1466).
 - **On a device that is its own node**: `arrived_here`
-  (`loquax/src/ui/arrival.rs:226`) owes it, once per message (the ledger
+  (`loquax/src/ui/arrival.rs#UiModel::arrived_here`) owes it, once per message (the ledger
   line `arrival acknowledged to the sender`); `arrival_step`
-  (`loquax/src/ui/arrival.rs:272`) sends it after the read receipt's
+  (`loquax/src/ui/arrival.rs#UiModel::arrival_step`) sends it after the read receipt's
   batch window, 5 s after the first arrival, alone or riding on the next
   message to that sender. Read wins: an id seen while read receipts go to
-  that peer is dropped (`drop_read`, `loquax/src/ui/arrival.rs:388`).
+  that peer is dropped (`drop_read`, `loquax/src/ui/arrival.rs#UiModel::drop_read`).
 - **On a home node** (since 1462): the home acknowledges nothing on its
   own; archiving is no device. A device that pulled the message hands the
   home an arrived mark (`MarkFlag::Arrived`), and the home's `arrived`
@@ -163,8 +163,8 @@ fields[0xFC] = map {
   came. A proof is signed by the recipient's identity, which its mailbox
   holds, so only this receipt says the device has it
   ([the read-receipts page](loquax-read-receipts.md), section 6).
-- **Taking it**: `take_lev` (`loquax/src/ui/receipts.rs:212`) hands a
-  `0x07` to `apply_arrival` (`loquax/src/ui/arrival.rs:416`) before the
+- **Taking it**: `take_lev` (`loquax/src/ui/receipts.rs#UiModel::take_lev`) hands a
+  `0x07` to `apply_arrival` (`loquax/src/ui/arrival.rs#UiModel::apply_arrival`) before the
   read-receipts switch is looked at. A `0x07` alone carries no mark and
   does not change what the peer is believed to say about read receipts.
 
@@ -198,7 +198,7 @@ a line (`on the recipient's device: its receipt`, before 1462 `delivered
 via the propagation network`, `collected from the
 propagation network`, `not collected at the propagation node; perhaps via
 another`), so the words survive a restart; `arrival::witness`
-(`loquax/src/ui/arrival.rs:104`) reads it, and a proof that came first
+(`loquax/src/ui/arrival.rs#witness`) reads it, and a proof that came first
 keeps the device's words. The mark itself is the delivered rung of
 `DELIVERY_GLYPHS`, unchanged.
 
@@ -306,7 +306,7 @@ refusal       uint error code                     0xf4 malformed or over 64 ids,
 - **Open to any link, never identified.** The node never asks who is on
   the link. A home asks over a link of its own that it does not identify,
   not over its sync link, which identifies before `/get`
-  (`leviculum-lxmf/src/router/propagation_runtime.rs:575`), or the node
+  (`leviculum-lxmf/src/router/propagation_runtime.rs#PropagationRuntime::begin_list_request`), or the node
   could tie its identity to the ids and through them to the recipients.
 - **Spaced per link**: a second request within one second on the same
   link is answered `0xf6`. A home asks once per sync round.
@@ -358,14 +358,14 @@ other key in either map (`lev_status::announced_version`).
   reached `collected`, `delivered` or a receipt is never asked again.
   Built as `pn_status::Asker` (`loquax/src/pn_status.rs`): a node is
   asked only after its announce said `{"lev": {"status": _}}`
-  (`OutboxEvent::NodeAnnounced.status`, read at `loquax/src/engine.rs:2037`);
+  (`OutboxEvent::NodeAnnounced.status`, read at `loquax/src/engine.rs#Engine::on_event`);
   the ids come from the upload's proof (`RouterEvent::PropagationUploaded`
   → `OutboxEvent::Uploaded`); at most 64 ids a request, oldest first;
   `collected`, `delivered`, `expired` and `evicted` close an id, `held`
   and `unknown` leave it open; each answer logs
   `PN_STATUS_ASKED ids=N answered=N`, where answered counts the ids the
   node named with a word other than `unknown`. The answers fold into the
-  marks with `UiModel::pn_answered` (`loquax/src/ui/arrival.rs:444`).
+  marks with `UiModel::pn_answered` (`loquax/src/ui/arrival.rs#UiModel::pn_answered`).
 
 ### Asking, as built (1409)
 

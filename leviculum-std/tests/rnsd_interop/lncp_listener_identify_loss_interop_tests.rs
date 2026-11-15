@@ -7,7 +7,7 @@
 //! armed `AcceptAll` only from the `LinkIdentified` event, so until an identify
 //! arrived the link kept `AcceptNone`, and `handle_resource_advertisement`
 //! discarded the advertisement with no event and no packet
-//! (`leviculum-core/src/node/link_management.rs:3175-3177`). The sender heard
+//! (`leviculum-core/src/node/link_management.rs#NodeCore::handle_resource_adv`). The sender heard
 //! nothing at all and had to wait out its own advertisement retries.
 //!
 //! Python's `rncp` does not have that state. `client_link_established`
@@ -80,7 +80,7 @@ async fn spawn_lncp_listener(
     let storage = tmp.join("listener-storage");
     std::fs::create_dir_all(&storage).expect("create listener storage");
 
-    // The hash run_listen will register (cp.rs:378-387), computed here so the
+    // The hash run_listen will register (leviculum-cli/src/cp.rs#run_listen), computed here so the
     // sender can be pointed at it before the loop starts.
     let dest_hash = *Destination::new(
         Some(identity.clone()),
@@ -273,7 +273,7 @@ async fn python_sender_against_our_listener(hold_rtt_behind_adv: bool) {
     let file_path = tmp.path().join("identify-loss.bin");
     std::fs::write(&file_path, &payload).expect("write payload");
 
-    // Our listener announces every 5 s (cp.rs:424-430); rncp's own path wait
+    // Our listener announces every 5 s (leviculum-cli/src/cp.rs#run_listen); rncp's own path wait
     // (rncp.py:658-664) covers the gap.
     let mut sender = spawn_rncp_sender(
         &sender_config_dir,
@@ -427,7 +427,7 @@ async fn our_sender_and_our_listener_recover_from_a_lost_identify() {
     let mut sender_events = sender.take_event_receiver().expect("event receiver");
     sender.start().await.expect("start sender node");
 
-    // The listener announces every 5 s (cp.rs:413-424) and there is no
+    // The listener announces every 5 s (leviculum-cli/src/cp.rs#run_listen) and there is no
     // transport node to answer a path request, so the announce is the only
     // readiness signal.
     let deadline = Instant::now() + Duration::from_secs(60);

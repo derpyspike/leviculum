@@ -65,6 +65,7 @@
 //! ```
 //!
 //! Sans-hardware, deterministic, a few seconds.
+#![cfg(feature = "serial")]
 
 use std::io;
 use std::pin::Pin;

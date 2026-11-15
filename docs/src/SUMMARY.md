@@ -44,7 +44,6 @@
   - [Loquax: the expedition map](concepts/loquax-expedition-map.md)
   - [Loquax: map data over Reticulum](concepts/loquax-map-over-reticulum.md)
   - [The map server](concepts/map-server.md)
-  - [Loquax: the expedition map](concepts/loquax-expedition-map.md)
   - [Loquax: the home node](concepts/loquax-home-node.md)
   - [Loquax: what a Loquax Mailbox is](concepts/loquax-mailbox-roles.md)
   - [Loquax: reaching the mailbox from anywhere](concepts/loquax-reachability.md)
