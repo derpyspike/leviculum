@@ -885,17 +885,35 @@ Additions (decided):
      A group's copy or a collector's row naming the READER moves no pin
      of the reader's, joins no track of the reader's and stores nothing.
      The rule is one predicate (`UiModel::anothers_word_about_the_reader`:
-     the peer is the reader and `via` is not the peer), and each of the
-     five writers of the screen's `positions` and `tracks` applies it
-     where it writes. `UiModel::take_fix` files every reading received
-     from another, at arrival, on the settled path and in the early-copy
-     refiling, and refuses such a fix before anything is written, the
-     store included (the second audit of 1824, after the early-copy
-     refiling had bypassed a filter on the arrival path alone).
+     the peer is the reader's address and `via` is not the peer), judged
+     against the address its caller hands it; with no address known it
+     refuses nothing. Each of the five writers of the screen's
+     `positions` and `tracks` applies it where it writes.
+     `UiModel::take_fix` files every reading received from another, at
+     arrival, on the settled path and in the early-copy refiling, and
+     refuses such a fix before anything is written, the store included
+     (the second audit of 1824, after the early-copy refiling had
+     bypassed a filter on the arrival path alone); it judges by the
+     model's `address`, which the engine's `Ready` sets, so a reading
+     filed before `Ready` is not judged by this rule.
      `UiModel::restore_positions` and `UiModel::restore_tracks` bring the
-     store's fixes back at start and skip such a fix, and the store
-     deletes such rows when it opens (`Store::check`), since an older
-     Loquax may have stored one (the audit of 1871).
+     store's fixes back at start and skip such a fix (the audit of 1871).
+     The shells restore BEFORE `Ready`, while `address` is still unset,
+     so both take the owner's address as a parameter and judge by it
+     (the audit of 1877, which found the rule idle in that order). Where
+     each caller has it when it restores: the desktop's start
+     (`shell.rs`) passes the address it opened the store with, the home
+     node's for a client and the identity's delivery address otherwise;
+     the phone's `known()` passes `Store::owner`, the address its caller
+     opened the store with, which is the session's own address at the
+     session's start and the client's home address in the sessionless
+     map's `pins_in`. The store keeps such rows from the reader on its
+     own as well, since an older Loquax may have stored one: a writable
+     open deletes them (`Store::check`, the audit of 1871), and the one
+     reader of the store's fixes, `Store::fixes_between`, which every
+     open uses, the read-only one included, never hands one out (its
+     query skips a row whose peer is the owner and whose `via` is
+     another; the audit of 1877).
      `UiModel::mesh_position` files an announced position whose `via` is
      its peer by construction, so the rule never refuses one, and
      `UiEvent::OwnFix` puts this device's own reading into the reader's

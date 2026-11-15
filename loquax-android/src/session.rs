@@ -4108,8 +4108,14 @@ pub fn known(home: &Path, store: &Store) -> Result<UiModel<Line>, String> {
     for (peer, link) in links::load(home).links {
         model.names.link(peer, &link.name, &link.lookup);
     }
-    model.restore_positions(store.positions().map_err(|error| error.to_string())?);
+    // The restores run before the engine's `Ready` sets the model's
+    // address; they judge by the store's owner, the address the caller
+    // opened it with (order 1877): the session's own at its start, the
+    // client's home address in `pins_in`.
+    let owner = store.owner();
+    model.restore_positions(owner, store.positions().map_err(|error| error.to_string())?);
     model.restore_tracks(
+        owner,
         store
             .fixes_between(None, i64::MIN, i64::MAX)
             .map_err(|error| error.to_string())?,
@@ -5698,5 +5704,57 @@ mod tests {
             "the pull schedule's next pull ends the sleep"
         );
         assert_eq!(idle_wait(Some(Duration::ZERO)), PUMP, "never a busy loop");
+    }
+
+    /// Order 1877 (the second auditor): the map without a session reads the
+    /// store through a read-only open, which runs no cleanup. A row an
+    /// older Loquax stored about the owner from another (`via` not the
+    /// owner), newer than the owner's own, never becomes the owner's pin:
+    /// the pin is the owner's own row.
+    #[test]
+    fn audit1877_the_owners_pin_in_pins_in_is_the_owners_own_row() {
+        use loquax::store::Store;
+        use loquax::telemetry::{Fix, Source};
+        use loquax::ui::history::StoreWrite;
+        let home = tempfile::tempdir().expect("a dir");
+        let key =
+            leviculum_core::identity::Identity::generate(&mut rand_core::OsRng).public_key_bytes();
+        loquax::home::client::save_client(home.path(), &key).expect("client");
+        let owner = loquax::home::lxmf_address(&key).expect("address");
+        let other = [0xb0u8; 16];
+        let row = |via: [u8; 16], at: i64, lat: i32| Fix {
+            peer: owner,
+            via,
+            message: None,
+            received_at: Some(at),
+            location: leviculum_lxmf::telemetry::Location {
+                last_update: at,
+                latitude_e6: lat,
+                longitude_e6: 13_000_000,
+                altitude_e2: 0,
+                speed_e2: 0,
+                bearing_e2: 0,
+                accuracy_e2: 0,
+            },
+            telemetry: Vec::new(),
+            source: Source::Telemetry,
+        };
+        let now = leviculum_std::local_time::unix_now_secs();
+        let mut store = Store::open_in(home.path(), owner).expect("store");
+        store
+            .write(&[
+                StoreWrite::Position(row(owner, now - 600, 52_500_000)),
+                StoreWrite::Position(row(other, now - 60, 9_900_000)),
+            ])
+            .expect("write");
+        drop(store);
+        let pins = super::pins_in(home.path(), super::wall_now(0)).expect("pins");
+        let ours: Vec<_> = pins.iter().filter(|p| p.peer == owner).collect();
+        assert_eq!(ours.len(), 1, "the owner's pin: {pins:?}");
+        assert_eq!(
+            ours[0].fix_at,
+            Some(now - 600),
+            "the owner's pin came from another's row"
+        );
     }
 }

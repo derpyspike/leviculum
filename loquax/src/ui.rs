@@ -7372,16 +7372,36 @@ impl<B> UiModel<B> {
     ///   anything is written, the store included.
     /// - [`Self::restore_positions`] and [`Self::restore_tracks`], the
     ///   store's fixes at start: they skip such a fix, so a row an older
-    ///   Loquax stored is not brought back; the store deletes such rows
-    ///   when it opens as well (`store::Store::open`, order 1871).
+    ///   Loquax stored is not brought back. The shells restore before the
+    ///   engine says `Ready`, while [`UiModel::address`] is still unset, so
+    ///   the restore takes the owner's address as its own parameter and
+    ///   judges by it, never by `address` (order 1877). Each caller has the
+    ///   owner's address when it restores: the desktop's start
+    ///   (`shell.rs`) from the address it opened the store with (the home
+    ///   node's for a client, else the identity's delivery address); the
+    ///   phone's `known()` from its caller, which is the session's start
+    ///   (the address it opened the store with) or the sessionless map's
+    ///   `pins_in` (the client's home address it opened the store with).
+    ///   The store keeps such rows from the reader in two places as well:
+    ///   a writable open deletes them (`store::Store::open`, order 1871),
+    ///   and its reader of fixes, which every open uses, the read-only
+    ///   one included, never hands one out (`Store::fixes_between`, order
+    ///   1877).
     /// - [`Self::mesh_position`], a position the mesh announced: its `via`
     ///   is its peer by construction, so the rule never refuses one; the
     ///   reader's own announce is the reader's own word.
     /// - [`UiEvent::OwnFix`] in [`update`], this device's own reading, into
     ///   the reader's track only: `peer` and `via` are both the reader's
     ///   address by construction, so there is nothing to refuse.
-    fn anothers_word_about_the_reader(&self, fix: &Fix) -> bool {
-        Some(fix.peer) == self.address && fix.via != fix.peer
+    ///
+    /// `reader` is the address the rule is judged against: the model's
+    /// own once `Ready` set it, the owner's handed to a restore before.
+    /// With no reader known (`None`) the rule refuses nothing. The
+    /// restores always pass the owner's address; [`Self::take_fix`]
+    /// passes `address`, so a reading it files before `Ready` is not
+    /// judged by this rule.
+    fn anothers_word_about_the_reader(reader: Option<[u8; 16]>, fix: &Fix) -> bool {
+        Some(fix.peer) == reader && fix.via != fix.peer
     }
 
     /// One position received: the peer's latest when it is newer than what
@@ -7397,7 +7417,7 @@ impl<B> UiModel<B> {
     /// the reader's own place is never another's word where it writes
     /// ([`Self::anothers_word_about_the_reader`] names them all).
     fn take_fix(&mut self, fix: Fix) {
-        if self.anothers_word_about_the_reader(&fix) {
+        if Self::anothers_word_about_the_reader(self.address, &fix) {
             return;
         }
         let newer = self
@@ -7417,10 +7437,12 @@ impl<B> UiModel<B> {
     /// The store's fixes at start, every peer's in time order: the tracks.
     /// Another's word about the reader is skipped (order 1871,
     /// `anothers_word_about_the_reader`): an older Loquax may have
-    /// stored one.
-    pub fn restore_tracks(&mut self, fixes: Vec<Fix>) {
+    /// stored one. `owner` is the store owner's address, the reader's:
+    /// the shells restore before `Ready` sets [`UiModel::address`] (order
+    /// 1877).
+    pub fn restore_tracks(&mut self, owner: [u8; 16], fixes: Vec<Fix>) {
         for fix in fixes {
-            if self.anothers_word_about_the_reader(&fix) {
+            if Self::anothers_word_about_the_reader(Some(owner), &fix) {
                 continue;
             }
             tracks::insert(
@@ -7465,10 +7487,12 @@ impl<B> UiModel<B> {
     /// The store's latest positions at start, one a peer. Another's word
     /// about the reader places no pin (order 1871,
     /// `anothers_word_about_the_reader`): an older Loquax may have
-    /// stored one.
-    pub fn restore_positions(&mut self, fixes: Vec<Fix>) {
+    /// stored one. `owner` is the store owner's address, the reader's:
+    /// the shells restore before `Ready` sets [`UiModel::address`] (order
+    /// 1877).
+    pub fn restore_positions(&mut self, owner: [u8; 16], fixes: Vec<Fix>) {
         for fix in fixes {
-            if self.anothers_word_about_the_reader(&fix) {
+            if Self::anothers_word_about_the_reader(Some(owner), &fix) {
                 continue;
             }
             let newer = self
@@ -15624,7 +15648,7 @@ pub(crate) mod tests {
             telemetry: Vec::new(),
             source: crate::telemetry::Source::Telemetry,
         };
-        model.restore_positions(vec![fix(2, 200), fix(1, 100)]);
+        model.restore_positions(READER, vec![fix(2, 200), fix(1, 100)]);
         assert_eq!(model.positions[&PEER].location.latitude_e6, 2);
         model.delete_conversation(PEER, true);
         assert!(model.positions.is_empty());
@@ -15893,7 +15917,7 @@ pub(crate) mod tests {
         }
         let store = crate::store::Store::open(&path, READER).expect("store again");
         let mut again = UiModel::<Field>::new(&[]);
-        again.restore_positions(store.positions().expect("positions"));
+        again.restore_positions(READER, store.positions().expect("positions"));
         assert!(
             !again.positions.contains_key(&PEER),
             "{:?}",
@@ -17654,7 +17678,7 @@ pub(crate) mod tests {
         }
         let store = crate::store::Store::open(&path, READER).expect("store again");
         let mut again = UiModel::<Field>::new(&[]);
-        again.restore_positions(store.positions().expect("positions"));
+        again.restore_positions(READER, store.positions().expect("positions"));
         let held: Vec<([u8; 16], i32)> = again
             .positions
             .iter()
@@ -17919,11 +17943,14 @@ pub(crate) mod tests {
             telemetry: Vec::new(),
             source: crate::telemetry::Source::Telemetry,
         };
-        model.restore_positions(vec![
-            fix(PEER, 43_775_000, 11_261_000, 240),
-            fix(OTHER, 43_776_000, 11_266_000, 3 * 3600),
-            fix([0x01; 16], 43_774_000, 11_258_000, 60),
-        ]);
+        model.restore_positions(
+            [0x01; 16],
+            vec![
+                fix(PEER, 43_775_000, 11_261_000, 240),
+                fix(OTHER, 43_776_000, 11_266_000, 3 * 3600),
+                fix([0x01; 16], 43_774_000, 11_258_000, 60),
+            ],
+        );
         update(
             &mut model,
             UiEvent::MapSetup(map::MapSetup {
@@ -23467,14 +23494,14 @@ pub(crate) mod tests {
         let mut forged = audit1871_collected_fix();
         forged.peer = ATK_ME;
         let mut model = atk_model(&[(ATK_BOB, false)]);
-        model.restore_positions(vec![forged.clone()]);
+        model.restore_positions(ATK_ME, vec![forged.clone()]);
         assert!(
             !model.positions.contains_key(&ATK_ME),
             "a restored collector's row moved the reader's own pin"
         );
         // Positive control: the reader's own fix comes back.
         forged.via = ATK_ME;
-        model.restore_positions(vec![forged]);
+        model.restore_positions(ATK_ME, vec![forged]);
         assert!(
             model.positions.contains_key(&ATK_ME),
             "the reader's own restored fix placed no pin"
@@ -23489,7 +23516,7 @@ pub(crate) mod tests {
         let mut forged = audit1871_collected_fix();
         forged.peer = ATK_ME;
         let mut model = atk_model(&[(ATK_BOB, false)]);
-        model.restore_tracks(vec![forged.clone()]);
+        model.restore_tracks(ATK_ME, vec![forged.clone()]);
         let points = |model: &UiModel<Field>| model.tracks.get(&ATK_ME).map_or(0, |t| t.len());
         assert_eq!(
             points(&model),
@@ -23497,7 +23524,7 @@ pub(crate) mod tests {
             "another's word joined the reader's track"
         );
         forged.via = ATK_ME;
-        model.restore_tracks(vec![forged]);
+        model.restore_tracks(ATK_ME, vec![forged]);
         assert_eq!(
             points(&model),
             1,
@@ -23522,12 +23549,12 @@ pub(crate) mod tests {
             source: telemetry::Source::Telemetry,
         };
         let mut model = atk_model(&[(ATK_BOB, false), (ATK_ME, false)]);
-        model.restore_positions(vec![stored.clone()]);
+        model.restore_positions(ATK_ME, vec![stored.clone()]);
         assert!(
             !model.positions.contains_key(&ATK_ME),
             "a group's stored word placed the reader's pin"
         );
-        model.restore_tracks(vec![stored.clone()]);
+        model.restore_tracks(ATK_ME, vec![stored.clone()]);
         assert!(
             !model.tracks.contains_key(&ATK_ME),
             "a group's stored word joined the reader's track"
@@ -23537,9 +23564,9 @@ pub(crate) mod tests {
             via: ATK_ME,
             ..stored
         };
-        model.restore_positions(vec![own.clone()]);
+        model.restore_positions(ATK_ME, vec![own.clone()]);
         assert_eq!(model.positions[&ATK_ME].location.latitude_e6, 9_920_000);
-        model.restore_tracks(vec![own]);
+        model.restore_tracks(ATK_ME, vec![own]);
         assert_eq!(model.tracks[&ATK_ME].len(), 1);
     }
 
@@ -23548,6 +23575,10 @@ pub(crate) mod tests {
     /// closed (`closed_at` 3), moves neither Bob's pin nor a group pin:
     /// a left group's copy is drawn under its writer but books nothing
     /// (`CopyUse::Book` in `settled_elsewhere`). The joined twin books it.
+    /// Pins existing behaviour: green before order 1871 added it, never
+    /// red first. The `CopyUse::Book` that `settled_elsewhere` hands
+    /// `copy_writer` swapped to `CopyUse::Draw` turns it red ("a left
+    /// group's settled copy moved Bob's pin").
     #[test]
     fn audit1871_a_settled_copy_from_a_left_group_before_it_closed_moves_no_pin() {
         let mut then = aud_joined(2);
@@ -23650,37 +23681,60 @@ pub(crate) mod tests {
         }
     }
 
-    /// Order 1871 (the second auditor): one message carrying both a new
-    /// membership naming the reader and a copy whose writer is the reader,
-    /// with a position: no pin of the reader's and nothing stored under it.
+    /// Order 1871 (the second auditor), body as order 1877 gives it: one
+    /// message carrying both the epoch-2 roster that names the reader
+    /// joined and a copy whose writer is the reader, with a position; then
+    /// a later message with the epoch-3 roster, which refiles any early
+    /// copy. No pin of the reader's and nothing stored under it. Pins
+    /// existing behaviour: green before order 1871 added it, never red
+    /// first. Two rules hold it, each alone: the copy's writer is judged
+    /// before the message's own membership is learned
+    /// (`apply_message_claims`), and `UiModel::take_fix` refuses
+    /// another's word about the reader. Only with both taken out is it red
+    /// (measured by order 1888); `CopyUse::Book` in
+    /// `groups::file_early_copies` swapped to `CopyUse::Draw` leaves it
+    /// green, since the epoch-2 copy is no early copy of the epoch-3
+    /// roster and is not refiled.
     #[test]
     fn audit1871_one_message_with_a_membership_and_a_copy_naming_the_reader_moves_no_pin() {
         use leviculum_lxmf::lev::{GroupCopy, Lev, MEMBER_JOINED};
         let mut model = atk_model(&[(ATK_BOB, false), (ATK_ME, false)]);
         let _ = model.take_writes();
-        let mut fields = report_of(&fix_at(9_910_000, 13_000_000, two_pm() - 60));
-        Lev {
-            members: Some(aud_members(
-                2,
+        let roster = |epoch: u64| {
+            aud_members(
+                epoch,
                 &[
                     (ATK_BOB, "Bob", MEMBER_JOINED),
                     (ATK_ME, "Me", MEMBER_JOINED),
                 ],
                 false,
-            )),
+            )
+        };
+        let mut fields = report_of(&fix_at(9_970_000, 13_000_000, two_pm() - 60));
+        Lev {
             group_copy: Some(GroupCopy {
                 sender: ATK_ME,
                 sent_ms: (two_pm() - 60) as u64 * 1000,
                 epoch: 2,
             }),
+            members: Some(roster(2)),
             ..Lev::default()
         }
         .put_into(&mut fields);
         arrive(&mut model, ATK_GROUP, 1, "", fields);
-        assert_eq!(model.group(&ATK_GROUP).map(|g| g.epoch), Some(2));
+        arrive(
+            &mut model,
+            ATK_GROUP,
+            2,
+            "",
+            aud_fields(Lev {
+                members: Some(roster(3)),
+                ..Lev::default()
+            }),
+        );
         assert!(
             !model.positions.contains_key(&ATK_ME),
-            "one message moved the reader's own pin"
+            "one group message moved the reader's own pin"
         );
         let stored: Vec<[u8; 16]> = model
             .take_writes()
@@ -23690,9 +23744,101 @@ pub(crate) mod tests {
                 _ => None,
             })
             .collect();
+        assert!(!stored.contains(&ATK_ME), "stored under the reader");
+    }
+
+    /// Order 1877 (the first auditor), the settled test in its round-2
+    /// form: an unverified copy at epoch 2 arrives at seq 9 in a group at
+    /// roster epoch 2 and is kept; settled verified in a group the reader
+    /// joined it books Bob (the positive twin), settled after the reader
+    /// left the group it moves neither Bob's pin nor a group pin. Pins
+    /// existing behaviour, never red first; `CopyUse::Book` in
+    /// `settled_elsewhere` swapped to `CopyUse::Draw` turns it red.
+    #[test]
+    fn audit1877_a_settled_copy_from_a_left_group_moves_no_pin_round2() {
+        let mut then = atk_model_at(&[(ATK_BOB, false)], 2);
+        aud_arrive_unverified(&mut then, 9, "", atk_copy_at(ATK_BOB, 9_940_000, 2));
+        let c = then.conversation(ATK_GROUP);
+        let mut kept = Vec::new();
+        then.conversations[c]
+            .messages
+            .for_each_mut(|m| kept.push(m.clone()));
+        let mut message = kept.pop().expect("the copy");
+        message.signature = Signature::Verified;
+        // The positive twin: joined, the settled copy books Bob.
+        let mut twin = aud_joined(2);
+        twin.positions.clear();
+        update(
+            &mut twin,
+            UiEvent::Settled {
+                peer: ATK_GROUP,
+                message: Some(message.clone()),
+            },
+        );
+        assert_eq!(twin.positions[&ATK_BOB].location.latitude_e6, 9_940_000);
+        // Left before the copy settled: nothing moves.
+        let mut model = aud_joined(2);
+        update(
+            &mut model,
+            UiEvent::Group(groups::Verb::Leave {
+                group: intent::Target::Peer(ATK_GROUP),
+                confirmed: true,
+            }),
+        );
+        assert_eq!(
+            model.group(&ATK_GROUP).map(|g| g.standing),
+            Some(groups::Standing::Left)
+        );
+        model.positions.clear();
+        update(
+            &mut model,
+            UiEvent::Settled {
+                peer: ATK_GROUP,
+                message: Some(message),
+            },
+        );
         assert!(
-            !stored.contains(&ATK_ME),
-            "a position under the reader went to the store"
+            !model.positions.contains_key(&ATK_BOB),
+            "a left group's settled copy moved Bob's pin"
+        );
+        assert!(!model.positions.contains_key(&ATK_GROUP), "a group pin");
+    }
+
+    /// Order 1877 (the second auditor): the shells restore the store's
+    /// fixes before the engine says `Ready`, so the model's `address` is
+    /// still unset then; the restore takes the owner's address itself.
+    #[test]
+    fn audit1877_a_restore_before_ready_brings_back_no_word_of_anothers_about_the_reader() {
+        let stored = Fix {
+            peer: ATK_ME,
+            via: ATK_GROUP,
+            message: None,
+            received_at: Some(two_pm() - 30),
+            location: fix_at(9_920_000, 13_000_000, two_pm() - 60)
+                .location
+                .expect("a location"),
+            telemetry: Vec::new(),
+            source: telemetry::Source::Telemetry,
+        };
+        let mut model = UiModel::<Field>::new(&[]);
+        assert_eq!(
+            model.address, None,
+            "precondition: the start restores before Ready"
+        );
+        model.restore_positions(ATK_ME, vec![stored.clone()]);
+        model.restore_tracks(ATK_ME, vec![stored]);
+        update(
+            &mut model,
+            UiEvent::Engine(OutboxEvent::Ready { address: ATK_ME }),
+        );
+        assert_eq!(model.address, Some(ATK_ME));
+        assert!(
+            !model.positions.contains_key(&ATK_ME),
+            "a stored word of another's became the reader's pin in the shells' order"
+        );
+        assert!(
+            model.tracks.get(&ATK_ME).is_none_or(|t| t.is_empty()),
+            "a stored word of another's joined the reader's track in the shells' order"
         );
     }
 }

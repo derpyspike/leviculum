@@ -73,7 +73,7 @@ fn ugly_model(home: &Path) -> UiModel<Line> {
     }
     update(&mut model, UiEvent::Clock(now()));
     model.restore(store.restore().expect("restore"));
-    model.restore_positions(store.positions().expect("positions"));
+    model.restore_positions(me, store.positions().expect("positions"));
     model
 }
 

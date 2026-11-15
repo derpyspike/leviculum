@@ -72,7 +72,7 @@ fn ugly_model(home: &Path) -> UiModel<Field> {
     }
     update(&mut model, UiEvent::Clock(now()));
     model.restore(store.restore().expect("restore"));
-    model.restore_positions(store.positions().expect("positions"));
+    model.restore_positions(me, store.positions().expect("positions"));
     // The board's screen (1532): its rows, no tab bar.
     model.viewing = screen::viewing(Size::DEFAULT);
     model

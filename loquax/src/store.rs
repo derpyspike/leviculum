@@ -725,6 +725,13 @@ pub struct Store {
 }
 
 impl Store {
+    /// The address the store was opened for, its owner's: the reader's
+    /// own LXMF address (a client's home address). The restores at start
+    /// judge by it before the engine says `Ready` (order 1877).
+    pub fn owner(&self) -> [u8; 16] {
+        self.identity
+    }
+
     /// `home/history.sqlite3` for `identity`, our LXMF address.
     pub fn open_in(home: &Path, identity: [u8; 16]) -> Result<Self, StoreError> {
         Self::open(&home.join(STORE_FILE), identity)
@@ -1762,6 +1769,10 @@ impl Store {
     /// The positions whose fix time is in `[from, to)`, `peer`'s or every
     /// peer's, by fix time: the track's reader (1385). The table's key
     /// starts with the peer and the fix time, so a window is a range.
+    /// A row about the owner from another (`peer` the owner, `via` not)
+    /// is never handed out (order 1877): a writable open deletes such rows
+    /// (order 1871), a read-only open cannot, and every reader of the
+    /// store's fixes comes through here.
     pub fn fixes_between(
         &self,
         peer: Option<[u8; 16]>,
@@ -1774,7 +1785,8 @@ impl Store {
                 "SELECT peer, via, message, fix_time, received_at, lat_e6, lon_e6, alt_e2, \
                  speed_e2, bearing_e2, accuracy_e2, telemetry, source FROM positions \
                  WHERE identity = ?1 AND (?2 IS NULL OR peer = ?2) \
-                 AND fix_time >= ?3 AND fix_time < ?4 ORDER BY fix_time",
+                 AND fix_time >= ?3 AND fix_time < ?4 \
+                 AND NOT (peer = ?1 AND via <> ?1) ORDER BY fix_time",
             )
             .map_err(|e| self.failed(e))?;
         let peer = peer.map(|peer| peer.to_vec());
@@ -6769,15 +6781,31 @@ mod tests {
                 StoreWrite::Position(fix(BOB, ALICE, None, 7_000)),
             ])
             .expect("write");
-        assert_eq!(store.fixes(None).expect("fixes").len(), 3, "the setup");
+        // The rows themselves, not the reader of fixes, which filters
+        // another's word about the owner since order 1877.
+        let rows = |store: &Store| -> Vec<([u8; 16], [u8; 16])> {
+            let mut statement = store
+                .conn
+                .prepare("SELECT peer, via FROM positions")
+                .expect("prepare");
+            statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+                })
+                .expect("query")
+                .map(|r| r.expect("row"))
+                .map(|(p, v)| {
+                    (
+                        <[u8; 16]>::try_from(p.as_slice()).expect("peer"),
+                        <[u8; 16]>::try_from(v.as_slice()).expect("via"),
+                    )
+                })
+                .collect()
+        };
+        assert_eq!(rows(&store).len(), 3, "the setup");
         drop(store);
         let store = Store::open_in(home.path(), US).expect("reopen");
-        let left: Vec<([u8; 16], [u8; 16])> = store
-            .fixes(None)
-            .expect("fixes")
-            .into_iter()
-            .map(|f| (f.peer, f.via))
-            .collect();
+        let left = rows(&store);
         assert!(
             !left.contains(&(US, BOB)),
             "another's word about the reader survived the open: {left:?}"
@@ -6786,6 +6814,74 @@ mod tests {
         assert!(
             left.contains(&(BOB, ALICE)),
             "a collected row of Bob's went"
+        );
+    }
+
+    /// Order 1877 (the second auditor): the read-only open runs no
+    /// cleanup, so its reader must not hand out a row an older Loquax
+    /// stored whose peer is the owner and whose `via` is another
+    /// (`fixes_between` filters it): the Android map's `pins_in` reads so.
+    #[test]
+    fn audit1877_a_read_only_open_hands_no_word_of_anothers_about_the_owner() {
+        let home = tempfile::tempdir().expect("home");
+        let mut store = Store::open_in(home.path(), US).expect("open");
+        store
+            .write(&[
+                StoreWrite::Position(fix(US, US, None, 5_000)),
+                StoreWrite::Position(fix(US, BOB, None, 6_000)),
+            ])
+            .expect("write");
+        drop(store);
+        let store = Store::open_read_only(&home.path().join(STORE_FILE), US)
+            .expect("read only")
+            .expect("the file");
+        let ours: Vec<([u8; 16], [u8; 16])> = store
+            .fixes_between(Some(US), i64::MIN, i64::MAX)
+            .expect("fixes")
+            .into_iter()
+            .map(|f| (f.peer, f.via))
+            .collect();
+        assert!(
+            !ours.contains(&(US, BOB)),
+            "the read-only open handed another's word about the owner: {ours:?}"
+        );
+        assert!(ours.contains(&(US, US)), "the owner's own row went");
+    }
+
+    /// Order 1877 (the first auditor): a forged row about the reader, newer
+    /// than the reader's own fix, never shadows it. The reader's own fix
+    /// at 5000 and two rows under the reader via Bob (6000) and via Alice
+    /// (7000); after a reopen the reader's one position is its own, and
+    /// its track holds only its own word. Pins the open's cleanup (order
+    /// 1871) together with the reader's filter (order 1877): green as soon
+    /// as either holds.
+    #[test]
+    fn audit1877_a_forged_row_never_shadows_the_readers_own_fix() {
+        let home = tempfile::tempdir().expect("home");
+        let mut store = Store::open_in(home.path(), US).expect("open");
+        store
+            .write(&[
+                StoreWrite::Position(fix(US, US, None, 5_000)),
+                StoreWrite::Position(fix(US, BOB, None, 6_000)),
+                StoreWrite::Position(fix(US, ALICE, None, 7_000)),
+            ])
+            .expect("write");
+        drop(store);
+        let store = Store::open_in(home.path(), US).expect("reopen");
+        let ours: Vec<Fix> = store
+            .positions()
+            .expect("positions")
+            .into_iter()
+            .filter(|f| f.peer == US)
+            .collect();
+        assert_eq!(ours.len(), 1, "{ours:?}");
+        assert_eq!(ours[0].via, US, "a forged row shadowed the reader's fix");
+        assert_eq!(ours[0].location.last_update, 5_000);
+        let track = store.track(US, 10).expect("track");
+        assert!(!track.is_empty(), "the reader's own fix went");
+        assert!(
+            track.iter().all(|f| f.via == US),
+            "another's word in the reader's track: {track:?}"
         );
     }
 }

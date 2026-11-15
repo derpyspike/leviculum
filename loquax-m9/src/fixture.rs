@@ -339,7 +339,7 @@ fn map(model: &mut UiModel<Field>) {
             source: Source::Telemetry,
         })
         .collect();
-    model.restore_positions(shares);
+    model.restore_positions(OWN, shares);
     let (identity, name, at, age) = NEARBY;
     update(
         model,
