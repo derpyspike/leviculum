@@ -1978,8 +1978,10 @@ pub(crate) async fn start(
     // The peer states likewise (1640): a pin loosened before the end
     // stays loosened.
     model.restore_owed_peer_states(owed_peer_states);
-    model.restore_positions(positions);
-    model.restore_tracks(track_fixes);
+    // The engine says `Ready` only later: the restores judge by the
+    // address the store was opened with (order 1877).
+    model.restore_positions(address, positions);
+    model.restore_tracks(address, track_fixes);
     model.activity = model.activity.max(last_key);
     model.ascii = options.ascii;
     model.mouse = !options.no_mouse;

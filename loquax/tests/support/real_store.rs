@@ -595,7 +595,7 @@ pub fn model_from_store<B: leviculum_ui::input::InputBuffer + Default>(
     }
     loquax::ui::update(&mut model, loquax::ui::UiEvent::Clock(now()));
     model.restore(store.restore().expect("restore"));
-    model.restore_positions(store.positions().expect("positions"));
+    model.restore_positions(own(), store.positions().expect("positions"));
     model
 }
 

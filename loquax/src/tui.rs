@@ -2919,10 +2919,13 @@ mod tests {
                     offset_secs: 3600,
                 }),
             );
-            model.restore_positions(vec![
-                fix(ANNA, 43_771_000, 11_254_000, 4 * 60),
-                fix(BEN, 43_776_500, 11_247_000, 25 * 60),
-            ]);
+            model.restore_positions(
+                [0x30; 16],
+                vec![
+                    fix(ANNA, 43_771_000, 11_254_000, 4 * 60),
+                    fix(BEN, 43_776_500, 11_247_000, 25 * 60),
+                ],
+            );
             update(&mut model, UiEvent::Key(parse_key("M").expect("key")));
             assert!(model.map.is_some(), "M opens the map");
             for _ in 0..4 {

@@ -1628,7 +1628,8 @@ mod tests {
     /// puts as the fourth `/sync` element, the home asks nothing for it
     /// (the fold stays the board's, never [`Fold::BoardVouched`]) and
     /// panics nowhere: not on the whole request, and not on any prefix of
-    /// it, which a cut packet would be.
+    /// it, which a cut packet would be. Pins existing behaviour: green
+    /// before order 1871 added it (it pins 5aab6c7fb), never red first.
     #[test]
     fn audit1871_a_hostile_fourth_sync_element_asks_nothing_and_panics_nowhere() {
         let fourths: Vec<Vec<u8>> = {
@@ -1661,6 +1662,14 @@ mod tests {
             put(&|o| o.push(0xc1));
             // Not valid UTF-8 inside a string.
             put(&|o| o.extend_from_slice(&[0xa2, 0xff, 0xfe]));
+            // The word cut by its last byte (order 1877): its str header
+            // claims seven bytes and six follow.
+            put(&|o| {
+                let mut word = Vec::new();
+                msgpack::string(&mut word, VOUCHED_WORD);
+                word.pop();
+                o.extend_from_slice(&word);
+            });
             // Nothing: the array promises a fourth element that never comes.
             put(&|_| {});
             list
@@ -1690,6 +1699,34 @@ mod tests {
         let asked = sync_request_folded(5, 412, Fold::BoardVouched);
         assert_eq!(
             read_sync_asked(&asked),
+            Ok((5, Some(412), Fold::BoardVouched))
+        );
+    }
+
+    /// Order 1877 (the second auditor): a str header claiming the seven
+    /// bytes of [`VOUCHED_WORD`] with six following asks nothing, and no
+    /// prefix of the honest vouched request asks the verdicts. Pins
+    /// existing behaviour: green when order 1877 added it, never red first.
+    #[test]
+    fn audit1877_a_cut_vouched_word_asks_nothing() {
+        let mut data = Vec::new();
+        msgpack::array(&mut data, 4);
+        msgpack::uint(&mut data, 5);
+        msgpack::uint(&mut data, 412);
+        msgpack::string(&mut data, "board");
+        let mut word = Vec::new();
+        msgpack::string(&mut word, VOUCHED_WORD);
+        word.pop();
+        data.extend_from_slice(&word);
+        assert_eq!(read_sync_asked(&data), Ok((5, Some(412), Fold::Board)));
+        let full = sync_request_folded(5, 412, Fold::BoardVouched);
+        for cut in 0..full.len() {
+            if let Ok((_, _, fold)) = read_sync_asked(&full[..cut]) {
+                assert_ne!(fold, Fold::BoardVouched, "cut {cut}");
+            }
+        }
+        assert_eq!(
+            read_sync_asked(&full),
             Ok((5, Some(412), Fold::BoardVouched))
         );
     }

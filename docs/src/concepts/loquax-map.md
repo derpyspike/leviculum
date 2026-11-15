@@ -41,7 +41,7 @@ stream row only where the reader chose that collector, and none can be
 chosen yet, `Writers`, `loquax/src/ui.rs:7099`), the screen model keeps
 each peer's latest and hands every one to the store (`take_telemetry`,
 `loquax/src/ui.rs:6978`), and the store keeps the fields whole in its
-`fields` column (`loquax/src/store.rs:3982`) and the positions in a table of
+`fields` column (`loquax/src/store.rs:3994`) and the positions in a table of
 their own (`SCHEMA_V2`, `loquax/src/store.rs:205`). The sender's timestamp
 is still not carried: `OutboxEvent`, the screen's `Message` and every type
 the model folds derive `Eq`, which an `f64` cannot, so carrying it is a
