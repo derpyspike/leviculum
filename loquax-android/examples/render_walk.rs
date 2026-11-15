@@ -805,6 +805,12 @@ impl Walk {
     /// A gesture: `steps` moving frames from the settled view `start`,
     /// each asked by `step` from the last frame, then a frame at rest.
     /// Every frame judged; the frame times and the heap judged at the end.
+    /// `while_drawn` is the share of a drag frame's move the finger makes
+    /// while that frame renders, as on the device, where the finger does
+    /// not wait for the library (order 1883): it reaches the mirror after
+    /// the draw and before `place`, so the frame lands with a drag it did
+    /// not absorb.
+    #[allow(clippy::too_many_arguments)]
     fn gesture(
         &mut self,
         name: &str,
@@ -812,6 +818,7 @@ impl Walk {
         centre: Centre,
         zoom_milli: u32,
         steps: usize,
+        while_drawn: f64,
         step: &dyn Fn(usize, &MapShown, MapRequest) -> Option<MapRequest>,
     ) {
         let home = self.home(&format!("gesture-{name}-{}", size.name));
@@ -896,6 +903,13 @@ impl Walk {
                 )
                 .map(|g| (g, fx, fy));
             }
+            // The share of this frame's drag the finger makes while the
+            // frame renders: none for a zoom or a jump.
+            let pan = (intent.pan_x, intent.pan_y);
+            let late = match by == 0 && intent.at_lat_e6.is_none() {
+                true => while_drawn,
+                false => 0.0,
+            };
             let ask = match intent.at_lat_e6.is_some() {
                 // A tap or the search recentres without fingers: the
                 // request goes as the view asks it.
@@ -912,8 +926,8 @@ impl Walk {
                     if intent.pan_x != 0 || intent.pan_y != 0 {
                         // A drag grabs the middle of the screen.
                         mirror.on_scroll(
-                            f64::from(intent.pan_x),
-                            f64::from(intent.pan_y),
+                            f64::from(intent.pan_x) * (1.0 - late),
+                            f64::from(intent.pan_y) * (1.0 - late),
                             f64::from(size.w) / 2.0,
                             f64::from(size.h) / 2.0,
                         );
@@ -931,8 +945,32 @@ impl Walk {
             played.frame_ms.push(drawn.ms);
             let image = format!("{}-{name}-{}-f{i:03}", self.variant, size.name);
             let mut verdicts = self.judge(&java, &drawn, false, &image);
+            if drawn.shown.ok {
+                let lo = i64::from(drawn.shown.min_zoom_milli);
+                let hi = i64::from(drawn.shown.max_zoom) * i64::from(MILLI);
+                exact_zoom = (i64::from(exact_zoom) + by).clamp(lo, hi.max(lo)) as u32;
+            }
+            if late > 0.0 && pan != (0, 0) {
+                // The rest of the move, made while the frame rendered.
+                mirror.on_scroll(
+                    f64::from(pan.0) * late,
+                    f64::from(pan.1) * late,
+                    f64::from(size.w) / 2.0,
+                    f64::from(size.h) / 2.0,
+                );
+            }
+            if drawn.shown.ok {
+                mirror.place(&drawn.shown, ask.moving);
+            }
             if drawn.shown.ok && drawn.shown.turns {
                 if let Some(fit) = disk_fit(&java.screen, space) {
+                    // Where Java SHOWS the disk until the next frame: the
+                    // frame under the leftover transform (MapView.onDraw,
+                    // shownX). The frame's own disk held while the shown
+                    // one slid with the finger (order 1883).
+                    let (cx, cy) = mirror.drawn(fit.0, fit.1);
+                    let rx = mirror.drawn(fit.0 + fit.2, fit.1).0;
+                    let fit = (cx, cy, rx - cx);
                     let centred = by != 0
                         && ask.about_x == (size.w / 2) as i32
                         && ask.about_y == (size.h / 2) as i32;
@@ -949,14 +987,6 @@ impl Walk {
                         _ => disk_ref = Some((drawn.shown.zoom_milli, fit)),
                     }
                 }
-            }
-            if drawn.shown.ok {
-                let lo = i64::from(drawn.shown.min_zoom_milli);
-                let hi = i64::from(drawn.shown.max_zoom) * i64::from(MILLI);
-                exact_zoom = (i64::from(exact_zoom) + by).clamp(lo, hi.max(lo)) as u32;
-            }
-            if drawn.shown.ok {
-                mirror.place(&drawn.shown, ask.moving);
             }
             if let (Some((g, fx, fy)), true) = (ground, drawn.shown.ok) {
                 // Where the ground is drawn on the SCREEN: the frame's
@@ -1152,12 +1182,18 @@ impl Walk {
         let [germany, _, _, _, _, berlin, _, _, _] = CENTRES;
         // Across tile seams at z13 over Berlin's region: 40 px a frame
         // east, 24 frames, three seams.
-        self.gesture("pan-seam", size, berlin, 13 * MILLI, 24, &|_, _, ask| {
-            Some(MapRequest { pan_x: 40, ..ask })
-        });
+        self.gesture(
+            "pan-seam",
+            size,
+            berlin,
+            13 * MILLI,
+            24,
+            0.0,
+            &|_, _, ask| Some(MapRequest { pan_x: 40, ..ask }),
+        );
         // Pinched out from z12 to the world at its smallest, a quarter
         // step a frame, then back in to z12.
-        self.gesture("pinch-out-in", size, germany, 12 * MILLI, 120, &{
+        self.gesture("pinch-out-in", size, germany, 12 * MILLI, 120, 0.0, &{
             let out = std::cell::Cell::new(true);
             move |_, last: &MapShown, ask| {
                 let zoom = ask.zoom_milli.unwrap_or(12 * MILLI);
@@ -1178,7 +1214,7 @@ impl Walk {
         // the ground under the focus must stay under it through the
         // whole handover, where the Mercator rule lost Morocco to Spain.
         let (tx, ty) = ((size.w / 3) as i32, (size.h / 3) as i32);
-        self.gesture("pinch-at-thumb", size, germany, 12 * MILLI, 120, &{
+        self.gesture("pinch-at-thumb", size, germany, 12 * MILLI, 120, 0.0, &{
             let out = std::cell::Cell::new(true);
             move |_, last: &MapShown, ask| {
                 let zoom = ask.zoom_milli.unwrap_or(12 * MILLI);
@@ -1205,10 +1241,38 @@ impl Walk {
             germany,
             3 * MILLI,
             60,
+            0.0,
             &|i, _, ask| {
                 Some(match i < 30 {
                     true => MapRequest { pan_y: -40, ..ask },
                     false => MapRequest { pan_x: 40, ..ask },
+                })
+            },
+        );
+        // The phone's drag path at the zoom floor (order 1883, Lew on APK
+        // 254c3f3aa: the earth slid off the picture's centre while a
+        // finger turned it, and snapped back when it lifted): the drags
+        // of the device smoke's globe-turns-in-place, 30 px a frame, half
+        // of each frame's move made while the frame renders. The disk
+        // Java shows must not move (globe_disk_fixed).
+        self.gesture(
+            "drag-globe-floor",
+            size,
+            germany,
+            0,
+            80,
+            0.5,
+            &|i, _, ask| {
+                let (x, y) = match i / 20 {
+                    0 => (30, 0),
+                    1 => (0, -30),
+                    2 => (21, 21),
+                    _ => (0, 30),
+                };
+                Some(MapRequest {
+                    pan_x: x,
+                    pan_y: y,
+                    ..ask
                 })
             },
         );
@@ -1221,6 +1285,7 @@ impl Walk {
             berlin,
             16 * MILLI,
             1,
+            0.0,
             &move |_, _, ask| {
                 Some(MapRequest {
                     at_lat_e6: Some(jump.lat_e7 / 10),

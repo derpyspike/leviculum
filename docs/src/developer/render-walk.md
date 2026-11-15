@@ -66,13 +66,22 @@ renderer.
     still.
   - `--quick` keeps the phone and the window, Germany, the north pole and
     Berlin, and the zooms 4 to 16 in steps of two plus the floor.
-- **Five gestures** run on each frame size. `--quick` runs them on the
+- **Seven gestures** run on each frame size. `--quick` runs them on the
   phone only.
   - `pan-seam`: 40 px a frame across three tile seams at z13.
   - `pinch-out-in`: a quarter step a frame from z12 out to the world and
     back.
+  - `pinch-at-thumb`: the same pinch about a focus a third into the
+    screen; the ground under it must stay there.
   - `drag-pole-around`: 30 frames toward the north pole, then 30 frames
     around. This turns the globe.
+  - `drag-globe-floor`: the phone's drag path at the zoom floor (order
+    1883): 30 px a frame across, up, diagonally and down to the pole, 20
+    frames each, half of every frame's move made while the frame renders,
+    as a finger does on the device. `globe_disk_fixed` judges the disk
+    where Java shows it, the frame under the gesture's leftover
+    transform; before 1883 that disk slid by the move made during each
+    render.
   - `jump-street-to-z5`: from Berlin z16 to Europe z5, the way a tap on a
     position asks for it.
   - `rotate`: portrait to landscape and back, at rest.
@@ -121,7 +130,7 @@ live in `loquax-android/src/render_walk.rs`.
 | `heap_returns` | a gesture | the live heap ends more than 160 MB above its start |
 | `heap_peak` | a gesture | the live heap grows more than 320 MB during the gesture |
 | `view_kept` | the rotation | the centre or the zoom moved |
-| `globe_disk_fixed` | a turning globe's gesture frame | the disk fitted from the frame's own pixels differs from the gesture's reference frame at the same zoom by more than 1 px in centre or radius (order 1818, the wobble proof) |
+| `globe_disk_fixed` | a turning globe's gesture frame | the disk fitted from the frame's own pixels, placed where Java shows it (the leftover gesture transform, order 1883), differs from the gesture's reference frame at the same zoom by more than 1 px in centre or radius (order 1818, the wobble proof) |
 | `view_only_by_input` | a settled frame, a gesture's rest held 120 s of held clock, the rotation's MapView made anew | a frame asked with no input shows another view than the one the last input left, by its centre or a thousandth of zoom (1819: the desktop's minute beat and the landed regions moved the view; the phone's recreated Activity fitted it anew) |
 | `zoom_keeps_the_place` | a zoom gesture's frame | the geographic point that started under the pinch focus is more than 2 px from it; the rest frame of an out-and-in pinch adds one row for "the start view is back" (order 1818, the Morocco-to-Spain jump) |
 | `screen_drawn` | a window or terminal screen | it drew nothing. For the window, that is at most two of four quarters with more than one colour. For the terminal, it is text on less than a tenth of its rows |
