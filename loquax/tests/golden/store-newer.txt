@@ -1,0 +1,1 @@
+loquax: Your chats were saved by a newer version of Loquax. Install the newer version and everything is back. Your data is unchanged.

@@ -87,7 +87,7 @@ path's interface changes. Nothing medium-aware enters transport
   `hops=0`.
 - **What the code does today (read 2026-11-04, not yet measured).** A
   desktop Loquax that is a client of a mailbox attaches to the shared
-  instance as `Role::Client` (`attach_as`, `loquax/src/shell.rs:1826`;
+  instance as `Role::Client` (`attach_as`, `loquax/src/shell.rs:1855`;
   `Upstream::Shared`, `loquax/src/engine/shell.rs:433`) and dials
   nothing: the only callers of the rendezvous rotation (`dial`,
   `loquax/src/engine/shell.rs:616`) are the leaf, the phone's own
@@ -107,7 +107,7 @@ path's interface changes. Nothing medium-aware enters transport
   instance of their own.
 - **A phone that is its own mailbox's device** (1264's case): the
   screens' leaf dials the phone mailbox's node on a loopback port
-  (`loquax-android/src/mailbox.rs:552`). That is a socket, but it never
+  (`loquax-android/src/mailbox.rs:558`). That is a socket, but it never
   leaves the phone, and no network change touches it. It reads "local".
   An in-process channel instead of loopback TCP saves a socket, not a
   hop; it is a later cleanup, not part of the ladder.

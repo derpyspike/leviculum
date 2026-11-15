@@ -154,8 +154,12 @@ impl ClientRecord {
             page_bytes: Some(page_bytes),
         };
         // The record is the board's (1415): it folds as the board does,
-        // so the home serves it only what `board::fold` keeps (1439).
-        Some(Ask::new(&self.home, verb, now_ms, budget_ms).map(|ask| ask.folding(Fold::Board)))
+        // so the home serves it only what `board::fold` keeps (1439), and
+        // says which received messages it verified (1744).
+        Some(
+            Ask::new(&self.home, verb, now_ms, budget_ms)
+                .map(|ask| ask.folding(Fold::BoardVouched)),
+        )
     }
 
     /// The bytes that go to flash.

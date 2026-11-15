@@ -30,7 +30,7 @@ use leviculum_core::ifac::IfacConfig;
 use leviculum_core::node::{NodeCore, NodeCoreBuilder};
 use leviculum_core::traits::Interface;
 use leviculum_core::transport::dispatch_actions;
-use leviculum_core::{EmbeddedStorage, Identity, InterfaceMode, TickOutput};
+use leviculum_core::{EmbeddedStorage, Identity, InterfaceId, InterfaceMode, TickOutput};
 use loquax::home::ask::{Ask, HomeError, Outcome, Verb};
 use loquax::home::board::{
     self, Batch, Executor, LinkClass, Medium, Progress, Reach, Report, Session, Way, Word,
@@ -79,11 +79,25 @@ pub const SEND_BUDGET_MS: u64 = 120_000;
 /// with an ask's end, a second is well under any of them.
 pub const WAY_EVERY_MS: u64 = 1_000;
 
+/// The BLE carrier's interface (1480): Columba over the TrouBLE host,
+/// `leviculum_trouble::ble`. Up only on a board whose media record keeps
+/// BLE on (the default).
+pub const BLE_IFACE: InterfaceId = InterfaceId(1);
+/// Its name in the `[NODE]` line and the interface table.
+pub const BLE_NAME: &str = "ble";
+
 /// The medium the bar names for the interface at `index` (1478): the host's
-/// serial line is a cable. Every other index is none until its interface
-/// joins the node and says what it is.
+/// serial line is a cable, the Columba mesh is Bluetooth (1480). Every
+/// other index is none until its interface joins the node and says what
+/// it is.
 pub fn medium_of(index: usize) -> Option<Medium> {
-    (index == SERIAL_IFACE.0).then_some(Medium::Cable)
+    if index == SERIAL_IFACE.0 {
+        Some(Medium::Cable)
+    } else if index == BLE_IFACE.0 {
+        Some(Medium::Bluetooth)
+    } else {
+        None
+    }
 }
 
 /// The name the board joins its home under: what the phone's device list
@@ -121,6 +135,9 @@ pub struct Drained {
 pub struct Handheld {
     pub node: Box<Core>,
     pub serial: SerialIface,
+    /// The BLE carrier (1480), once [`Handheld::enable_ble`] put it up;
+    /// `None` on a board whose media record switched BLE off.
+    ble: Option<leviculum_ble_link::BleInterface>,
     ifac: BTreeMap<usize, IfacConfig>,
     client: Option<Client>,
     /// The way to the home as last read from the path table (1478), and
@@ -229,6 +246,7 @@ impl Handheld {
         let mut handheld = Self {
             node,
             serial: SerialIface::new(),
+            ble: None,
             ifac: BTreeMap::new(),
             client: None,
             way: None,
@@ -726,6 +744,66 @@ impl Handheld {
         self.client.as_ref().map(|client| client.session.reach())
     }
 
+    /// BLE joins the node (1480): the interface the TrouBLE backend's
+    /// fan-out serves, up from this call on. Mode stays the default,
+    /// Full: the peers behind it are mesh nodes of their own — phones,
+    /// boards, a host's daemon — and the automatic-mesh rule wants
+    /// announces relayed into the room as on any carrier.
+    pub fn enable_ble(&mut self, iface: leviculum_ble_link::BleInterface) {
+        self.node
+            .set_interface_name(BLE_IFACE.0, alloc::string::String::from(BLE_NAME));
+        self.node
+            .set_interface_hw_mtu(BLE_IFACE.0, leviculum_trouble::ble::INTERFACE_MTU as u32);
+        self.ble = Some(iface);
+        let up = self.node.handle_interface_up(BLE_IFACE.0);
+        self.dispatch(up.actions);
+    }
+
+    /// A packet a BLE link delivered, with the link peer's identity when
+    /// its handshake named one (Codeberg #365): path entries learned
+    /// over the link stay attributable when it dies.
+    pub fn ble_packet(
+        &mut self,
+        peer: Option<[u8; 16]>,
+        data: &[u8],
+        now_ms: u64,
+        stores: &mut Stores<'_>,
+        log: &mut UartLog<'_>,
+    ) {
+        let out = match peer {
+            Some(peer) => self.node.handle_packet_from_peer(BLE_IFACE, peer, data),
+            None => self.node.handle_packet(BLE_IFACE, data),
+        };
+        self.output(out, now_ms, stores, log);
+    }
+
+    /// A BLE peer's FIRST link came up: pull its delivery path over the
+    /// new link — Columba answers a path request but announces on
+    /// neither connect nor reconnect.
+    pub fn ble_peer_up(
+        &mut self,
+        peer: [u8; 16],
+        now_ms: u64,
+        stores: &mut Stores<'_>,
+        log: &mut UartLog<'_>,
+    ) {
+        let out = self.node.handle_interface_peer_up(BLE_IFACE, peer);
+        self.output(out, now_ms, stores, log);
+    }
+
+    /// A BLE peer's LAST link died: cull the paths whose next hop it
+    /// was, or a stale 1-hop BLE path keeps swallowing traffic.
+    pub fn ble_peer_lost(
+        &mut self,
+        peer: [u8; 16],
+        now_ms: u64,
+        stores: &mut Stores<'_>,
+        log: &mut UartLog<'_>,
+    ) {
+        let out = self.node.handle_interface_peer_lost(BLE_IFACE, peer);
+        self.output(out, now_ms, stores, log);
+    }
+
     /// A packet the host sent.
     pub fn packet(
         &mut self,
@@ -769,8 +847,16 @@ impl Handheld {
         if actions.is_empty() {
             return;
         }
-        let mut ifaces: [&mut dyn Interface; 1] = [&mut self.serial];
-        let dispatched = dispatch_actions(&mut ifaces, actions, &self.ifac);
+        let dispatched = match self.ble.as_mut() {
+            Some(ble) => {
+                let mut ifaces: [&mut dyn Interface; 2] = [&mut self.serial, ble];
+                dispatch_actions(&mut ifaces, actions, &self.ifac)
+            }
+            None => {
+                let mut ifaces: [&mut dyn Interface; 1] = [&mut self.serial];
+                dispatch_actions(&mut ifaces, actions, &self.ifac)
+            }
+        };
         self.node.record_dispatch_drops(&dispatched);
     }
 

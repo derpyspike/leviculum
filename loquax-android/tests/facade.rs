@@ -53,6 +53,114 @@ fn start_bytes(start: &Start) -> Vec<u8> {
     schema::encode(start)
 }
 
+/// The store at `path` stamped `ahead` schemas past this build's: the
+/// header's `user_version`, four bytes big end first at offset 60, as a
+/// later Loquax's migration leaves it (SQLite keeps no checksum over it).
+fn stamp_ahead(path: &Path, ahead: i32) {
+    let mut bytes = std::fs::read(path).expect("the store");
+    let version = loquax::store::SCHEMA_VERSION + ahead;
+    bytes[60..64].copy_from_slice(&version.to_be_bytes());
+    std::fs::write(path, bytes).expect("stamp the store");
+}
+
+/// The phone's start answer over a store a later Loquax wrote (1760), as
+/// Java decodes it, the app's directory said as `<dir>`; pinned in German
+/// as `golden/store-newer-started.json`.
+fn newer_golden(answer: &Started, dir: &Path) -> String {
+    let mut got = serde_json::to_string_pretty(answer)
+        .expect("json")
+        .replace(&dir.display().to_string(), "<dir>")
+        // The schemas move with every migration; the golden does not.
+        .replace(
+            &format!("schema {}", loquax::store::SCHEMA_VERSION + 1),
+            "schema <later>",
+        )
+        .replace(
+            &format!("knows {}", loquax::store::SCHEMA_VERSION),
+            "knows <ours>",
+        );
+    got.push('\n');
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/store-newer-started.json");
+    if std::env::var_os("LOQUAX_WRITE_GOLDEN").is_some() {
+        std::fs::write(&path, &got).expect("write the golden");
+    }
+    got
+}
+
+/// A store from a later Loquax is no first start (1760): the start says
+/// so in plain words in the phone's language, asks for nothing the join
+/// form would (`need` is `newer`, not `code` or `server`), keeps the path
+/// and the schema numbers under Details, and leaves the file byte for
+/// byte as it was. The phone's own store and the mailbox's alike.
+#[test]
+fn a_store_from_a_later_loquax_says_so_and_is_left_alone() {
+    let _facade = FACADE.blocking_lock();
+    loquax_android::stop();
+    for under in ["", "mailbox"] {
+        let dir = tempfile::tempdir().expect("app dir");
+        let at = dir.path().join(under);
+        std::fs::create_dir_all(&at).expect("the store's directory");
+        drop(loquax::store::Store::open_in(&at, [0x42; 16]).expect("a store"));
+        let path = at.join(loquax::store::STORE_FILE);
+        stamp_ahead(&path, 1);
+        let before = std::fs::read(&path).expect("the store");
+        for (lang, said) in [
+            (
+                Some("de-DE"),
+                "Deine Chats wurden mit einer neueren Loquax-Version gespeichert. \
+                 Installiere die neuere Version, dann ist alles wieder da. \
+                 Deine Daten sind unverändert.",
+            ),
+            (
+                None,
+                "Your chats were saved by a newer version of Loquax. Install the \
+                 newer version and everything is back. Your data is unchanged.",
+            ),
+        ] {
+            let answer = started(&loquax_android::start(&start_bytes(&Start {
+                dir: dir.path().display().to_string(),
+                lang: lang.map(str::to_string),
+                ..Start::default()
+            })));
+            assert!(!answer.ok, "{under}: {answer:?}");
+            assert_eq!(answer.need.as_deref(), Some("newer"), "{under}: {answer:?}");
+            let error = answer.error.clone().expect("words");
+            assert_eq!(error, said, "{under}");
+            assert!(
+                !error.contains("sqlite") && !error.contains("schema"),
+                "{error}"
+            );
+            let details = answer.details.clone().expect("details");
+            assert!(details.contains(&path.display().to_string()), "{details}");
+            assert!(
+                details.contains(&format!("schema {}", loquax::store::SCHEMA_VERSION + 1)),
+                "{details}"
+            );
+            if under.is_empty() && lang.is_some() {
+                let got = newer_golden(&answer, dir.path());
+                let want = std::fs::read_to_string(
+                    Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("tests/golden/store-newer-started.json"),
+                )
+                .unwrap_or_default();
+                assert!(
+                    got == want,
+                    "the answer moved:\n{got}\n(LOQUAX_WRITE_GOLDEN=1 writes it)"
+                );
+            }
+        }
+        assert!(
+            std::fs::read(&path).expect("the store") == before,
+            "{under}: the store was touched"
+        );
+        // Nothing ran: no session answers.
+        let done: schema::Done =
+            rmp_serde::from_slice(&loquax_android::command(&schema::encode(&Request::Pull)))
+                .expect("a Done");
+        assert_eq!(done.error.as_deref(), Some("not started"), "{under}");
+    }
+}
+
 /// The ways a first start goes wrong, each with what the join screen asks
 /// for and words for it. Through the exported facade, which keeps no
 /// session after a failed start.
@@ -1984,6 +2092,36 @@ fn home_keeps_petname(session: &Session, home: &Path, peer: [u8; 16], want: Opti
     }
 }
 
+/// Wait until the phone's store owes nothing for one word any more
+/// (1635, 1640), reading `session`'s events meanwhile: the home took it
+/// and the phone folded the home's answer, which is what the assertion
+/// after the stop reads. The home's journal alone says only that the
+/// home took it: its answer reaches the phone's pump a turn later, and a
+/// stop in between keeps the word owed in the store — the module's own
+/// rules ([`loquax::ui::owed`]) make it settle on that answer, not on
+/// the home's journal. Waiting on the journal alone made the `taken`
+/// cases depend on that turn's timing under the suite's load.
+fn the_phone_owes_nothing(
+    session: &Session,
+    store: &Path,
+    settled: impl Fn(&loquax::store::Store) -> bool,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let kept = loquax::store::Store::open_read_only(store, session.address())
+            .expect("the phone's store")
+            .expect("there");
+        if settled(&kept) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the phone never recorded what its home took"
+        );
+        let _ = session.next_event(Duration::from_millis(200));
+    }
+}
+
 /// 1635: the reader names a peer "Mum", the home node keeps it, and the
 /// reader clears the name again. `taken` says whether the home node took
 /// the clearing before the session stopped; without it the home is
@@ -2003,6 +2141,7 @@ async fn a_cleared_petname_across_a_restart(taken: bool) {
     let home_dir = home.path().to_path_buf();
     let phone = tempfile::tempdir().expect("app dir");
     let dir = phone.path().display().to_string();
+    let phone_store = phone.path().join(loquax::store::STORE_FILE);
     let first = Start {
         dir: dir.clone(),
         code: Some(format!("{code}@127.0.0.1:{port}")),
@@ -2039,6 +2178,9 @@ async fn a_cleared_petname_across_a_restart(taken: bool) {
             .expect("clear");
         if taken {
             home_keeps_petname(&session, &at, peer, None);
+            the_phone_owes_nothing(&session, &phone_store, |kept| {
+                !kept.owed_petnames().expect("owed").contains_key(&peer)
+            });
             kill();
         }
         let address = session.address();
@@ -2192,6 +2334,7 @@ async fn an_unpinned_peer_across_a_restart(taken: bool) {
     let home_dir = home.path().to_path_buf();
     let phone = tempfile::tempdir().expect("app dir");
     let dir = phone.path().display().to_string();
+    let phone_store = phone.path().join(loquax::store::STORE_FILE);
     let first = Start {
         dir: dir.clone(),
         code: Some(format!("{code}@127.0.0.1:{port}")),
@@ -2228,6 +2371,9 @@ async fn an_unpinned_peer_across_a_restart(taken: bool) {
             .expect("unpin");
         if taken {
             home_keeps_pin(&session, &at, peer, false);
+            the_phone_owes_nothing(&session, &phone_store, |kept| {
+                !kept.owed_peer_states().expect("owed").contains_key(&peer)
+            });
             kill();
         }
         let address = session.address();

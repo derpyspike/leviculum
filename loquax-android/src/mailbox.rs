@@ -538,6 +538,12 @@ pub struct Here {
     lends: loquax::home::daemon::Lends,
     stop: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<Result<(), String>>>,
+    /// The home node's end, the moment it ends (1798): `None` while it
+    /// runs, the daemon's own words once it ended. Until 1798 the task's
+    /// `Err` was read only by [`Here::stop`], so a daemon that died at its
+    /// first step left the screens joining a closed port for the whole
+    /// join budget, and its reason was never seen anywhere.
+    over: tokio::sync::watch::Receiver<Option<String>>,
 }
 
 impl Here {
@@ -555,6 +561,7 @@ impl Here {
             .local_addr()
             .map_err(|error| format!("no port for the screens: {error}"))?
             .port();
+        let (_, over) = tokio::sync::watch::channel(None);
         let mut here = Self {
             app: app.to_path_buf(),
             port,
@@ -562,6 +569,7 @@ impl Here {
             lends,
             stop: None,
             task: None,
+            over,
         };
         here.spawn(listener, runtime)?;
         Ok(here)
@@ -624,9 +632,37 @@ impl Here {
             network: self.network.clone(),
             lends: self.lends.clone(),
         };
+        let (over_tx, over_rx) = tokio::sync::watch::channel(None);
+        self.over = over_rx;
         self.stop = Some(stop);
-        self.task = Some(runtime.spawn(loquax::home::daemon::run(options)));
+        crate::events::mailbox_here("spawned", "");
+        self.task = Some(runtime.spawn(async move {
+            let result = loquax::home::daemon::run(options).await;
+            let words = match &result {
+                Ok(()) => "stopped".to_string(),
+                Err(error) => error.clone(),
+            };
+            crate::events::mailbox_here("ended", &words);
+            let _ = over_tx.send(Some(words));
+            result
+        }));
         Ok(())
+    }
+
+    /// The home node's end, the moment it ends (1798): the daemon's own
+    /// words. Pending while it runs, so a `select!` against the join
+    /// resolves only when the mailbox is actually gone.
+    pub async fn ended(&self) -> String {
+        let mut over = self.over.clone();
+        loop {
+            let said = over.borrow().clone();
+            if let Some(words) = said {
+                return words;
+            }
+            if over.changed().await.is_err() {
+                return "the mailbox's task is gone".to_string();
+            }
+        }
     }
 
     /// Stop the home node and wait, up to a bound, until its node closed.

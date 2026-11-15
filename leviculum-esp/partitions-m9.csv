@@ -41,8 +41,16 @@
 # board flashed with an older table says `wifi=none/no-entry` and keeps
 # its WiFi radio off.
 #
+# The media opt-outs (1480, `leviculum_core::media_switches`) take the
+# next sector down the same way, 0xD000: media are on by default, so a
+# board without the record — an erased sector, an older table — runs
+# every carrier its image has, and `lnflash --ble off` is the one way to
+# switch BLE off. Same argument as wifi: nothing reads nvs, every other
+# offset keeps its place.
+#
 # Name,         Type, SubType,   Offset,   Size,     Flags
-nvs,            data, nvs,       0x9000,   0x5000,
+nvs,            data, nvs,       0x9000,   0x4000,
+media,          data, undefined, 0xd000,   0x1000,
 wifi,           data, undefined, 0xe000,   0x1000,
 phy_init,       data, phy,       0xf000,   0x1000,
 factory,        app,  factory,   0x10000,  0x800000,

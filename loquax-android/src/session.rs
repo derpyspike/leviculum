@@ -157,6 +157,23 @@ impl StartError {
     }
 }
 
+/// Why the join leg of a start ended without a session.
+enum JoinFail {
+    /// The join itself failed.
+    Join(loquax::home::client::HomeError),
+    /// The mailbox on this phone ended while the screens joined it
+    /// (1798), with the daemon's own words.
+    HereOver(String),
+}
+
+/// The phone's store or its mailbox's, when a later Loquax wrote it
+/// (1760); read only, neither file touched.
+fn newer_store(home: &Path) -> Option<loquax::store::StoreError> {
+    [home.to_path_buf(), home.join(mailbox::DIR)]
+        .iter()
+        .find_map(|dir| loquax::store::written_later(&dir.join(loquax::store::STORE_FILE)))
+}
+
 /// The compose field the model needs a type for. Nobody types into it: the
 /// app's own text field sends with [`UiEvent::Write`].
 #[derive(Debug, Default, Clone)]
@@ -464,6 +481,16 @@ impl Session {
     /// server along; a server given beside it wins.
     pub fn start(start: &schema::Start) -> Result<Self, StartError> {
         let home = PathBuf::from(&start.dir);
+        // A store a later Loquax wrote (1760) is no first start: said in
+        // plain words before anything runs or is written, the join form
+        // not asked for, the file and the schemas under Details.
+        if let Some(error) = newer_store(&home) {
+            return Err(StartError {
+                need: Some("newer"),
+                text: error.brief(Lang::of_tag(start.lang.as_deref().unwrap_or_default())),
+                details: Some(error.to_string()),
+            });
+        }
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -491,6 +518,7 @@ impl Session {
         let (lend, lends) = tokio::sync::mpsc::unbounded_channel();
         let (rooms_lend, rooms_lends) = tokio::sync::mpsc::unbounded_channel();
         let (start, here) = if start.here || mailbox::is_here(&home) {
+            crate::events::first_start("mode", true, "here");
             let lending = Vec::from([
                 (Lender::Browse, lend.clone()),
                 (Lender::Rooms, rooms_lend.clone()),
@@ -499,6 +527,7 @@ impl Session {
                 Self::start_here(start, &home, runtime.handle(), &network, lending)?;
             (start, Some(here))
         } else {
+            crate::events::first_start("mode", true, "client");
             (start.clone(), None)
         };
         let start = &start;
@@ -590,7 +619,12 @@ impl Session {
             },
             Role::Client { address },
         ));
-        let attached = attached.map_err(|error| StartError::other(error.to_string()))?;
+        let attached = attached.map_err(|error| {
+            let words = error.to_string();
+            crate::events::first_start("leaf", false, &words);
+            StartError::other(words)
+        })?;
+        crate::events::first_start("leaf", true, &server);
         // The mailbox here lends its own node; the screens' leaf reaches
         // nothing past it. A mailbox elsewhere is reached through a
         // rendezvous, which carries the leaf's links on.
@@ -611,29 +645,69 @@ impl Session {
         };
         if let Some(code) = &code {
             let name = start.name.clone().unwrap_or_else(|| "phone".to_string());
-            let joined = runtime.block_on(loquax::home::client::join(
+            crate::events::first_start("join", true, &server);
+            let join = loquax::home::client::join(
                 &client.node,
                 &code.public_key,
                 &client.device,
                 &code.token,
                 &name,
                 BUDGET,
-            ));
-            if let Err(error) = joined {
+            );
+            // The mailbox on this phone can end while the screens join it
+            // (1798, render walk 2026-11-13 finding 2): its end is the
+            // verdict at once, never the join's whole budget against a
+            // port nothing serves any more.
+            let joined = match &here {
+                Some(here) => runtime.block_on(async {
+                    tokio::select! {
+                        joined = join => joined.map_err(JoinFail::Join),
+                        words = here.ended() => Err(JoinFail::HereOver(words)),
+                    }
+                }),
+                None => runtime.block_on(join).map_err(JoinFail::Join),
+            };
+            if let Err(failed) = joined {
                 drop(client);
                 runtime.block_on(attached.stop());
-                let need = match error {
-                    loquax::home::client::HomeError::NoPath => Some("server"),
-                    loquax::home::client::HomeError::Refused(_) => Some("code"),
-                    _ => None,
-                };
-                return Err(StartError::said(
-                    need,
-                    join_words(&error),
-                    lang,
-                    Some(join_details(&error, &servers.join(", "))),
-                ));
+                return Err(match failed {
+                    JoinFail::HereOver(words) => {
+                        crate::events::first_start("joined", false, &words);
+                        StartError::said(None, StrId::HereNotStarted, lang, Some(words))
+                    }
+                    JoinFail::Join(error) => {
+                        crate::events::first_start("joined", false, &error.to_string());
+                        // The phone's own mailbox has no address to retype
+                        // and no computer to ask about (1798): its words,
+                        // and the daemon under the same roof as what died.
+                        if here.is_some() {
+                            let words = match error {
+                                loquax::home::client::HomeError::NoPath => StrId::HereNoAnswer,
+                                _ => join_words(&error),
+                            };
+                            StartError::said(
+                                None,
+                                words,
+                                lang,
+                                Some(format!("Joining the mailbox on this phone: {error}.")),
+                            )
+                        } else {
+                            let need = match error {
+                                loquax::home::client::HomeError::NoPath => Some("server"),
+                                loquax::home::client::HomeError::Refused(_) => Some("code"),
+                                _ => None,
+                            };
+                            StartError::said(
+                                need,
+                                join_words(&error),
+                                lang,
+                                Some(join_details(&error, &servers.join(", "))),
+                            )
+                        }
+                    }
+                });
             }
+            crate::events::first_start("joined", true, "");
             loquax::home::client::save_client(&home, &code.public_key)
                 .map_err(StartError::other)?;
         }
@@ -848,7 +922,11 @@ impl Session {
                 "This phone already reads a mailbox on a computer.",
             ));
         }
-        let public_key = mailbox::choose_here(home).map_err(StartError::other)?;
+        let public_key = mailbox::choose_here(home).map_err(|words| {
+            crate::events::first_start("choose_here", false, &words);
+            StartError::other(words)
+        })?;
+        crate::events::first_start("choose_here", true, "");
         if joined.is_some_and(|key| key != public_key) {
             return Err(StartError::said(
                 None,
@@ -861,12 +939,20 @@ impl Session {
             Some(_) => None,
             None => Some(
                 mailbox::admission(home)
-                    .map_err(StartError::other)?
+                    .map_err(|words| {
+                        crate::events::first_start("admission", false, &words);
+                        StartError::other(words)
+                    })?
                     .encode(),
             ),
         };
-        let here = mailbox::Here::start(home, runtime, network.clone(), lends)
-            .map_err(StartError::other)?;
+        crate::events::first_start("admission", true, "");
+        let here =
+            mailbox::Here::start(home, runtime, network.clone(), lends).map_err(|words| {
+                crate::events::first_start("here_spawned", false, &words);
+                StartError::other(words)
+            })?;
+        crate::events::first_start("here_spawned", true, &here.server());
         let start = schema::Start {
             server: Some(here.server()),
             code,
@@ -3114,6 +3200,10 @@ impl Inner {
                 .store
                 .search(&query, &self.model.loaded_from())
                 .map(|hits| UiEvent::StoredHits { query, hits }),
+            StoreRead::Settled { peer, id } => self
+                .store
+                .settled(peer, id)
+                .map(|message| UiEvent::Settled { peer, message }),
         };
         answer.unwrap_or_else(|error| UiEvent::Notice(format!("history: {error}")))
     }
@@ -3296,8 +3386,16 @@ impl Inner {
             let home = self.home.clone();
             let done = self.finished_tx.clone();
             let wake = Arc::clone(&self.wake);
+            let (told, woken) = (self.finished_tx.clone(), Arc::clone(&self.wake));
             self.runtime.spawn(async move {
-                let end = runner::pull(&mut tap, &client, &home, BUDGET).await;
+                // How far a catch-up came (1697): the mailbox's state
+                // line, folded on the next turn.
+                let mut progress = move |event: UiEvent| {
+                    let _ = told.send(Finished::Event(event));
+                    woken.notify_one();
+                };
+                let end =
+                    runner::pull_watching(&mut tap, &client, &home, BUDGET, &mut progress).await;
                 // The history it imported, read here, off the session's
                 // lock (1464): the store's read was the pull end's turn.
                 let stored = match end.imported {
@@ -3330,8 +3428,9 @@ impl Inner {
     ) {
         self.pulling = false;
         runner::settle_pull(&self.home, end.cursor);
-        // Once a pull settled, what arrives is live mail (1429).
-        if end.cursor.is_some() {
+        // Once a pull settled whole, what arrives is live mail (1429). A
+        // partial pull moved the cursor and stays history (1697).
+        if end.settled {
             self.model.history = false;
         }
         if let Some(stored) = stored {

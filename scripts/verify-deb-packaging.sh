@@ -385,6 +385,9 @@ rm -rf "$CTRL_DIR"
 echo
 
 check_package lnomad lnomad lnomad
+# Nessa with the compass (1690), under the name the launcher entry will use
+# when the GUI lands.
+contains "$CONTENTS" "./usr/share/icons/hicolor/256x256/apps/lnomad.png" "ships the 256 px icon"
 # lnomad is deliberately service-free: it is a terminal browser, and
 # installing it must not add a unit to the system.
 if grep -q 'systemd' <<<"$CONTENTS"; then
@@ -575,6 +578,9 @@ elif [ "$ARCH" = amd64 ]; then
         "ships the bundle manifest at /usr/share/lnflash"
     contains "$CONTENTS" "_license-agreement.txt" \
         "ships the SoftDevice licence beside the blob"
+    # Nessa with the bolt (1690).
+    contains "$CONTENTS" "./usr/share/icons/hicolor/256x256/apps/lnflash.png" \
+        "ships the 256 px icon"
     if grep -q 'systemd' <<<"$CONTENTS"; then
         fail "lnflash ships a systemd unit, which it must not"
     else

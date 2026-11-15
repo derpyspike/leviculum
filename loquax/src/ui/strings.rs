@@ -670,6 +670,11 @@ leviculum_ui::catalogue! {
     // Joining a mailbox (1263, finding 8): one sentence each, the
     // daemon's words under Details.
     JoinNoAnswer = "join_no_answer", "The mailbox did not answer. Is the computer on?", "Das Postfach hat nicht geantwortet. Ist der Computer an?";
+    // The mailbox on this phone (1798, render walk 2026-11-13 finding 2):
+    // its own words, never the computer question above, which has no
+    // computer to ask about here.
+    HereNotStarted = "here_not_started", "Your mailbox could not start on this phone.", "Dein Postfach konnte auf diesem Handy nicht starten.";
+    HereNoAnswer = "here_no_answer", "The mailbox on this phone did not answer.", "Das Postfach auf diesem Handy hat nicht geantwortet.";
     JoinSlow = "join_slow", "The mailbox did not answer in time. Try again.", "Das Postfach hat nicht rechtzeitig geantwortet. Versuch es noch einmal.";
     JoinNotMailbox = "join_not_mailbox", "That code is not a mailbox code.", "Das ist kein Postfach-Code.";
     JoinRefused = "join_refused", "The mailbox did not take this code. Make a new one on the computer.", "Das Postfach hat den Code nicht angenommen. Mach am Computer einen neuen.";
@@ -678,6 +683,9 @@ leviculum_ui::catalogue! {
     JoinBadWhere = "join_bad_where", "Loquax cannot read where the mailbox is. It looks like 192.168.1.20:4242.", "Loquax kann nicht lesen, wo das Postfach ist. Das sieht so aus: 192.168.1.20:4242.";
     JoinFailed = "join_failed", "Joining the mailbox did not work.", "Das Postfach ließ sich nicht verbinden.";
     JoinOtherMailbox = "join_other_mailbox", "This phone already reads another mailbox.", "Dieses Handy liest schon ein anderes Postfach.";
+    // A store a later Loquax wrote (1760): no first start, nothing lost;
+    // the file and the schemas only under Details.
+    StoreNewer = "store_newer", "Your chats were saved by a newer version of Loquax. Install the newer version and everything is back. Your data is unchanged.", "Deine Chats wurden mit einer neueren Loquax-Version gespeichert. Installiere die neuere Version, dann ist alles wieder da. Deine Daten sind unverändert.";
     // A device of a home that has no window to say more (1415, the M9's
     // top bar): joining with its code, the archive coming in, and the
     // home out of reach. The pull counts entries of the archive, which
@@ -685,6 +693,9 @@ leviculum_ui::catalogue! {
     HomeJoining = "home_joining", "Joining your mailbox", "Verbinde mit deinem Postfach";
     HomeFetched = "home_fetched", "Fetched %1$d of %2$d", "%1$d von %2$d abgeholt";
     HomeFetchedSome = "home_fetched_some", "Fetched %1$d", "%1$d abgeholt";
+    // A first sync or a catch-up runs (1697): older messages are being
+    // loaded, said with the pull's own numbers, never a bare spinner.
+    HomeCatchUp = "home_catch_up", "Loading older messages: %1$d of %2$d", "Lade ältere Nachrichten: %1$d von %2$d";
     HomeUnreachable = "home_unreachable", "Mailbox unreachable", "Postfach nicht erreichbar";
     // Linking a device (1264): the phone holds no mailbox to link to.
     LinkOnComputer = "link_on_computer", "Your mailbox is on a computer. Link the other device there.", "Dein Postfach ist auf einem Computer. Verbinde das andere Gerät dort.";
@@ -806,6 +817,8 @@ leviculum_ui::catalogue! {
     M9BarWayCableOne = "m9_bar_way_cable_one", "Mailbox over cable · %1$d station", "Postfach über Kabel · %1$d Station";
     M9BarWayWifi = "m9_bar_way_wifi", "Mailbox over WiFi · %1$d stations", "Postfach über WLAN · %1$d Stationen";
     M9BarWayWifiOne = "m9_bar_way_wifi_one", "Mailbox over WiFi · %1$d station", "Postfach über WLAN · %1$d Station";
+    M9BarWayBle = "m9_bar_way_ble", "Mailbox over Bluetooth · %1$d stations", "Postfach über Bluetooth · %1$d Stationen";
+    M9BarWayBleOne = "m9_bar_way_ble_one", "Mailbox over Bluetooth · %1$d station", "Postfach über Bluetooth · %1$d Station";
     M9BarNoWay = "m9_bar_no_way", "No way to mailbox", "Kein Weg zum Postfach";
     // The same without the mailbox's name, for a bar the long form does
     // not fit beside its title (at the default type, "Chats" leaves 27
@@ -816,6 +829,8 @@ leviculum_ui::catalogue! {
     M9BarCableOne = "m9_bar_cable_one", "Cable · %1$d station", "Kabel · %1$d Station";
     M9BarWifi = "m9_bar_wifi", "WiFi · %1$d stations", "WLAN · %1$d Stationen";
     M9BarWifiOne = "m9_bar_wifi_one", "WiFi · %1$d station", "WLAN · %1$d Station";
+    M9BarBle = "m9_bar_ble", "Bluetooth · %1$d stations", "Bluetooth · %1$d Stationen";
+    M9BarBleOne = "m9_bar_ble_one", "Bluetooth · %1$d station", "Bluetooth · %1$d Station";
 }
 
 /// [`leviculum_ui::strings::format`] over Loquax's catalogue.

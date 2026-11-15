@@ -1090,6 +1090,7 @@ golden without its German twin.
 | scene | window | terminal | terminal, German | M9 | phone | scene, every target |
 |---|---|---|---|---|---|---|
 | First start, before a mailbox | `gui-first-start.png`, `gui-first-start-profile.png` | `tui-first-start.txt`, `tui-first-start-profile.txt` | `tui-first-start-de.txt`, `tui-first-start-profile-de.txt` | `m9-fw-splash.png`, `m9-fw-pairing.png` | not pinned: the first start is `WelcomeActivity.java`'s own | |
+| A store a later Loquax wrote (1760) | not drawn: the window starts through the terminal's `shell::start`, which says it on stderr before any window opens | `store-newer.txt` (stderr; `--verbose` adds the file and the schemas) | `store-newer-de.txt` | n/a: the board's store is a cache of the mailbox; a sector of another version is not read and is filled again from the mailbox | `store-newer-started.json` (the start's answer: no form, no Retry, the file and the schemas under Details) | |
 | Joining a mailbox with its code | not drawn: a desktop joins with `loquax mailbox join` | not drawn: a desktop joins with `loquax mailbox join` | | `m9-joining.png` | not pinned: the join form is `JoinForm.java`'s own | |
 | The mailbox out of reach, and back | not drawn: the desktop's shell never learns the mailbox's reach | not drawn: the desktop's shell never learns the mailbox's reach | | `m9-offline.png`, `m9-online.png`, `m9-way-radio.png` | not pinned: the offline bar is `ConversationsActivity.java`'s own | |
 | The chats list and an open chat | `gui-chat-light.png`, `gui-chat-dark.png` | `tui_session.frames`, `tui_chat.frames`, `tui_chat.styles`, `tui_layout.frames` | `tui_session_de.frames`, `tui_chat_de.frames`, `tui_layout_de.frames` | `m9-chats.png`, `m9-chats-cursor.png`, `m9-chat.png`, `m9-chat-cursor.png`, `m9-fw-chats.png`, `m9-fw-chat.png` | | `scene-compact-list.json`, `scene-compact-chat.json`, `scene-wide.json` |
@@ -1107,7 +1108,7 @@ golden without its German twin.
 | A long message read by the line | | `tui_long_message.frames` | `tui_long_message_de.frames` | `m9-chat-long-mid.png`, `m9-chat-long-back.png`, `m9-chat-top-held.png` | | |
 | Photos, files and voice in a chat | `gui-chat-media.png`, `gui-attach-sheet-light.png` | `tui_media.frames`, `tui-file-progress.txt` | `tui_media_de.frames`, `tui-file-progress-de.txt` | | | |
 | Recording a voice message | `gui-recording-held.png`, `gui-recording-locked.png`, `gui-recording-paused.png` | `tui_recording.frames` | `tui_recording_de.frames` | | | |
-| A message's Info | `gui-info-light.png` | | | | | |
+| A message's Info | `gui-info-light.png`, `gui-info-position-light.png` | | | | | |
 | Selecting and copying text | `gui-chat-selected-light.png`, `gui-chat-selected-dark.png` | `tui-copy-mode.txt` | `tui-copy-mode-de.txt` | | | |
 | A late message at its sent time | `gui-late-message.png` | `tui-late-message.txt`, `tui_late.frames` | `tui-late-message-de.txt`, `tui_late_de.frames` | `m9-late-message.png` | `late-message.json` | |
 | Two contacts of one name | `gui-same-name.png` | `tui-same-name.txt`, `tui_names.frames` | `tui-same-name-de.txt`, `tui_names_de.frames` | `m9-same-name-list.png`, `m9-same-name-chat.png` | | |
@@ -1117,6 +1118,7 @@ golden without its German twin.
 | A send's two legs in the toast | | `tui_toast_two_legs.frame` | `tui_toast_two_legs_de.frame` | | | |
 | History, drafts and an import | | `tui_history.frames`, `tui_draft.frames`, `tui_ugly.frames` | `tui_history_de.frames`, `tui_draft_de.frames`, `tui_ugly_de.frames` | | | |
 | The profile | `gui-profile-light.png` | `tui_profile.frames` | `tui_profile_de.frames` | | `profile-words.json` | `scene-profile.json` |
+| A catch-up counting in the mailbox's state line (1697) | | `tui_profile_catchup.frames` | `tui_profile_catchup_de.frames` | | | |
 | Groups: new, invited, the chat, its members | `gui-group-new.png`, `gui-group-invitation.png`, `gui-group-chat.png`, `gui-group-members.png` | | | `m9-group.png`, `m9-fw-groups.png`, `m9-fw-invite.png`, `m9-fw-members.png`, `m9-fw-admin.png`, `m9-fw-ask.png`, `m9-fw-name.png`, `m9-fw-pick.png` | | `scene-group-list.json`, `scene-group-new-name.json`, `scene-group-new-pick.json`, `scene-group-invitation.json`, `scene-group-invited-chat.json`, `scene-group-chat.json`, `scene-group-members.json`, `scene-group-members-leave.json` |
 | A group's one and two ticks | `gui-group-ticks.png` | `tui-group-ticks.txt` | `tui-group-ticks-de.txt` | `m9-group-ticks.png` | `group-ticks.json` | `scene-group-ticks.json` |
 | A relayed group | `gui-relay-group.png` | `tui-relay-group.txt` | `tui-relay-group-de.txt` | | `relay-group.json` | `scene-relay-group.json` |

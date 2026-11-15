@@ -23,3 +23,11 @@ decodes it, in German, drawn by `tests/rooms.rs`,
 field, another's join, a line, our action echoed as "du", a hub notice,
 and the field empty again after a line over the hub's limit was kept in
 it. Compared as text; `LOQUAX_WRITE_GOLDEN=1` writes it again.
+
+`store-newer-started.json`: the start's answer over a store a later
+Loquax wrote (1760), as Java decodes it, in German, drawn by
+`tests/facade.rs`, `a_store_from_a_later_loquax_says_so_and_is_left_alone`:
+the plain sentence, `need` "newer" (no join form, no Retry), the file and
+the schemas under Details with the app's directory as `<dir>` and the
+schema numbers as `<later>` and `<ours>`. Compared as text;
+`LOQUAX_WRITE_GOLDEN=1` writes it again.

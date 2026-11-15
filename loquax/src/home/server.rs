@@ -2742,7 +2742,7 @@ mod tests {
             rusqlite::Connection::open(dir.path().join(crate::store::STORE_FILE)).expect("raw");
         conn.execute_batch(
             "ALTER TABLE home_devices DROP COLUMN last_seen; DROP TABLE owed_peer_states; \
-             DROP TABLE home_names; ALTER TABLE client_groups DROP COLUMN member_epochs; PRAGMA user_version = 19;",
+             DROP TABLE home_names; ALTER TABLE client_groups DROP COLUMN member_epochs; ALTER TABLE client_groups DROP COLUMN closed_at; ALTER TABLE archive DROP COLUMN vouched; PRAGMA user_version = 19;",
         )
         .expect("made schema 19");
         drop(conn);

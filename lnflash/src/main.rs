@@ -53,7 +53,7 @@ use lnflash::usb::{Sysfs, SYSFS_USB_DEVICES};
 )]
 #[command(group(
     clap::ArgGroup::new("port_user")
-        .args(["home", "region", "regions", "management_identity", "clear_management", "wifi"])
+        .args(["home", "region", "regions", "management_identity", "clear_management", "wifi", "ble"])
         .multiple(false)
 ))]
 struct Cli {
@@ -555,8 +555,15 @@ struct Cli {
     #[arg(long, value_name = "PASS", requires = "wifi", default_value = "")]
     wifi_pass: String,
 
-    /// The serial port of the board --home, --region, --regions or --wifi talks
-    /// to, such as /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 for the
+    /// Switch the ThinkNode M9's BLE carrier on --port, then exit. BLE is
+    /// on by default; `--ble off` is the opt-out, `--ble on` clears it.
+    /// Written through the ROM loader like --wifi; the board resets. The
+    /// nRF boards take this over --set-media instead.
+    #[arg(long, value_name = "on|off", requires = "port")]
+    ble: Option<String>,
+
+    /// The serial port of the board --home, --region, --regions, --wifi
+    /// or --ble talks to, such as /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 for the
     /// M9's CH340K. Opening it resets the board; the session waits for its
     /// boot.
     ///
@@ -865,6 +872,16 @@ fn run(cli: &Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
     }
     if let (Some(ssid), Some(port)) = (&cli.wifi, &cli.port) {
         let said = lnflash::wifi::write(port, ssid, &cli.wifi_pass)?;
+        ui.say(&said);
+        return Ok(ExitCode::SUCCESS);
+    }
+    if let (Some(ble), Some(port)) = (&cli.ble, &cli.port) {
+        let ble_on = match ble.as_str() {
+            "on" => true,
+            "off" => false,
+            other => return Err(format!("--ble takes on or off, not {other:?}").into()),
+        };
+        let said = lnflash::media_sector::write(port, ble_on)?;
         ui.say(&said);
         return Ok(ExitCode::SUCCESS);
     }
@@ -1578,6 +1595,19 @@ mod tests {
             alone.extend(["--port", port]);
             assert!(parse(&alone).is_ok(), "{alone:?}");
         }
+    }
+
+    /// 1480: `--ble` names its port and goes alone like the other M9
+    /// writes; the value is checked at dispatch, not by clap.
+    #[test]
+    fn the_ble_flag_needs_its_port_and_goes_alone() {
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(std::iter::once("lnflash").chain(args.iter().copied()))
+        };
+        assert!(parse(&["--ble", "off"]).is_err());
+        let cli = parse(&["--ble", "off", "--port", "/dev/ttyUSB0"]).expect("ble off");
+        assert_eq!(cli.ble.as_deref(), Some("off"));
+        assert!(parse(&["--ble", "on", "--wifi", "a", "--port", "/dev/ttyUSB0"]).is_err());
     }
 
     fn plan(args: &[&str]) -> Result<RadioPlan, String> {

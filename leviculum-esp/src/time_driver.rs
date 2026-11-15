@@ -1,13 +1,21 @@
-//! embassy-time on the ESP firmware without an executor (1478b).
+//! embassy-time on the ESP firmware without an executor of ours (1478b).
 //!
 //! `leviculum-lr11xx` is async on `embassy-time` (its `Timer` and
-//! `with_timeout`), and the ESP images run no executor: core 0 is one loop
-//! (`thinknode_m9.rs`), which polls the radio's task once a turn with a
-//! no-op waker ([`poll_once`]), as `leviculum-nrf`'s frame writer polls
-//! eagerly. A timer here therefore needs only the clock: a future that is
-//! not due is polled again on the loop's next turn, at most one keyboard
-//! tick (10 ms) away, so [`Driver::schedule_wake`] keeps no queue and
-//! wakes nothing.
+//! `with_timeout`), and the ESP images run no executor for our own
+//! futures: core 0 is one loop (`thinknode_m9.rs`), which polls each
+//! task once a turn with a no-op waker ([`poll_once`]), as
+//! `leviculum-nrf`'s frame writer polls eagerly. A timer here therefore
+//! needs only the clock: a future that is not due is polled again on
+//! the loop's next turn, at most one keyboard tick (10 ms) away, so
+//! [`Driver::schedule_wake`] keeps no queue and wakes nothing.
+//!
+//! Since 1480 esp-rtos runs on core 0 when BLE is on, exactly as far
+//! as the Espressif radio blobs force it and no further; the scope of
+//! that exception, its measured costs and the decision it awaits are
+//! `docs/src/concepts/thinknode-m9.md`, "The esp-rtos exception". The
+//! blobs' tasks never touch this driver — their timing lives inside
+//! the controller — so the no-queue rule above is unchanged either
+//! way.
 
 use core::future::Future;
 use core::pin::Pin;

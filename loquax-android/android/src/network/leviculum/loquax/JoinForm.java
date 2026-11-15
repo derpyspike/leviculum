@@ -27,6 +27,17 @@ final class JoinForm {
         return asked || !("code".equals(need) || "server".equals(need));
     }
 
+    /**
+     * Whether a failed start shows the join form and Retry (1760): not for a
+     * store a later Loquax wrote (`need` "newer"), which is no first start
+     * and which no code and no second try can help; only installing the
+     * newer version does. Nor for a mailbox that moved (`need` "moved"),
+     * whose own button takes it back.
+     */
+    static boolean offersJoin(String need) {
+        return !("newer".equals(need) || "moved".equals(need));
+    }
+
     /** Whether "Advanced" with the address field is there at all: not while the code carries servers. */
     static boolean advancedOffered(String code) {
         return !ServerField.carried(code);

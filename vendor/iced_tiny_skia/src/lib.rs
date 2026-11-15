@@ -154,15 +154,33 @@ impl Renderer {
                 if !layer.images.is_empty() {
                     let render_span = debug::render(debug::Primitive::Image);
 
+                    // Leviculum's patch (1699): an image is clipped to its
+                    // own clip as well as to the layer's, as a primitive
+                    // group is above. Upstream drew it within the layer's
+                    // bounds alone, so a canvas's picture drawn past the
+                    // canvas's edge (the map's frame, an eighth past each
+                    // edge) covered the widgets beside it.
                     for image in &layer.images {
+                        let (graphics::Image::Raster { clip_bounds, .. }
+                        | graphics::Image::Vector { clip_bounds, .. }) = image;
+                        let Some(image_bounds) = (*clip_bounds * scale_factor)
+                            .intersection(&layer_bounds)
+                        else {
+                            continue;
+                        };
+
+                        self.engine.clip.set(image_bounds);
+
                         self.engine.draw_image(
                             image,
                             Transformation::scale(scale_factor),
                             pixels,
                             clip_mask,
-                            layer_bounds,
+                            image_bounds,
                         );
                     }
+
+                    self.engine.clip.set(layer_bounds);
 
                     render_span.finish();
                 }

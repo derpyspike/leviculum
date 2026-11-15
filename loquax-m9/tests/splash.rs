@@ -46,13 +46,20 @@ fn the_splash_through_the_dump_is_its_golden() {
     let mut frame = Frame::new();
     splash::draw(&mut frame);
     check("m9-fw-splash.png", &frame);
-    // The logo is there: its centre is the jackdaw's ground, not the
-    // panel's, and a corner of the panel is the ground.
+    // The logo is there in the theme's ink on the theme's ground: the
+    // forehead is fur, an eye is a hole in it, the panel's corner stays
+    // the ground.
     let at = splash::logo_at();
-    let centre = (at.x as u32 + LOGO_PX / 2, at.y as u32 + LOGO_PX / 2);
-    assert_ne!(frame.pixel(centre.0, centre.1), frame.pixel(0, 0));
+    let at_logo = |x: u32, y: u32| frame.pixel(at.x as u32 + x, at.y as u32 + y);
+    assert_ne!(at_logo(56, 34), frame.pixel(0, 0), "the forehead is ink");
+    assert_eq!(at_logo(56, 34), at_logo(40, 40), "the fur is one colour");
+    assert_eq!(
+        at_logo(39, 52),
+        frame.pixel(0, 0),
+        "the eye is the ground cutting through the fur"
+    );
     assert_eq!(frame.pixel(0, 0), frame.pixel(WIDTH - 1, HEIGHT - 1));
-    assert_eq!(LOGO.len(), (LOGO_PX * LOGO_PX * 4) as usize);
+    assert_eq!(LOGO.len(), (LOGO_PX * LOGO_PX / 8) as usize);
 }
 
 /// Off, the whole panel written, on: the backlight follows the write.

@@ -4,6 +4,8 @@ title = "Help"
 
 How to use Loquax, the messenger app. [Diese Seite auf Deutsch](/help-de).
 
+![Nessa, Loquax's lioness](/docs/images/nessa-head.png)
+
 ## First steps
 
 When you open Loquax for the first time, it asks where your mailbox should be. Your mailbox receives your messages and keeps them for you.

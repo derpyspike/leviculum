@@ -218,6 +218,11 @@ pub enum StoreRead {
     /// The messages the screen has not loaded whose text has `query` in
     /// it: answered with [`super::UiEvent::StoredHits`].
     Search(String),
+    /// The message `id` of `peer`'s conversation, a group's, whose verdict
+    /// said verified while the screen did not hold it (1744): answered with
+    /// [`super::UiEvent::Settled`], so its membership and positions are
+    /// read as they would have been on the screen.
+    Settled { peer: [u8; 16], id: [u8; 32] },
 }
 
 /// A send still being worked on at exit, as the store holds it.

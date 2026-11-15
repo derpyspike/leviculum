@@ -984,6 +984,63 @@ mod tests {
         assert!(read.fixes.iter().all(|f| f.peer != VICTIM), "{read:?}");
     }
 
+    /// 1696 (homenode), under the one rule of 1816: [`read`] files a
+    /// message's own reading under its signed source, whatever writer a
+    /// `lev.group_copy` names. Whether the named writer is credited is the
+    /// writer rule's question above this layer (`ui::copy_writer`), which
+    /// for a person's message refuses it.
+    #[test]
+    fn a_copy_in_a_persons_message_names_nobody_but_its_sender() {
+        use leviculum_lxmf::lev::{GroupCopy, Lev};
+
+        const MALLORY: [u8; 16] = [0x3a; 16];
+        let mut fields: Vec<Field> = Lev {
+            group_copy: Some(GroupCopy {
+                sender: BOB,
+                sent_ms: 1_793_015_000_000,
+                epoch: 3,
+            }),
+            ..Lev::default()
+        }
+        .fields()
+        .to_vec();
+        fields.push((
+            FIELD_TELEMETRY,
+            report(location(43_773_100, 11_256_000, 500, NOW - 240)).encode_field_value(),
+        ));
+        let read = read(MALLORY, &fields, Some(NOW));
+        assert!(read.unreadable.is_empty());
+        assert_eq!(read.fixes.len(), 1);
+        assert_eq!(
+            (read.fixes[0].peer, read.fixes[0].via),
+            (MALLORY, MALLORY),
+            "nobody vouched for the writer; the signed source stands"
+        );
+    }
+
+    /// 1702 (homenode), under the rule of 1792/1816: a stream row naming
+    /// Bob from a deliverer the reader did not choose is a stranger's
+    /// claim and gives Bob no fix. Under 1792 such a deliverer's rows are
+    /// dropped whole, its row about itself included (homenode counted
+    /// that one); only a chosen collector's rows name their measurers.
+    #[test]
+    fn a_stream_row_from_a_stranger_speaks_for_nobody_but_the_stranger() {
+        let rows = stream(&[
+            (BOB, location(43_776_000, 11_266_000, 0, NOW - 180)),
+            (COLLECTOR, location(43_774_000, 11_258_000, 0, NOW - 1)),
+        ]);
+        let fields = vec![(FIELD_TELEMETRY_STREAM, rows)];
+        let who = |read: Read| -> Vec<_> { read.fixes.iter().map(|f| (f.peer, f.via)).collect() };
+        let stranger = read(COLLECTOR, &fields, Some(NOW));
+        assert_eq!(stranger.dropped_rows, 2);
+        assert_eq!(who(stranger), Vec::new(), "no row of a stranger speaks");
+        assert_eq!(
+            who(chosen(COLLECTOR, &fields)),
+            vec![(BOB, COLLECTOR), (COLLECTOR, COLLECTOR)],
+            "a chosen collector's rows name their measurers"
+        );
+    }
+
     /// `fields` from `source`, a collector the reader chose: its rows are
     /// filed under their measurers.
     fn chosen(source: [u8; 16], fields: &[Field]) -> Read {

@@ -167,6 +167,14 @@ GRAPHS = [
             "Built for thumbv7em-none-eabihf."
         ),
     ),
+    # No part for the ThinkNode M9 image (order 1715): no published
+    # artifact carries it today — scripts/build-m9-image.sh writes it
+    # into the tree and `just flash-m9` flashes it from there; neither
+    # the .deb packages nor the lnflash bundle include it. The day an
+    # artifact ships it, it becomes PART 3 here, over leviculum-esp's
+    # own lockfile (a third graph, like the nRF one), and THIRD-PARTY.md's
+    # blob row for the Espressif radio libraries must be mirrored into
+    # that part's notices.
 ]
 
 

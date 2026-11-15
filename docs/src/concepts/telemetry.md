@@ -22,7 +22,11 @@ reverse.
 Since 2026-10-25 a viewer of ours is a goal (the map, [A messenger whose
 core runs anywhere](handheld-messenger.md)); the wire format stays
 Sideband's regardless, and the collector (#239) is the viewer's data
-source.
+source. Loquax takes a collector's row only for the message's own
+verified source, or, in a copy from a group the reader joined, for the
+member who wrote the copy and is present in its membership (1702,
+1728); rows from any other collector, Sideband's included, are dropped,
+since nothing records who may collect for whom.
 
 ## Where the format comes from, and how far it is settled
 
