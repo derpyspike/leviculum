@@ -13,10 +13,10 @@
 use loquax_android::schema::{
     self, AddressRow, Addresses, Backup, Bar, BarButton, Blob, CandidateRow, Chip, ContactCopy,
     ConversationRow, Conversations, Detail, Done, Event, FileRow, FriendRow, Friends, ImRow, Info,
-    InfoRow, LinkCode, LinkRow, Linked, Links, MapFlingChoice, MapMark, MapRegions, MapRequest,
-    MapShown, MapThemeChoice, Me, MessageRow, Messages, PositionRow, Query, Recents, Recording,
-    RegionRow, Request, Run, RunRow, ShareRow, Shared, SharedRow, Shares, Start, Started,
-    SuggestionRow, Suggestions,
+    InfoRow, LinkCode, LinkRow, Linked, Links, MapFlingChoice, MapMark, MapRegions,
+    MapReliefChoice, MapRequest, MapShown, MapThemeChoice, Me, MessageRow, Messages, PositionRow,
+    Query, Recents, Recording, RegionRow, Request, Run, RunRow, ShareRow, Shared, SharedRow,
+    Shares, Start, Started, SuggestionRow, Suggestions,
 };
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed};
@@ -316,6 +316,7 @@ fn query() -> impl Strategy<Value = Query> {
         }),
         opt_text().prop_map(|set| Query::MapTheme { set }),
         prop::option::of(any::<bool>()).prop_map(|set| Query::MapFling { set }),
+        prop::option::of(any::<bool>()).prop_map(|set| Query::MapRelief { set }),
         opt_text().prop_map(|set| Query::PhotoSize { set }),
         (text(), i64s(), u32s()).prop_map(|(peer, key, edge)| Query::Photo { peer, key, edge }),
         (text(), u32s()).prop_map(|(peer, edge)| Query::Staged { peer, edge }),
@@ -1430,6 +1431,7 @@ proptest! {
         round_trips(&MapRegions { v, ok, regions, region_bytes, autoload })?;
         round_trips(&MapThemeChoice { v, ok, theme, theme_chosen })?;
         round_trips(&MapFlingChoice { v, ok, fling: autoload })?;
+        round_trips(&MapReliefChoice { v, ok, relief: autoload })?;
     }
 
     #[test]

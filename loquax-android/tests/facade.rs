@@ -4865,6 +4865,30 @@ async fn the_settings_pages_ask_the_renderer_in_javas_bytes() {
         .expect("the fling on");
         assert!(on.ok && on.fling, "{on:?}");
 
+        // The Advanced page's relief switch (1863), as `Core.mapRelief`
+        // asks: on by default, off stored in the config, on again.
+        let relief: schema::MapReliefChoice =
+            java_query(&session, &[("t", Java::Str("maprelief"))]).expect("Advanced");
+        assert!(relief.ok && relief.relief, "on by default: {relief:?}");
+        let off: schema::MapReliefChoice = java_query(
+            &session,
+            &[("t", Java::Str("maprelief")), ("set", Java::Bool(false))],
+        )
+        .expect("the relief off");
+        assert!(off.ok && !off.relief, "{off:?}");
+        assert_eq!(
+            loquax::config::load(Path::new(&first.dir))
+                .expect("config")
+                .map_relief,
+            Some(false)
+        );
+        let on: schema::MapReliefChoice = java_query(
+            &session,
+            &[("t", Java::Str("maprelief")), ("set", Java::Bool(true))],
+        )
+        .expect("the relief on");
+        assert!(on.ok && on.relief, "{on:?}");
+
         // The Privacy page's "Send read receipts" (1233), as
         // `Core.receipts` asks: on by default, off stored in the config.
         let receipts: schema::ReceiptsChoice =
