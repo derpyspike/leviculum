@@ -885,8 +885,15 @@ pub const EVENT_CATALOG: &[EventSchema] = &[
     EventSchema {
         name: "MAPGESTURE",
         required_keys: &[
-            "w", "h", "moving", "x", "y", "z", "by", "to_x", "to_y", "to_z",
+            "w", "h", "moving", "x", "y", "z", "by", "to_x", "to_y", "to_z", "ms",
         ],
+    },
+    // One line per height fetch the phone's loader ended (order 1868, the
+    // audit of 1863): the packs it wrote, those it had, the bytes, or why
+    // it failed; without it a device's relief arrives unseen in logcat.
+    EventSchema {
+        name: "MAPHEIGHTS",
+        required_keys: &["ok", "packs", "had", "fetched", "elapsed_ms"],
     },
     EventSchema {
         name: "HOME_ABOUT",

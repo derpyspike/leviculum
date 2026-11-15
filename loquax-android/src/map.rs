@@ -246,18 +246,30 @@ impl Renderer {
                     ..
                 } => {
                     tracing::info!(
-                        "MAPLOAD heights packs={} had={} fetched={} elapsed_ms={elapsed_ms}",
-                        l.packs.len(),
-                        l.had,
-                        l.fetched
+                        event = "MAPHEIGHTS",
+                        ok = true,
+                        packs = l.packs.len(),
+                        had = l.had,
+                        fetched = l.fetched,
+                        elapsed_ms,
+                        names = %l.packs.join(","),
                     );
                     // A pack read again by every painter: the relief comes.
                     repaint |= !l.packs.is_empty() || !l.evicted.is_empty();
                 }
                 Step::Heights {
                     landed: Err(detail),
+                    elapsed_ms,
                     ..
-                } => tracing::info!("MAPLOAD heights-failed detail={detail:?}"),
+                } => tracing::info!(
+                    event = "MAPHEIGHTS",
+                    ok = false,
+                    packs = 0,
+                    had = 0,
+                    fetched = 0,
+                    elapsed_ms,
+                    detail = %detail,
+                ),
             }
         }
         if landed || repaint {
@@ -1344,6 +1356,7 @@ fn said_gesture(request: &MapRequest, shown: &MapShown) {
         turns = shown.turns,
         own_x = shown.own_x.unwrap_or(i32::MIN),
         own_y = shown.own_y.unwrap_or(i32::MIN),
+        ms = shown.ms,
     );
 }
 
