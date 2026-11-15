@@ -850,6 +850,26 @@ async fn the_boards_group_keys_make_join_add_leave_and_delete_on_real_homes() {
         "Lew's home hosts no Seilschaft after the delete"
     );
 
+    // The board keeps the deleted group's sheet up until it learns the
+    // end from its home (`forget_group` closes it). Pull until it has:
+    // otherwise Chor's invitation, when it reaches Lew's home before
+    // Seilschaft's end notice, is pulled first, the sheet still takes the
+    // keys and the Enter below joins nothing.
+    let mut cursor = 0;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    while model.group(&seil).is_some() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "Seilschaft's end never reached the board"
+        );
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        pull_into_model(&node, &device, &lew.public_key, &mut cursor, &mut model).await;
+    }
+    assert!(
+        model.group_sheet.is_none(),
+        "the deleted group's sheet closed with its end"
+    );
+
     // Anna's Chor, with Lew: made on Anna's home by her phone's ask.
     let chor = wire::GroupRequest {
         client_id: client::client_id(),
@@ -868,7 +888,6 @@ async fn the_boards_group_keys_make_join_add_leave_and_delete_on_real_homes() {
     };
 
     // The invitation reaches Lew's home; the board pulls it in LoRa pages.
-    let mut cursor = 0;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     while model.group(&chor).is_none() {
         assert!(
