@@ -409,6 +409,20 @@ expired one was set outranks the expiry and nothing is marked: on
 miauhaus the first of two requests expired 1.6 s after the second one's
 proof came back over the same next hop.
 
+**A local client's path is never marked.** A path whose interface is a
+connected local client's (the hops-0 entry the client's own announce
+installs) is exempt from every unresponsive mark (order 1881,
+`PATH_KEPT_LOCAL`). The reference marks it when the initiator was one
+hop away (`Transport.py:746-753`), and then the next relayed copy of
+the client's own emission takes the path at any length
+(`Transport.py:1819-1824`): on miauhaus on 2026-11-15 the Loquax home on
+the same host was reached over a 7-hop backbone route for two hours and
+every phone's link request left the box. A client on the IPC socket
+cannot have moved; an expired request says it did not answer, not that
+the route is wrong. The path leaves the client when the client
+disconnects or a newer emission places it elsewhere. The wire is
+unchanged.
+
 The mvr is `leviculum-core/src/node/mvr_path_answer_through_us.rs`: the
 three-node loop (a neighbour that routes the destination through us
 hands our link request back), the heal after a rebalance, the five
