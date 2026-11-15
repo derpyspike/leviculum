@@ -1032,8 +1032,14 @@ config, #471) says the map works without a step. Decided 2026-10-27
   0.27 s, every z13 tile after 10.7 s, the whole region after 58.2 s,
   where fetching everything first took 53.6 s with nothing to draw
   before the end. Every region that reaches into a view is drawn, each
-  into its own box (1077's clip), the deepest last, so loaded patches
-  join up (this replaces "one region or the outline" of section 7). A
+  into its own box (1077's clip), so loaded patches join up (this
+  replaces "one region or the outline" of section 7). On top the region
+  whose data at the view's zoom is least changed: its deepest zoom the
+  view's, then deeper ones the nearer the higher, then shallower ones
+  the deeper the higher (1836; before, the deepest drew last and the
+  same view drew differently by landing order). A region still arriving
+  or paused draws only into the squares of the tiles it has, so where it
+  has nothing yet the region under it shows (1836, Lew's rule 8a). A
   place's map is fitted again to the region when it lands, unless the
   reader touched the map since (1819: any key, drag or wheel ends it);
   no other load moves the view.
@@ -1055,9 +1061,15 @@ config, #471) says the map works without a step. Decided 2026-10-27
   view and regions again decide nothing. The loader orders its queue by
   that decision: a box asked for by hand (a place, the pins, "load this
   area"), then the screen's, then the ones next to it, then those the
-  view left, of which it keeps the newest eight. A load the view left
-  cannot be paused, the cut reads the archive in one call, so the
-  screen's load starts beside it: two at most. Measured with the facade
+  view left, of which it keeps the newest eight. A load runs a round of
+  its cut at a time (1836): while anything for the screen runs or waits,
+  a load the view left pauses at its next round, its file kept and drawn
+  as far as it came, and the screen's load starts at once; once the
+  screen has its box the paused loads go on, before any new box starts.
+  Two run at most, four wait paused at most, past that the worst ranked
+  is dropped and queued again. At 200 kB/s the load walk's
+  wheel-rested-slow measured the screen waiting 322 ms behind loads the
+  view left, 15.4 s before (43.6 s in 1811's walk). Measured with the facade
   and a source that never answers (`a_pan_into_the_empty_loads_what_is_on_screen_at_once`,
   a frame every 16 ms): a pan of a screen and a half that rests, one that
   goes on slowly, a fling that coasts and a zoom out by two steps each
@@ -1578,7 +1590,8 @@ The reviewer decided three more for slice (c), 2026-10-27 (leviculum 1065):
 - **One region or the outline, never a patchwork.** Superseded by 1089:
   loaded patches must join up, so a view now draws every region that
   reaches into it whose zooms reach the view's, each inside its box, the
-  deepest last (`leviculum_map::choice::drawn`), over the outline. Until
+  one nearest the view's zoom last (`leviculum_map::choice::drawn`, 1836),
+  over the outline. Until
   then: a view drew the
   installed region of the deepest max zoom whose box holds the view's
   centre and whose zooms reach the view's (its shallowest down to eight

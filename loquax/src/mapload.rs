@@ -2442,8 +2442,8 @@ mod tests {
         assert!(loader.loading_here());
     }
 
-    /// A load whose area the view left runs on, as the cut cannot pause;
-    /// the box under the new screen starts beside it, and the chip's
+    /// A load whose area the view left pauses at its next round (1836);
+    /// the box under the new screen starts at once, and the chip's
     /// "here" names it, not the old one (1292).
     #[test]
     fn a_load_the_view_left_does_not_hold_up_the_screen() {
