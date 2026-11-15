@@ -362,3 +362,59 @@ pub fn cut_planned<R: RangeRead, W: Write + Seek>(
     });
     Ok(loaded)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    const FIXTURE: &[u8] = include_bytes!("../fixtures/oltrarno.pmtiles");
+
+    struct InMemory;
+
+    impl RangeRead for InMemory {
+        fn read_range(&self, offset: u64, len: u64) -> Res<Vec<u8>> {
+            let at = (offset as usize).min(FIXTURE.len());
+            let end = at.saturating_add(len as usize).min(FIXTURE.len());
+            Ok(FIXTURE[at..end].to_vec())
+        }
+    }
+
+    /// A load paused between two rounds holds none of the tiles it
+    /// fetched (1836): the round is written and let go, so four paused
+    /// loads cost their plans, not their last rounds' bytes.
+    #[test]
+    fn a_load_between_rounds_holds_no_fetched_tile() {
+        let archive = Archive::from_source(InMemory).expect("open");
+        let want = Want {
+            bounds: Bounds {
+                west: 112_615_000,
+                south: 437_405_000,
+                east: 112_825_000,
+                north: 437_545_000,
+            },
+            zooms: 0..=15,
+            floor: 10,
+            cap: 64 << 20,
+            profile: 2,
+            locale: None,
+            buildings: false,
+            pois: false,
+        };
+        let planned = plan(&archive, &want).expect("plan");
+        let mut loading =
+            Loading::begin(&archive, &want, planned, "test", 1, Cursor::new(Vec::new()))
+                .expect("begin");
+        let held = |l: &Loading<'_, InMemory, Cursor<Vec<u8>>>| {
+            l.fetched
+                .round
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_some()
+        };
+        assert!(!held(&loading));
+        while loading.step().expect("round").is_some() {
+            assert!(!held(&loading), "a written round is let go");
+        }
+    }
+}
