@@ -18,6 +18,10 @@ Every picture is framed out of that canvas by a box in `HEAD_BOX` and
 `SIGN_BOX` and rendered by resvg (0.45.1 measured; `sudo apt install
 resvg`), which writes the same bytes for the same SVG, so `--check`
 re-renders into `target/tmp` and fails on any committed file that differs.
+Every render also writes `assets/nessa/products.sha256`, the digests of the
+source, of this script and of every product; on a host without resvg
+`--check` holds the committed pictures to that list instead, and the first
+line of its output names which of the two modes ran (order 1698).
 The framed SVGs are written as well as the PNGs: a picture whose only form
 is a PNG cannot be inspected or revised.
 
@@ -58,19 +62,23 @@ The products, by the thing that shows them:
                                       lblogd ships no static assets of its own
 
   The M9's power-on splash (1690, the M9 decisions of 2026-11-07)
-    loquax-m9/assets/splash-head.svg  the hand-made 1-bit line drawing
+    loquax-m9/assets/splash-head.svg  the head in one-bit roles, generated
     loquax-m9/assets/splash-head.png  112 px, what a person looks at
     loquax-m9/assets/splash-head.1bpp 112 x 112 bits, what the board burns
 
-The splash is NOT a scaled copy of the colour head: thresholded, her cream
-muzzle and dark nose read as a bear's snout. It is drawn for the panel —
-white fur on the ground, eyes and nose cut out, the muzzle one outline —
-and the script only packs what it finds: white is ink, everything else is
-the panel's ground.
+The splash is NOT a threshold of the colour head: thresholded, her cream
+muzzle and dark nose read as a bear's snout. Nor is it drawn by hand, which
+gave her a house cat's pointed ears (the audit of 1690). It is the source's
+own head and face, each shape given a one-bit role in `SPLASH_ROLES`: the
+cheek fur, the round ears and the skull white, the skull outlined so the
+cheek fur stands apart, the eyes, the nose and the face's lines cut out, and
+the muzzle one outline. The script then packs what resvg draws: white is
+ink, everything else is the panel's ground.
 
 `assets/nessa/README.md` states what the source is and whose it is.
 """
 
+import hashlib
 import math
 import re
 import shutil
@@ -84,6 +92,10 @@ ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / "assets" / "nessa"
 SOURCE = ASSETS / "nessa-R3-b.svg"
 SCRATCH = ROOT / "target" / "tmp" / "nessa-render"
+SCRIPT = Path(__file__).resolve()
+# What the last render wrote: the digest of the source, of this script and
+# of every product. A host without resvg checks the pictures against it.
+LIST = ASSETS / "products.sha256"
 
 ICON = ROOT / "loquax-android" / "icon"
 RES = ROOT / "loquax-android" / "android" / "res"
@@ -153,10 +165,38 @@ DENSITIES = {
 }
 
 SPLASH_SVG = ROOT / "loquax-m9" / "assets" / "splash-head.svg"
+# The splash is her head and face from the source, each shape given one of
+# four one-bit roles: white fur, a black cut, a black outline, or left out.
+# The roles are keyed by (group, index) and carry the fill the source gives
+# that shape, so a redrawn source whose shapes moved is refused rather than
+# drawn wrong. The skull is fur with an outline, which parts it from the
+# cheek fur behind it; the muzzle is only an outline (Lew's order for the
+# splash, 1690); the ears stay round, as hers are. Stroke widths are in the
+# source's units, about two panel pixels at 112.
+SPLASH_ROLES = {
+    ("head", 0): ("#b8702a", "fur"),       # the cheek fur
+    ("head", 1): (INK, "fur"),             # the ears' round rims
+    ("head", 2): (HONEY, "cut"),           # the ears' fill, inside the rims
+    ("head", 3): ("#b8702a", "fur"),       # the inner ears
+    ("head", 4): (HONEY, "fur+outline"),   # the skull
+    ("head", 5): ("#f5cc86", None),        # the forehead blaze
+    ("head", 6): (CREAM, "outline"),       # the muzzle and the chin
+    ("face", 0): (CREAM, "cut"),           # the eyes
+    ("face", 1): (INK, "cut"),             # lids, pupils, brows, whisker dots
+    ("face", 2): (CREAM, None),            # the eyes' glints
+    ("face", 3): (TERRACOTTA, "cut"),      # the nose
+    ("face", 4): ("none", "line"),         # the mouth
+}
+SPLASH_STROKE = 4.4
 SPLASH_PNG = ROOT / "loquax-m9" / "assets" / "splash-head.png"
 SPLASH_BITS = ROOT / "loquax-m9" / "assets" / "splash-head.1bpp"
 # The M9's splash side in panel pixels, `loquax_m9::splash::LOGO_PX`.
 SPLASH_PX = 112
+
+# What decides every product: the list a host without resvg checks against
+# names their digests, and is red once one of them moved. The splash's SVG
+# is a product since order 1698, written from the source like the rest.
+INPUTS = (SOURCE, SCRIPT)
 
 
 def num(value):
@@ -451,6 +491,7 @@ def sources(groups):
         # else (0.4.48 has no key for it), so the handbook's tab is the
         # round mark as an SVG: a 16 px tab wants the vector.
         ROOT / "docs" / "src" / "favicon.svg": composed_svg(groups, "loquax"),
+        SPLASH_SVG: splash_svg(groups),
     }
 
 
@@ -479,6 +520,57 @@ def rasters(groups, round_pictures):
 
 
 # --- The M9's splash ------------------------------------------------------
+
+
+def splash_svg(groups):
+    """The M9's splash: the source's head, each shape drawn in its one-bit
+    role from `SPLASH_ROLES`, on the panel's black, framed as the head
+    pictures are."""
+    shapes = []
+    for name in ("head", "face"):
+        found = paths(groups[name])
+        for index, path in enumerate(found):
+            role = SPLASH_ROLES.get((name, index))
+            fill = path.get("fill", "#000000")
+            if role is None or role[0] != fill:
+                sys.exit(
+                    f"nessa-render: the splash has no role for {name} shape "
+                    f"{index} (fill {fill}); the source's shapes moved, so "
+                    "SPLASH_ROLES needs the new list"
+                )
+            kind = role[1]
+            if kind is None:
+                continue
+            d = path["d"]
+            if kind in ("fur", "fur+outline"):
+                shapes.append(f'<path d="{d}" fill="#ffffff"/>')
+            if kind == "cut":
+                shapes.append(f'<path d="{d}" fill="#000000"/>')
+            if kind in ("fur+outline", "outline", "line"):
+                shapes.append(
+                    f'<path d="{d}" fill="none" stroke="#000000" '
+                    f'stroke-width="{num(SPLASH_STROKE)}" '
+                    'stroke-linecap="round" stroke-linejoin="round"/>'
+                )
+        expected = sum(1 for key in SPLASH_ROLES if key[0] == name)
+        if len(found) != expected:
+            sys.exit(
+                f"nessa-render: the splash knows {expected} {name} shapes, the "
+                f"source has {len(found)}; SPLASH_ROLES needs the new list"
+            )
+    x, y, side = square(HEAD_BOX)
+    return (
+        "<!-- Written by scripts/nessa-render.py from assets/nessa/nessa-R3-b.svg\n"
+        "     (the M9's splash, one bit a pixel); edit the source or the\n"
+        "     script's SPLASH_ROLES, not this file. -->\n"
+        '<svg xmlns="http://www.w3.org/2000/svg" '
+        f'viewBox="{num(x)} {num(y)} {num(side)} {num(side)}" '
+        f'width="{SPLASH_PX}" height="{SPLASH_PX}">\n'
+        f'<rect x="{num(x)}" y="{num(y)}" width="{num(side)}" '
+        f'height="{num(side)}" fill="#000000"/>\n'
+        + "\n".join(shapes)
+        + "\n</svg>\n"
+    )
 
 
 def png_pixels(path):
@@ -549,6 +641,61 @@ def render(src, size, out):
     )
 
 
+def sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def list_text(entries):
+    """The sha256 list as `sha256sum` writes it, sorted by path."""
+    return (
+        "".join(
+            f"{digest}  {path.relative_to(ROOT)}\n"
+            for path, digest in sorted(entries.items(), key=lambda e: str(e[0]))
+        )
+    )
+
+
+def read_list():
+    """The committed sha256 list, as {path: digest}, or None if absent."""
+    if not LIST.exists():
+        return None
+    out = {}
+    for line in LIST.read_text().splitlines():
+        digest, _, name = line.partition("  ")
+        out[ROOT / name] = digest
+    return out
+
+
+def check_against_list(expected_paths):
+    """The pictures held to the committed list, for a host without resvg.
+
+    The list is what the last render wrote: the digest of every input in
+    `INPUTS`, which together decide every product, and the digest of every
+    product. An input that moved since then means the list no longer speaks
+    for the products, which is red like any differing picture.
+    """
+    committed = read_list()
+    if committed is None:
+        return [LIST], [f"{LIST.relative_to(ROOT)} is missing"]
+    wanted = set(expected_paths) | set(INPUTS)
+    differ, notes = [], []
+    if set(committed) != wanted:
+        differ.append(LIST)
+        for path in sorted(wanted - set(committed), key=str):
+            notes.append(f"{LIST.relative_to(ROOT)} does not name {path.relative_to(ROOT)}")
+        for path in sorted(set(committed) - wanted, key=str):
+            notes.append(f"{LIST.relative_to(ROOT)} names {path.relative_to(ROOT)}, which this script does not write")
+    for path in sorted(wanted & set(committed), key=str):
+        if not path.exists() or sha256(path.read_bytes()) != committed[path]:
+            differ.append(path)
+            if path in INPUTS:
+                notes.append(
+                    f"{path.relative_to(ROOT)} moved since the pictures were "
+                    "rendered; run the script on a host with resvg"
+                )
+    return differ, notes
+
+
 def main():
     arguments = sys.argv[1:]
     if arguments not in ([], ["--check"]):
@@ -559,10 +706,12 @@ def main():
     if SCRATCH.exists():
         shutil.rmtree(SCRATCH)
     SCRATCH.mkdir(parents=True)
-    differ = []
+    differ, notes = [], []
+    digests = {path: sha256(path.read_bytes()) for path in INPUTS}
 
     texts = sources(groups)
     for path, text in texts.items():
+        digests[path] = sha256(text.encode())
         if check:
             if not path.exists() or path.read_text() != text:
                 differ.append(path)
@@ -570,51 +719,69 @@ def main():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text)
 
-    # Without resvg the pictures cannot be compared, and a guard that could
-    # not compare is red, not green (the audit of order 1824): `nessa-check`
-    # sits in `guards` and `fast`, so a silent pass here would let every host
-    # without resvg call the icons and the M9 splash held to the source. The
-    # products above are still checked first, so the output names those too.
-    if shutil.which("resvg") is None:
-        for path in differ:
-            print(f"nessa-render: {path.relative_to(ROOT)} differs from the source's")
-        sys.exit(
-            "nessa-render: FAIL the pictures were not compared, no resvg on this "
-            "host (sudo apt install resvg)"
-        )
-
-    # The rendered pictures are all from files written above, so a
-    # hand-edited one is what `--check` compares, not a stale copy.
     round_pictures = {}
     for sign in ("lnomad", "lnflash"):
         round_pictures[sign] = SCRATCH / f"{sign}-icon.svg"
         round_pictures[sign].write_text(composed_svg(groups, sign))
-    for path, (src, size) in rasters(groups, round_pictures).items():
-        out = SCRATCH / "png" / path.relative_to(ROOT)
-        render(src, size, out)
-        if check:
-            if not path.exists() or path.read_bytes() != out.read_bytes():
-                differ.append(path)
-        else:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(out, path)
+    pictures = list(rasters(groups, round_pictures)) + [SPLASH_PNG, SPLASH_BITS]
 
-    splash = SCRATCH / "splash-head.png"
-    render(SPLASH_SVG, SPLASH_PX, splash)
-    width, height, pixels = png_pixels(splash)
-    if (width, height) != (SPLASH_PX, SPLASH_PX):
-        sys.exit(f"nessa-render: the splash rendered {width}x{height}")
-    bits = pack_bits(pixels)
-    for path, wanted in ((SPLASH_PNG, splash.read_bytes()), (SPLASH_BITS, bits)):
+    # Without resvg the pictures cannot be rendered, so the check holds them
+    # to the sha256 list the last render wrote (order 1698): a guard that
+    # cannot compare is red, never a silent pass (the audit of order 1824),
+    # and with the list it can compare. Writing needs the renderer.
+    if shutil.which("resvg") is None:
+        if not check:
+            sys.exit("nessa-render: FAIL no resvg on this host, nothing rendered (sudo apt install resvg)")
+        print(
+            "nessa-render: mode sha256 list (no resvg): the pictures are compared "
+            f"against {LIST.relative_to(ROOT)}, not rendered"
+        )
+        listed, notes = check_against_list(list(texts) + pictures)
+        differ += listed
+    else:
+        print("nessa-render: mode render (resvg): every picture rendered and compared")
+        # The rendered pictures are all from files written above, so a
+        # hand-edited one is what `--check` compares, not a stale copy.
+        for path, (src, size) in rasters(groups, round_pictures).items():
+            out = SCRATCH / "png" / path.relative_to(ROOT)
+            render(src, size, out)
+            digests[path] = sha256(out.read_bytes())
+            if check:
+                if not path.exists() or path.read_bytes() != out.read_bytes():
+                    differ.append(path)
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(out, path)
+
+        splash = SCRATCH / "splash-head.png"
+        # Rendered from the text just generated, so a check does not render
+        # a stale committed copy of the splash's SVG.
+        (SCRATCH / "splash-head.svg").write_text(texts[SPLASH_SVG])
+        render(SCRATCH / "splash-head.svg", SPLASH_PX, splash)
+        width, height, pixels = png_pixels(splash)
+        if (width, height) != (SPLASH_PX, SPLASH_PX):
+            sys.exit(f"nessa-render: the splash rendered {width}x{height}")
+        bits = pack_bits(pixels)
+        for path, wanted in ((SPLASH_PNG, splash.read_bytes()), (SPLASH_BITS, bits)):
+            digests[path] = sha256(wanted)
+            if check:
+                if not path.exists() or path.read_bytes() != wanted:
+                    differ.append(path)
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(wanted)
+
+        wanted_list = list_text(digests)
         if check:
-            if not path.exists() or path.read_bytes() != wanted:
-                differ.append(path)
+            if not LIST.exists() or LIST.read_text() != wanted_list:
+                differ.append(LIST)
         else:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(wanted)
+            LIST.write_text(wanted_list)
 
     shutil.rmtree(SCRATCH)
-    for path in differ:
+    for note in notes:
+        print(f"nessa-render: {note}")
+    for path in dict.fromkeys(differ):
         print(f"nessa-render: {path.relative_to(ROOT)} differs from the source's")
     if differ:
         sys.exit(1)

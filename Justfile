@@ -3278,42 +3278,66 @@ check-allocator:
 # 1690: Nessa is the suite's logo (Lew, 2026-11-11), and every picture of her
 # is rendered from one SVG. This holds the tree to it: the script re-renders
 # every product into target/tmp and compares bytes, so a hand-edited PNG or a
-# forgotten re-run is red. On a host without resvg the guard is RED: the
-# script still compares the SVG and vector-drawable text products, names each
-# one that differs, and then fails with "FAIL the pictures were not compared",
-# because a guard that could not compare the pictures has not held them to
-# the source, and a green there would let every host without resvg call the
-# icons and the M9 splash checked (the audit of order 1824). Install resvg
+# forgotten re-run is red. On a host without resvg it cannot render, so it
+# compares every committed product against `assets/nessa/products.sha256`,
+# the digests the last render wrote, and is red if the source or the script
+# moved since then: a guard that cannot compare must fail, and with the list
+# it can compare (orders 1698 and 1871, the audit of order 1824). The first
+# line of its output says which mode ran. Install resvg to re-render
 # (scripts/install-ci.sh names it). ~2 s with resvg, no build. In `guards`
-# and `fast`, with `nessa-check-selftest` holding the no-resvg branch red;
+# and `fast`, with `nessa-check-selftest` holding the no-resvg branch;
 # written at the end of this file so no cited Justfile line moves.
 [doc('Check every icon and the splash match the Nessa SVG (1690)')]
 nessa-check:
     @python3 -I scripts/nessa-render.py --check
 
-# Order 1871: `nessa-check` on a host without resvg must be red, never a
-# silent pass. This runs `scripts/nessa-render.py --check` (or `script`) with
-# a PATH that holds python3 and nothing else, so resvg is not found whatever
-# the host has, and fails unless that run exits non-zero AND prints "FAIL the
-# pictures were not compared". Under a second, no build. In `guards` and
-# `fast` beside `nessa-check`.
-[doc('Check nessa-check is red on a host without resvg (1871)')]
+# Orders 1871 and 1698: `nessa-check` on a host without resvg must compare,
+# never pass silently. This copies the script, `products.sha256` and every
+# file it names into a scratch tree and runs the check there with a PATH
+# that holds python3 and nothing else, so resvg is not found whatever the
+# host has. Red unless: the untouched copy passes in the sha256-list mode
+# and says so; one byte appended to `head-256.png` fails; one byte appended
+# to the source SVG fails (the list no longer speaks for it); and, where the
+# host has resvg, the tampered PNG fails in the render mode too. Under a
+# few seconds, no build. In `guards` and `fast` beside `nessa-check`.
+[doc('Check nessa-check without resvg compares and fails on tampering')]
 nessa-check-selftest script="scripts/nessa-render.py":
     #!/usr/bin/env bash
     set -euo pipefail
-    bin="$(mktemp -d)"
-    trap 'rm -rf "$bin"' EXIT
-    ln -s "$(command -v python3)" "$bin/python3"
-    status=0
-    out="$(PATH="$bin" python3 -I {{script}} --check 2>&1)" || status=$?
-    if [ "$status" -eq 0 ]; then
-        echo "nessa-check-selftest: FAIL the check without resvg exited 0" >&2
-        echo "$out" >&2
-        exit 1
+    scratch="$(mktemp -d)"
+    trap 'rm -rf "$scratch"' EXIT
+    mkdir -p "$scratch/bin" "$scratch/tree/scripts"
+    ln -s "$(command -v python3)" "$scratch/bin/python3"
+    cp {{script}} "$scratch/tree/scripts/nessa-render.py"
+    list=assets/nessa/products.sha256
+    while read -r _ name; do
+        mkdir -p "$scratch/tree/$(dirname "$name")"
+        [ "$name" = scripts/nessa-render.py ] || cp "$name" "$scratch/tree/$name"
+    done < "$list"
+    cp "$list" "$scratch/tree/$list"
+    run() {
+        status=0
+        out="$(PATH="$1" python3 -I "$scratch/tree/scripts/nessa-render.py" --check 2>&1)" || status=$?
+    }
+    fail() { echo "nessa-check-selftest: FAIL $1" >&2; echo "$out" >&2; exit 1; }
+    run "$scratch/bin"
+    [ "$status" -eq 0 ] || fail "the untouched copy without resvg exited $status"
+    grep -qF "mode sha256 list" <<< "$out" || fail "the untouched copy without resvg did not name the sha256-list mode"
+    cp "$scratch/tree/assets/nessa/head-256.png" "$scratch/head.png"
+    printf 'x' >> "$scratch/tree/assets/nessa/head-256.png"
+    run "$scratch/bin"
+    [ "$status" -ne 0 ] || fail "head-256.png with one byte appended passed without resvg"
+    grep -qF "head-256.png differs" <<< "$out" || fail "the tampered head-256.png was not named without resvg"
+    if command -v resvg > /dev/null; then
+        run "$PATH"
+        [ "$status" -ne 0 ] || fail "head-256.png with one byte appended passed with resvg"
+        grep -qF "mode render" <<< "$out" || fail "the run with resvg did not name the render mode"
+        withresvg="and with resvg"
+    else
+        withresvg="(this host has no resvg, so the render mode was not exercised)"
     fi
-    if ! grep -qF "FAIL the pictures were not compared" <<< "$out"; then
-        echo "nessa-check-selftest: FAIL exit $status but no 'FAIL the pictures were not compared' line" >&2
-        echo "$out" >&2
-        exit 1
-    fi
-    echo "nessa-check-selftest: ok, without resvg the check exits $status and says the pictures were not compared"
+    cp "$scratch/head.png" "$scratch/tree/assets/nessa/head-256.png"
+    printf ' ' >> "$scratch/tree/assets/nessa/nessa-R3-b.svg"
+    run "$scratch/bin"
+    [ "$status" -ne 0 ] || fail "a source moved since the last render passed without resvg"
+    echo "nessa-check-selftest: ok, without resvg the untouched copy passes in the sha256-list mode, a tampered head-256.png fails without resvg $withresvg, and a moved source fails"
