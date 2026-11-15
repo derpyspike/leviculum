@@ -980,6 +980,20 @@ impl Store {
                 [],
             )
             .map_err(|e| corrupt(e.to_string()))?;
+        // Order 1871: a row whose peer is its own store owner and whose
+        // `via` is another is a group's or a collector's word about the
+        // reader, which no path files since 1728; an older Loquax may have
+        // stored one, and its restore would bring it back as the reader's
+        // pin. Like the cleanup above it runs at every open, not as a
+        // schema step: idempotent and cheap, and it also clears a row an
+        // older Loquax wrote into this file after the newer one migrated it.
+        // The key's prefix (identity, peer) finds the owner's own rows.
+        self.conn
+            .execute(
+                "DELETE FROM positions WHERE identity = ?1 AND peer = ?1 AND via <> ?1",
+                params![&self.identity[..]],
+            )
+            .map_err(|e| corrupt(e.to_string()))?;
         Ok(())
     }
 
@@ -6738,5 +6752,40 @@ mod tests {
             .map(|m| m.signature)
             .collect();
         assert_eq!(signatures, [Signature::Verified, Signature::Invalid]);
+    }
+
+    /// Order 1871 (the second auditor): a store an older Loquax wrote may
+    /// hold a group's or a collector's word about the reader, a row whose
+    /// peer is the owner and whose `via` is another. Opening the store
+    /// deletes it; the reader's own row and another peer's row stay.
+    #[test]
+    fn audit1871_a_stored_word_of_anothers_about_the_reader_is_gone_after_open() {
+        let home = tempfile::tempdir().expect("home");
+        let mut store = Store::open_in(home.path(), US).expect("open");
+        store
+            .write(&[
+                StoreWrite::Position(fix(US, US, None, 5_000)),
+                StoreWrite::Position(fix(US, BOB, None, 6_000)),
+                StoreWrite::Position(fix(BOB, ALICE, None, 7_000)),
+            ])
+            .expect("write");
+        assert_eq!(store.fixes(None).expect("fixes").len(), 3, "the setup");
+        drop(store);
+        let store = Store::open_in(home.path(), US).expect("reopen");
+        let left: Vec<([u8; 16], [u8; 16])> = store
+            .fixes(None)
+            .expect("fixes")
+            .into_iter()
+            .map(|f| (f.peer, f.via))
+            .collect();
+        assert!(
+            !left.contains(&(US, BOB)),
+            "another's word about the reader survived the open: {left:?}"
+        );
+        assert!(left.contains(&(US, US)), "the reader's own row went");
+        assert!(
+            left.contains(&(BOB, ALICE)),
+            "a collected row of Bob's went"
+        );
     }
 }

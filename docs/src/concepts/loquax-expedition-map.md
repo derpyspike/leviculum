@@ -883,12 +883,25 @@ Additions (decided):
      early-copy refiling skips the message that carried the membership
      (`file_early_copies`, the second auditor's audit of 1828).
      A group's copy or a collector's row naming the READER moves no pin
-     of the reader's and stores nothing, on every filing path: the rule
-     sits where every received reading is filed (`UiModel::take_fix`,
-     the second audit of 1824, after the early-copy refiling had
-     bypassed a filter on the arrival path alone); a message the
-     reader's own address signed, from another of its devices, stays
-     its own. The membership test the map and the chat ask is one
+     of the reader's, joins no track of the reader's and stores nothing.
+     The rule is one predicate (`UiModel::anothers_word_about_the_reader`:
+     the peer is the reader and `via` is not the peer), and each of the
+     five writers of the screen's `positions` and `tracks` applies it
+     where it writes. `UiModel::take_fix` files every reading received
+     from another, at arrival, on the settled path and in the early-copy
+     refiling, and refuses such a fix before anything is written, the
+     store included (the second audit of 1824, after the early-copy
+     refiling had bypassed a filter on the arrival path alone).
+     `UiModel::restore_positions` and `UiModel::restore_tracks` bring the
+     store's fixes back at start and skip such a fix, and the store
+     deletes such rows when it opens (`Store::check`), since an older
+     Loquax may have stored one (the audit of 1871).
+     `UiModel::mesh_position` files an announced position whose `via` is
+     its peer by construction, so the rule never refuses one, and
+     `UiEvent::OwnFix` puts this device's own reading into the reader's
+     track, its peer and `via` both the reader's. A message
+     the reader's own address signed, from another of its devices,
+     stays its own. The membership test the map and the chat ask is one
      function (`groups::vouches_for`, the audit of 1824), and the self-
      inviter refusal is in it once; they differ in one parameter
      (`CopyUse`: the map books only a joined group's copies, the chat
