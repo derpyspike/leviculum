@@ -19,7 +19,6 @@
 //! Red before: with the escape in `SerialMuxPort::poll_write` replaced by a
 //! pass-through, the mux arm comes back `Silent`, which is the plain arm's
 //! outcome. Green after: `Adopted`.
-#![cfg(feature = "serial")]
 
 use leviculum_core::envelope;
 use leviculum_core::framing::hdlc::{frame, DeframeResult, Deframer};
