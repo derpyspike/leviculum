@@ -2083,7 +2083,7 @@ read: those of messages pulled before a resumed boot and not opened
 since.
 
 `a_chat_opens_with_its_own_marks_only`
-(`loquax-m9/tests/restore_counts.rs:1101`) keeps the archive with 1800
+(`loquax-m9/tests/restore_counts.rs:1104`) keeps the archive with 1800
 read marks of another chat and a deleted mark of the small chat's: after
 a resumed boot the small chat's page is its 5 messages and the one mark
 from 8 sectors, its deleted message stays deleted, and the bubbles are
