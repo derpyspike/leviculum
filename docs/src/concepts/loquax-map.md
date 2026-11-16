@@ -1667,6 +1667,55 @@ The reviewer decided three more for slice (c), 2026-10-27 (leviculum 1065):
   zoom, within half a pixel, and the outline is drawn under the rest of
   the view (1077).
 
+## 8. The view is whole (1934)
+
+Lew, 2026-11-16: "What the user sees in his window, when he does not
+zoom or pan, must be complete and nice, visually, within a short time.
+At the latest after a few seconds the picture should be done, even if
+everything has to be loaded. If it is not done after 5 seconds, that is
+a bug. ... And from far away you must not load deep zoom levels while
+the picture you look at is not done yet."
+
+- **Settled view:** no pan, zoom or rotate input for 300 ms
+  (`loquax::ui::viewwatch::SETTLE_MS`).
+- **Whole and right:** every screen cell is drawn from data at the
+  view's own zoom (or the region's deepest zoom, overzoomed, where the
+  view is deeper than any data); no cell is outline-only, grey, white or
+  a coarser stand-in; and the frame equals the frame a fresh start with
+  a full cache would draw for the same view (same regions, same order).
+  The watch counts a cell by the screen's sample points
+  (`loquax::ui::viewload::screen_cells`): drawn, stand-in or outline,
+  the frame's owed tiles counted as stand-ins and a frontend's grey
+  cells as grey.
+- **View level:** exactly the tiles of the view's zoom for the screen
+  rectangle, the screen's own box (`viewload::screen_want`), asked at
+  every zoom as soon as any of the screen lacks it. Nothing else is
+  loaded, prefetched or cut before the view level is whole: no deeper
+  zoom, no neighbour, no wide box. The loader starts nothing but the
+  view level while a box of it runs or waits, and every other running
+  load pauses at its next round (`mapload::Loader`, the 1836 pause), a
+  box asked by hand and a cell under the screen among them. A moving
+  view's first frame, a frame at a new zoom and a frame that leaves a
+  held screen tell the loader at once, so nothing off the screen starts
+  in the pacing's 250 ms.
+- **The watchdog** (`loquax::ui::viewwatch::ViewWatch`) says, as
+  structured events: `VIEW_SETTLED view=<lon,lat,zoom> cells=<n>`;
+  `VIEW_WHOLE ms=<since settled> bytes=<fetched since the input>`;
+  `VIEW_INCOMPLETE ms=... missing= grey= standin= outline= share=
+  first=<tile keys> loads= cache= disk=` once a settled view is not
+  whole after 5 s (`WHOLE_BOUND_MS`) and every 10 s after while it stays
+  so; `VIEW_REGRESSED cell= from= to= cause=<evict|land|redraw>` when a
+  drawn cell of a settled view stops being drawn (1930 drives it to 0).
+  A debug build shows a red badge with the seconds and the share in the
+  map's top right corner, a release build the events alone.
+- **The walks:** the load walk's rule `view_whole_in_bound` fails on any
+  `VIEW_REGRESSED` and on a `VIEW_INCOMPLETE` at or past the rest's
+  bound: 5 s at full speed, the real network's; on the walk's throttled
+  link the rest's fill bound (10 s plus twice the time the view's own
+  bytes take at that rate). `every_zoom_from_3_to_16_settles_whole_in_bound`
+  settles once per zoom from 3 to 16 over a ladder archive and wants
+  `VIEW_WHOLE` under 5 s each.
+
 ## See also
 
 - [Loquax: tracks on the map](loquax-tracks.md): each peer's current

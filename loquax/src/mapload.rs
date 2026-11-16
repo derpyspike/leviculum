@@ -22,9 +22,12 @@
 //!   another for the screen; a cell for the screen waits until it landed,
 //!   so the screen's tiles draw before a byte of the cell arrives. A
 //!   screen's box the view left is dropped while it waits: the cells
-//!   hold its area. A screen's box a running load brings is not asked
-//!   twice, and that load ranks as the screen's, so the cells wait for
-//!   it too (1616).
+//!   hold its area. A screen's box a running screen's box brings is not
+//!   asked twice, and that load ranks as the screen's, so the cells wait
+//!   for it too (1616); a running cell is no such load (1934).
+//! - The view level first (1934): while a screen's box runs or waits,
+//!   nothing else starts and every other running load pauses at its next
+//!   round, a box asked by hand and a cell under the screen among them.
 //! - A box that failed stays queued and the loader retries it on its own
 //!   clock (1811, the load walk's `fault_recovers`): a box for the screen
 //!   after [`SCREEN_RETRY_FIRST_MS`] doubling to [`SCREEN_RETRY_MAX_MS`],
@@ -763,9 +766,16 @@ impl Loader {
         if self.running.iter().any(|r| r.hold != Hold::Pause) || self.heights_pending() {
             return true;
         }
-        // Mirror [`Loader::start_next`]: an off-screen box behind an
-        // on-screen box waiting to retry does not start, so it is not
-        // loading either.
+        // Mirror [`Loader::start_next`]: while the view level runs or
+        // waits (1934) only its own boxes start, so only a due one of them
+        // is loading; an off-screen box behind an on-screen box waiting to
+        // retry does not start, so it is not loading either.
+        if self.level_wants() {
+            return self
+                .queue
+                .iter()
+                .any(|q| q.rank == Rank::Screen && q.retry_at == 0);
+        }
         let mut screen_waits = false;
         for queued in &self.queue {
             match (queued.retry_at > 0, queued.rank.on_screen()) {
@@ -781,11 +791,13 @@ impl Loader {
     /// asked for by hand or under the screen (1292). The phone's chip says
     /// "Loading the map of this area" for these only.
     pub fn loading_here(&self) -> bool {
+        // While the view level runs or waits (1934) nothing else under the
+        // screen can start: a cell queued behind it is not loading.
+        let level = self.level_wants();
         self.running.iter().any(|r| r.rank.on_screen())
-            || self
-                .queue
-                .iter()
-                .any(|q| q.rank.on_screen() && q.retry_at == 0)
+            || self.queue.iter().any(|q| {
+                q.rank.on_screen() && q.retry_at == 0 && (!level || q.rank == Rank::Screen)
+            })
     }
 
     /// Milliseconds until the loader's next own move (1821, the audit of
@@ -1346,7 +1358,14 @@ impl Loader {
                 }
                 // One line per box, not one per retry (1811): the first
                 // failure speaks, the loader's own retries stay quiet.
+                // The view level where the source holds no tiles (1934):
+                // asked at every zoom, it finds none at a zoom the source
+                // was not cut at; the outline draws, the watchdog says the
+                // view is not whole, and the user has nothing to do.
+                let bare_level =
+                    failure.permanent && !failure.too_large && want.reason == LoadReason::Screen;
                 let toast = match (failure.unreachable, failure.too_large) {
+                    _ if bare_level => None,
                     (true, _) if self.offline_said => None,
                     (true, _) => {
                         self.offline_said = true;
@@ -1399,6 +1418,13 @@ impl Loader {
     /// names wakes by (1835, the audit of 1821): an instant this scan
     /// refuses is no wake, because nothing could start at it.
     fn due_at(&self, now_ms: u64) -> Option<usize> {
+        // While the view level is not whole (1934) only its box is due.
+        if self.level_wants() {
+            return self
+                .queue
+                .iter()
+                .position(|q| q.rank == Rank::Screen && q.retry_at <= now_ms);
+        }
         let mut screen_waits = false;
         for (n, queued) in self.queue.iter().enumerate() {
             if queued.retry_at > now_ms {
@@ -1423,6 +1449,7 @@ impl Loader {
     /// [`MAX_PAUSED`] paused loads the worst ranked, the latest started
     /// among equals, stops for good.
     fn steer(&mut self) -> Vec<Step> {
+        let level = self.level_wants();
         let screen_wants = self
             .running
             .iter()
@@ -1458,6 +1485,7 @@ impl Loader {
         let mut order: Vec<usize> = (0..self.running.len())
             .filter(|&n| self.running[n].hold != Hold::Stop)
             .filter(|&n| !screen_wants || self.running[n].rank.on_screen())
+            .filter(|&n| !level || self.running[n].rank == Rank::Screen)
             .collect();
         order.sort_by_key(|&n| (self.running[n].rank, self.running[n].started));
         for (k, &n) in order.iter().enumerate() {
@@ -1469,7 +1497,7 @@ impl Loader {
         }
         if screen_wants {
             for r in &mut self.running {
-                if !r.rank.on_screen() {
+                if !r.rank.on_screen() || level && r.rank != Rank::Screen {
                     set(r, Hold::Pause, &mut steps);
                 }
             }
@@ -1487,6 +1515,20 @@ impl Loader {
             set(&mut self.running[n], Hold::Stop, &mut steps);
         }
         steps
+    }
+
+    /// Whether the view level (1934, the screen's own box at the view's
+    /// zoom, [`Rank::Screen`]) is still to come: a box of it runs or
+    /// waits. While it is, nothing else starts and every other running
+    /// load pauses at its next round, a box asked by hand and a cell under
+    /// the screen among them (Lew, 2026-11-16: "from far away you must not
+    /// load deep zoom levels while the picture you look at is not done
+    /// yet").
+    fn level_wants(&self) -> bool {
+        self.running
+            .iter()
+            .any(|r| r.hold != Hold::Stop && r.rank == Rank::Screen)
+            || self.queue.iter().any(|q| q.rank == Rank::Screen)
     }
 
     /// Start the queue's first boxes ([`due_at`](Self::due_at)): one
@@ -1669,7 +1711,11 @@ pub fn loads_line(loads: &crate::ui::maploading::Loads) -> String {
 /// Whether a load of `load` brings `want`, the screen's own box (1527):
 /// its box and zooms inside the load's.
 fn brings(load: &MapWant, want: &MapWant) -> bool {
-    want.reason == LoadReason::Screen
+    // Only another screen's box (1934): a cell brings the screen's tiles
+    // with its deeper zooms and its wide box, which wait for the view
+    // level, so it is no stand-in for the screen's own load.
+    load.reason == LoadReason::Screen
+        && want.reason == LoadReason::Screen
         && load.bounds.holds(&want.bounds)
         && load.zooms.0 <= want.zooms.0
         && load.zooms.1 >= want.zooms.1
@@ -2694,15 +2740,15 @@ mod tests {
             ]
         );
         assert!(loader.loading_here());
-        // The screen's own box (1527) goes before the cells under it; the
-        // view moves, the old screen box is dropped, not kept as left.
+        // The screen's own box (1527) goes before the cells under it and
+        // starts at once, the box asked by hand pausing for it (1934).
         let (s, t) = (screen(6), screen(7));
         loader.schedule(vec![s.clone(), nth(4), nth(3)], Vec::new(), 500);
         assert_eq!(
             order(&loader),
             [
                 (1, Rank::Asked, true),
-                (6, Rank::Screen, false),
+                (6, Rank::Screen, true),
                 (4, Rank::Here, false),
                 (3, Rank::Here, false),
                 (2, Rank::Away, false)
@@ -2713,19 +2759,21 @@ mod tests {
             order(&loader),
             [
                 (1, Rank::Asked, true),
-                (7, Rank::Screen, false),
+                (6, Rank::Away, true),
+                (7, Rank::Screen, true),
                 (3, Rank::Here, false),
                 (4, Rank::Away, false),
                 (2, Rank::Away, false)
             ],
-            "the screen box the view left is gone: {s:?}"
+            "the screen box the view left runs on paused, the new one runs: {s:?}"
         );
     }
 
     /// The screen's own box loads first and alone (1527): the cell under
     /// the screen waits until it landed, so no byte of the cell comes
-    /// before the screen's tiles; a screen's box starts beside a cell for
-    /// the screen that runs already, never beside another screen box.
+    /// before the screen's tiles; a cell for the screen that runs already
+    /// pauses when a screen's box comes (1934), and a screen's box never
+    /// waits for another the view left.
     #[test]
     fn the_screens_own_box_loads_before_the_cell_around_it() {
         let (_source, source) = stalling();
@@ -2744,7 +2792,9 @@ mod tests {
         );
         assert!(loader.loading_here());
         // A cell for the screen runs (the screen's box landed meanwhile,
-        // here: was never asked); a new screen box starts beside it.
+        // here: was never asked); a new screen box starts and the cell
+        // pauses for it (1934: nothing but the view level runs while the
+        // view level is not whole).
         let (_source, source) = stalling();
         let dir = tempfile::tempdir().expect("tmp");
         let mut loader = Loader::new(Maps::new(Some(dir.path().to_path_buf())), source, 1 << 30);
@@ -2755,12 +2805,18 @@ mod tests {
         let t = screen(3);
         assert_eq!(
             loader.schedule(vec![t.clone(), a.clone()], Vec::new(), 250),
-            [Step::Started(t.clone())],
-            "beside the cell"
+            [
+                Step::Held {
+                    want: a.clone(),
+                    how: Held::Paused
+                },
+                Step::Started(t.clone())
+            ],
+            "the cell pauses"
         );
         // A second screen box does not wait for the first, which the view
         // left (1836): that one pauses at its next round, the new one
-        // starts beside the cell at once.
+        // starts at once.
         let u = screen(4);
         assert_eq!(
             loader.schedule(vec![u.clone(), a.clone()], Vec::new(), 500),
@@ -2815,6 +2871,184 @@ mod tests {
             [(1, Rank::Screen, true), (30, Rank::Here, false)]
         );
         assert!(loader.loading_here());
+    }
+
+    /// A running cell that holds the screen's box among its zooms and its
+    /// wide box is not the view level (1934): it pauses, and the screen's
+    /// own box starts. The load walk's wheel-rested-slow caught a z15
+    /// screen waiting 15 s behind two cells of z12 to z15 that "brought"
+    /// it (1616), 5 MB at 200 kB/s, while its own box of 0.6 MB waited.
+    #[test]
+    fn a_running_cell_that_brings_the_screens_box_pauses_for_it() {
+        let (_source, source) = stalling();
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut loader = Loader::new(Maps::new(Some(dir.path().to_path_buf())), source, 1 << 30);
+        let cell = nth(1);
+        assert_eq!(
+            loader.schedule(vec![cell.clone()], Vec::new(), 0),
+            [Step::Started(cell.clone())]
+        );
+        let s = MapWant {
+            bounds: Bounds {
+                west: cell.bounds.west + 1000,
+                east: cell.bounds.east - 1000,
+                ..cell.bounds
+            },
+            zooms: (15, 15),
+            floor: 15,
+            ..screen(1)
+        };
+        assert_eq!(
+            loader.schedule(vec![s.clone(), cell.clone()], Vec::new(), 250),
+            [
+                Step::Held {
+                    want: cell.clone(),
+                    how: Held::Paused
+                },
+                Step::Started(s.clone())
+            ]
+        );
+    }
+
+    /// While a box of the view level waits to retry (1934), a cell under
+    /// the screen queued behind it cannot start, so the loader is neither
+    /// busy nor loading here: the phone's chip said "loading" for ever
+    /// over a source with no internet (`a_missing_region_loads_by_itself`).
+    #[test]
+    fn a_cell_behind_a_view_level_box_waiting_to_retry_is_not_loading() {
+        let (_source, source) = stalling();
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut loader = Loader::new(Maps::new(Some(dir.path().to_path_buf())), source, 1 << 30);
+        loader.queue.push(Queued {
+            want: screen(1),
+            rank: Rank::Screen,
+            retry_at: 10_000,
+        });
+        loader.queue.push(Queued {
+            want: nth(2),
+            rank: Rank::Here,
+            retry_at: 0,
+        });
+        assert!(loader.poll(0).is_empty(), "nothing starts");
+        assert!(!loader.busy(), "the cell cannot start");
+        assert!(!loader.loading_here());
+        assert_eq!(loader.next_due_ms(0), Some(10_000));
+    }
+
+    /// The view level at a zoom the source holds no tiles for (1934: it is
+    /// asked at every zoom, and a source cut from z10 on has none at z9)
+    /// fails quietly: the outline draws there, nothing is for the user to
+    /// do, and the view watchdog says the view is not whole. A box asked
+    /// for by hand that finds nothing still says so.
+    #[test]
+    fn a_view_level_box_with_no_tiles_fails_quietly() {
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut loader = Loader::new(maps, Source::Url(serve.url("o.pmtiles")), 1 << 30);
+        let far = MapWant {
+            zooms: (5, 5),
+            floor: 5,
+            ..screen(1)
+        };
+        loader.schedule(vec![far], Vec::new(), 0);
+        let steps = settle(&mut loader, 0);
+        assert!(
+            matches!(steps.as_slice(), [Step::Failed { toast: None, .. }]),
+            "{steps:?}"
+        );
+        let asked = MapWant {
+            zooms: (5, 5),
+            floor: 5,
+            ..nth(2)
+        };
+        loader.ask(asked, 10);
+        let steps = settle(&mut loader, 10);
+        assert!(
+            matches!(steps.as_slice(), [Step::Failed { toast: Some(_), .. }]),
+            "{steps:?}"
+        );
+    }
+
+    /// The load order rule (1934, Lew 2026-11-16: "from far away you must
+    /// not load deep zoom levels while the picture you look at is not
+    /// done yet"): zoomed out over Morocco to z6 after a z10 visit left a
+    /// cell of zooms 7 to 15 queued, the z6 view level loads first, at z6
+    /// alone, and the deep box does not start while it runs.
+    #[test]
+    fn far_out_the_view_level_loads_before_a_deep_box() {
+        use crate::ui::viewload::wants;
+        use leviculum_map::mercator::{project, LatLon};
+        use leviculum_map::viewport::Viewport;
+        let (_source, source) = stalling();
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut loader = Loader::new(Maps::new(Some(dir.path().to_path_buf())), source, 1 << 30);
+        let at = project(LatLon::from_degrees(31.1, -4.0));
+        let visit = wants(&Viewport::new(at, 10, 1120, 700), &[], false, None);
+        let deep = visit
+            .here
+            .iter()
+            .find(|w| w.reason == LoadReason::View)
+            .cloned()
+            .expect("the z10 visit asks for its cells");
+        assert_eq!(deep.zooms, (7, 15), "the cell of a z10 view");
+        // The visit's cell still queued: the view left it.
+        loader.queue.push(Queued {
+            want: deep.clone(),
+            rank: Rank::Away,
+            retry_at: 0,
+        });
+        let far = wants(&Viewport::new(at, 6, 1120, 700), &[], false, None);
+        let steps = loader.schedule(far.here, far.ahead, 1_000);
+        assert!(
+            !steps.contains(&Step::Started(deep.clone())),
+            "the 7-15 box started before the z6 view level: {steps:?}"
+        );
+        let started: Vec<&MapWant> = steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::Started(w) => Some(w),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(started.len(), 1, "{steps:?}");
+        assert_eq!(started[0].reason, LoadReason::Screen);
+        assert_eq!(started[0].zooms, (6, 6), "the view's zoom alone");
+        // Later frames of the same view start nothing else either.
+        for t in [1_250, 5_000, 60_000] {
+            let steps = loader.poll(t);
+            assert!(
+                !steps.contains(&Step::Started(deep.clone())),
+                "{t}: {steps:?}"
+            );
+        }
+    }
+
+    /// The second half of the rule (1934): a load running for anything
+    /// but the view level pauses while the view level is not whole, a
+    /// cell under the screen among them, and goes on after it.
+    #[test]
+    fn a_running_cell_pauses_while_the_view_level_loads() {
+        let (_source, source) = stalling();
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut loader = Loader::new(Maps::new(Some(dir.path().to_path_buf())), source, 1 << 30);
+        let a = nth(2);
+        assert_eq!(
+            loader.schedule(vec![a.clone()], Vec::new(), 0),
+            [Step::Started(a.clone())]
+        );
+        let t = screen(3);
+        assert_eq!(
+            loader.schedule(vec![t.clone(), a.clone()], Vec::new(), 250),
+            [
+                Step::Held {
+                    want: a.clone(),
+                    how: Held::Paused
+                },
+                Step::Started(t.clone())
+            ],
+            "the cell pauses, the view level starts"
+        );
     }
 
     /// A load whose area the view left pauses at its next round (1836);
@@ -3377,7 +3611,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tmp");
         let maps = Maps::new(Some(dir.path().to_path_buf()));
         let mut loader = Loader::new(maps, Source::Url(serve.url("o.pmtiles")), 1 << 30);
-        let s = screen(1);
+        // A cell under the screen, not the view level: while a box of the
+        // view level waits to retry nothing else starts at all (1934).
+        let s = nth(1);
         loader.schedule(vec![s.clone()], Vec::new(), 0);
         let steps = settle(&mut loader, 0);
         assert!(
@@ -3421,7 +3657,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tmp");
         let maps = Maps::new(Some(dir.path().to_path_buf()));
         let mut loader = Loader::new(maps, Source::Url(serve.url("o.pmtiles")), 1 << 30);
-        let s = screen(1);
+        // A cell under the screen, not the view level: while a box of the
+        // view level waits to retry nothing else starts at all (1934).
+        let s = nth(1);
         loader.schedule(vec![s.clone()], Vec::new(), 0);
         let steps = settle(&mut loader, 0);
         assert!(

@@ -2998,3 +2998,166 @@ fn the_loading_looks_side_by_side() {
     std::fs::write(out.join("looks.tsv"), rows).expect("the rows");
     std::fs::write(out.join("index.html"), html).expect("the sheet");
 }
+
+/// The ladder archive (1934): [`first_tile`]'s z15 tile in every slot of
+/// a screen and a tile round it about `centre` at each zoom from z3 to
+/// z15, unpadded, so a view of [`WALK_SIZE`] there at any of those zooms
+/// finds its tiles and nothing else is in it.
+pub fn ladder_archive(centre: World) -> Vec<u8> {
+    use leviculum_map::region::TileId;
+    use leviculum_mapcut::pmtiles::{write, Archive, NONE};
+    use std::collections::BTreeMap;
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../leviculum-mapcut/fixtures/grunewald.pmtiles");
+    let archive = Archive::open(&path).expect("the fixture");
+    let z15 = archive
+        .tiles()
+        .expect("tiles")
+        .into_iter()
+        .find(|t| t.z == 15)
+        .expect("a z15 tile");
+    let mvt = archive.mvt(z15).expect("read").expect("the tile");
+    let meta = archive.metadata().expect("metadata");
+    let mut tiles = BTreeMap::new();
+    let (w, h) = WALK_SIZE;
+    for z in 3..=15u8 {
+        let shift = 32 - u32::from(z);
+        let (cx, cy) = (centre.x >> shift, centre.y >> shift);
+        // Half the screen in tiles of this zoom, rounded up, and one more.
+        let (rx, ry) = (w.div_ceil(512) + 1, h.div_ceil(512) + 1);
+        let last = (1u32 << z) - 1;
+        for x in cx.saturating_sub(rx)..=(cx + rx).min(last) {
+            for y in cy.saturating_sub(ry)..=(cy + ry).min(last) {
+                tiles.insert(TileId { z, x, y }, mvt.clone());
+            }
+        }
+    }
+    let mut out = Vec::new();
+    write(&tiles, NONE, &meta, &mut out).expect("the archive");
+    out
+}
+
+/// One settle per zoom from 3 to 16 (1934, deliverable 4): over the
+/// ladder archive at full speed, the window jumps to each zoom, rests,
+/// and its view watchdog says `VIEW_WHOLE` within [`WHOLE_BOUND_MS`] of
+/// the settle, with no `VIEW_INCOMPLETE` and no `VIEW_REGRESSED`.
+#[test]
+fn every_zoom_from_3_to_16_settles_whole_in_bound() {
+    let place = (31.08, -4.0);
+    let at = project(LatLon::from_degrees(place.0, place.1));
+    let serve = Serve::start(vec![("w.pmtiles".into(), ladder_archive(at))]).expect("serve");
+    let ground = Ground {
+        at,
+        zoom: 3,
+        cache_bytes: 1 << 30,
+        prefill: 0,
+    };
+    let mut walk = Walk::over(serve, "ladder", 0, 0, ground, Inject::None);
+    let mut seen = Vec::new();
+    for zoom in 3..=16u8 {
+        walk.jump(place, zoom);
+        let from = walk.view_events.len();
+        let until = walk.now_ms() + WHOLE_BOUND_MS + 2_000;
+        let mut whole = None;
+        while walk.now_ms() < until && whole.is_none() {
+            walk.step();
+            whole = walk.view_events[from..].iter().find_map(|v| match v.event {
+                ViewEvent::Whole { ms, .. } => Some(ms),
+                _ => None,
+            });
+        }
+        let said: Vec<String> = walk.view_events[from..]
+            .iter()
+            .map(|v| v.event.line())
+            .collect();
+        assert!(
+            !said
+                .iter()
+                .any(|l| l.starts_with("VIEW_INCOMPLETE") || l.starts_with("VIEW_REGRESSED")),
+            "z{zoom}: {said:?}"
+        );
+        let ms = whole.unwrap_or_else(|| panic!("z{zoom} never whole: {said:?}"));
+        assert!(ms < WHOLE_BOUND_MS, "z{zoom}: whole after {ms} ms");
+        seen.push((zoom, ms));
+        eprintln!("z{zoom}: {said:?}");
+    }
+    eprintln!("VIEW_WHOLE per zoom: {seen:?}");
+}
+
+/// Step until the view watchdog said `VIEW_WHOLE` for the view settled
+/// last, or `max_ms` passed; its lines since `from`.
+fn settle_lines(walk: &mut Walk, from: usize, max_ms: u64) -> Vec<String> {
+    let until = walk.now_ms() + max_ms;
+    while walk.now_ms() < until {
+        walk.step();
+        let whole = walk.view_events[from..]
+            .iter()
+            .rev()
+            .take_while(|v| !matches!(v.event, ViewEvent::Settled { .. }))
+            .any(|v| matches!(v.event, ViewEvent::Whole { .. }));
+        let settled = walk.view_events[from..]
+            .iter()
+            .any(|v| matches!(v.event, ViewEvent::Settled { .. }));
+        if settled && whole {
+            break;
+        }
+    }
+    walk.view_events[from..]
+        .iter()
+        .map(|v| v.event.line())
+        .collect()
+}
+
+/// Lew's three cases (1934, deliverable 5), over the walk's archive at
+/// `rate` (0 for full speed): pan a screen and stop; zoom in one wheel
+/// step and stop; zoom out four steps from a detailed visit and stop.
+/// Each case's watchdog lines from its input on.
+pub fn lews_three_cases(rate: u64) -> Vec<(&'static str, Vec<String>)> {
+    let max = WHOLE_BOUND_MS + 12_000;
+    let mut out = Vec::new();
+    // Pan and stop: at rest and whole at z15, a screen east.
+    let mut walk = Walk::new("lew-pan", rate, 0, 15, Inject::None);
+    walk.rest("start", true);
+    let from = walk.view_events.len();
+    walk.drag(-(WALK_SIZE.0 as f32) / 20.0, 0.0, 20);
+    out.push(("pan and stop", settle_lines(&mut walk, from, max)));
+    // Zoom in one wheel step and stop: at rest and whole at z13.
+    let mut walk = Walk::new("lew-in", rate, 0, 13, Inject::None);
+    walk.rest("start", true);
+    let from = walk.view_events.len();
+    walk.wheel(1000, 1);
+    out.push(("zoom in one step", settle_lines(&mut walk, from, max)));
+    // Zoom out four steps from a detailed visit and stop: whole at z16.
+    let mut walk = Walk::new("lew-out", rate, 0, 16, Inject::None);
+    walk.rest("start", true);
+    let from = walk.view_events.len();
+    for _ in 0..4 {
+        walk.wheel(-1000, 1);
+    }
+    out.push(("zoom out four steps", settle_lines(&mut walk, from, max)));
+    out
+}
+
+/// Lew's three cases at full speed are whole within the real network's
+/// bound, nothing late and nothing lost; at the walk's slow rate their
+/// lines are printed for the report.
+#[test]
+fn lews_three_cases_are_whole_in_bound() {
+    for rate in [0, SLOW_RATE] {
+        for (case, lines) in lews_three_cases(rate) {
+            eprintln!("lew rate={rate} {case}: {lines:?}");
+            if rate == 0 {
+                assert!(
+                    lines.iter().any(|l| l.starts_with("VIEW_WHOLE")),
+                    "{case}: {lines:?}"
+                );
+                assert!(
+                    !lines.iter().any(
+                        |l| l.starts_with("VIEW_INCOMPLETE") || l.starts_with("VIEW_REGRESSED")
+                    ),
+                    "{case}: {lines:?}"
+                );
+            }
+        }
+    }
+}

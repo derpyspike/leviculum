@@ -1014,7 +1014,7 @@ enum Until {
     /// The send runner reported this leg for the newest message we wrote in
     /// the selected conversation.
     Leg(Leg),
-    /// No region load runs or waits (1089).
+    /// No region load runs or waits (1089), none for the screen (1934).
     MapIdle,
     /// This many fetches (on a client, pulls from the home node) ended.
     Synced(usize),
@@ -1051,7 +1051,11 @@ impl Until {
                     >= *count
             }
             Self::Named(count) => model.names.heard_count() >= *count,
-            Self::MapIdle => model.map_loading.is_none(),
+            // No load for the screen runs or waits either (1934): a load
+            // that ends while another for the screen goes on (the view
+            // level lands before the place's box, which paused for it) is
+            // no idle map.
+            Self::MapIdle => model.map_loading.is_none() && !model.map_here,
             Self::Synced(count) => model.fetches_done >= *count,
             Self::Groups(count) => {
                 model
