@@ -756,6 +756,10 @@ impl Painter {
             .filter(|_| ink == Ink::Colour && style.theme == MapTheme::Light)
             .filter(|_| self.ground.any())
             .map(|g| (&self.ground, g));
+        // The areas complete regions drew, each with the zoom of its data
+        // there: a region still arriving draws no coarser stand-in over
+        // them (audit of 1836, finding 2).
+        let mut solid: Vec<(Rectangle, u8)> = Vec::new();
         for &i in &order {
             let installed = &self.regions[i];
             let area = installed.region.area(view);
@@ -763,6 +767,7 @@ impl Painter {
                 &installed.region,
                 view,
                 area,
+                &solid,
                 ink,
                 style,
                 percent,
@@ -776,6 +781,10 @@ impl Painter {
                 attribution = installed.region.attribution().to_string();
                 shown.push(i);
                 pending += owed;
+                if owed == 0 {
+                    let data = installed.region.header().max_zoom.min(view.zoom());
+                    solid.push((area, data));
+                }
             }
         }
         for i in shown {
@@ -1167,6 +1176,7 @@ fn region_into<D>(
     region: &Region<File>,
     view: &Viewport,
     area: Rectangle,
+    solid: &[(Rectangle, u8)],
     ink: Ink,
     style: Style,
     percent: u32,
@@ -1217,8 +1227,10 @@ where
     // region still arriving, or paused (1836), clears only the squares of
     // the tiles it has, stand-ins included, so where it has nothing yet
     // the region under it stays drawn (Lew 2026-11-15, rule 8a: a
-    // finished area went white under a deeper region's empty box).
-    for part in owned_areas(tiles.iter().map(|t| t.tile), area, pending) {
+    // finished area went white under a deeper region's empty box). Nor
+    // does it lay a coarser stand-in over a complete region drawn under
+    // it with sharper data there (audit of 1836, finding 2).
+    for part in owned_areas(tiles.iter().map(|t| t.tile), area, pending, solid) {
         let shade = sampler
             .as_mut()
             .map(|s| s as &mut dyn leviculum_map::relief::Shade);
@@ -1246,29 +1258,37 @@ where
 
 /// What a region's pass draws into of `area` (1836): all of it when the
 /// region owes no tile of the view; else the squares of the tiles it has,
-/// each cut to `area`, none inside another.
+/// each cut to `area` and with every `solid` area taken out whose data is
+/// at least as deep as the tile (a complete region drawn under it, audit
+/// of 1836 finding 2), none inside another.
 fn owned_areas(
     tiles: impl Iterator<Item = ViewTile>,
     area: Rectangle,
     pending: usize,
+    solid: &[(Rectangle, u8)],
 ) -> Vec<Rectangle> {
     if pending == 0 {
         return vec![area];
     }
     let sub = leviculum_mapfill::SUBPIXEL;
-    let mut parts: Vec<Rectangle> = tiles
-        .map(|t| {
-            let size = 1i32 << (12 + u32::from(t.overzoom));
-            let (x0, y0) = (t.origin.x.div_euclid(sub), t.origin.y.div_euclid(sub));
-            let (x1, y1) = (
-                (t.origin.x + size + sub - 1).div_euclid(sub),
-                (t.origin.y + size + sub - 1).div_euclid(sub),
-            );
-            Rectangle::with_corners(Point::new(x0, y0), Point::new(x1 - 1, y1 - 1))
-                .intersection(&area)
-        })
-        .filter(|r| !r.is_zero_sized())
-        .collect();
+    let mut parts: Vec<Rectangle> = Vec::new();
+    for t in tiles {
+        let size = 1i32 << (12 + u32::from(t.overzoom));
+        let (x0, y0) = (t.origin.x.div_euclid(sub), t.origin.y.div_euclid(sub));
+        let (x1, y1) = (
+            (t.origin.x + size + sub - 1).div_euclid(sub),
+            (t.origin.y + size + sub - 1).div_euclid(sub),
+        );
+        let square = Rectangle::with_corners(Point::new(x0, y0), Point::new(x1 - 1, y1 - 1))
+            .intersection(&area);
+        let mut left = vec![square];
+        for &(under, zoom) in solid {
+            if zoom >= t.id.z {
+                left = left.iter().flat_map(|r| minus(*r, under)).collect();
+            }
+        }
+        parts.extend(left.into_iter().filter(|r| !r.is_zero_sized()));
+    }
     parts.sort_by_key(|r| core::cmp::Reverse(r.size.width * r.size.height));
     let mut kept: Vec<Rectangle> = Vec::with_capacity(parts.len());
     for r in parts {
@@ -1280,6 +1300,36 @@ fn owned_areas(
         }
     }
     kept
+}
+
+/// What of `r` lies outside `cut`: up to four rectangles, none
+/// overlapping, `r` itself when the two do not meet.
+fn minus(r: Rectangle, cut: Rectangle) -> Vec<Rectangle> {
+    let both = r.intersection(&cut);
+    if both.is_zero_sized() {
+        return vec![r];
+    }
+    let (rx0, ry0) = (r.top_left.x, r.top_left.y);
+    let (rx1, ry1) = (rx0 + r.size.width as i32, ry0 + r.size.height as i32);
+    let (cx0, cy0) = (both.top_left.x, both.top_left.y);
+    let (cx1, cy1) = (cx0 + both.size.width as i32, cy0 + both.size.height as i32);
+    let span = |x0: i32, y0: i32, x1: i32, y1: i32| {
+        Rectangle::new(
+            Point::new(x0, y0),
+            embedded_graphics::prelude::Size::new((x1 - x0) as u32, (y1 - y0) as u32),
+        )
+    };
+    [
+        // Above and below the cut, the whole width.
+        span(rx0, ry0, rx1, cy0),
+        span(rx0, cy1, rx1, ry1),
+        // Left and right of it, its height.
+        span(rx0, cy0, cx0, cy1),
+        span(cx1, cy0, rx1, cy1),
+    ]
+    .into_iter()
+    .filter(|p| !p.is_zero_sized())
+    .collect()
 }
 
 #[cfg(test)]
@@ -1477,9 +1527,9 @@ mod tests {
             origin: Point::new(x * 16, y * 16),
         };
         let tiles = [tile(-10, -20, 0), tile(300, 100, 1), tile(310, 120, 0)];
-        assert_eq!(owned_areas(tiles.into_iter(), area, 0), vec![area]);
+        assert_eq!(owned_areas(tiles.into_iter(), area, 0, &[]), vec![area]);
         assert_eq!(
-            owned_areas(tiles.into_iter(), area, 1),
+            owned_areas(tiles.into_iter(), area, 1, &[]),
             vec![
                 // 512 px from (300, 100), cut to the area.
                 Rectangle::new(Point::new(300, 100), Size::new(300, 200)),
@@ -1493,10 +1543,62 @@ mod tests {
             ..tile(0, 0, 0)
         };
         assert_eq!(
-            owned_areas([half].into_iter(), area, 1),
+            owned_areas([half].into_iter(), area, 1, &[]),
             vec![Rectangle::new(Point::new(0, 0), Size::new(257, 257))]
         );
-        assert!(owned_areas(core::iter::empty(), area, 3).is_empty());
+        assert!(owned_areas(core::iter::empty(), area, 3, &[]).is_empty());
+    }
+
+    /// Audit of 1836, finding 2: a complete region drawn under takes its
+    /// area out of a tile's square when its data there is as deep as the
+    /// tile or deeper, and leaves a square of deeper data alone; what is
+    /// left is the square outside it, no pixel twice.
+    #[test]
+    fn audit_a_solid_area_as_deep_as_a_tile_is_cut_out_of_its_square() {
+        use embedded_graphics::prelude::Size;
+        use leviculum_map::region::TileId;
+        let area = Rectangle::new(Point::new(0, 0), Size::new(600, 600));
+        let tile = |z: u8| ViewTile {
+            id: TileId { z, x: 0, y: 0 },
+            overzoom: 0,
+            origin: Point::new(0, 0),
+        };
+        // The left half of the 256-pixel square lies drawn under.
+        let under = Rectangle::new(Point::new(0, 0), Size::new(128, 600));
+        let right = vec![Rectangle::new(Point::new(128, 0), Size::new(128, 256))];
+        let whole = vec![Rectangle::new(Point::new(0, 0), Size::new(256, 256))];
+        assert_eq!(
+            owned_areas([tile(14)].into_iter(), area, 1, &[(under, 15)]),
+            right
+        );
+        assert_eq!(
+            owned_areas([tile(14)].into_iter(), area, 1, &[(under, 14)]),
+            right
+        );
+        assert_eq!(
+            owned_areas([tile(14)].into_iter(), area, 1, &[(under, 13)]),
+            whole
+        );
+        // A complete region over it all leaves nothing to draw.
+        assert!(owned_areas([tile(14)].into_iter(), area, 1, &[(area, 15)]).is_empty());
+        // A cut in the middle leaves four pieces around it, together the
+        // square's pixels less the cut's.
+        let r = Rectangle::new(Point::new(10, 20), Size::new(100, 50));
+        let hole = Rectangle::new(Point::new(40, 30), Size::new(20, 10));
+        let pieces = minus(r, hole);
+        assert_eq!(pieces.len(), 4, "{pieces:?}");
+        let px: u32 = pieces.iter().map(|p| p.size.width * p.size.height).sum();
+        assert_eq!(px, 100 * 50 - 20 * 10);
+        for (n, p) in pieces.iter().enumerate() {
+            assert!(p.intersection(&hole).is_zero_sized(), "{p:?}");
+            for q in &pieces[n + 1..] {
+                assert!(p.intersection(q).is_zero_sized(), "{p:?} {q:?}");
+            }
+        }
+        assert_eq!(
+            minus(r, Rectangle::new(Point::new(500, 500), Size::new(5, 5))),
+            vec![r]
+        );
     }
 
     /// Lew 2026-11-15, rule 8a of order 1836: a finished area went white.
@@ -1541,6 +1643,41 @@ mod tests {
             "the upper region's missing tiles cleared the lower one's picture"
         );
         assert!(both.fb == alone.fb, "the lower region shows unchanged");
+    }
+
+    /// Audit of 1836, finding 2 (rule 8a for stand-ins): a region still
+    /// arriving that owes the view's tiles draws its coarser stand-ins
+    /// only where nothing sharper lies drawn under it. A complete z14-15
+    /// region under a z14-15 region with one round written (its z14
+    /// tiles), view at z15: the upper one's z14 stand-ins must neither
+    /// clear nor overdraw the lower one's own z15 tiles, so the frame is
+    /// the lower region's alone.
+    #[test]
+    fn audit_a_region_still_arriving_draws_no_stand_in_over_a_sharper_one_under_it() {
+        use leviculum_map::mercator::{project, LatLon};
+        let dir = tempfile::tempdir().expect("tmp");
+        oltrarno_region(&dir.path().join("auto-lower.lmr"), 14..=15, usize::MAX);
+        let mut painter = Painter::new(Maps::new(Some(dir.path().to_path_buf())));
+        let at = project(LatLon::from_degrees(43.7475, 11.272));
+        let view = Viewport::new(at, 15, 320, 240);
+        let alone = painter.draw(&view, Ink::Colour, Style::SCREEN, 100);
+        assert_eq!(painter.regions().len(), 1, "the lower region is read");
+        assert_eq!(alone.pending, 0, "the lower region is complete");
+        oltrarno_region(&dir.path().join("auto-upper.lmr"), 14..=15, 1);
+        painter.maps().changed();
+        let both = painter.draw(&view, Ink::Colour, Style::SCREEN, 100);
+        assert_eq!(painter.regions().len(), 2, "the upper region is read");
+        assert!(both.pending > 0, "the upper region owes the view's tiles");
+        let differ = both
+            .fb
+            .iter()
+            .zip(alone.fb.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+        assert_eq!(
+            differ, 0,
+            "the upper region's stand-ins changed {differ} pixels of the lower one's picture"
+        );
     }
 
     #[test]
