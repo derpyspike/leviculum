@@ -13,7 +13,8 @@ scripts/check-citations-by-name.py (the guard) on a scratch repository:
   repository and a marked fixture line pass.
 scripts/citation-census.py (the drift census) on the same repository:
   agree, drift, nolabel, each foreign reason, a shortened path the page spells
-  out, the table-row rule, and the `//` comment-block rule; and on this
+  out, the table-row rule, and the `//` comment-block rule (a `cfg(test)`
+  is no test attribute); and on this
   repository's own history, the 64 citations commit 8482638d6 renumbered
   (scripts/citations-control-1908.tsv). A clone without that commit FAILS the
   control, unless LEVICULUM_CITATION_CONTROL_WAIVE is set, which turns the
@@ -328,11 +329,13 @@ def census_controls(repo):
     write(repo, stray,
           "fn first() {}\n\n// other_thing: migrated to Storage trait\nfn second() {}\n\n"
           "struct S {\n    a: u32,\n\n    // b_field: moved away\n    c: u32,\n}\n\n"
-          "// third returns nothing.\nfn third() {}\n")
+          "// third returns nothing.\nfn third() {}\n\n"
+          "// other_name: kept for the tests\n#[cfg(test)]\nfn helper() {}\n")
     write(repo, "docs/src/stray.md", page(
         f"Stray: `second` (`{L(stray, 3)}`).",
         f"Field: `S::c` (`{L(stray, 9)}`).",
-        f"Named: `third` (`{L(stray, 13)}`)."))
+        f"Named: `third` (`{L(stray, 13)}`).",
+        f"Cfg: `helper` (`{L(stray, 16)}`)."))
     write(repo, "docs/src/spelled.md", page(
         f"The file is `{LIB}`.", f"Spelled: `alpha` (`{L('src/lib.rs', 3)}`)."))
     write(repo, "docs/src/foreign.md", page(
@@ -371,6 +374,8 @@ def census_controls(repo):
             v(st, 1).get("verdict") in ("drift", "nolabel"), out)
     control("census: a comment that names its item belongs to it",
             v(st, 2).get("verdict") == "agree", out)
+    control("census: `cfg(test)` is no test attribute: a stray comment above it "
+            "does not join the item", v(st, 3).get("verdict") in ("drift", "nolabel"), out)
     s = "docs/src/spelled.md"
     control("census: a shortened path the page spells out is placed",
             v(s, 0).get("verdict") == "agree" and v(s, 0).get("how") == "spelled", out)
