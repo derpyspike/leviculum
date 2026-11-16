@@ -287,7 +287,8 @@ pub struct TilePoiData {
 pub struct PoiData {
     pub kind: String,
     pub name: Option<Name>,
-    pub min_zoom: u8,
+    /// `None` where the source gave none (1714).
+    pub min_zoom: Option<u8>,
     pub at: [i16; 2],
     pub attrs: Vec<(&'static str, String)>,
 }

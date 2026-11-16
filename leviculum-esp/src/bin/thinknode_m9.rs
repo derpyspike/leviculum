@@ -296,7 +296,7 @@ use loquax_m9::render::Renderer;
 use loquax_m9::splash::{self, Panel as _};
 use loquax_m9::{dump, group, home, screen};
 
-esp_bootloader_esp_idf::esp_app_desc!();
+leviculum_esp::m9_app_desc!();
 
 /// How often the board re-states what it is: the five seconds every
 /// leviculum board uses, so a reader that attaches late still reads it.

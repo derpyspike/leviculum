@@ -1,4 +1,4 @@
-//! `leviculum-map-tool cut | info | render`.
+//! `leviculum-map-tool cut | strip-pois | info | render`.
 
 use std::fs::File;
 use std::io::BufWriter;
@@ -178,6 +178,14 @@ enum Cmd {
         output: PathBuf,
         #[arg(required = true)]
         packs: Vec<PathBuf>,
+    },
+    /// Write a region without its points of interest (1714): a version 5
+    /// file as the version 4 file `cut --pois false` writes, for a board
+    /// whose flash should not pay for them or whose image reads version 4.
+    StripPois {
+        region: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
     },
     /// Print a region's header and per-zoom sizes, after checking it whole.
     Info { region: PathBuf },
@@ -788,6 +796,23 @@ fn cmd_render(path: &Path, out: &Path, at: LatLon, zoom: u8, w: u32, h: u32) -> 
     Ok(())
 }
 
+fn cmd_strip_pois(region: &Path, output: &Path) -> Res<()> {
+    let bytes = std::fs::read(region)?;
+    let stripped = leviculum_map::region::without_pois(&bytes)
+        .map_err(|e| format!("{}: {e:?}", region.display()))?;
+    std::fs::write(output, &stripped)?;
+    let version = |b: &[u8]| u16::from_le_bytes([b[4], b[5]]);
+    println!(
+        "{}: region version {}, {} bytes (from version {}, {} bytes)",
+        output.display(),
+        version(&stripped),
+        stripped.len(),
+        version(&bytes),
+        bytes.len()
+    );
+    Ok(())
+}
+
 fn main() -> Res<()> {
     leviculum_alloc::start();
     match Cli::parse().cmd {
@@ -890,6 +915,7 @@ fn main() -> Res<()> {
             );
             Ok(())
         }
+        Cmd::StripPois { region, output } => cmd_strip_pois(&region, &output),
         Cmd::Info { region } => cmd_info(&region),
         Cmd::Labels { region, zoom } => cmd_labels(&region, zoom),
         Cmd::Render {

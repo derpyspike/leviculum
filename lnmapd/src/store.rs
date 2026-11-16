@@ -51,7 +51,14 @@
 //!     24  u64 total bytes (the assembled file's length)
 //!     32  [32] whole-file sha256
 //!     64  [32] attribution piece sha256
-//!     96  u32 attribution piece length    100 u32 0
+//!     96  u32 attribution piece length
+//!    100  u16 format version: the file's own (a region's LMR version, a
+//!         height file's version); 0 in an index from before 1714
+//!    102  u16 minimum reader version: the oldest reader of that format
+//!         that reads the file (a region's header field from version 5,
+//!         its version before); 0 in an index from before 1714. A client
+//!         skips a pack it cannot read and says so (1714,
+//!         [`crate::client::readable`])
 //!     id bytes, kind bytes  UTF-8
 //!     pieces, in assembly order, 48 bytes each:
 //!      0  [32] sha256   32 u64 offset   40 u32 length
@@ -216,6 +223,12 @@ pub struct Pack {
     pub attribution: [u8; 32],
     /// The attribution piece's length.
     pub attribution_len: u32,
+    /// The file's own format version: a region's LMR version, a height
+    /// file's version (1714); 0 in an index from before 1714.
+    pub format: u16,
+    /// The oldest reader version of that format that reads the file; 0
+    /// in an index from before 1714, where the file's own header decides.
+    pub min_reader: u16,
     /// The pieces, in assembly order (coarse to fine).
     pub pieces: Vec<Piece>,
 }
@@ -312,7 +325,8 @@ impl Index {
             b.extend_from_slice(&pack.whole);
             b.extend_from_slice(&pack.attribution);
             b.extend_from_slice(&pack.attribution_len.to_le_bytes());
-            b.extend_from_slice(&0u32.to_le_bytes());
+            b.extend_from_slice(&pack.format.to_le_bytes());
+            b.extend_from_slice(&pack.min_reader.to_le_bytes());
             b.extend_from_slice(pack.id.as_bytes());
             b.extend_from_slice(pack.kind.as_bytes());
             for piece in &pack.pieces {
@@ -483,6 +497,8 @@ impl Index {
                 whole,
                 attribution,
                 attribution_len,
+                format: u16le(fixed, 100),
+                min_reader: u16le(fixed, 102),
                 pieces,
             });
         }
@@ -689,6 +705,9 @@ struct Layout {
     max_zoom: u8,
     bounds: [i32; 4],
     attribution: String,
+    /// The file's format version and minimum reader version.
+    format: u16,
+    min_reader: u16,
 }
 
 /// A region file: split at zoom boundaries, a prefix ladder.
@@ -707,6 +726,8 @@ fn region_layout(region: &[u8]) -> Result<Layout, StoreError> {
             header.bounds.north,
         ],
         attribution: format!("{}\n{}\n", parsed.attribution(), parsed.notice()),
+        format: parsed.version(),
+        min_reader: parsed.min_reader(),
     })
 }
 
@@ -733,6 +754,8 @@ fn elevation_layout(file: &[u8]) -> Result<Layout, StoreError> {
         max_zoom: directory.tile_zoom(),
         bounds: directory.bounds(),
         attribution: format!("{}\n{}\n", directory.attribution(), directory.notice()),
+        format: leviculum_map::elevation::VERSION,
+        min_reader: leviculum_map::elevation::VERSION,
     })
 }
 
@@ -805,6 +828,8 @@ pub fn add_pack(
         attribution,
         attribution_len: u32::try_from(layout.attribution.len())
             .map_err(|_| StoreError::Field("attribution"))?,
+        format: layout.format,
+        min_reader: layout.min_reader,
         pieces,
     };
 
