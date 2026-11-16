@@ -46,6 +46,10 @@ pub struct MapSetup {
     pub drawings: Vec<Drawing>,
     /// Which of [`MapSetup::drawings`] draws the map now.
     pub drawing: usize,
+    /// Whether the footer offers a finer drawing (1880): the shell started
+    /// safe, over ssh with nothing remembered, and the reader has not
+    /// stepped yet.
+    pub finer_hint: bool,
 }
 
 /// One way the shell can draw the map, as a key and the palette offer it.
@@ -68,6 +72,7 @@ impl Default for MapSetup {
             regions: Vec::new(),
             drawings: Vec::new(),
             drawing: 0,
+            finer_hint: false,
         }
     }
 }

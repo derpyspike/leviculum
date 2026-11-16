@@ -2703,7 +2703,7 @@ async fn the_map_shows_the_pins_on_the_region_and_the_outline_in_braille_and_hal
         assert_eq!(
             line,
             format!(
-                "GRAPHICS backend={graphics} reason=forced detected=none between=none cell={} zooms=0-20 \
+                "GRAPHICS backend={graphics} reason=forced detected=none between=none ssh=no widths=none cell={} zooms=0-20 \
                  context=local:unknown",
                 match graphics {
                     "braille" => "2x4",
@@ -2846,7 +2846,7 @@ async fn the_map_drawing_cycles_through_the_text_techniques_in(lang: &str) -> St
         map_session_of("mapcycle", &format!("{lang}{MAP_CYCLE_SCRIPT}"), "octant").await;
     assert!(
         !en || log.contains(
-            "GRAPHICS backend=octant reason=forced detected=none between=none cell=2x4 zooms=0-20 \
+            "GRAPHICS backend=octant reason=forced detected=none between=none ssh=no widths=none cell=2x4 zooms=0-20 \
              context=local:unknown"
         ),
         "{log}"

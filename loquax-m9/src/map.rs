@@ -142,6 +142,7 @@ pub fn setup_of(headers: &[Header]) -> MapSetup {
         regions: headers.to_vec(),
         drawings: Vec::new(),
         drawing: 0,
+        finer_hint: false,
     }
 }
 

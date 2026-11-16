@@ -1403,6 +1403,13 @@ remembered. The techniques and the measurements behind their order are
   Termux; `braille-thin` otherwise, at 16 colours with each class in its
   own of the sixteen (`leviculum_mapfill::style::ansi16`); plain braille
   without colour. Half-blocks and the mosaic are no rung, only a choice.
+  Over ssh (1880) block elements are not taken either: the far terminal's
+  font is unknown, and Termux's drew them as boxes. A protocol it answered
+  for and octants it draws itself still are; a cursor position report after
+  an octant and a braille cell catches a width table that disagrees, never
+  a missing glyph. The memory's context carries a hash of the ssh client,
+  the footer offers `T finer drawing` until the reader steps, and
+  `loquax tui --graphics-test` prints every way's glyphs in a labelled row.
   tmux now keeps the pictures off the top: it passes them only where its
   configuration allows.
 - `t` and `T` (and `F2`) cycle every way in the ladder's order, the title

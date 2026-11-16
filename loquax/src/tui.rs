@@ -209,7 +209,8 @@ fn log_graphics(painter: &map::MapPainter, chosen: &map::Chosen, facts: &map::Fa
     ];
     let between: Vec<&str> = names.iter().filter(|(b, _)| *b).map(|(_, n)| *n).collect();
     tracing::info!(
-        "GRAPHICS backend={} reason={} detected={} between={} cell={}x{} zooms={}-{} context={}",
+        "GRAPHICS backend={} reason={} detected={} between={} ssh={} widths={} cell={}x{} \
+         zooms={}-{} context={}",
         painter.graphics().name(),
         chosen.reason(),
         facts
@@ -219,12 +220,41 @@ fn log_graphics(painter: &map::MapPainter, chosen: &map::Chosen, facts: &map::Fa
             true => "none".to_string(),
             false => between.join(","),
         },
+        if facts.ssh.is_some() { "yes" } else { "no" },
+        facts.widths.words(),
         setup.cell_px.0,
         setup.cell_px.1,
         setup.zooms.0,
         setup.zooms.1,
         facts.context()
     );
+}
+
+/// How far the cursor moves for each of [`map::Widths::GLYPHS`], read from
+/// the terminal's cursor position report (1880): each glyph printed at the
+/// top left of the alternate screen, which the first frame overwrites, and
+/// the line cleared after. A terminal that does not answer the first
+/// report within crossterm's wait is asked nothing more and measures
+/// nothing. A glyph the font lacks still advances one cell, so this finds
+/// a width table that disagrees, never a missing glyph.
+fn probe_widths() -> map::Widths {
+    use crossterm::cursor::{position, MoveTo};
+    use crossterm::style::Print;
+    use crossterm::terminal::{Clear, ClearType};
+    let mut out = std::io::stdout();
+    let mut answers = Vec::new();
+    for glyph in map::Widths::GLYPHS {
+        let answer = crossterm::execute!(out, MoveTo(0, 0), Print(glyph))
+            .ok()
+            .and_then(|()| position().ok())
+            .map(|(col, _)| col);
+        answers.push(answer);
+        if answer.is_none() {
+            break;
+        }
+    }
+    let _ = crossterm::execute!(out, MoveTo(0, 0), Clear(ClearType::CurrentLine));
+    map::Widths::of(&answers)
 }
 
 /// The real terminal: keys in, frames out, until the reader quits.
@@ -288,7 +318,12 @@ async fn run_terminal(
         false => None,
     };
     let detected = picker.as_ref().map(Picker::protocol_type);
-    let facts = map::Facts::read(detected, shell.model.tier, Between::detect());
+    let mut facts = map::Facts::read(detected, shell.model.tier, Between::detect());
+    // Over ssh the far terminal is unknown: ask it how far the cursor goes
+    // for the glyphs the ladder may take (1880). Only under `auto`.
+    if facts.ssh.is_some() && graphics == map::GraphicsFlag::Auto {
+        facts.widths = probe_widths();
+    }
     // The way remembered for this terminal wins over the ladder, unless it
     // cannot work here; then the ladder's, said once (1093).
     let context = facts.context();
@@ -303,6 +338,8 @@ async fn run_terminal(
         shell.apply(UiEvent::Notice(line));
     }
     let mut memory = map::Memory::new(context, held, chosen.graphics);
+    // The footer's `T finer drawing` until the reader steps (1880).
+    let finer = map::finer_hint(graphics, held, &chosen);
     // The map is drawn on its own thread: a key is read while the last
     // one's view is painted and encoded (1075).
     // Read once: the painter is handed it rather than reading it itself.
@@ -311,7 +348,10 @@ async fn run_terminal(
         .behind_tmux(tmux)
         .threaded();
     log_graphics(&painter, &chosen, &facts);
-    shell.apply(UiEvent::MapSetup(map::setup_of(&painter, &facts)));
+    shell.apply(UiEvent::MapSetup(loquax::ui::map::MapSetup {
+        finer_hint: finer,
+        ..map::setup_of(&painter, &facts)
+    }));
     let mut map_open = false;
     let log_input = input_log_on(std::env::var_os(INPUT_LOG_VAR).as_deref());
     if log_input {
@@ -369,6 +409,7 @@ async fn run_terminal(
                         .threaded();
                     memory.chose(next);
                     tracing::info!("GRAPHICS backend={} reason=chosen", next.name());
+                    // The setup below carries no `finer_hint`: answered.
                     shell.apply(UiEvent::MapSetup(map::setup_of(&painter, &facts)));
                 }
                 continue;

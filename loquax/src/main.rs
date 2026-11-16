@@ -470,6 +470,14 @@ struct TuiArgs {
     #[arg(long, value_enum, default_value_t = tui::map::GraphicsFlag::Auto)]
     graphics: tui::map::GraphicsFlag,
 
+    /// Print a labelled row of glyphs for every way of drawing the map,
+    /// best first, and exit: the rows that show boxes are ways this
+    /// terminal's font cannot draw. Pick the best clean one on the map with
+    /// t / T; it is remembered for this terminal (and, over ssh, for this
+    /// client).
+    #[arg(long)]
+    graphics_test: bool,
+
     /// Run a key script instead of reading the keyboard, and write every
     /// `frame` it asks for to --frames. For tests and demos.
     #[arg(long, value_name = "FILE")]
@@ -1308,6 +1316,11 @@ async fn run_tui(args: TuiArgs) -> ExitCode {
     let Some(size) = size else {
         return usage(format!("--size {}: want WxH, at least 20x8", args.size));
     };
+    if args.graphics_test {
+        let colour = !args.no_color && std::env::var_os("NO_COLOR").is_none();
+        print!("{}", tui::map::graphics_test_page(colour));
+        return ExitCode::SUCCESS;
+    }
     if args.script.is_none() {
         first_start_import();
     }

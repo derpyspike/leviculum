@@ -5072,6 +5072,8 @@ fn map_key<B: InputBuffer>(model: &mut UiModel<B>, cmd: keys::MapCmd) -> Vec<UiE
         }
         MapCmd::Drawing(forward) => {
             let n = setup.drawings.len();
+            // The reader stepped: the footer's offer is answered (1880).
+            model.map_setup.finer_hint = false;
             if n > 0 {
                 let next = match forward {
                     true => (setup.drawing + 1) % n,
@@ -9228,7 +9230,18 @@ fn footer<B>(model: &UiModel<B>) -> Vec<FooterItem<FooterAct>> {
             FooterItem::action("Esc", "close", FooterAct::PaletteClose),
         ];
     }
-    keys::footer(keys::panes_of(model.focus), model.ctx(), FooterAct::Row)
+    let mut items = keys::footer(keys::panes_of(model.focus), model.ctx(), FooterAct::Row);
+    // Over ssh the map started safe, the far terminal's font unknown: one
+    // button to step up to a finer drawing, first so a narrow footer keeps
+    // it (1880). `T` is the step towards the finer ways.
+    if model.focus == Pane::Map && model.map.is_some() && model.map_setup.finer_hint {
+        let finer = Action::Map(keys::MapCmd::Drawing(false));
+        items.insert(
+            0,
+            FooterItem::action("T", "finer drawing", FooterAct::Row(Some(finer))),
+        );
+    }
+    items
 }
 
 /// The help overlay's text, every row of the keymap ([`keys::help_groups`]).
@@ -18117,6 +18130,50 @@ pub(crate) mod tests {
             ..model.map_setup.clone()
         };
         update(model, UiEvent::MapSetup(setup));
+    }
+
+    /// Over ssh with nothing remembered the shell offers a finer drawing in
+    /// the map's footer, first; a step answers it, and outside the map, or
+    /// without the shell's offer, there is no such button (1880).
+    #[test]
+    fn the_map_footer_offers_a_finer_drawing_until_the_reader_steps() {
+        let footer = |model: &UiModel<Field>| -> Vec<String> {
+            view(model)
+                .footer
+                .iter()
+                .map(|item| format!("{} {}", item.key, item.label))
+                .collect()
+        };
+        let mut model = mapped();
+        offered(&mut model, 2);
+        let setup = map::MapSetup {
+            finer_hint: true,
+            ..model.map_setup.clone()
+        };
+        update(&mut model, UiEvent::MapSetup(setup));
+        assert!(
+            !footer(&model).contains(&"T finer drawing".to_string()),
+            "no map open"
+        );
+        update(&mut model, key(KeyCode::Char('M')));
+        let open = footer(&model);
+        assert_eq!(
+            open.first().map(String::as_str),
+            Some("T finer drawing"),
+            "{open:?}"
+        );
+        assert_eq!(
+            update(&mut model, key(KeyCode::Char('T'))),
+            vec![UiEffect::MapDrawing(1)]
+        );
+        assert!(
+            !footer(&model).contains(&"T finer drawing".to_string()),
+            "answered"
+        );
+        let mut plain = mapped();
+        offered(&mut plain, 2);
+        update(&mut plain, key(KeyCode::Char('M')));
+        assert!(!footer(&plain).contains(&"T finer drawing".to_string()));
     }
 
     /// `t` asks the shell for the next drawing, `T` and the wrap for the
