@@ -44,6 +44,7 @@ pub mod error;
 #[cfg(test)]
 mod event_catalog_completeness;
 pub mod event_log;
+pub mod fd_limit;
 pub mod file_identity_store;
 pub(crate) mod file_known_destinations_store;
 pub mod file_lock;
@@ -89,6 +90,7 @@ pub mod test_support;
 pub mod user;
 
 // Re-export commonly used core types for the high-level API
+// ANCHOR: root-reexports
 pub use leviculum_core::node::{DeliveryError, EventClass, LinkStats, NodeEvent};
 pub use leviculum_core::transport::{InterfaceId, PathTableExport};
 pub use leviculum_core::{
@@ -118,6 +120,7 @@ pub use file_peer_store::FilePeerStore;
 pub use file_propagation_store::{FilePropagationStore, StoreHeapCensus};
 pub use file_ratchet_store::dest_ratchet_keys_path;
 pub use reticulum::Reticulum;
+// ANCHOR_END: root-reexports
 /// Client for the shared-instance RPC socket (`rnstatus`/`rnpath` protocol).
 /// Used by `lnstest diag` to query a running `lnsd`/`rnsd`.
 pub use rpc::{
