@@ -667,7 +667,7 @@ terminal and window get no tab (the second question, answered no for now).
   lnomad-core-no-std` still build both for the firmware triples. The tab
   is `Browse` (`loquax/src/ui/browse.rs:38`): whether the host has the tab
   (`enabled`, set by the phone's session from the config, on unless it
-  says off, at `loquax-android/src/session.rs:2423`), whether it is in front, and
+  says off, at `loquax-android/src/session.rs:2425`), whether it is in front, and
   lnomad's `Model`, marked `hosted`. `TabId::Browse`
   (`loquax/src/ui/scene.rs:82`) joins Chats and Map where enabled, and the
   scene carries lnomad's scene as `browse` (`loquax/src/ui/scene.rs:1066`;
@@ -683,7 +683,7 @@ terminal and window get no tab (the second question, answered no for now).
   address field as they are. An announce is kept while the tab is off.
 - **Chat and page hand over.** A NomadNet page link in a chat
   (`<hash>:/page/...`) opens the tab at that page where the host has the
-  tab (`loquax/src/ui.rs:5585`) and is copied for lnomad where not. A
+  tab (`loquax/src/ui.rs:5668`) and is copied for lnomad where not. A
   page's `lxmf@` link raises lnomad's new `Effect::Write`
   (`lnomad/src/app/model.rs:456`) when hosted
   (`lnomad/src/app/event.rs:1658`), and Loquax opens that chat for
@@ -768,12 +768,12 @@ two).** Slice 3's network seam: one node, lent, not a second one.
 - **The phone's turn.** `loquax-android/src/browse_fetch.rs` is the task
   the terminal's loop is on a desktop: one fetch in flight, a newer one or
   a cancel superseding it, lnomad's discovery drain beside it. The
-  session's pump (`browse`, `loquax-android/src/session.rs:2552`) hands it
+  session's pump (`browse`, `loquax-android/src/session.rs:2555`) hands it
   the owed effects and folds back what it says: `BrowseEvent::FailedText`,
   `Identifying`, `Downloaded` and `DownloadFailed` are new
   (`loquax/src/ui/browse.rs:270`). A download is kept under the app's
   files as a bubble's file is, `files/browse/` (`keep_download`,
-  `loquax-android/src/session.rs:2614`), and the clipboard text and the
+  `loquax-android/src/session.rs:2617`), and the clipboard text and the
   file go to Java once with the next screen; `BrowsePane` writes the
   clipboard and opens the file, or the share sheet takes it. Announces
   reach the list from the session's start, the tab shown or not.
@@ -781,7 +781,7 @@ two).** Slice 3's network seam: one node, lent, not a second one.
   key named (`lnomad/src/app/event.rs:370`, English and German).
 - **On by default since 1618.** The browser is Explore's way in: on
   unless the config's `browse_tab` says off
-  (`loquax-android/src/session.rs:2423`). It was held back, off in the
+  (`loquax-android/src/session.rs:2425`). It was held back, off in the
   APK, until the fetch had been seen on a device; the walk of 17024c3a
   found Explore listing every page and opening none.
 - **Measured.** From the tap on a node's row to the first screen that
@@ -835,9 +835,9 @@ as the phone, on by default since 1618.
   the bookmarks and pins to their files. A write and a quit stay the
   core's (`effects_of`).
 - **The keys.** While the tab is in front the core hands keys and the
-  mouse to the browser (`loquax/src/ui.rs:4003`, `loquax/src/ui.rs:4058`),
+  mouse to the browser (`loquax/src/ui.rs:4086`, `loquax/src/ui.rs:4141`),
   so lnomad's whole key table works, its `q` leaves the tab, and the
-  terminal's screen size is the page's (`loquax/src/ui.rs:4056`). `B` and
+  terminal's screen size is the page's (`loquax/src/ui.rs:4139`). `B` and
   the palette's `browse` bring the tab to the front
   (`loquax/src/keys.rs:646`, `browse::open`, `loquax/src/ui/browse.rs:453`);
   with the tab off they say how to switch it on.
@@ -847,17 +847,17 @@ as the phone, on by default since 1618.
   for no pictures (`no_images`): the map owns the terminal's picture
   protocol, and two pickers on one terminal is a later question.
 - **The window** draws it with lnomad's window view beside the rail
-  (`browse_view`, `loquax/src/gui.rs:3379`; `lnomad::gui::view`,
+  (`browse_view`, `loquax/src/gui.rs:3386`; `lnomad::gui::view`,
   `lnomad/src/gui.rs:681`). The pictures are lnomad's window code too:
   `Pictures` (`lnomad/src/gui.rs:272`), moved out of lnomad's `Window`
   so a host keeps it beside a model it hosts; the shell holds it and the
   window draws from it. What lnomad's view says is folded as lnomad's
-  window folds it (`App::browse`, `loquax/src/gui.rs:2351`, with
+  window folds it (`App::browse`, `loquax/src/gui.rs:2374`, with
   `wheel_mice` and `pointer_mouse`, `lnomad/src/gui.rs:433` and
   `lnomad/src/gui.rs:433`, and `type_address`,
   `lnomad/src/app/event.rs:546`, which lnomad's own window now calls as
   well). The window tells the browser its light or dark and the page's
-  cells (`browse_sync`, `loquax/src/gui.rs:2237`). The tab's icon
+  cells (`browse_sync`, `loquax/src/gui.rs:2260`). The tab's icon
   borrows the search glass; the shared icons have no globe yet.
 - **What the standalone has that the tab lacked (1337's list), and what
   the desktop tab has now.** Inline pictures: the window, yes; the
