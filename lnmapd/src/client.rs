@@ -42,6 +42,21 @@ pub enum FetchError {
         /// How many bytes are assembled.
         assembled: u64,
     },
+    /// The pack is a region this program cannot read (1714): its minimum
+    /// reader version is newer than the region reader built in. Said
+    /// before a piece is asked for; the words are the user's.
+    #[error(
+        "the map {id} is region version {format}, which this program cannot read (it reads \
+         up to version {reads}): update it to load this map"
+    )]
+    TooNew {
+        /// The pack id.
+        id: String,
+        /// The region version the pack says.
+        format: u16,
+        /// The newest region version this program reads.
+        reads: u16,
+    },
     /// The pack is not a prefix ladder: only a vectors pack's pieces
     /// complete zooms in order. A height pack's blocks stand alone and
     /// are fetched by block, not by prefix.
@@ -58,6 +73,23 @@ pub enum FetchError {
 pub trait PieceFetcher {
     /// The bytes of the piece named `id` (64 hex characters).
     fn fetch_piece(&mut self, id: &str) -> Result<Vec<u8>, FetchError>;
+}
+
+/// Whether this program reads the region `pack` holds (1714): an error
+/// in the user's words for a pack whose minimum reader version is newer
+/// than [`leviculum_map::region::VERSION`]. A pack from an index before
+/// 1714 says 0 and is read; the file's own header then decides. A client
+/// choosing among packs skips the ones this refuses and shows the words.
+pub fn readable(pack: &Pack) -> Result<(), FetchError> {
+    let reads = leviculum_map::region::VERSION;
+    match pack.kind == KIND_VECTORS && pack.min_reader > reads {
+        true => Err(FetchError::TooNew {
+            id: pack.id.clone(),
+            format: pack.format,
+            reads,
+        }),
+        false => Ok(()),
+    }
 }
 
 /// Elapsed time since the fetch began, injectable for tests.
@@ -107,7 +139,8 @@ pub struct Fetched {
 ///
 /// Only a [`KIND_VECTORS`] pack is a prefix ladder whose piece zoom
 /// byte means "deepest zoom complete"; any other kind is refused with
-/// [`FetchError::NotAPrefixLadder`] before a piece is asked for.
+/// [`FetchError::NotAPrefixLadder`] before a piece is asked for, and so
+/// is a region this program cannot read ([`readable`]).
 pub fn fetch_prefix<F: PieceFetcher, C: Clock>(
     fetcher: &mut F,
     clock: &C,
@@ -121,6 +154,7 @@ pub fn fetch_prefix<F: PieceFetcher, C: Clock>(
             kind: pack.kind.clone(),
         });
     }
+    readable(pack)?;
     let mut fetched = Fetched {
         pieces: 0,
         complete: false,

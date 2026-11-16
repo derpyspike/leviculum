@@ -181,3 +181,59 @@ fn a_tampered_piece_fails_the_fetch_and_keeps_the_good_prefix() {
     );
     Region::from_bytes(&out).expect("the good prefix is still a readable region");
 }
+
+/// 1714: a region newer than this program reads is skipped before a
+/// piece is asked for, in words the user can act on; the pack the index
+/// wrote for the same file says its own version and is fetched.
+#[test]
+fn a_region_newer_than_the_reader_is_skipped_and_said() {
+    let (pack, mut fetcher, clock) = fixture(1_000_000);
+    let reads = leviculum_map::region::VERSION;
+    let region = Region::from_bytes(&common::grunewald_region())
+        .map(|r| (r.version(), r.min_reader()))
+        .expect("the region");
+    assert_eq!((pack.format, pack.min_reader), region);
+    assert!(lnmapd::client::readable(&pack).is_ok());
+
+    let newer = Pack {
+        format: reads + 1,
+        min_reader: reads + 1,
+        ..pack.clone()
+    };
+    let mut out = Vec::new();
+    let err = fetch_prefix(
+        &mut fetcher,
+        &clock,
+        &newer,
+        Duration::from_secs(9),
+        &mut out,
+    )
+    .expect_err("skipped");
+    assert!(matches!(err, FetchError::TooNew { .. }), "{err:?}");
+    let said = err.to_string();
+    assert!(
+        said.contains(&format!("region version {}", reads + 1))
+            && said.contains(&format!("reads up to version {reads}"))
+            && said.contains("update"),
+        "{said}"
+    );
+    assert!(fetcher.served.is_empty() && out.is_empty());
+
+    // A newer format a reader of this version still reads (minimum reader
+    // version unchanged) is fetched, as is a pack from an index before
+    // 1714, which says 0.
+    for readable in [
+        Pack {
+            format: reads + 1,
+            min_reader: reads,
+            ..pack.clone()
+        },
+        Pack {
+            format: 0,
+            min_reader: 0,
+            ..pack.clone()
+        },
+    ] {
+        assert!(lnmapd::client::readable(&readable).is_ok());
+    }
+}
