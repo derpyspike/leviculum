@@ -1476,8 +1476,21 @@ impl leviculum_core::traits::Storage for Storage {
         self.inner.local_path_owner(dest_hash)
     }
 
-    fn note_unproven_local_path_expiry(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> u8 {
-        self.inner.note_unproven_local_path_expiry(dest_hash)
+    fn note_unproven_local_path_expiry(
+        &mut self,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+        ingress: Option<leviculum_core::storage_types::LinkIngress>,
+    ) -> u8 {
+        self.inner
+            .note_unproven_local_path_expiry(dest_hash, ingress)
+    }
+
+    fn note_local_path_proof(
+        &mut self,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+        ingress: leviculum_core::storage_types::LinkIngress,
+    ) -> bool {
+        self.inner.note_local_path_proof(dest_hash, ingress)
     }
 
     fn clear_local_path_owner(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) {
@@ -1616,12 +1629,20 @@ mod tests {
 
         // Order 1905: the unproven-expiry count is delegated too, and a new
         // owner record starts it again.
-        assert_eq!(s.note_unproven_local_path_expiry(&a), u8::MAX);
+        assert_eq!(s.note_unproven_local_path_expiry(&a, None), u8::MAX);
         s.set_local_path_owner(a, 3);
-        assert_eq!(s.note_unproven_local_path_expiry(&a), 1);
-        assert_eq!(s.note_unproven_local_path_expiry(&a), 2);
+        assert_eq!(s.note_unproven_local_path_expiry(&a, None), 1);
+        assert_eq!(s.note_unproven_local_path_expiry(&a, None), 2);
         s.set_local_path_owner(a, 3);
-        assert_eq!(s.note_unproven_local_path_expiry(&a), 1);
+        assert_eq!(s.note_unproven_local_path_expiry(&a, None), 1);
+
+        // Order 1914: a proof restarts the count only from the ingress of
+        // the last counted dead request, and that is delegated too.
+        assert_eq!(s.note_unproven_local_path_expiry(&a, Some((7, None))), 2);
+        assert!(!s.note_local_path_proof(&a, (8, None)));
+        assert_eq!(s.note_unproven_local_path_expiry(&a, Some((7, None))), 3);
+        assert!(s.note_local_path_proof(&a, (7, None)));
+        assert_eq!(s.note_unproven_local_path_expiry(&a, None), 1);
     }
 
     /// Codeberg #336: the names come off the filesystem, so `hex_decode`

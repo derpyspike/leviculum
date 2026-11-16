@@ -239,8 +239,15 @@ async fn tcp_client_with_an_unresolvable_target_is_present_and_down() {
         .expect("the node must start with a TCPClient name that does not resolve");
 
     // Three attempts: at start, then two base-interval waits (1 s +/-20 %).
+    // Wait for the third TCP_CONNECT_FAILED line, not only the third lookup:
+    // the resolver counts the call before the interface logs its failure
+    // (interfaces/tcp.rs, the `stage=resolve` arm), so a dump read the moment
+    // the count reached three could miss the last line under load.
     let deadline = tokio::time::Instant::now() + Duration::from_millis(3500);
-    while calls.load(Ordering::SeqCst) < 3 && tokio::time::Instant::now() < deadline {
+    while (calls.load(Ordering::SeqCst) < 3
+        || connect_failures(&evlog.dump(), UNRESOLVABLE).len() < 3)
+        && tokio::time::Instant::now() < deadline
+    {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
