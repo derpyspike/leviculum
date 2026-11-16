@@ -537,6 +537,14 @@ struct Cli {
     #[arg(long, value_name = "FILE.lmr", requires = "port")]
     region: Vec<PathBuf>,
 
+    /// Write the --region files without their points of interest: a
+    /// region of version 5 goes to the board as the version 4 file
+    /// `leviculum-map-tool strip-pois` writes. The M9 draws no points of
+    /// interest yet, and they cost its flash; an image from before the
+    /// version 5 reader needs it.
+    #[arg(long, requires = "region")]
+    no_pois: bool,
+
     /// List the regions in the map area of the ThinkNode M9 on --port,
     /// then exit.
     #[arg(long, requires = "port")]
@@ -866,7 +874,7 @@ fn run(cli: &Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
     }
 
     if let (false, Some(port)) = (cli.region.is_empty(), &cli.port) {
-        let said = lnflash::maps::write(port, &cli.region)?;
+        let said = lnflash::maps::write(port, &cli.region, cli.no_pois)?;
         ui.say(&said);
         return Ok(ExitCode::SUCCESS);
     }
@@ -1533,6 +1541,13 @@ mod tests {
                 .regions
         );
         assert!(parse(&["--regions", "--region", "a.lmr", "--port", "/dev/ttyUSB0"]).is_err());
+        // 1714: --no-pois goes with --region alone.
+        assert!(parse(&["--no-pois", "--port", "/dev/ttyUSB0"]).is_err());
+        assert!(
+            parse(&["--region", "a.lmr", "--no-pois", "--port", "/dev/ttyUSB0"])
+                .expect("no pois")
+                .no_pois
+        );
         assert!(parse(&[
             "--home",
             "lqxh1",

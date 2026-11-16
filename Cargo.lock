@@ -3933,6 +3933,7 @@ dependencies = [
  "leviculum-alloc",
  "leviculum-core",
  "leviculum-map",
+ "leviculum-mapcut",
  "libc",
  "serde",
  "sha2",

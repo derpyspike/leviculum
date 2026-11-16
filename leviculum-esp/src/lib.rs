@@ -1367,3 +1367,28 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         core::hint::spin_loop();
     }
 }
+
+/// The ThinkNode M9 image's app descriptor (1714): the descriptor
+/// `esp_bootloader_esp_idf::esp_app_desc!()` writes, its version naming
+/// the newest map region version the image reads (`0.1.7+lmr5`). lnflash
+/// reads it from the board before it writes regions and refuses a region
+/// the image would leave off the map. The number is
+/// `leviculum_map::region::VERSION`; lnflash's
+/// `the_m9_image_names_the_region_version_its_reader_reads` holds the two
+/// together. Invoked once, by the image's binary.
+#[macro_export]
+macro_rules! m9_app_desc {
+    () => {
+        esp_bootloader_esp_idf::esp_app_desc!(
+            concat!(env!("CARGO_PKG_VERSION"), "+lmr5"),
+            env!("CARGO_PKG_NAME"),
+            esp_bootloader_esp_idf::BUILD_TIME,
+            esp_bootloader_esp_idf::BUILD_DATE,
+            esp_bootloader_esp_idf::ESP_IDF_COMPATIBLE_VERSION,
+            esp_bootloader_esp_idf::MMU_PAGE_SIZE,
+            0,
+            u16::MAX,
+            esp_bootloader_esp_idf::SECURE_VERSION
+        );
+    };
+}
