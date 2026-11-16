@@ -151,11 +151,7 @@ cannot read yet.
 
 **O5, the LoRa cadence for the Mailbox's announces, not built.** The
 Mailbox announces at start and every 360 minutes on every interface,
-`ANNOUNCE_EVERY` (`loquax/src/home/daemon.rs:74`), whatever moves. On a
-shared instance it announces every 30 minutes instead,
-`ANNOUNCE_EVERY_ON_SHARED`, half of lnsd's `LOCAL_EMISSION_HOLD_MS`: lnsd
-keeps the home's path on the box only while its emission is younger than
-that hold (`docs/src/protocol-notes/announce-dedup-and-path-replacement.md`).
+`ANNOUNCE_EVERY` (`loquax/src/home/daemon.rs:74`), whatever moves.
 
 ## M6. Every Loquax is a home; an external Mailbox is a second one
 

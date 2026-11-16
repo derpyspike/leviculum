@@ -5,8 +5,7 @@
 //! shared instance, and no screen. It
 //!
 //! - receives as the messenger does: the delivery destination of the home
-//!   identity, announced at start and every [`ANNOUNCE_EVERY`] (every
-//!   [`ANNOUNCE_EVERY_ON_SHARED`] on a shared instance), so senders
+//!   identity, announced at start and every [`ANNOUNCE_EVERY`], so senders
 //!   deliver DIRECT and get their proof;
 //! - archives every received message, packed as it came, under a sequence
 //!   ([`crate::store::Store::archive_append`]), within the configured cap,
@@ -94,18 +93,6 @@ pub const ANNOUNCE_EVERY_AFTER_MOVE: Duration = Duration::from_secs(30 * 60);
 /// 5.2). At 585 ms an announce at SF8 that is 0.016 % of the hour.
 pub const GROUP_ANNOUNCE_EVERY: Duration = Duration::from_secs(60 * 60);
 
-/// How often the home announces while it runs on a shared instance (lnsd
-/// beside it, the `Shared` upstream): half of
-/// [`LOCAL_EMISSION_HOLD_MS`](leviculum_core::transport::LOCAL_EMISSION_HOLD_MS).
-/// lnsd keeps a local client's hops-0 path from the unresponsive mark only
-/// while its emission is younger than that hold; at the six-hour
-/// [`ANNOUNCE_EVERY`] a phone's dead link request could move the home's
-/// path off the box for most of the interval (miauhaus, 2026-11-15, two
-/// hours). Every 30 minutes is the cadence [`ANNOUNCE_EVERY_AFTER_MOVE`]
-/// already argues for: 48 announces of about 200 bytes a day, 0.9 bit/s.
-pub const ANNOUNCE_EVERY_ON_SHARED: Duration =
-    Duration::from_millis(leviculum_core::transport::LOCAL_EMISSION_HOLD_MS / 2);
-
 /// How long the shorter cadence lasts after a move.
 pub const AFTER_MOVE: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -116,18 +103,6 @@ pub fn announce_period(moved_at: Option<i64>, now: i64) -> Duration {
     match moved_at {
         Some(at) if (0..window).contains(&now.saturating_sub(at)) => ANNOUNCE_EVERY_AFTER_MOVE,
         _ => ANNOUNCE_EVERY,
-    }
-}
-
-/// The home's announce interval: [`announce_period`], and at most
-/// [`ANNOUNCE_EVERY_ON_SHARED`] when `on_shared`, so lnsd's hold of the
-/// home's path never runs out between two announces.
-pub fn home_announce_period(moved_at: Option<i64>, now: i64, on_shared: bool) -> Duration {
-    let period = announce_period(moved_at, now);
-    if on_shared {
-        period.min(ANNOUNCE_EVERY_ON_SHARED)
-    } else {
-        period
     }
 }
 
@@ -402,9 +377,6 @@ pub async fn run(options: DaemonOptions) -> Result<(), String> {
     let role = Role::Home {
         requests: requests_tx,
     };
-    // On a shared instance lnsd holds the home's path only while its
-    // emission is young (`home_announce_period`).
-    let on_shared = matches!(upstream, DaemonUpstream::Shared { .. });
     let (instance, attached, mailbox) = match upstream {
         DaemonUpstream::Shared {
             instance,
@@ -583,8 +555,7 @@ pub async fn run(options: DaemonOptions) -> Result<(), String> {
             ANNOUNCE_EVERY_AFTER_MOVE.as_secs() / 60
         );
     }
-    let mut next_announce =
-        tokio::time::Instant::now() + home_announce_period(moved_at, unix_now(), on_shared);
+    let mut next_announce = tokio::time::Instant::now() + announce_period(moved_at, unix_now());
     // Each group announced with its engine's registration; the next ones
     // on the groups' own hour (1307 G2).
     let mut next_group_announce = tokio::time::Instant::now() + GROUP_ANNOUNCE_EVERY;
@@ -1030,8 +1001,7 @@ pub async fn run(options: DaemonOptions) -> Result<(), String> {
                 }
             }
             _ = tokio::time::sleep_until(next_announce) => {
-                next_announce = tokio::time::Instant::now()
-                    + home_announce_period(moved_at, unix_now(), on_shared);
+                next_announce = tokio::time::Instant::now() + announce_period(moved_at, unix_now());
                 if attached.outbox.submit(Command::Announce).is_err() {
                     break Err("the message engine stopped".to_string());
                 }
@@ -2868,24 +2838,6 @@ mod tests {
         );
         assert_eq!(announce_period(Some(at), at + 86_400), ANNOUNCE_EVERY);
         assert_eq!(announce_period(Some(at), at - 10), ANNOUNCE_EVERY);
-    }
-
-    /// Reviewer decision 2026-11-16: on a shared instance lnsd keeps the
-    /// home's hops-0 path from the unresponsive mark only while the
-    /// emission is younger than `LOCAL_EMISSION_HOLD_MS`, so the home
-    /// announces at least twice per hold there; in its own mesh process
-    /// the cadence is unchanged.
-    #[test]
-    fn on_a_shared_instance_the_home_announces_twice_per_hold() {
-        let at = 1_793_000_000;
-        let hold = Duration::from_millis(leviculum_core::transport::LOCAL_EMISSION_HOLD_MS);
-        assert_eq!(home_announce_period(None, at, true), hold / 2);
-        assert_eq!(home_announce_period(Some(at), at, true), hold / 2);
-        assert_eq!(home_announce_period(None, at, false), ANNOUNCE_EVERY);
-        assert_eq!(
-            home_announce_period(Some(at), at, false),
-            ANNOUNCE_EVERY_AFTER_MOVE
-        );
     }
 
     /// 1331: the router ending a direct leg nobody answered logs the line

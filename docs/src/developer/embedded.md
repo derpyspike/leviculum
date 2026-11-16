@@ -30,7 +30,7 @@ your own allocator. The reference firmware `leviculum-nrf` targets
 ## The sans-IO contract
 
 The core is a state machine with exactly three ways in, and one way out. The way
-out is always a `TickOutput` (`leviculum-core/src/transport.rs:656`), carrying
+out is always a `TickOutput` (`leviculum-core/src/transport.rs:645`), carrying
 `actions` to perform, `events` that occurred, and `next_deadline_ms`, the time at
 which you must next tick the timer. It is `#[must_use]`: dropping it loses
 outbound packets and events.
@@ -126,7 +126,7 @@ Three things to notice:
 3. **`dispatch_actions` does the routing.** Rather than matching on each `Action`
    yourself, hand the whole `actions` vec plus your `&mut dyn Interface` slice
    (or a slice of your own interface type, through `AsInterface`) to the
-   generic `dispatch_actions` (`leviculum-core/src/transport.rs:839`). Broadcast
+   generic `dispatch_actions` (`leviculum-core/src/transport.rs:828`). Broadcast
    exclusion, interface selection, and IFAC wrapping live in core, so every
    driver gets them for free. Bind what it returns: the `DispatchResult` is
    `#[must_use]` because dropping it discards the retries the core asked for,
@@ -248,7 +248,7 @@ Key-value persistence for the path table, link table, announce caches,
 identities, ratchets, and dedup hashes (`leviculum-core/src/traits.rs:610`). It
 is a large trait; you do not write it from scratch:
 
-- `NoStorage` (`leviculum-core/src/traits.rs:1101`) — zero-sized, every lookup
+- `NoStorage` (`leviculum-core/src/traits.rs:1072`) — zero-sized, every lookup
   returns nothing. Use it for a stateless node or a smoke test.
 - `EmbeddedStorage` (`leviculum-core/src/embedded_storage.rs:91`,
   `EmbeddedStorage::new()` at `:344`) — `heapless`-backed, fixed-capacity, the
