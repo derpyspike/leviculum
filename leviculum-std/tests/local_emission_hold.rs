@@ -1,16 +1,24 @@
 //! A local client's hops-0 path is kept from the unresponsive mark only
 //! while the emission it installed is young (reviewer decision 2026-11-16,
-//! after orders 1881 to 1914): at most `LOCAL_EMISSION_HOLD_MS` after this
-//! daemon first installed that emission from a local-client interface.
-//! After that, or once the client is gone, Python's rule applies: an expired
-//! link request marks the path, and a relayed copy of the same emission
-//! takes it (`RNS/Transport.py:746-753`, `:1819-1824`).
+//! after orders 1881 to 1914), and only for an emission whose first receipt
+//! at this daemon was that client's hops-0 copy: at most
+//! `LOCAL_EMISSION_HOLD_MS` after that first install, and never past the
+//! installing client's disconnect. A local hops-0 copy of an emission the
+//! daemon already held (from the network, or from a client before) earns
+//! nothing. Otherwise Python's rule applies: an expired link request marks
+//! the path, and a relayed copy of the same emission takes it
+//! (`RNS/Transport.py:746-753`, `:1819-1824`).
 //!
 //! The field case (miauhaus, 2026-11-15) and every attack of orders 1898 to
-//! 1914 run here through the public API. The attacks no longer fail on who
-//! proved what: a replaying process cannot make a new emission without the
-//! destination's private key, so whatever it does, the path it captured is
-//! held for at most the hold.
+//! 1914 run here through the public API. A replay of an emission the
+//! network brought first is marked at the first dead request; a capture
+//! that reaches a fresh daemon before the network does is that emission's
+//! first receipt and is held at most the hold, whatever the replayer
+//! answers or lets die. These tests do not bound the residuals the protocol
+//! note names (`docs/src/protocol-notes/announce-dedup-and-path-replacement.md`):
+//! a replayer racing the network with each fresh emission, an lnsd
+//! restart, a full record table, re-replay flapping after the hold, and a
+//! reused interface index whose teardown the driver did not report.
 
 #[path = "support/path_ownership.rs"]
 mod support;
@@ -74,6 +82,25 @@ fn held_at_most_the_hold(
         clock.advance(10 * 60 * 1000);
         i = i.wrapping_add(1);
     }
+}
+
+/// For a replay of an emission this daemon heard from the network first:
+/// `attack` runs once, then one network request dies, and that first dead
+/// request must mark the path. Such a replay earns no hold, because only an
+/// emission whose first receipt here was the local client's hops-0 copy
+/// does (`Transport::mark_path_unresponsive`).
+fn first_dead_request_marks(
+    t: &mut T,
+    clock: &TestClock,
+    hash: [u8; TRUNCATED_HASHBYTES],
+    attack: impl FnOnce(&mut T, &TestClock),
+) {
+    attack(t, clock);
+    expire_unproven(t, clock, [0xD0; TRUNCATED_HASHBYTES], hash);
+    assert!(
+        t.path_is_unresponsive(&hash),
+        "a replay of a network-first emission is held for no time at all"
+    );
 }
 
 /// (a) The field case: a hops-0 path of a local client, a dead one-hop
@@ -181,7 +208,9 @@ fn a_newer_network_emission_beats_a_replayed_older_one_held_locally() {
 // die, and must lose the path at the first dead request after the hold.
 
 /// Order 1898 (audit of 1881): the client replays a network destination's
-/// emission it already heard at hops 0.
+/// emission it already heard at hops 0. The network heard it first, so the
+/// replay earns no hold: the first dead request marks the path (audit of
+/// 1922; the name is kept from the hold it was once bounded by).
 #[test]
 fn attack_1898_a_replay_of_a_network_destination_is_held_at_most_the_hold() {
     let (mut t, clock) = transport();
@@ -194,9 +223,8 @@ fn attack_1898_a_replay_of_a_network_destination_is_held_at_most_the_hold() {
     t.process_incoming(LOCAL, &announce(&dest, 0)).unwrap();
     t.drain_actions();
     assert_eq!(path_of(&t, &hash), (LOCAL, 0));
-    let at = clock.now_ms();
 
-    held_at_most_the_hold(&mut t, &clock, hash, at, |_, _, _| {});
+    first_dead_request_marks(&mut t, &clock, hash, |_, _| {});
     relayed_copy_arrives(&mut t, &clock, &network);
     assert_eq!(
         path_of(&t, &hash),
@@ -221,7 +249,8 @@ fn attack_1905_a_first_installed_replay_is_held_at_most_the_hold() {
 }
 
 /// Order 1905, attack 2: the client relays link requests to the real
-/// destination, whose signed proofs come back over the client.
+/// destination, whose signed proofs come back over the client. The network
+/// heard the emission first, so the first dead request marks the path.
 #[test]
 fn attack_1905_relayed_proofs_hold_at_most_the_hold() {
     let (mut t, clock) = transport();
@@ -232,10 +261,9 @@ fn attack_1905_relayed_proofs_hold_at_most_the_hold() {
     clock.advance(12_000);
     t.process_incoming(LOCAL, &announce(&dest, 0)).unwrap();
     t.drain_actions();
-    let at = clock.now_ms();
 
-    held_at_most_the_hold(&mut t, &clock, hash, at, |t, clock, i| {
-        prove_over_client(t, clock, [0x50 ^ i; TRUNCATED_HASHBYTES], &dest);
+    first_dead_request_marks(&mut t, &clock, hash, |t, clock| {
+        prove_over_client(t, clock, [0x50; TRUNCATED_HASHBYTES], &dest);
     });
 }
 
@@ -277,6 +305,7 @@ fn attack_1914_own_dead_probes_and_proven_probes_on_its_own_connection_hold_at_m
 
 /// Order 1914, second condition: the network heard the destination first, the
 /// client replays it and proves probes that entered over its own connection.
+/// The replay earns no hold, so the first dead request marks the path.
 #[test]
 fn attack_1914_a_replayed_network_destination_proven_over_its_own_connection_is_held_at_most_the_hold(
 ) {
@@ -288,10 +317,9 @@ fn attack_1914_a_replayed_network_destination_proven_over_its_own_connection_is_
     clock.advance(12_000);
     t.process_incoming(LOCAL, &announce(&dest, 0)).unwrap();
     t.drain_actions();
-    let at = clock.now_ms();
 
-    held_at_most_the_hold(&mut t, &clock, hash, at, |t, clock, i| {
-        prove_over_client_from(t, clock, [0x80 ^ i; TRUNCATED_HASHBYTES], &dest, OWN_TCP);
+    first_dead_request_marks(&mut t, &clock, hash, |t, clock| {
+        prove_over_client_from(t, clock, [0x80; TRUNCATED_HASHBYTES], &dest, OWN_TCP);
     });
 }
 
@@ -386,4 +414,97 @@ fn expire_own(
     t.poll();
     t.drain_actions();
     assert!(!t.storage().has_link_entry(&link_id));
+}
+
+/// Audit of 1922, first auditor (verbatim): a replayer that passes on every
+/// new emission the network brings, each at hops 0, must not hold the path
+/// past the hold.
+#[test]
+fn audit_1922_rereplaying_each_new_network_emission_is_held_at_most_the_hold() {
+    let (mut t, clock) = transport();
+    let dest = destination();
+    let hash = dest.hash().into_bytes();
+    let first_capture_at = clock.now_ms();
+    let mut checked_after_hold = 0u32;
+    for round in 0..4u8 {
+        let emitted_s = 9000 + u64::from(round) * 3000;
+        let nonce = 0x90 + round;
+        t.storage_mut().clear_packet_hashes();
+        clock.advance(20_000);
+        let _ = t.process_incoming(NETWORK, &announce_emission(&dest, 1, nonce, emitted_s));
+        t.drain_actions();
+        assert_eq!(
+            path_of(&t, &hash).0,
+            NETWORK,
+            "round {round}: the network's newer emission installs"
+        );
+        t.storage_mut().clear_packet_hashes();
+        clock.advance(20_000);
+        let _ = t.process_incoming(LOCAL, &announce_emission(&dest, 0, nonce, emitted_s));
+        t.drain_actions();
+        expire_unproven(&mut t, &clock, [0xC0 + round; TRUNCATED_HASHBYTES], hash);
+        if clock.now_ms() - first_capture_at >= HOLD_MS {
+            assert!(t.path_is_unresponsive(&hash),
+                "round {round}: {} ms after the first capture, a replayer passing on the destination's new emissions must not hold the path past the hold",
+                clock.now_ms() - first_capture_at);
+            checked_after_hold += 1;
+        }
+        clock.advance(50 * 60 * 1000);
+    }
+    assert!(checked_after_hold >= 2, "the loop must run past the hold");
+}
+
+/// Audit of 1922: a hold does not survive a disconnect of the client that
+/// installed the emission. The client goes and comes back on the same
+/// interface index inside the hold, and announces nothing: its path is
+/// markable at once.
+#[test]
+fn audit_1922_a_hold_does_not_survive_the_installing_clients_disconnect() {
+    let (mut t, clock) = transport();
+    let dest = destination();
+    let hash = dest.hash().into_bytes();
+    t.process_incoming(LOCAL, &announce(&dest, 0)).unwrap();
+    t.drain_actions();
+    assert_eq!(path_of(&t, &hash), (LOCAL, 0));
+
+    clock.advance(HOLD_MS / 4);
+    t.set_local_client(LOCAL, false);
+    clock.advance(1_000);
+    t.set_local_client(LOCAL, true);
+    assert_eq!(path_of(&t, &hash), (LOCAL, 0), "the path stays on the box");
+    assert!(
+        t.mark_path_unresponsive(&hash),
+        "the hold ended with the installing client's connection"
+    );
+}
+
+/// A client that installed its own emission and then replays a newer
+/// emission the network brought first does not carry its older hold over
+/// to the replay: the record names the older emission, the path holds the
+/// newer one, and the path is markable at once.
+#[test]
+fn a_replay_of_a_newer_network_emission_does_not_inherit_the_clients_older_hold() {
+    let (mut t, clock) = transport();
+    let dest = destination();
+    let hash = dest.hash().into_bytes();
+    t.process_incoming(LOCAL, &announce(&dest, 0)).unwrap();
+    t.drain_actions();
+
+    let newer = 9600;
+    relayed_copy_arrives(&mut t, &clock, &announce_emission(&dest, 1, 0x7A, newer));
+    assert_eq!(path_of(&t, &hash), (NETWORK, 2), "a newer emission wins");
+    t.storage_mut().clear_packet_hashes();
+    clock.advance(20_000);
+    let _ = t.process_incoming(LOCAL, &announce_emission(&dest, 0, 0x7A, newer));
+    t.drain_actions();
+    assert_eq!(path_of(&t, &hash), (LOCAL, 0), "the replay takes the path");
+    assert_eq!(
+        t.storage().local_emission_installed(&hash).map(|r| r.0),
+        Some(9000),
+        "the record still names the client's own, older emission"
+    );
+    assert!(
+        t.mark_path_unresponsive(&hash),
+        "the replayed newer emission holds nothing"
+    );
 }

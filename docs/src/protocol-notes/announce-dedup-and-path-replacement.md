@@ -412,34 +412,64 @@ proof came back over the same next hop.
 **A local client's young emission is not marked.** A connected local
 client's hops-0 path is exempt from the unresponsive mark, and so from
 replacement by a relayed copy of the same emission, only while that
-emission is young: for at most `LOCAL_EMISSION_HOLD_MS` (one hour) after
-this daemon first installed it from a local-client interface
-(`Transport::mark_path_unresponsive`, `PATH_KEPT_LOCAL
-reason=young_local_emission`). After that, or once the client has
-disconnected, the reference's rule applies unchanged: an expired request
-from a one-hop initiator marks the path (`Transport.py:746-753`) and the
-next relayed copy of the emission takes it at any length
-(`Transport.py:1819-1824`). A newer emission always wins, as before. The
-reference has no exemption; on miauhaus on 2026-11-15 its rule had the
-Loquax home on the same host reached over a 7-hop backbone route for two
-hours, and every phone's link request left the box. The bound is the
-emission and not the client's behaviour: a process that replays a
-captured announce cannot make a newer emission without the destination's
-private key, so whatever requests it answers or lets die, a path it
-captured is kept at most the hold and then repaired, while the genuine
-owner renews the hold with every announce (a Loquax home on a shared
-instance announces every 30 minutes, `ANNOUNCE_EVERY_ON_SHARED`). The
-first install of an emission is what counts: handing the same emission in
-again, re-replaying it after the network took the path back, or
-reconnecting restarts nothing. Deviation rule: the wire is unchanged, the
-state is ours alone, P1 gains the field case, and a local attacker's worst
-case is the hold. What it is not: the hold does not show the client hosts
-the destination. The record of first installs is not persisted and a full
-table (`TableCaps::local_dest_cap`) records nothing new until its oldest
-entry is a week old, so after an lnsd restart the same capture earns one
-more hold, and on a full table a new client's emission earns none. Tests:
-`leviculum-std/tests/local_emission_hold.rs`, with every attack of orders
-1898 to 1914 held to the hour.
+emission is young, and only for an emission whose first receipt at this
+daemon was that client's hops-0 copy: the path this daemon held did not
+already carry the emission's random blob (`Transport::mark_path_unresponsive`,
+`PATH_KEPT_LOCAL reason=young_local_emission`). The hold lasts at most
+`LOCAL_EMISSION_HOLD_MS` (one hour) after that first install, and it ends
+when the installing client disconnects, even if a new client later gets
+the same interface index. A local hops-0 copy of an emission this daemon
+already held, from the network or from a client before, earns no hold:
+a dead request from a one-hop initiator marks that path at once
+(`Transport.py:746-753`), as it does after the hour, for a disconnected
+client, and for a relayed or HEADER_2 path; the next relayed copy of the
+emission then takes it at any length (`Transport.py:1819-1824`). A newer
+emission always wins, as before. The reference has no exemption; on
+miauhaus on 2026-11-15 its rule had the Loquax home on the same host
+reached over a 7-hop backbone route for two hours, and every phone's link
+request left the box. The bound is the emission and not the client's
+behaviour: what requests a client answers or lets die changes nothing,
+and the genuine owner renews the hold with every announce (a Loquax home
+on a shared instance announces every 30 minutes,
+`ANNOUNCE_EVERY_ON_SHARED`). Handing the same emission in again,
+re-replaying it, or reconnecting restarts nothing. Deviation rule: the
+wire is unchanged, the state is ours alone, and P1 gains the field case.
+What it is not: the hold does not show the client hosts the destination,
+and it is not a bound on what a local replayer can do. The residuals are:
+- **Racing the network.** A process that brings a destination's emission
+  to this daemon before the network does (captured elsewhere) is that
+  emission's first receipt and earns its hold; for a destination that keeps
+  announcing, one such race per emission. No test shows a bound for that
+  case; the tests show only that a replay of an emission the network
+  brought first is held for no time
+  (`leviculum-std/tests/audit_1922b_fresh_emission_replay.rs`).
+- **An lnsd restart.** The record of first installs is not persisted, so
+  after a restart a capture of an emission whose path this daemon no
+  longer holds earns one more hold.
+- **A full table.** The record table (`TableCaps::local_dest_cap`) records
+  nothing new until its oldest entry is a week old; meanwhile a new
+  client's emission earns no hold, which is the reference's behaviour.
+- **Re-replay flapping.** After the hold, a re-replayed capture takes a
+  repaired path back at hops 0 through the same-emission fewer-hops clause
+  (`Transport::handle_announce`, `same_emission_fewer_hops`, Codeberg
+  #231). It earns no hold, so the next dead request marks it and the next
+  relayed copy takes the path again, but the path flaps for as long as
+  the replayer repeats it.
+- **A reused interface index inside the hold.** The hold ends with the
+  installing client's connection (`set_local_client(id, false)`); it rests
+  on the driver reporting every teardown before it reuses the index.
+
+What the rule costs a genuine client: when the network's echo of its
+emission reaches this daemon before its own hops-0 copy (the 08:38 case on
+miauhaus, order 1881), the own copy still wins the path at hops 0 but earns
+no hold, because that is what a replay looks like too; a dead request
+marks the path and the relayed copy takes it, as in the reference
+(`local_client_copy_after_an_earlier_backbone_echo_wins_but_earns_no_hold`
+in `leviculum-core/src/transport.rs`).
+
+Tests: `leviculum-std/tests/local_emission_hold.rs`,
+`leviculum-std/tests/audit_1922b_fresh_emission_replay.rs` and
+`leviculum-std/tests/audit_1922b_owner_positive_control.rs`.
 
 The mvr is `leviculum-core/src/node/mvr_path_answer_through_us.rs`: the
 three-node loop (a neighbour that routes the destination through us
