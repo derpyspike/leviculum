@@ -36,7 +36,7 @@ use loquax::home::runner::{self, HomeClient};
 use loquax::home::watch::{self, Fallback, WatchEvent};
 use loquax::mailbox::{Unanswered, UNANSWERED_EXCLUSION_MS, UNANSWERED_LIMIT};
 use loquax::mailbox_state::{self, short, Stored};
-use loquax::mapload::{Loader, Source, Step, CACHE_DEFAULT_MB};
+use loquax::mapload::{Loader, Source, Step, Watch, CACHE_DEFAULT_MB};
 use loquax::outbox::{Command, Outbox, OutboxEvent, OutboxGone, SendRequest, Via};
 use loquax::picture::Maps;
 use loquax::seen::{SeenStore, SeenWrite};
@@ -260,6 +260,9 @@ pub(crate) struct Shell {
     pub(crate) maps: Maps,
     /// The autoload: regions the model asks for, one load at a time.
     loader: Loader,
+    /// The loader's report as the map shows it (1812): each running
+    /// load's bytes watched for a stall.
+    load_watch: Watch,
     /// The terminal's map pane's scheduler (1527, [`ViewLoads`]): every
     /// frame of the open map is shown to it, and the screen at its zoom
     /// loads first. `None` in the window, whose map keeps its own view and
@@ -1222,6 +1225,32 @@ impl Shell {
                 Step::Skipped { want, why } => {
                     tracing::info!("MAPLOAD skipped box={} why={why}", box_words(&want));
                 }
+                Step::Held { want, how } => {
+                    tracing::info!("MAPLOAD {} box={}", how.word(), box_words(&want));
+                }
+                Step::Heights {
+                    want,
+                    landed,
+                    elapsed_ms,
+                } => match landed {
+                    Ok(l) => {
+                        tracing::info!(
+                            "MAPLOAD heights box={} packs={} had={} fetched={} elapsed_ms={elapsed_ms} evicted={}",
+                            box_words(&want),
+                            l.packs.len(),
+                            l.had,
+                            l.fetched,
+                            l.evicted.len()
+                        );
+                        if !l.packs.is_empty() || !l.evicted.is_empty() {
+                            self.regions_changed();
+                        }
+                    }
+                    Err(detail) => tracing::info!(
+                        "MAPLOAD heights-failed box={} detail={detail:?} elapsed_ms={elapsed_ms}",
+                        box_words(&want)
+                    ),
+                },
             }
         }
         // Whether a load runs or waits for the screen (1527): the
@@ -1230,6 +1259,21 @@ impl Shell {
         if here != self.model.map_here {
             self.apply(UiEvent::MapLoad(MapLoad::Here(here)));
         }
+        // What of the view is still to come, area by area (1812): the
+        // map draws it in place, every target says it in one line.
+        let loads = self.load_watch.loads(&self.loader, self.elapsed_ms());
+        if loads != self.model.map_loads {
+            self.apply(UiEvent::MapLoad(MapLoad::Loads(loads)));
+        }
+    }
+
+    /// "Try now" on the map's failed areas (1812): every box for the view
+    /// that waits to retry is due at once. The window's button; the
+    /// terminal has none yet.
+    #[cfg(feature = "gui")]
+    pub(crate) fn map_retry_now(&mut self) {
+        let steps = self.loader.retry_now(self.elapsed_ms());
+        self.map_steps(steps);
     }
 
     /// What the watching link said: a wake past the cursor pulls, and while
@@ -2048,8 +2092,16 @@ pub(crate) async fn start(
             Source::Daily(base) => format!("{base}<newest>.pmtiles"),
         }
     );
+    model.map_relief = config.map_relief.unwrap_or(true);
+    model.map_ground = config.map_ground.unwrap_or_default();
     let cache_bytes = config.map_cache_mb.unwrap_or(CACHE_DEFAULT_MB) << 20;
-    let loader = Loader::new(maps.clone(), source, cache_bytes);
+    // The relief's height packs come with every region that lands (1863).
+    let heights = loquax::mapload::heights_url(
+        config.height_source.as_deref(),
+        config.map_source.as_deref(),
+    );
+    tracing::info!("MAPLOAD heights={heights}");
+    let loader = Loader::new(maps.clone(), source, cache_bytes).with_heights(heights);
     let (done_tx, done_rx) = unbounded_channel();
     let watch = match (&client, options.scripted) {
         (Some(client), false) => {
@@ -2106,6 +2158,7 @@ pub(crate) async fn start(
         outputs: Vec::new(),
         maps,
         loader,
+        load_watch: Watch::default(),
         map_drive: Some(ViewLoads::new()),
         origin: tokio::time::Instant::now(),
         watch,

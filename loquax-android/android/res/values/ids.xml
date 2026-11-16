@@ -54,6 +54,7 @@
     <item name="connection_notice" type="id" />
     <item name="maps_auto" type="id" />
     <item name="map_fling" type="id" />
+    <item name="map_relief" type="id" />
     <item name="maps_region" type="id" />
     <item name="maps_region_name" type="id" />
     <item name="maps_region_line" type="id" />

@@ -157,6 +157,7 @@ pub mod listing;
 pub mod liveness;
 pub mod mailbox_page;
 pub mod map;
+pub mod maploading;
 pub mod owed;
 pub mod pager;
 pub mod photos;
@@ -1378,6 +1379,10 @@ pub struct UiModel<B> {
     /// The map's time window for the tracks' lines: a map control, the
     /// current episode until the reader picks another.
     pub track_window: tracks::TrackWindow,
+    /// The tracks [`UiModel::map_tracks`] derived last, and at what
+    /// (1694 E): the terminal's frames and the phone's asks derive them
+    /// again only when a fix, the zoom, the window or an age moved.
+    track_cache: tracks::TrackCache,
     /// The time zone view (1684): the zones' borders and each one's clock
     /// over the map, `z` in the terminal, the map menu's entry elsewhere.
     pub time_zones: bool,
@@ -1410,11 +1415,21 @@ pub struct UiModel<B> {
     /// The config's `map_theme`, which each frontend resolves against the
     /// theme it draws in (`picture::map_theme`); `None` for unset.
     pub map_theme: Option<ThemeFlag>,
+    /// The config's `map_relief` (1863): the ground relief under the
+    /// light map; on unless the config says off.
+    pub map_relief: bool,
+    /// The config's `map_ground` (1743): the ground map's style under the
+    /// light map; pastel unless the config says otherwise.
+    pub map_ground: crate::config::GroundFlag,
     /// The word the map's title carries while a region loads.
     pub map_loading: Option<String>,
     /// A load runs or waits for what is on screen (1527): the title says
     /// [`MAP_LOADING_HERE`], the window's chip too.
     pub map_here: bool,
+    /// What of the map's view is still to come (1812): each area's state
+    /// from the loader's report, drawn over the map in place and said in
+    /// one line ([`maploading::Loads::line`]), the title's here.
+    pub map_loads: maploading::Loads,
     /// The glyph test pattern is over the map (`g`, 1093).
     pub map_glyph_test: bool,
     /// The tick until which the map's title names the way it is drawn,
@@ -1672,6 +1687,7 @@ impl<B: InputBuffer + Default> UiModel<B> {
             fixes_received: Vec::new(),
             tracks: BTreeMap::new(),
             track_window: tracks::TrackWindow::default(),
+            track_cache: tracks::TrackCache::default(),
             time_zones: false,
             own_stored_at: None,
             map: None,
@@ -1682,8 +1698,11 @@ impl<B: InputBuffer + Default> UiModel<B> {
             map_from: Pane::Messages,
             map_autoload: false,
             map_theme: None,
+            map_relief: true,
+            map_ground: crate::config::GroundFlag::Pastel,
             map_loading: None,
             map_here: false,
+            map_loads: maploading::Loads::default(),
             map_glyph_test: false,
             map_named_until: None,
             map_wants: Vec::new(),
@@ -2292,6 +2311,84 @@ impl<B> UiModel<B> {
         // said once it took a second, and the next sync's minute.
         hash.word(u64::from(fetch_shown(self)));
         hash.word(next_sync(self).map_or(u64::MAX, |at| at.unix_secs as u64));
+        // The map's ages (1694 A): a pin's "1 min ago" when its fix is a
+        // minute old, not at the next minute of the wall clock, and a
+        // track's part when it crosses an age step.
+        hash.word(self.map_age_marks());
+        hash.done()
+    }
+
+    /// What the clock moves on the map (1694 A): each pin's age step
+    /// ([`scene::ago_step`]), whether it is ahead or stale, and the
+    /// tracks' [`tracks::age_marks`]. Equal marks at two moments draw the
+    /// same map, given the same positions and tracks. `O(pins + peers ·
+    /// log fixes)`, and no fix is copied: cheap enough for every tick.
+    pub fn map_age_marks(&self) -> u64 {
+        let Some(now) = self.now else {
+            return 0;
+        };
+        let t = now.unix_secs;
+        let mut hash = Fnv::new();
+        let mut age = |at: i64, ahead: bool| {
+            hash.word(u64::from(ahead));
+            hash.word(scene::ago_step(t - at).word());
+            hash.word(u64::from(
+                t.saturating_sub(at) > telemetry::STALE_AFTER_SECS,
+            ));
+        };
+        for (peer, fix) in &self.positions {
+            if self.names.trust(peer) != Trust::Blocked || self.address == Some(*peer) {
+                age(fix.fix_time(), fix.ahead());
+            }
+        }
+        if let Some(own) = self.bar.own_fix {
+            age(
+                own.last_update,
+                own.last_update > t.saturating_add(telemetry::FUTURE_TOLERANCE_SECS),
+            );
+        }
+        hash.word(tracks::age_marks(
+            &self.track_input(),
+            self.track_window,
+            &now,
+        ));
+        hash.done()
+    }
+
+    /// What the map draws, as one word (1694 D): the pins as [`map_pins`]
+    /// gives them (place, name, age, stale, battery), the tracks' fixes by
+    /// identity and their window, and the clock's [`map_age_marks`]. A
+    /// target that draws the map only when this moved draws nothing for a
+    /// chat line, a link or a sync, and draws a pin that moved, a new name
+    /// and an age that changed.
+    ///
+    /// [`map_pins`]: UiModel::map_pins
+    /// [`map_age_marks`]: UiModel::map_age_marks
+    pub fn map_marks(&self) -> u64 {
+        let mut hash = Fnv::new();
+        for pin in self.map_pins() {
+            hash.bytes(&pin.peer);
+            hash.word(u64::from(pin.at.x) << 32 | u64::from(pin.at.y));
+            hash.bytes(pin.label.as_bytes());
+            hash.word(0xff);
+            hash.bytes(pin.age.as_deref().unwrap_or("").as_bytes());
+            hash.word(
+                u64::from(pin.stale)
+                    | u64::from(pin.nearby) << 1
+                    | u64::from(pin.own) << 2
+                    | u64::from(pin.battery.unwrap_or(255)) << 8,
+            );
+            hash.word(pin.fix_at.map_or(u64::MAX, |at| at as u64));
+        }
+        for (peer, own, fixes) in self.track_input() {
+            hash.bytes(&peer);
+            hash.word(u64::from(own));
+            hash.word(alloc::sync::Arc::as_ptr(&fixes) as usize as u64);
+            hash.word(fixes.len() as u64);
+        }
+        hash.word(self.track_window as u64);
+        hash.word(self.lang as u64);
+        hash.word(self.map_age_marks());
         hash.done()
     }
 
@@ -3524,6 +3621,8 @@ pub enum MapLoad {
     /// Whether a load runs or waits for what is on screen (1527, the
     /// loader's `loading_here`): "Loading the map of this area".
     Here(bool),
+    /// What of the view is still to come, area by area (1812).
+    Loads(maploading::Loads),
 }
 
 /// What the shell is asked to do.
@@ -4898,6 +4997,7 @@ fn map_load<B: InputBuffer>(model: &mut UiModel<B>, load: MapLoad) {
             }
         }
         MapLoad::Here(here) => model.map_here = here,
+        MapLoad::Loads(loads) => model.map_loads = loads,
     }
 }
 
@@ -5055,6 +5155,8 @@ fn map_key<B: InputBuffer>(model: &mut UiModel<B>, cmd: keys::MapCmd) -> Vec<UiE
         }
         MapCmd::Drawing(forward) => {
             let n = setup.drawings.len();
+            // The reader stepped: the footer's offer is answered (1880).
+            model.map_setup.finer_hint = false;
             if n > 0 {
                 let next = match forward {
                     true => (setup.drawing + 1) % n,
@@ -7460,7 +7562,7 @@ impl<B> UiModel<B> {
         let Some(now) = self.now else {
             return Vec::new();
         };
-        tracks::tracks(
+        self.track_cache.tracks(
             &self.track_input(),
             self.track_window,
             &now,
@@ -8097,6 +8199,12 @@ pub struct View {
     pub map_glyph_test: bool,
     /// The time zone view over the open map (1684).
     pub time_zones: bool,
+    /// The config's `map_relief` (1863): the terminal's picture lays the
+    /// relief under the light map only with it on, as the window and the
+    /// phone do.
+    pub map_relief: bool,
+    /// The config's `map_ground` (1743), as the window takes it.
+    pub map_ground: crate::config::GroundFlag,
 }
 
 /// The map pane's title.
@@ -8905,9 +9013,12 @@ fn view_fresh<B: InputBuffer>(model: &UiModel<B>) -> View {
         });
     // The screen's own load says so in words (1527), as the phone's chip
     // does.
-    let loading_word = match model.map_here {
-        true => Some(MAP_LOADING_HERE.to_string()),
-        false => model.map_loading.clone(),
+    // Since 1812 the loads' one line where it has one: how far, stalled,
+    // failed and when it retries, offline.
+    let loading_word = match (model.map_loads.line(model.lang), model.map_here) {
+        (Some(line), _) => Some(line),
+        (None, true) => Some(MAP_LOADING_HERE.to_string()),
+        (None, false) => model.map_loading.clone(),
     };
     let (messages_title, messages_title_right) = match &map {
         Some(shown) => (
@@ -8991,6 +9102,8 @@ fn view_fresh<B: InputBuffer>(model: &UiModel<B>) -> View {
         map_theme: model.map_theme,
         map_glyph_test: map.is_some() && model.map_glyph_test,
         time_zones: map.is_some() && model.time_zones,
+        map_relief: model.map_relief,
+        map_ground: model.map_ground,
         map,
     }
 }
@@ -9200,7 +9313,18 @@ fn footer<B>(model: &UiModel<B>) -> Vec<FooterItem<FooterAct>> {
             FooterItem::action("Esc", "close", FooterAct::PaletteClose),
         ];
     }
-    keys::footer(keys::panes_of(model.focus), model.ctx(), FooterAct::Row)
+    let mut items = keys::footer(keys::panes_of(model.focus), model.ctx(), FooterAct::Row);
+    // Over ssh the map started safe, the far terminal's font unknown: one
+    // button to step up to a finer drawing, first so a narrow footer keeps
+    // it (1880). `T` is the step towards the finer ways.
+    if model.focus == Pane::Map && model.map.is_some() && model.map_setup.finer_hint {
+        let finer = Action::Map(keys::MapCmd::Drawing(false));
+        items.insert(
+            0,
+            FooterItem::action("T", "finer drawing", FooterAct::Row(Some(finer))),
+        );
+    }
+    items
 }
 
 /// The help overlay's text, every row of the keymap ([`keys::help_groups`]).
@@ -18024,23 +18148,6 @@ pub(crate) mod tests {
         assert!(list[0].starts_with("bob") && list[1].starts_with("Alice"));
     }
 
-    /// 1693: the card's avatar and the locations list's entry are in the
-    /// peer's hue, the colour its pin and track are drawn in, whatever icon
-    /// the peer chose; the initials in the ink the one rule picks for it.
-    #[test]
-    fn a_cards_avatar_is_in_its_peers_hue() {
-        use crate::ui::tracks::{ink_on, peer_colour};
-        let model = mapped();
-        let cards = pin_card::cards(&model);
-        let rgb = |c: [u8; 3]| u32::from_be_bytes([0, c[0], c[1], c[2]]);
-        for card in cards.iter().filter(|c| !c.own && !c.nearby) {
-            let hue = peer_colour(&card.peer, false);
-            assert_eq!(card.avatar.bg, rgb(hue), "{}", card.name);
-            assert_eq!(card.avatar.fg, rgb(ink_on(hue)), "{}", card.name);
-        }
-        assert!(cards.iter().any(|c| !c.own && !c.nearby));
-    }
-
     /// The shell's own fix is our pin where it is newer than the one we
     /// shared (1375): a board's GNSS shows it before it shared anything,
     /// and the older one does not move it back. The map's picture is the
@@ -18106,6 +18213,50 @@ pub(crate) mod tests {
             ..model.map_setup.clone()
         };
         update(model, UiEvent::MapSetup(setup));
+    }
+
+    /// Over ssh with nothing remembered the shell offers a finer drawing in
+    /// the map's footer, first; a step answers it, and outside the map, or
+    /// without the shell's offer, there is no such button (1880).
+    #[test]
+    fn the_map_footer_offers_a_finer_drawing_until_the_reader_steps() {
+        let footer = |model: &UiModel<Field>| -> Vec<String> {
+            view(model)
+                .footer
+                .iter()
+                .map(|item| format!("{} {}", item.key, item.label))
+                .collect()
+        };
+        let mut model = mapped();
+        offered(&mut model, 2);
+        let setup = map::MapSetup {
+            finer_hint: true,
+            ..model.map_setup.clone()
+        };
+        update(&mut model, UiEvent::MapSetup(setup));
+        assert!(
+            !footer(&model).contains(&"T finer drawing".to_string()),
+            "no map open"
+        );
+        update(&mut model, key(KeyCode::Char('M')));
+        let open = footer(&model);
+        assert_eq!(
+            open.first().map(String::as_str),
+            Some("T finer drawing"),
+            "{open:?}"
+        );
+        assert_eq!(
+            update(&mut model, key(KeyCode::Char('T'))),
+            vec![UiEffect::MapDrawing(1)]
+        );
+        assert!(
+            !footer(&model).contains(&"T finer drawing".to_string()),
+            "answered"
+        );
+        let mut plain = mapped();
+        offered(&mut plain, 2);
+        update(&mut plain, key(KeyCode::Char('M')));
+        assert!(!footer(&plain).contains(&"T finer drawing".to_string()));
     }
 
     /// `t` asks the shell for the next drawing, `T` and the wrap for the
@@ -22983,6 +23134,81 @@ pub(crate) mod tests {
         );
         assert_eq!(model.positions[&PEER].location.latitude_e6, 2_000_000);
         assert_eq!(view(&model).messages_title_right, "pos 1 min");
+    }
+
+    /// Order 1694 A: the clock alone ages a pin when its fix crosses a
+    /// minute of age, not at the next minute of the wall clock, and moves
+    /// nothing in between. Every target draws a new view only when the
+    /// revision moved ([`Presented`]); before, the clock moved it for the
+    /// map only through the rows' wall minute, so a fix taken at :30 said
+    /// "now" until a minute and 29 seconds had gone.
+    #[test]
+    fn the_clock_alone_ages_a_pin_when_its_fix_turns_a_minute_old() {
+        let mut model = UiModel::<Field>::new(&[PEER]);
+        let secs = |s: i64| {
+            let mut t = at(26, 14, 1);
+            t.unix_secs += s;
+            UiEvent::Clock(t)
+        };
+        update(&mut model, secs(0));
+        arrive(
+            &mut model,
+            PEER,
+            1,
+            "",
+            report_of(&fix_at(1_000_000, 1_000_000, two_pm() + 30)),
+        );
+        let age = |m: &UiModel<Field>| m.map_pins()[0].age.clone();
+        assert_eq!(age(&model).as_deref(), Some("now"));
+        let quiet = model.revision;
+        // The control: 29 seconds on, still "now", nothing to draw.
+        update(&mut model, secs(5));
+        update(&mut model, secs(29));
+        assert_eq!(
+            model.revision, quiet,
+            "seconds that age nothing draw nothing"
+        );
+        // The fix is a minute old at 14:01:30: the label moves then.
+        update(&mut model, secs(30));
+        assert_ne!(model.revision, quiet, "the pin's minute moves the revision");
+        assert_eq!(age(&model).as_deref(), Some("1 min ago"));
+        let aged = model.revision;
+        update(&mut model, secs(45));
+        assert_eq!(model.revision, aged, "and the next seconds draw nothing");
+    }
+
+    /// Order 1694 D: [`UiModel::map_marks`] moves for what the map draws
+    /// and for nothing else. A chat line from a peer with a pin moves no
+    /// mark; a new fix and a pin's minute of age do.
+    #[test]
+    fn the_map_marks_move_for_a_fix_and_an_age_and_not_for_a_chat_line() {
+        let mut model = UiModel::<Field>::new(&[PEER]);
+        clock(&mut model, 26, 14, 0);
+        arrive(
+            &mut model,
+            PEER,
+            1,
+            "",
+            report_of(&fix_at(1_000_000, 1_000_000, two_pm())),
+        );
+        let marks = model.map_marks();
+        receive(&mut model, PEER, 2, "a chat line");
+        assert_eq!(model.map_marks(), marks, "a chat line is no map change");
+        let mut five = at(26, 14, 0);
+        five.unix_secs += 5;
+        update(&mut model, UiEvent::Clock(five));
+        assert_eq!(model.map_marks(), marks, "five seconds age nothing");
+        clock(&mut model, 26, 14, 1);
+        let aged = model.map_marks();
+        assert_ne!(aged, marks, "a minute ages the pin");
+        arrive(
+            &mut model,
+            PEER,
+            3,
+            "",
+            report_of(&fix_at(2_000_000, 1_000_000, two_pm() + 60)),
+        );
+        assert_ne!(model.map_marks(), aged, "a new fix moves the pin");
     }
 
     /// Door 1 under order 1792/1816 (D2 of order 1824): a stream row is

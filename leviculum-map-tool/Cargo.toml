@@ -36,7 +36,13 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 flate2 = "1"
 libm = "0.2"
 zstd = { version = "0.13", default-features = false }
+# The ground cut (1743): Kellndorfer's radar tiles are LZW GeoTIFFs. The
+# crate is in the lock already (through the image decoders).
+weezl = "0.1"
 
 [dev-dependencies]
 # The height cut's tests write synthetic GLO-30 cells into a directory.
 tempfile = "3"
+# The ground cut's test writes a synthetic height pack (1743); in the lock
+# already, through leviculum-map's height pieces.
+ruzstd = { version = "0.9", default-features = false, features = ["hash"] }

@@ -275,6 +275,8 @@ struct Inner {
     scene: Arc<Mutex<Scene>>,
     /// [`schema::Event::Changed::counts`] as the last scene made it.
     counts: u64,
+    /// [`schema::Event::Changed::map`] as last said (1694 D).
+    map_gate: crate::friends::MapGate,
     gone: bool,
     /// Whether the TCP interface to the home node was up at the last look,
     /// none before the first, and when that look was.
@@ -1918,6 +1920,10 @@ impl Session {
                 let home = self.lock().home.clone();
                 return crate::map::fling(&home, set).map(|fling| schema::encode(&fling));
             }
+            schema::Query::MapRelief { set } => {
+                let home = self.lock().home.clone();
+                return crate::map::relief(&home, set).map(|relief| schema::encode(&relief));
+            }
             // The Privacy page's switch (1233): the model's, which the
             // config keeps (`UiEffect::Remember`).
             // The Chats page's photo size (1220), kept as the receipts'
@@ -2230,6 +2236,7 @@ impl Session {
             | schema::Query::MapRegions { .. }
             | schema::Query::MapTheme { .. }
             | schema::Query::MapFling { .. }
+            | schema::Query::MapRelief { .. }
             | schema::Query::Receipts { .. }
             | schema::Query::RoomsHub { .. }
             | schema::Query::PhotoSize { .. }
@@ -2528,6 +2535,7 @@ impl Inner {
             row_cache: std::cell::RefCell::default(),
             request_shown: false,
             turn_own: false,
+            map_gate: crate::friends::MapGate::default(),
             pump_thread: None,
             just_added: std::collections::BTreeSet::new(),
             keys_told: Arc::default(),
@@ -2745,12 +2753,25 @@ impl Inner {
         if dirty || self.scene_at() != Some(self.model.lists_revision()) {
             self.show_scene();
         }
-        if dirty || owed {
+        // The map's word (1694 D): a pin the clock aged says `changed`
+        // by itself, and every `changed` says whether the map moved.
+        let mut gate = std::mem::take(&mut self.map_gate);
+        let map_moved = gate.moved(self.model.revision, || {
+            crate::friends::map_word(
+                &self.model,
+                wall_now(self.offset).unix_secs,
+                self.lang,
+                |peer| self.photo(peer),
+            )
+        });
+        self.map_gate = gate;
+        if dirty || owed || map_moved {
             // The lists first: a screen told `changed` reads them at once,
             // and may find the lock held by the next turn (1464).
             let _ = self.events.send(Event::Changed {
                 v: VERSION,
                 counts: self.counts,
+                map: self.map_gate.word(),
             });
         }
         true
@@ -3435,8 +3456,9 @@ impl Inner {
         }
         if let Some(stored) = stored {
             self.persist();
-            let shown = stored
-                .and_then(|stored| runner::show_restored(&mut self.model, &self.store, stored));
+            // A side read that missed is done again on the session's own
+            // connection (1894).
+            let shown = runner::show_pulled(&mut self.model, &self.store, stored);
             match shown {
                 Ok(()) => tracing::info!("HOME imported rows={} shown", end.imported),
                 Err(error) => {

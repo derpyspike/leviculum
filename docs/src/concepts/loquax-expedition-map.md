@@ -106,7 +106,7 @@ not in the tree). Total about 166 KB beside today's 209 KB.
 - Desktop users never see Protomaps' own Natural Earth zooms, since the
   autoload starts at z7 at the earliest: nothing is asked for below
   `MIN_ZOOM` (`loquax/src/ui/viewload.rs:57`), z10, and a view loads
-  `VIEW_BELOW` (`loquax/src/ui/map.rs:127`), three zooms above its own.
+  `VIEW_BELOW` (`loquax/src/ui/map.rs:132`), three zooms above its own.
   The world view is ours alone.
 
 ### The world as a globe, flowing into Mercator
@@ -922,7 +922,7 @@ Additions (decided):
      pin moves for the relay or for the member — the member's own
      signed message is the only word about the member's position
      outside a vouched group copy. The rule is one function in LXMF,
-     `Lev::reading_writer` (`copy_writer`, `loquax/src/ui.rs:7069`, the
+     `Lev::reading_writer` (`copy_writer`, `loquax/src/ui.rs:7171`, the
      audits of 1757, 1787 and 1808), which the node helper's telemetry
      report and the liveness judgement go through too (rule 5: one
      definition of "this message names a copy's writer", so filing and
@@ -1003,7 +1003,7 @@ Additions (decided):
      in the conversation, marked as unverified, as LXMF shows it. The
      gate is one place, the single entry where a received message's
      position and group claims become state (`apply_message_claims`,
-     `loquax/src/ui.rs:6775`; the restore has the same gate at its own
+     `loquax/src/ui.rs:6877`; the restore has the same gate at its own
      entry, `learn_groups`); nothing behind the gate knows about
      verification. The held message is kept as received with its
      verdict pending: when the verdict says valid, its claims are
@@ -1032,7 +1032,7 @@ Additions (decided):
      named writer, for the source and for the group address — a group
      is not a place and gets no pin of its own. Nothing of it shows in
      the pin, the store, the bubble's position line or the Info
-     (`Writers`, `loquax/src/ui.rs:7091`); each refused reading is said
+     (`Writers`, `loquax/src/ui.rs:7193`); each refused reading is said
      in one structured `POSITION_REFUSED reason=…` event in `tui.log`,
      nothing on screen — exactly one, where the judging happens: at
      arrival for a verified message, at the valid verdict for a held
@@ -1298,6 +1298,9 @@ any other word that promises a vehicle gets through.
   longer the dark brown of steep rock (Lew, 2026-11-12, on the pilot's
   images). Whether the pastel or the strong style becomes the default
   is open.
+- Stage A landed with order 1743: ground packs, their cut and its
+  validation, and both styles on the shared painter
+  ([the map server, "Ground packs"](map-server.md#ground-packs)).
 - Why imagery cannot lead (the imagery survey): none of the sharp
   imagery in the OpenStreetMap editors may be shipped by our server
   (Bing, Esri, Mapbox, Maxar), and nothing sharper than 10 m is openly

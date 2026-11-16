@@ -8,7 +8,8 @@
 use leviculum_map::elevation::{split, TileDecoder, TILE_CELLS};
 use leviculum_map::relief::{
     self, ao_of, assemble, fill_ground, gblur, gblur_exact, measure, sample, shade_rgb,
-    sky_exaggeration, sky_radius_m, Ground, Plane, ShadePlane, APRON, PLANE_SIDE, SIDE, TILE,
+    sky_exaggeration, sky_radius_m, Ground, Grounds, Plane, ShadePlane, APRON, PLANE_SIDE, SIDE,
+    TILE,
 };
 
 const CHEBBI: &[u8] = include_bytes!("../fixtures/erg-chebbi.lmh");
@@ -242,8 +243,10 @@ fn sky_exaggeration_follows_the_fine_band() {
     let alp_like = sky_exaggeration(0.01, 0.12, 0.015);
     assert!(dune_like > 2.2, "fine-banded clean ground, got {dune_like}");
     assert!(alp_like < 1.1, "form-banded ground, got {alp_like}");
+    // Half-way up the fine-share ramp (0.55 of the slope energy in the
+    // fine band; it starts at 0.5 since the stone-desert measure).
     assert!(
-        sky_exaggeration(0.01, 0.012, 0.002) > alp_like,
+        sky_exaggeration(0.012, 0.01, 0.002) > alp_like,
         "the step between is smooth"
     );
     // A vegetated surface model is fine-band-loud too — canopy, not
@@ -344,7 +347,7 @@ fn chebbi_tiles() -> Vec<Vec<i16>> {
 /// neighbourhood is `slots` (row-major, centre 4), as the product's
 /// store builds them: heights by [`assemble`], each present tile's
 /// ground measured on the tile alone, the missing ones filled.
-fn plane_in(slots: [Option<&[i16]>; 9], res: f32) -> (Plane, [Ground; 9]) {
+fn plane_in(slots: [Option<&[i16]>; 9], res: f32) -> (Plane, Grounds) {
     let grounds: [Option<Ground>; 9] = core::array::from_fn(|i| slots[i].map(|t| measure(t, res)));
     (
         assemble(&slots),
@@ -472,9 +475,10 @@ impl TestPack {
     }
 
     /// The plane of tile (x, y) at `z` with what the pack has of its
-    /// neighbourhood and every present tile's ground, as the product's
-    /// store builds it; `None` where the pack lacks the tile itself.
-    fn plane(&mut self, z: u8, x: u32, y: u32, res: f32) -> Option<(Plane, [Ground; 9])> {
+    /// neighbourhood and every present tile's ground, each measured at
+    /// its own row's resolution ([`relief::tile_res`]) as the product's
+    /// store measures it; `None` where the pack lacks the tile itself.
+    fn plane(&mut self, z: u8, x: u32, y: u32) -> Option<(Plane, Grounds)> {
         let at = |i: usize| (x as i64 + (i % 3) as i64 - 1, y as i64 + (i / 3) as i64 - 1);
         let mut grounds: [Option<Ground>; 9] = [None; 9];
         for (i, g) in grounds.iter_mut().enumerate() {
@@ -486,7 +490,7 @@ impl TestPack {
             if let Some(&known) = self.grounds.get(&key) {
                 *g = Some(known);
             } else if let Some(t) = self.tile(z, nx as u32, ny as u32) {
-                let m = measure(t, res);
+                let m = measure(t, relief::tile_res(z, ny as u32));
                 self.grounds.insert(key, m);
                 *g = Some(m);
             }
@@ -505,13 +509,10 @@ impl TestPack {
     }
 }
 
-/// Ground metres per sample at the centre row of tile row `y` at `z`.
+/// Ground metres per sample at the centre row of tile row `y` at `z`:
+/// the product's one formula.
 fn res_at(z: u8, y: u32) -> f32 {
-    let n = f64::from(1u32 << z);
-    let lat = (core::f64::consts::PI * (1.0 - 2.0 * (f64::from(y) + 0.5) / n))
-        .sinh()
-        .atan();
-    (156_543.03 * lat.cos() / n) as f32
+    relief::tile_res(z, y)
 }
 
 /// Two horizontally adjacent tiles of a bigger real cut, each with its
@@ -526,8 +527,8 @@ fn real_ground_seams_are_quiet_with_full_neighbourhoods() {
         // neighbour inside it.
         let (x0, y0) = (pack.pos.0 * 4 + 1, pack.pos.1 * 4 + 1);
         let res = res_at(12, y0);
-        let (left, lg) = pack.plane(12, x0, y0, res).expect("left tile");
-        let (right, rg) = pack.plane(12, x0 + 1, y0, res).expect("right tile");
+        let (left, lg) = pack.plane(12, x0, y0).expect("left tile");
+        let (right, rg) = pack.plane(12, x0 + 1, y0).expect("right tile");
         let a = relief::compute_in(&left, res, sky_radius_m(14), &lg);
         let b = relief::compute_in(&right, res, sky_radius_m(14), &rg);
         let worst = seam_step(&a, &b);
@@ -561,7 +562,7 @@ fn relief_picture(bytes: &'static [u8], zoom: u8, w: usize, h: usize) -> Vec<u8>
             let (tx, ty) = ((sx / 256.0) as u32, (sy / 256.0) as u32);
             let plane = planes.entry((tx, ty)).or_insert_with(|| {
                 let res = res_at(rz, ty);
-                pack.plane(rz, tx, ty, res)
+                pack.plane(rz, tx, ty)
                     .map(|(dem, g)| relief::compute_in(&dem, res, sky_radius_m(zoom), &g))
             });
             let c = match plane {
@@ -667,4 +668,221 @@ fn relief_goldens() {
         assert!(darkest >= 100.0, "{name}: darkest luminance {darkest}");
         golden(name, &rgb, 256, 256);
     }
+}
+
+/// Vertically adjacent planes at a concave pack corner: the pack lacks
+/// (0, 2) of the block but holds (0, 1). Both planes see (0, 2) in their
+/// neighbourhood and must fill it the same way, so their shared rows agree
+/// within 3 of 254. First the same pair with nothing missing, as control.
+#[test]
+fn audit_vertical_seams_agree_at_a_pack_corner() {
+    let rim = (PLANE_SIDE - TILE) / 2;
+    for (name, bytes) in [("chebbi", CHEBBI_Z10), ("chegaga", CHEGAGA_Z10)] {
+        let mut pack = TestPack::open(bytes);
+        let (bx, by) = (pack.pos.0 * 4, pack.pos.1 * 4);
+        let res = res_at(12, by + 1);
+        let mut t: std::collections::HashMap<(u32, u32), Vec<i16>> = Default::default();
+        for y in 0..4u32 {
+            for x in 0..4u32 {
+                let tile = pack.tile(12, bx + x, by + y).expect("held").to_vec();
+                t.insert((x, y), tile);
+            }
+        }
+        for missing in [None, Some((0u32, 2u32))] {
+            let slots = |cx: u32, cy: u32| -> [Option<&[i16]>; 9] {
+                core::array::from_fn(|i| {
+                    let x = cx as i64 + (i % 3) as i64 - 1;
+                    let y = cy as i64 + (i / 3) as i64 - 1;
+                    if x < 0 || y < 0 {
+                        return None;
+                    }
+                    let k = (x as u32, y as u32);
+                    if Some(k) == missing {
+                        return None;
+                    }
+                    t.get(&k).map(|v| &v[..])
+                })
+            };
+            let (upper, ug) = plane_in(slots(1, 1), res);
+            let (lower, lg) = plane_in(slots(1, 2), res);
+            let a = relief::compute_in(&upper, res, sky_radius_m(14), &ug);
+            let b = relief::compute_in(&lower, res, sky_radius_m(14), &lg);
+            let mut worst = 0i32;
+            for k in 0..rim {
+                for x in 0..TILE {
+                    let la = i32::from(a.t[(rim + TILE + k) * PLANE_SIDE + rim + x]);
+                    let lb = i32::from(b.t[(rim + k) * PLANE_SIDE + rim + x]);
+                    worst = worst.max((la - lb).abs());
+                }
+            }
+            assert!(
+                worst <= 3,
+                "{name}, missing {missing:?}: vertical seam step {worst} of 254"
+            );
+        }
+    }
+}
+
+/// The planes of every held tile of a fixture's 4 x 4 block, with the
+/// tiles of `missing` (block coordinates) taken out of the pack, each
+/// plane at its own row's resolution and every tile's ground measured
+/// at its own row's, as the product's store builds them.
+fn block_planes(
+    bytes: &'static [u8],
+    missing: &[(u32, u32)],
+) -> std::collections::HashMap<(u32, u32), ShadePlane> {
+    let mut pack = TestPack::open(bytes);
+    let (bx, by) = (pack.pos.0 * 4, pack.pos.1 * 4);
+    let mut tiles: std::collections::HashMap<(u32, u32), Vec<i16>> = Default::default();
+    for y in 0..4u32 {
+        for x in 0..4u32 {
+            if !missing.contains(&(x, y)) {
+                tiles.insert(
+                    (x, y),
+                    pack.tile(12, bx + x, by + y).expect("held").to_vec(),
+                );
+            }
+        }
+    }
+    let grounds: std::collections::HashMap<(u32, u32), Ground> = tiles
+        .iter()
+        .map(|(&(x, y), t)| ((x, y), measure(t, res_at(12, by + y))))
+        .collect();
+    let held: Vec<(u32, u32)> = tiles.keys().copied().collect();
+    let planes = std::thread::scope(|s| {
+        let jobs: Vec<_> = held
+            .iter()
+            .map(|&(cx, cy)| {
+                let (tiles, grounds) = (&tiles, &grounds);
+                s.spawn(move || {
+                    let at = |i: usize| {
+                        let x = cx as i64 + (i % 3) as i64 - 1;
+                        let y = cy as i64 + (i / 3) as i64 - 1;
+                        (x >= 0 && y >= 0).then_some((x as u32, y as u32))
+                    };
+                    let slots: [Option<&[i16]>; 9] =
+                        core::array::from_fn(|i| at(i).and_then(|k| tiles.get(&k)).map(|v| &v[..]));
+                    let g: [Option<Ground>; 9] =
+                        core::array::from_fn(|i| at(i).and_then(|k| grounds.get(&k)).copied());
+                    let res = res_at(12, by + cy);
+                    let ground = fill_ground(&g).expect("the centre is held");
+                    let dem = assemble(&slots);
+                    (
+                        (cx, cy),
+                        relief::compute_in(&dem, res, sky_radius_m(14), &ground),
+                    )
+                })
+            })
+            .collect();
+        jobs.into_iter()
+            .map(|j| j.join().expect("plane worker"))
+            .collect()
+    });
+    planes
+}
+
+/// Every pair of neighbouring held tiles (horizontal, vertical and both
+/// diagonals) around missing tiles, on both ergs: the whole block as
+/// control, a hole in the block at (1, 1) and at (2, 2) (the pack's
+/// concave corners around a void, its straight edges on all four
+/// sides), a notch at the block's edge (the audit's corner), an L of
+/// three missing tiles (the pack's convex corner pointing into the void)
+/// and a missing corner square. Every sample the two planes share,
+/// their rims included, wears the same tone within 3 of 254: the
+/// stand-in of a missing tile depends on where it is and what the pack
+/// holds, never on which plane asks (order 1853). On the code of
+/// 8a2a3ddad370 it failed at 36 of 254 (Chebbi, the hole at (1, 1),
+/// planes (0, 0) and (0, 1)).
+#[test]
+fn every_corner_of_a_missing_tile_agrees() {
+    let cases: [&[(u32, u32)]; 6] = [
+        &[],
+        &[(1, 1)],
+        &[(2, 2)],
+        &[(0, 2)],
+        &[(1, 1), (2, 1), (1, 2)],
+        &[(2, 2), (3, 2), (2, 3), (3, 3)],
+    ];
+    let side = PLANE_SIDE as i64;
+    for (name, bytes) in [("chebbi", CHEBBI_Z10), ("chegaga", CHEGAGA_Z10)] {
+        for missing in cases {
+            let planes = block_planes(bytes, missing);
+            let mut keys: Vec<_> = planes.keys().copied().collect();
+            keys.sort_unstable();
+            for &(ax, ay) in &keys {
+                for (dx, dy) in [(1i64, 0i64), (0, 1), (1, 1), (-1, 1)] {
+                    let (bx, by) = (ax as i64 + dx, ay as i64 + dy);
+                    if bx < 0 || by < 0 {
+                        continue;
+                    }
+                    let Some(b) = planes.get(&(bx as u32, by as u32)) else {
+                        continue;
+                    };
+                    let a = &planes[&(ax, ay)];
+                    let mut worst = 0i32;
+                    for py in 0..side {
+                        for px in 0..side {
+                            // The same ground sample in b's plane.
+                            let (qx, qy) = (px - dx * TILE as i64, py - dy * TILE as i64);
+                            if !(0..side).contains(&qx) || !(0..side).contains(&qy) {
+                                continue;
+                            }
+                            let la = i32::from(a.t[(py * side + px) as usize]);
+                            let lb = i32::from(b.t[(qy * side + qx) as usize]);
+                            worst = worst.max((la - lb).abs());
+                        }
+                    }
+                    assert!(
+                        worst <= 3,
+                        "{name}, missing {missing:?}: planes {:?} and {:?} differ by {worst} of 254",
+                        (ax, ay),
+                        (bx, by)
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Jbel Bani's stone desert (hamada, gullied escarpment, the plain
+/// below) does not wear the dune sky: no tile of the fixture asks for
+/// more than 1.2 of sky exaggeration, while the ergs keep theirs (95 %
+/// of the trip is stone desert, Lew 2026-11-14).
+#[test]
+fn stone_desert_wears_no_dune_sky() {
+    let zf_of = |bytes: &'static [u8]| -> Vec<((u32, u32), Ground, f32)> {
+        let mut pack = TestPack::open(bytes);
+        let tz = pack.tile_zoom;
+        let n = 1u32 << (tz - pack.block_zoom);
+        let (bx, by) = (pack.pos.0 * n, pack.pos.1 * n);
+        let mut out = Vec::new();
+        for y in by..by + n {
+            for x in bx..bx + n {
+                let res = res_at(tz, y);
+                if let Some(t) = pack.tile(tz, x, y) {
+                    let g = measure(t, res);
+                    out.push(((x, y), g, g.zf()));
+                }
+            }
+        }
+        out
+    };
+    let bani = zf_of(BANI);
+    assert!(!bani.is_empty());
+    for (at, g, zf) in &bani {
+        println!("BANI {at:?} {g:?} zf={zf:.3}");
+    }
+    for (name, bytes) in [("chebbi", CHEBBI_Z10), ("chegaga", CHEGAGA_Z10)] {
+        let erg = zf_of(bytes);
+        for (at, g, zf) in &erg {
+            println!("ERG {name} {at:?} {g:?} zf={zf:.3}");
+        }
+        let max = erg.iter().map(|e| e.2).fold(0.0f32, f32::max);
+        assert!(max > 1.5, "{name}: the dunes keep their sky, max zf {max}");
+    }
+    let worst = bani.iter().map(|e| e.2).fold(0.0f32, f32::max);
+    assert!(
+        worst <= 1.2,
+        "stone desert: a Bani tile asks for sky exaggeration {worst}"
+    );
 }

@@ -209,7 +209,8 @@ fn log_graphics(painter: &map::MapPainter, chosen: &map::Chosen, facts: &map::Fa
     ];
     let between: Vec<&str> = names.iter().filter(|(b, _)| *b).map(|(_, n)| *n).collect();
     tracing::info!(
-        "GRAPHICS backend={} reason={} detected={} between={} cell={}x{} zooms={}-{} context={}",
+        "GRAPHICS backend={} reason={} detected={} between={} ssh={} widths={} cell={}x{} \
+         zooms={}-{} context={}",
         painter.graphics().name(),
         chosen.reason(),
         facts
@@ -219,12 +220,41 @@ fn log_graphics(painter: &map::MapPainter, chosen: &map::Chosen, facts: &map::Fa
             true => "none".to_string(),
             false => between.join(","),
         },
+        if facts.ssh.is_some() { "yes" } else { "no" },
+        facts.widths.words(),
         setup.cell_px.0,
         setup.cell_px.1,
         setup.zooms.0,
         setup.zooms.1,
         facts.context()
     );
+}
+
+/// How far the cursor moves for each of [`map::Widths::GLYPHS`], read from
+/// the terminal's cursor position report (1880): each glyph printed at the
+/// top left of the alternate screen, which the first frame overwrites, and
+/// the line cleared after. A terminal that does not answer the first
+/// report within crossterm's wait is asked nothing more and measures
+/// nothing. A glyph the font lacks still advances one cell, so this finds
+/// a width table that disagrees, never a missing glyph.
+fn probe_widths() -> map::Widths {
+    use crossterm::cursor::{position, MoveTo};
+    use crossterm::style::Print;
+    use crossterm::terminal::{Clear, ClearType};
+    let mut out = std::io::stdout();
+    let mut answers = Vec::new();
+    for glyph in map::Widths::GLYPHS {
+        let answer = crossterm::execute!(out, MoveTo(0, 0), Print(glyph))
+            .ok()
+            .and_then(|()| position().ok())
+            .map(|(col, _)| col);
+        answers.push(answer);
+        if answer.is_none() {
+            break;
+        }
+    }
+    let _ = crossterm::execute!(out, MoveTo(0, 0), Clear(ClearType::CurrentLine));
+    map::Widths::of(&answers)
 }
 
 /// The real terminal: keys in, frames out, until the reader quits.
@@ -288,7 +318,12 @@ async fn run_terminal(
         false => None,
     };
     let detected = picker.as_ref().map(Picker::protocol_type);
-    let facts = map::Facts::read(detected, shell.model.tier, Between::detect());
+    let mut facts = map::Facts::read(detected, shell.model.tier, Between::detect());
+    // Over ssh the far terminal is unknown: ask it how far the cursor goes
+    // for the glyphs the ladder may take (1880). Only under `auto`.
+    if facts.ssh.is_some() && graphics == map::GraphicsFlag::Auto {
+        facts.widths = probe_widths();
+    }
     // The way remembered for this terminal wins over the ladder, unless it
     // cannot work here; then the ladder's, said once (1093).
     let context = facts.context();
@@ -303,6 +338,8 @@ async fn run_terminal(
         shell.apply(UiEvent::Notice(line));
     }
     let mut memory = map::Memory::new(context, held, chosen.graphics);
+    // The footer's `T finer drawing` until the reader steps (1880).
+    let finer = map::finer_hint(graphics, held, &chosen);
     // The map is drawn on its own thread: a key is read while the last
     // one's view is painted and encoded (1075).
     // Read once: the painter is handed it rather than reading it itself.
@@ -311,7 +348,10 @@ async fn run_terminal(
         .behind_tmux(tmux)
         .threaded();
     log_graphics(&painter, &chosen, &facts);
-    shell.apply(UiEvent::MapSetup(map::setup_of(&painter, &facts)));
+    shell.apply(UiEvent::MapSetup(loquax::ui::map::MapSetup {
+        finer_hint: finer,
+        ..map::setup_of(&painter, &facts)
+    }));
     let mut map_open = false;
     let log_input = input_log_on(std::env::var_os(INPUT_LOG_VAR).as_deref());
     if log_input {
@@ -369,6 +409,7 @@ async fn run_terminal(
                         .threaded();
                     memory.chose(next);
                     tracing::info!("GRAPHICS backend={} reason=chosen", next.name());
+                    // The setup below carries no `finer_hint`: answered.
                     shell.apply(UiEvent::MapSetup(map::setup_of(&painter, &facts)));
                 }
                 continue;
@@ -2357,6 +2398,8 @@ pub fn draw(frame: &mut Frame, view: &View, painter: Option<&mut map::MapPainter
             painter.set_tier(tier);
             painter.set_theme(loquax::picture::map_theme(view.map_theme, Some(view.theme)));
             painter.set_time_zones(view.time_zones);
+            painter.set_relief(view.map_relief);
+            painter.set_ground(loquax::picture::ground_style(view.map_ground));
             painter.render(frame, shown, Style::default().add_modifier(Modifier::DIM));
             if view.map_glyph_test {
                 map::draw_glyph_test(frame, to_ratatui(shown.area));
@@ -5819,6 +5862,94 @@ mod tests {
         let Ok(_) = terminal.draw(|f| draw(f, &ui::view(&model), Some(&mut painter)));
         assert_eq!(painter.paints(), 1, "one frame for the ten");
         assert_eq!(painter.painted_view(), Some(want));
+    }
+
+    /// Audit 1863: the config's `map_relief` governs the terminal's
+    /// pictures as it does the window's and the phone's. A sixel paint
+    /// over a height pack draws the relief with the key on, and with it
+    /// off draws the very frame the same view draws with no pack at all.
+    #[test]
+    fn map_relief_off_draws_the_terminal_picture_as_without_a_pack() {
+        use leviculum_map::elevation::{split, write_directory, Directory, DirectoryInfo};
+        use leviculum_map::mercator::{project, LatLon};
+        const CHEBBI: &[u8] = include_bytes!("../../leviculum-map/fixtures/erg-chebbi.lmh");
+        let fixtures =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../leviculum-map/fixtures");
+        let at = project(LatLon::from_degrees(43.7714, 11.2542));
+        // The Erg Chebbi block's heights under Florence, where the region
+        // fixture is: its coordinates moved, the frames as they are (a
+        // tile's checksum covers its heights alone).
+        let pack = {
+            let (dir, ranges) = split(CHEBBI).expect("split");
+            let shift = 32 - u32::from(dir.block_zoom());
+            let (x, y) = (at.x >> shift, at.y >> shift);
+            let mut block = CHEBBI[ranges[1].clone()].to_vec();
+            block[12..16].copy_from_slice(&x.to_le_bytes());
+            block[16..20].copy_from_slice(&y.to_le_bytes());
+            let (d, _) = Directory::parse_prefix(CHEBBI).expect("directory");
+            let mut pack = write_directory(
+                &DirectoryInfo {
+                    tile_zoom: d.tile_zoom(),
+                    block_zoom: dir.block_zoom(),
+                    bounds: [0, 0, 1, 1],
+                    attribution: d.attribution(),
+                    notice: d.notice(),
+                },
+                &[(x, y)],
+            )
+            .expect("write");
+            pack.extend_from_slice(&block);
+            pack
+        };
+        // One frame of the open map over Florence at z13, in sixel.
+        let frame = |with_pack: bool, relief: bool| -> String {
+            let dir = tempfile::tempdir().expect("tmp");
+            std::fs::copy(fixtures.join("firenze.lmr"), dir.path().join("firenze.lmr"))
+                .expect("region");
+            if with_pack {
+                std::fs::write(dir.path().join("dunes.lmh"), &pack).expect("pack");
+            }
+            let maps = loquax::picture::Maps::new(Some(dir.path().to_path_buf()));
+            let mut painter =
+                map::MapPainter::new(maps, map::Graphics::Sixel, Some(Picker::halfblocks()));
+            let mut model = Model::new(&[[0x22; 16]]);
+            model.map_relief = relief;
+            update(&mut model, UiEvent::MapSetup(painter.setup()));
+            update(
+                &mut model,
+                UiEvent::Resize {
+                    width: 80,
+                    height: 24,
+                },
+            );
+            update(
+                &mut model,
+                UiEvent::Key(KeyEvent::new(KeyCode::Char('M'), KeyModifiers::NONE)),
+            );
+            let state = model.map.as_mut().expect("the map is open");
+            state.centre = at;
+            state.zoom = 13;
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+            let Ok(drawn) = terminal.draw(|f| draw(f, &ui::view(&model), Some(&mut painter)));
+            let mut all = String::new();
+            for y in 0..24 {
+                for x in 0..80 {
+                    if let Some(cell) = drawn.buffer.cell((x, y)) {
+                        all.push_str(cell.symbol());
+                    }
+                }
+                all.push('\n');
+            }
+            assert!(all.contains("\u{1b}P"), "a sixel picture");
+            all
+        };
+        let bare = frame(false, true);
+        assert_ne!(
+            frame(true, true),
+            bare,
+            "the relief is drawn with the key on"
+        );
+        assert_eq!(frame(true, false), bare, "no relief with the key off");
     }
 
     /// The raw input log: one line an event, every field but a paste's

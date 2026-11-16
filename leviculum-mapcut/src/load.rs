@@ -5,7 +5,8 @@
 //! then is anything fetched, a round of the cut at a time, coarse to fine,
 //! each round in as few ranges as the archive's layout allows, so the region
 //! file shows its shallow zooms while the deep ones still arrive (1291,
-//! [`cut_planned`]).
+//! [`cut_planned`]). A load lives across calls ([`Loading`], 1836): it can
+//! stop between two rounds and go on later from where it was.
 
 use std::collections::HashMap;
 use std::io::{Seek, Write};
@@ -15,7 +16,9 @@ use std::sync::{PoisonError, RwLock};
 
 use leviculum_map::region::{Bounds, TileId};
 
-use crate::cut::{cut_streamed, in_bounds, CutOptions, CutStats, Progress};
+#[cfg(doc)]
+use crate::cut::Progress;
+use crate::cut::{in_bounds, CutOptions, CutStats, Streaming};
 use crate::pmtiles::{Archive, Fetched, Located, RangeRead};
 use crate::{notice, source_line, Res, TileSource, ATTRIBUTION};
 
@@ -192,8 +195,151 @@ impl<R: RangeRead> TileSource for Arriving<'_, R> {
     }
 }
 
+/// How far a load has come (1836): tiles and archive bytes, done of
+/// planned. The bytes are the tiles' own, the gaps a range spans aside,
+/// so done reaches planned exactly when every tile is written.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LoadProgress {
+    pub tiles_done: usize,
+    pub tiles: usize,
+    pub bytes_done: u64,
+    pub bytes: u64,
+    /// The deepest zoom written so far.
+    pub zoom: u8,
+    /// The region is complete ([`Progress::complete`]).
+    pub complete: bool,
+}
+
+/// A load that lives across calls (1836): the plan, the archive's tiles
+/// still to fetch and the region file as far as it is written. Each
+/// [`Loading::step`] fetches and writes one round; between two steps the
+/// caller may pause as long as it likes and go on later from the same
+/// round, the file a painter draws from staying as that round left it.
+/// [`cut_planned`] is the same in one call.
+pub struct Loading<'a, R: RangeRead, W: Write + Seek> {
+    fetched: Arriving<'a, R>,
+    cut: Streaming<W>,
+    zooms: RangeInclusive<u8>,
+    /// Every tile's length, by id: the bytes a round brings.
+    lengths: HashMap<TileId, u64>,
+    bytes: u64,
+    bytes_done: u64,
+    zoom: u8,
+}
+
+impl<'a, R: RangeRead, W: Write + Seek> Loading<'a, R, W> {
+    /// Write `planned`'s region header and slots into `out`; nothing is
+    /// fetched yet.
+    pub fn begin(
+        archive: &'a Archive<R>,
+        want: &Want,
+        planned: Planned,
+        by: &str,
+        threads: usize,
+        out: W,
+    ) -> Res<Self> {
+        let zooms = planned.zooms;
+        let first = *zooms.start();
+        let lengths: HashMap<TileId, u64> = planned
+            .chosen
+            .iter()
+            .map(|l| (l.0, u64::from(l.2)))
+            .collect();
+        let fetched = Arriving {
+            archive,
+            chosen: planned.chosen.into_iter().map(|l| (l.0, l)).collect(),
+            round: RwLock::new(None),
+            bytes: AtomicU64::new(0),
+            requests: AtomicUsize::new(0),
+        };
+        let opts = CutOptions {
+            bounds: want.bounds,
+            zooms: zooms.clone(),
+            profile: want.profile,
+            attribution: ATTRIBUTION.to_owned(),
+            notice: notice(by, want.profile, &source_line(archive)),
+            threads,
+            locale: want.locale.clone(),
+            buildings: want.buildings,
+            pois: want.pois,
+            round: crate::cut::ROUND,
+        };
+        let cut = Streaming::begin(&fetched, &opts, out)?;
+        // The cut's own list decides what is fetched: a tile the plan
+        // located that the cut drops (out of the box) brings no byte.
+        let bytes = cut
+            .tiles()
+            .iter()
+            .map(|t| lengths.get(t).copied().unwrap_or(0))
+            .sum();
+        Ok(Self {
+            fetched,
+            cut,
+            zooms,
+            lengths,
+            bytes,
+            bytes_done: 0,
+            zoom: first,
+        })
+    }
+
+    /// Where the load stands.
+    pub fn progress(&self) -> LoadProgress {
+        LoadProgress {
+            tiles_done: self.cut.done(),
+            tiles: self.cut.tiles().len(),
+            bytes_done: self.bytes_done,
+            bytes: self.bytes,
+            zoom: self.zoom,
+            complete: false,
+        }
+    }
+
+    /// Whether a round is left to fetch.
+    pub fn rounds_left(&self) -> bool {
+        self.cut.next_round().is_some()
+    }
+
+    /// Fetch and write the next round; its progress, or `None` when every
+    /// round is written and only [`finish`](Self::finish) is left. The
+    /// round fetched is dropped once written: a paused load holds no tile.
+    pub fn step(&mut self) -> Res<Option<LoadProgress>> {
+        let round: u64 = match self.cut.next_round() {
+            Some(round) => round
+                .iter()
+                .map(|t| self.lengths.get(t).copied().unwrap_or(0))
+                .sum(),
+            None => return Ok(None),
+        };
+        let written = self.cut.round(&self.fetched)?;
+        *self
+            .fetched
+            .round
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+        Ok(written.map(|p| {
+            self.bytes_done += round;
+            self.zoom = p.zoom;
+            self.progress()
+        }))
+    }
+
+    /// Write the names, buildings, pois and the length: the region is
+    /// complete. Every round must have been stepped.
+    pub fn finish(self) -> Res<Loaded> {
+        let (stats, _) = self.cut.finish()?;
+        Ok(Loaded {
+            zooms: self.zooms,
+            fetched: self.fetched.bytes.load(Ordering::Relaxed),
+            requests: self.fetched.requests.load(Ordering::Relaxed),
+            stats,
+        })
+    }
+}
+
 /// Fetch `planned`'s tiles and cut them into `out`, a round at a time,
-/// telling `progress` after each round is written ([`cut_streamed`]).
+/// telling `progress` after each round is written and once complete
+/// ([`Loading`] in one call).
 pub fn cut_planned<R: RangeRead, W: Write + Seek>(
     archive: &Archive<R>,
     want: &Want,
@@ -201,33 +347,74 @@ pub fn cut_planned<R: RangeRead, W: Write + Seek>(
     by: &str,
     threads: usize,
     out: W,
-    progress: &mut dyn FnMut(Progress),
+    progress: &mut dyn FnMut(LoadProgress),
 ) -> Res<Loaded> {
-    let zooms = planned.zooms;
-    let fetched = Arriving {
-        archive,
-        chosen: planned.chosen.into_iter().map(|l| (l.0, l)).collect(),
-        round: RwLock::new(None),
-        bytes: AtomicU64::new(0),
-        requests: AtomicUsize::new(0),
-    };
-    let opts = CutOptions {
-        bounds: want.bounds,
-        zooms: zooms.clone(),
-        profile: want.profile,
-        attribution: ATTRIBUTION.to_owned(),
-        notice: notice(by, want.profile, &source_line(archive)),
-        threads,
-        locale: want.locale.clone(),
-        buildings: want.buildings,
-        pois: want.pois,
-        round: crate::cut::ROUND,
-    };
-    let stats = cut_streamed(&fetched, &opts, out, progress)?;
-    Ok(Loaded {
-        zooms,
-        fetched: fetched.bytes.load(Ordering::Relaxed),
-        requests: fetched.requests.load(Ordering::Relaxed),
-        stats,
-    })
+    let mut loading = Loading::begin(archive, want, planned, by, threads, out)?;
+    while let Some(p) = loading.step()? {
+        progress(p);
+    }
+    let last = loading.progress();
+    let loaded = loading.finish()?;
+    progress(LoadProgress {
+        complete: true,
+        zoom: *loaded.zooms.end(),
+        ..last
+    });
+    Ok(loaded)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    const FIXTURE: &[u8] = include_bytes!("../fixtures/oltrarno.pmtiles");
+
+    struct InMemory;
+
+    impl RangeRead for InMemory {
+        fn read_range(&self, offset: u64, len: u64) -> Res<Vec<u8>> {
+            let at = (offset as usize).min(FIXTURE.len());
+            let end = at.saturating_add(len as usize).min(FIXTURE.len());
+            Ok(FIXTURE[at..end].to_vec())
+        }
+    }
+
+    /// A load paused between two rounds holds none of the tiles it
+    /// fetched (1836): the round is written and let go, so four paused
+    /// loads cost their plans, not their last rounds' bytes.
+    #[test]
+    fn a_load_between_rounds_holds_no_fetched_tile() {
+        let archive = Archive::from_source(InMemory).expect("open");
+        let want = Want {
+            bounds: Bounds {
+                west: 112_615_000,
+                south: 437_405_000,
+                east: 112_825_000,
+                north: 437_545_000,
+            },
+            zooms: 0..=15,
+            floor: 10,
+            cap: 64 << 20,
+            profile: 2,
+            locale: None,
+            buildings: false,
+            pois: false,
+        };
+        let planned = plan(&archive, &want).expect("plan");
+        let mut loading =
+            Loading::begin(&archive, &want, planned, "test", 1, Cursor::new(Vec::new()))
+                .expect("begin");
+        let held = |l: &Loading<'_, InMemory, Cursor<Vec<u8>>>| {
+            l.fetched
+                .round
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_some()
+        };
+        assert!(!held(&loading));
+        while loading.step().expect("round").is_some() {
+            assert!(!held(&loading), "a written round is let go");
+        }
+    }
 }

@@ -165,6 +165,18 @@ leviculum-map-tool cut -o chegaga.lmr https://build.protomaps.com/20261113.pmtil
 from the Protomaps daily build of 2026-11-13, © OpenStreetMap
 contributors, ODbL 1.0, as above.
 
+`morocco/bani.lmr` (45,621 bytes, sha256
+`1707c25568b6b8e1c949e7101a6a7e259b7a147fc2132acae38916c08a1e82e2`): the
+render walk's Bani centre (order 1868), over the box of the
+`bani-z11.lmh` block (z11 tile 985/846), zooms 10 to 14, cut on
+2026-11-15 from the same build and under the same licence with
+
+```sh
+leviculum-map-tool cut -o bani.lmr https://build.protomaps.com/20261113.pmtiles \
+    --bbox=-6.8555,29.6880,-6.6797,29.8407 --min-zoom 10 --max-zoom 14 \
+    --locale de --buildings false --pois false
+```
+
 ## The world outline
 
 `../data/ne_50m_land.lwo` is not a test fixture but the table the crate
@@ -465,3 +477,34 @@ EntitySchema namespaces is available under the Creative Commons CC0
 License" (<https://www.wikidata.org/wiki/Wikidata:Licensing>, read
 2026-11-11), CC0 1.0, <https://creativecommons.org/publicdomain/zero/1.0/>.
 No attribution is owed; this note names the source anyway.
+
+`ground-chebbi-z9.lmg`, `ground-chegaga-z9.lmg`, `ground-bani-z9.lmg`:
+ground packs (order 1743, `leviculum_map::ground`), one z9 block each
+under the render walk's desert centres, cut on 2026-11-15 with
+
+```sh
+leviculum-map-tool ground -o ground-<name>-z9.lmg --bbox=<box> \
+    --heights pilot.lmh --source <mirror>
+```
+
+from the order 1740 height pack of the Morocco pilot box (`pilot.lmh`,
+`leviculum-map-tool heights --bbox=-7.6,29.3,-3.7,31.5`), Kellndorfer et
+al.'s coherence and backscatter cells N30 to N32, W003 to W009, and the
+GeoMAD 2024 tiles over 28.3 to 32.5 N, 8.6 to 2.7 W (their 40 m
+overviews; `--source` holds them as the buckets lay them out, without it
+the cut reads the buckets):
+
+| file | box (W,S,E,N) | block | bytes | sha256 |
+|---|---|---|---|---|
+| `ground-chebbi-z9.lmg` | -4.2187,30.7514,-3.5157,31.3535 | 250/209 | 48,593 | `d76098cd87622fcebee3ead4f5ec4b8cf7f3a940150f70dcce593644327c5331` |
+| `ground-chegaga-z9.lmg` | -6.3280,29.5353,-5.6251,30.1450 | 247/211 | 46,732 | `db8cb408522ebb6b844b276cf2d3f93d3eb4d3b265e9c7a6c49256197518492d` |
+| `ground-bani-z9.lmg` | -7.0312,29.5353,-6.3282,30.1450 | 246/211 | 44,278 | `5c6379afb0ae282abf11be4c5072eaa7e0a2548c1b54c20c9c9b892b85f8e195` |
+
+Ground classes: Global seasonal Sentinel-1 coherence and backscatter,
+Kellndorfer et al. 2022, CC BY 4.0, modified; GeoMAD © Digital Earth
+Africa, CC BY 4.0, modified; contains modified Copernicus Sentinel data
+2019-2020 and 2024; heights produced using Copernicus WorldDEM-30 as
+above. The attribution and the notice are inside each file. The frames
+are written by the C zstd library at level 19 and read by the pure-Rust
+decoder in `../tests/ground.rs`.
+

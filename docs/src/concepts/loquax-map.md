@@ -33,14 +33,14 @@ the two telemetry fields into positions (`telemetry::read`,
 `loquax/src/telemetry.rs:198`; a group's copy books its position under
 the writer, not the group, only where the signature was verified and a
 group the reader joined itself lists that writer at the copy's epoch,
-`copy_writer`, `loquax/src/ui.rs:7069` — a named writer the rule does
+`copy_writer`, `loquax/src/ui.rs:7171` — a named writer the rule does
 not credit makes the reading nobody's (Lew 2026-11-13,
 [the expedition map](loquax-expedition-map.md); the chat draws a copy's
 writer by the same rule, `groups::copy_writer`, 1696, 1702, 1728); a collector's
 stream row only where the reader chose that collector, and none can be
-chosen yet, `Writers`, `loquax/src/ui.rs:7091`), the screen model keeps
+chosen yet, `Writers`, `loquax/src/ui.rs:7193`), the screen model keeps
 each peer's latest and hands every one to the store (`take_telemetry`,
-`loquax/src/ui.rs:6970`), and the store keeps the fields whole in its
+`loquax/src/ui.rs:7072`), and the store keeps the fields whole in its
 `fields` column (`loquax/src/store.rs:3994`) and the positions in a table of
 their own (`SCHEMA_V2`, `loquax/src/store.rs:205`). The sender's timestamp
 is still not carried: `OutboxEvent`, the screen's `Message` and every type
@@ -828,6 +828,11 @@ after the area fills and before the buildings and every line
 (`leviculum_map::draw::draw_in_relief`), so it shades the ground
 colours and never a road, a footprint or a name. The style is part of
 the tile cache's key, so switching the flag drops the cached tiles.
+The config's `map_relief` (1863, on by default; the phone's Advanced
+page has the switch) turns it off. The packs come with the regions:
+the autoload fetches the height pack blocks under every region that
+lands from the server's catalogue and evicts them with it
+([map server](map-server.md), "Height packs on the device").
 The packs are found and indexed by `loquax/src/relief.rs` (bounded
 reads, indexed again only when the set of pack files changes, one store
 shared by all of a tile cache's workers); the method and its parameters
@@ -1055,8 +1060,17 @@ config, #471) says the map works without a step. Decided 2026-10-27
   0.27 s, every z13 tile after 10.7 s, the whole region after 58.2 s,
   where fetching everything first took 53.6 s with nothing to draw
   before the end. Every region that reaches into a view is drawn, each
-  into its own box (1077's clip), the deepest last, so loaded patches
-  join up (this replaces "one region or the outline" of section 7). A
+  into its own box (1077's clip), so loaded patches join up (this
+  replaces "one region or the outline" of section 7). On top the region
+  whose data at the view's zoom is least changed: its deepest zoom the
+  view's, then deeper ones the nearer the higher, then shallower ones
+  the deeper the higher (1836; before, the deepest drew last and the
+  same view drew differently by landing order). A region still arriving
+  or paused draws only into the squares of the tiles it has, so where it
+  has nothing yet the region under it shows (1836, Lew's rule 8a), and
+  lays no coarser stand-in over a complete region drawn under it whose
+  data there is as deep or deeper (1910); each square draws only the
+  tiles that meet it. A
   place's map is fitted again to the region when it lands, unless the
   reader touched the map since (1819: any key, drag or wheel ends it);
   no other load moves the view.
@@ -1078,9 +1092,19 @@ config, #471) says the map works without a step. Decided 2026-10-27
   view and regions again decide nothing. The loader orders its queue by
   that decision: a box asked for by hand (a place, the pins, "load this
   area"), then the screen's, then the ones next to it, then those the
-  view left, of which it keeps the newest eight. A load the view left
-  cannot be paused, the cut reads the archive in one call, so the
-  screen's load starts beside it: two at most. Measured with the facade
+  view left, of which it keeps the newest eight. A load runs a round of
+  its cut at a time (1836): while anything for the screen runs or waits,
+  a load the view left pauses at its next round, its file kept and drawn
+  as far as it came, and the screen's load starts at once; a paused load
+  whose area is back on the screen goes on before any later box for the
+  screen starts (1910); once the screen has its box the paused loads go
+  on, before any new box starts. Two run at most, four wait paused at
+  most, past that the worst ranked is dropped and queued again. When a
+  landing for the screen needs space, the paused loads' files go first,
+  each load stopped and queued again (1910). At 200 kB/s the load walk's
+  wheel-rested-slow at the head of 1836 measured the screen waiting
+  308 ms behind loads the view left, 15.4 s before (43.6 s in 1811's
+  walk). Measured with the facade
   and a source that never answers (`a_pan_into_the_empty_loads_what_is_on_screen_at_once`,
   a frame every 16 ms): a pan of a screen and a half that rests, one that
   goes on slowly, a fling that coasts and a zoom out by two steps each
@@ -1097,6 +1121,24 @@ config, #471) says the map works without a step. Decided 2026-10-27
   "Loading the map of this area" only for a load for the screen
   (`loading_here`, 1292); a load for an area the view left says nothing,
   and "No map here yet" shows over it.
+- *Where it loads, in place (1812).* Every area of the view whose data is
+  still to come carries a treatment in the picture itself
+  (`loquax::ui::maploading`): sparse blue stripes that move while bytes
+  arrive, a blue edge and a bar along the bottom of what the screen shows
+  of it, filled to the bytes done of the bytes planned; grey still
+  stripes and a dashed edge for an area waiting its turn; red for one
+  that failed. A load that receives no byte for ten seconds stops moving
+  and turns amber. A region that already holds the view's zoom stays
+  bare, whatever box loads over it, and a completed area simply loses its
+  stripes, the map under it unmoved. One line beside the map says the
+  same in words, through the translations: "Loading the map · 42 %",
+  "No map data for 12 s", "Map not loaded · next try in 7 s" (the window
+  adds "Try now"), "The map waits its turn", and offline once for the
+  view; the phone's chip and the terminal's title carry it in place of
+  "Loading the map of this area". The stripes step eight times a second
+  only while a load moves; an idle map draws no frame for them. The load
+  walk holds it (`loading_is_visible`, `progress_moves_with_bytes`,
+  `no_treatment_when_complete`, `idle_draws_nothing`).
 - *Disk.* Loaded regions are named `auto-<box>-z<min>-<max>.lmr` and are a
   cache of `map_cache_mb` megabytes (500 by default, a hundred or more city
   places), the least recently viewed evicted first, viewed meaning drawn,
@@ -1362,6 +1404,13 @@ remembered. The techniques and the measurements behind their order are
   Termux; `braille-thin` otherwise, at 16 colours with each class in its
   own of the sixteen (`leviculum_mapfill::style::ansi16`); plain braille
   without colour. Half-blocks and the mosaic are no rung, only a choice.
+  Over ssh (1880) block elements are not taken either: the far terminal's
+  font is unknown, and Termux's drew them as boxes. A protocol it answered
+  for and octants it draws itself still are; a cursor position report after
+  an octant and a braille cell catches a width table that disagrees, never
+  a missing glyph. The memory's context carries a hash of the ssh client,
+  the footer offers `T finer drawing` until the reader steps, and
+  `loquax tui --graphics-test` prints every way's glyphs in a labelled row.
   tmux now keeps the pictures off the top: it passes them only where its
   configuration allows.
 - `t` and `T` (and `F2`) cycle every way in the ladder's order, the title
@@ -1601,7 +1650,8 @@ The reviewer decided three more for slice (c), 2026-10-27 (leviculum 1065):
 - **One region or the outline, never a patchwork.** Superseded by 1089:
   loaded patches must join up, so a view now draws every region that
   reaches into it whose zooms reach the view's, each inside its box, the
-  deepest last (`leviculum_map::choice::drawn`), over the outline. Until
+  one nearest the view's zoom last (`leviculum_map::choice::drawn`, 1836),
+  over the outline. Until
   then: a view drew the
   installed region of the deepest max zoom whose box holds the view's
   centre and whose zooms reach the view's (its shallowest down to eight

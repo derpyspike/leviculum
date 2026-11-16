@@ -3602,9 +3602,11 @@ dependencies = [
  "leviculum-mapcut",
  "leviculum-mapfill",
  "libm",
+ "ruzstd",
  "serde_json",
  "tempfile",
  "ureq",
+ "weezl",
  "zstd",
 ]
 

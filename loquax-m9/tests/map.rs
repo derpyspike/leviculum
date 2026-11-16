@@ -1084,52 +1084,42 @@ fn the_time_zone_view_draws_its_borders() {
     }
 }
 
-/// 1693: a friend's pin text is drawn in the peer's hue, the colour its
-/// pin and track take on the dark map of every other target
-/// (`loquax::ui::tracks::peer_colour`), chosen or not: the chosen one
-/// reversed, its ground the hue. Two peers of different first bytes, two
-/// different colours. The control: a node nearby is in neither hue.
+/// Order 1910: the board picks its region by the rule every frontend
+/// stacks regions by (`leviculum_map::choice::draw_rank`): of two regions
+/// under the view, the one whose own deepest zoom is the view's, not a
+/// deeper one, whose data at the view's zoom a cut simplified. The second
+/// region is the fixture with a max zoom one shallower (header byte 25):
+/// at that zoom it is the one drawn, at the fixture's own the fixture.
 #[test]
-fn a_friends_pin_is_drawn_in_its_hue() {
-    use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565, Rgb888};
-    use embedded_graphics::prelude::RawData;
-    use loquax::ui::map::PinCell;
-    let model = Screen::Map.model();
-    let look = Look::of(&model);
-    let pin = |peer: u8, row: u16, selected: bool, nearby: bool| PinCell {
-        peer: [peer; 16],
-        col: 1,
-        row,
-        text: "● bob".to_string(),
-        apart: None,
-        stale: false,
-        nearby,
-        selected,
-        own: false,
-    };
-    let pins = [
-        pin(1, 2, false, false),
-        pin(3, 4, true, false),
-        pin(5, 6, false, true),
-    ];
-    let mut frame = Frame::new();
-    let font = loquax_m9::font::Size::Large.atlas();
-    map::pins(&pins, &look, &font, &mut frame).expect("pins");
-    let word = |peer: u8| {
-        let [r, g, b] = loquax::ui::tracks::peer_colour(&[peer; 16], true);
-        RawU16::from(Rgb565::from(Rgb888::new(r, g, b))).into_inner()
-    };
-    let cell = |row: u16| -> Vec<u16> {
-        let (cw, ch) = (u32::from(CELL_PX.0), u32::from(CELL_PX.1));
-        let y0 = u32::from(row) * ch;
-        (y0..y0 + ch)
-            .flat_map(|y| (cw..cw * 6).map(move |x| (x, y)))
-            .map(|(x, y)| frame.pixel(x, y))
-            .collect()
-    };
-    assert_ne!(word(1), word(3));
-    assert!(cell(2).contains(&word(1)), "peer 1's text in its hue");
-    assert!(cell(4).contains(&word(3)), "the chosen pin keeps its hue");
-    let nearby = cell(6);
-    assert!(!nearby.contains(&word(5)) && !nearby.contains(&word(1)));
+fn the_board_picks_the_region_the_frontends_draw_on_top() {
+    use leviculum_map::mercator::{project, LatLon};
+    use leviculum_map::region::Region;
+    use leviculum_map::viewport::Viewport;
+    let header = *Region::from_bytes(FIXTURE).expect("fixture").header();
+    let shallow = header.max_zoom - 1;
+    assert!(header.min_zoom <= shallow, "{header:?}");
+    let mut copy = FIXTURE.to_vec();
+    copy[25] = shallow;
+    assert_eq!(
+        Region::from_bytes(&copy).expect("copy").header().max_zoom,
+        shallow
+    );
+    let board = Map::board(FIXTURE, &[&copy]).expect("regions");
+    let b = header.bounds;
+    let at = project(LatLon::from_e6(
+        ((i64::from(b.south) + i64::from(b.north)) / 20) as i32,
+        ((i64::from(b.west) + i64::from(b.east)) / 20) as i32,
+    ));
+    let view = Viewport::new(at, shallow, 320, 240);
+    assert_eq!(
+        board.choose(&view),
+        map::Drawn::Detail(1),
+        "z{shallow}: the region whose deepest zoom is the view's"
+    );
+    let own = Viewport::new(at, header.max_zoom, 320, 240);
+    assert_eq!(
+        board.choose(&own),
+        map::Drawn::Detail(0),
+        "the fixture's own zoom"
+    );
 }

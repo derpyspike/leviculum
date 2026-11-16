@@ -856,6 +856,18 @@ pub const EVENT_CATALOG: &[EventSchema] = &[
         name: "LNMSG_SENDER",
         required_keys: &["from", "source"],
     },
+    // The map's budgets from the machine's facts, said once at start
+    // (`loquax/src/budget.rs`, rule 6 of order 1836, built in 1910).
+    EventSchema {
+        name: "MAP_BUDGET",
+        required_keys: &[
+            "ram_mb",
+            "cores",
+            "tile_cache_mb",
+            "frame_tiles",
+            "prefetch_tiles",
+        ],
+    },
     EventSchema {
         name: "LNMSG_ATTACHED",
         required_keys: &["instance", "address"],
@@ -885,8 +897,15 @@ pub const EVENT_CATALOG: &[EventSchema] = &[
     EventSchema {
         name: "MAPGESTURE",
         required_keys: &[
-            "w", "h", "moving", "x", "y", "z", "by", "to_x", "to_y", "to_z",
+            "w", "h", "moving", "x", "y", "z", "by", "to_x", "to_y", "to_z", "ms",
         ],
+    },
+    // One line per height fetch the phone's loader ended (order 1868, the
+    // audit of 1863): the packs it wrote, those it had, the bytes, or why
+    // it failed; without it a device's relief arrives unseen in logcat.
+    EventSchema {
+        name: "MAPHEIGHTS",
+        required_keys: &["ok", "packs", "had", "fetched", "elapsed_ms"],
     },
     EventSchema {
         name: "HOME_ABOUT",

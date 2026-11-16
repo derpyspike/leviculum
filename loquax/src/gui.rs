@@ -74,6 +74,7 @@ use iced::{
 use tokio::sync::oneshot;
 
 use leviculum_map::viewport::{ExactView, MILLI};
+use leviculum_mapfill::style::MapTheme;
 use leviculum_mapfill::style::Style;
 use leviculum_ui::input::KeyCode;
 use leviculum_ui::keymap::Ctx;
@@ -85,8 +86,10 @@ use loquax::ui::browse::BrowseEvent;
 use loquax::ui::compose::Sheet;
 use loquax::ui::intent::{Intent, Messages, Target};
 use loquax::ui::map::{fit, want_pins, want_view, zoom_floor, MapPin, MapSetup, MapWant};
+use loquax::ui::maploading::{paint, Brush, Loads, Look, Painted};
 use loquax::ui::scene::{LayoutClass, NodeId, Scene, TabId};
 use loquax::ui::strings::{Lang, StrId};
+use loquax::ui::viewload::holding;
 use loquax::ui::viewload::{ViewLoads, ViewWants};
 use loquax::ui::{Pane, UiEvent, MAP_LOADED_ALREADY, MAP_LOADING_HERE_WORDS};
 use loquax::when::WallTime;
@@ -121,6 +124,9 @@ pub struct Seen {
     pub notice: Option<String>,
     /// The word while a map region loads.
     pub loading: Option<String>,
+    /// What of the map's view is still to come, area by area (1812):
+    /// drawn over the map in place ([`loquax::ui::maploading::paint`]).
+    pub loads: Loads,
     /// The maps directory's epoch: a new one means a region landed or left.
     pub maps: u64,
     /// Whether going to a place loads its region (`map_autoload`).
@@ -226,14 +232,24 @@ impl Seen {
             tracks: model.track_input(),
             track_window: model.track_window,
             notice: model.toasts.last().map(|t| t.text.clone()),
-            // The screen's own load in the phone chip's words (1527).
-            loading: match model.map_here {
-                true => Some(MAP_LOADING_HERE_WORDS.to_string()),
-                false => model.map_loading.clone(),
+            // The loads' one line (1812): how far, stalled, failed and
+            // when it retries, offline; before it the screen's own load in
+            // the phone chip's words (1527).
+            loading: match (model.map_loads.line(model.lang), model.map_here) {
+                (Some(line), _) => Some(line),
+                (None, true) => Some(MAP_LOADING_HERE_WORDS.to_string()),
+                (None, false) => model.map_loading.clone(),
             },
+            loads: model.map_loads.clone(),
             maps,
             autoload: model.map_autoload,
-            style: Style::SCREEN.in_theme(map_theme(model.map_theme, None)),
+            // The relief is the config's `map_relief` (1863); the dark
+            // table draws without it in any case.
+            style: Style {
+                relief: model.map_relief,
+                ground: loquax::picture::ground_style(model.map_ground),
+                ..Style::SCREEN.in_theme(map_theme(model.map_theme, None))
+            },
             map_flag: model.map_theme,
             scene: model.scene(LayoutClass::Wide),
             now: model.now,
@@ -335,6 +351,8 @@ pub enum Want {
     /// A link for the system's handler (1430): the card's Navigate, the
     /// directions on OpenStreetMap's site in the browser.
     Open(String),
+    /// "Try now" on the map's failed areas (1812).
+    MapRetry,
 }
 
 /// `loquax gui`: the shell started as the terminal starts it, driven on
@@ -467,6 +485,7 @@ async fn drive(
             Some(want) = asks.recv() => match want {
                 Want::Map(want) => shell.map_ask(want),
                 Want::MapView(wants) => shell.map_schedule(wants),
+                Want::MapRetry => shell.map_retry_now(),
                 Want::Ui(event) => shell.apply(event),
                 Want::Record { peer, input } => shell.record(peer, input),
                 Want::Attach { peer, path, photo } => shell.attach(peer, &path, photo),
@@ -489,7 +508,7 @@ async fn drive(
 /// window is sent only what it would show differently. The model's clock
 /// moves every second, and the window shows no second of it: a list's
 /// time and the date lines are by the day, a message's time by the
-/// minute, the tracks are kept by the minute ([`TrackKey`]), a stale
+/// minute, the tracks are kept by their ages ([`loquax::ui::tracks::TrackKey`]), a stale
 /// fix by the hour. So the clock counts by the minute here; what else
 /// moves each second (a pin's age in words, a recording's length) moves
 /// the scene or the pins and is sent.
@@ -617,6 +636,8 @@ pub enum Pointer {
 #[derive(Clone, Debug)]
 pub enum Message {
     Seen(Box<Seen>),
+    /// "Try now" beside the map's line while an area failed (1812).
+    MapRetry,
     /// The map's canvas has this logical size.
     MapSize(Size),
     Scale(f32),
@@ -743,6 +764,7 @@ impl Message {
         !matches!(
             self,
             Message::Seen(_)
+                | Message::MapRetry
                 | Message::MapSize(_)
                 | Message::Scale(_)
                 | Message::Window(_)
@@ -829,6 +851,33 @@ pub struct Order {
     /// The time zone view at this minute, in seconds since the epoch
     /// (1684); `None` without it.
     pub time_zones: Option<i64>,
+    /// What of the view is still to come (1812), drawn over the frame.
+    pub loads: Loads,
+    /// The loads' stripes' step ([`Loads::phase`]): 0 while nothing
+    /// moves, so an idle map asks the same frame again and draws none.
+    pub phase: u32,
+}
+
+/// The pins and tracks a frame of `view` draws (1694 B): those inside
+/// [`loquax::ui::map::clip_area`] on a flat view, so a fix far outside the
+/// view changes no [`Order`] and draws no frame. All of them on the globe,
+/// where a turn brings any into view, and under the radar, which points at
+/// pins outside the view. The `selected` pin stays: its card shows it.
+fn clip_order(
+    view: &ExactView,
+    pins: Vec<MapPin>,
+    tracks: Vec<loquax::ui::tracks::Track>,
+    radar: bool,
+    selected: Option<[u8; 16]>,
+) -> (Vec<MapPin>, Vec<loquax::ui::tracks::Track>) {
+    let area = match radar || loquax::mapgesture::turns(view).is_some() {
+        true => None,
+        false => loquax::ui::map::clip_area(view.centre, view.unit(), view.size()),
+    };
+    match area {
+        Some(area) => loquax::ui::map::clip(pins, tracks, area, selected),
+        None => (pins, tracks),
+    }
 }
 
 /// A frame drawn for the window.
@@ -847,6 +896,10 @@ pub struct Shown {
     pub fading: bool,
     /// What drawing it took on the worker, in milliseconds (1431).
     pub ms: f64,
+    /// Where the loads' treatment lies in it (1812), in its pixels.
+    pub painted: Painted,
+    /// What the treatment took of [`ms`](Self::ms), in milliseconds.
+    pub treat_ms: f64,
 }
 
 /// What the worker does next.
@@ -887,14 +940,38 @@ pub fn draw(frames: &Mutex<Frames>, order: Order) -> Arc<Shown> {
         time_zones: order.time_zones,
     });
     let (w, h) = shot.view.size();
+    let mut rgba = shot.rgba;
+    // What of the view is still to come, in place (1812).
+    let treat = Instant::now();
+    // Where a region holds the view's zoom the map shows it bare.
+    let held = match order.loads.areas.is_empty() {
+        true => Vec::new(),
+        false => holding(&frames.painter().headers(), order.view.tile_zoom()),
+    };
+    let painted = paint(
+        &mut rgba,
+        &shot.view,
+        &order.loads,
+        &held,
+        &Brush {
+            phase: order.phase,
+            dark: order.style.theme == MapTheme::Dark,
+            scale: order.scale,
+            margin: order.margin,
+            look: Look::default(),
+        },
+    );
+    let treat_ms = treat.elapsed().as_secs_f64() * 1e3;
     Arc::new(Shown {
-        handle: Handle::from_rgba(w, h, shot.rgba),
+        handle: Handle::from_rgba(w, h, rgba),
         view: shot.view,
         placed: frames.placed().to_vec(),
         attribution: shot.attribution,
         missing: shot.missing,
         fading: shot.fading,
         ms: start.elapsed().as_secs_f64() * 1e3,
+        painted,
+        treat_ms,
         order,
     })
 }
@@ -985,20 +1062,18 @@ impl Glide {
 }
 
 /// The window's state.
-/// What the window's tracks were derived at ([`App::tracks`]).
-#[derive(Clone, Debug, PartialEq)]
-struct TrackKey {
-    zoom: u8,
-    scale: u32,
-    window: loquax::ui::tracks::TrackWindow,
-    minute: i64,
-    fixes: Vec<([u8; 16], usize, usize)>,
-}
-
 struct App {
     seen: Seen,
-    /// The tracks last derived, and at what.
-    track_cache: std::cell::RefCell<Option<(TrackKey, Vec<loquax::ui::tracks::Track>)>>,
+    /// The tracks last derived, and at what (the core's key, 1694 E).
+    track_cache: loquax::ui::tracks::TrackCache,
+    /// The map's picture as the canvas last drew it, and what it drew it
+    /// of (1694 C): iced builds the view after every message, and the
+    /// picture's geometry is made again only when the frame on screen,
+    /// where it lies, its filter, the ground or the size moved.
+    picture: canvas::Cache<Renderer>,
+    picture_key: std::cell::RefCell<Option<PictureKey>>,
+    /// How often the picture's geometry was made (for the tests).
+    picture_draws: std::cell::Cell<u64>,
     asks: Option<Asks>,
     /// The core's scheduler over the map's frames (1527): the screen at its
     /// zoom loads first.
@@ -1174,6 +1249,7 @@ impl App {
                 track_window: Default::default(),
                 notice: None,
                 loading: None,
+                loads: Loads::default(),
                 maps: 0,
                 autoload: false,
                 style: Style::SCREEN,
@@ -1192,7 +1268,10 @@ impl App {
                 cards: Vec::new(),
             },
             asks,
-            track_cache: std::cell::RefCell::new(None),
+            track_cache: loquax::ui::tracks::TrackCache::default(),
+            picture: canvas::Cache::new(),
+            picture_key: std::cell::RefCell::new(None),
+            picture_draws: std::cell::Cell::new(0),
             touched: false,
             frames: Arc::new(Mutex::new(frames)),
             view: ExactView::new(centre, u32::from(setup.zooms.0) * MILLI, 1, 1),
@@ -2079,7 +2158,9 @@ impl App {
         }
         // The screen's frames while the wheel's zoom glides or a frame is
         // held back for the frame interval (1431).
-        if self.screen == Screen::Map && (self.animating() || self.owed) {
+        // And while a load's stripes move (1812): only then, an idle map
+        // asks for no frame.
+        if self.screen == Screen::Map && (self.animating() || self.owed || self.loads_move()) {
             all.push(window::frames().map(Message::Frame));
         }
         Subscription::batch(all)
@@ -2411,6 +2492,12 @@ impl App {
                 self.map_menu = !self.map_menu;
                 return Task::none();
             }
+            Message::MapRetry => {
+                if let Some(asks) = &self.asks {
+                    let _ = asks.send(Want::MapRetry);
+                }
+                return Task::none();
+            }
             Message::TimeZones => {
                 self.map_menu = false;
                 self.time_zones = !self.time_zones;
@@ -2649,23 +2736,52 @@ impl App {
     fn order(&self) -> Option<Order> {
         let (w, h) = self.pixels()?;
         let (pins, radar) = self.radar_pins();
+        // While the wheel's zoom glides, the view it ends on: the glide
+        // scales the frame on screen towards it.
+        let view = self.glide.map_or(self.view, |g| g.to);
+        let (pins, tracks) = clip_order(&view, pins, self.tracks(), radar.is_some(), self.selected);
         Some(Order {
-            // While the wheel's zoom glides, the view it ends on: the
-            // glide scales the frame on screen towards it.
-            view: self.glide.map_or(self.view, |g| g.to),
+            view,
             margin: (w / MARGIN_PART, h / MARGIN_PART),
             moving: self.moving(),
             style: self.map_style(),
             scale: self.scale,
             pins,
-            tracks: self.tracks(),
+            tracks,
             radar,
             selected: self.selected,
             zooms: self.zooms(),
             epoch: self.seen.maps,
             motion: self.motion,
             time_zones: self.time_zones.then(loquax::zoneclock::unix_minute),
+            loads: self.seen.loads.clone(),
+            phase: self.load_phase(),
         })
+    }
+
+    /// The stripes' step for the next frame (1812): it moves only while a
+    /// load moves AND the frame on screen shows it moving; otherwise it
+    /// stays where the last frame had it, so the order is the same and no
+    /// frame is drawn for it. A load whose area the regions hold already
+    /// is drawn bare and asks for nothing.
+    fn load_phase(&self) -> u32 {
+        let last = self.shown.as_ref().map_or(0, |s| s.order.phase);
+        match self.loads_move() {
+            true => self.seen.loads.phase(self.now_ms()),
+            false => last,
+        }
+    }
+
+    /// A load moves, and the frame on screen shows it ([`load_phase`]),
+    /// or none is on screen yet to say.
+    fn loads_move(&self) -> bool {
+        self.seen.loads.animates()
+            && self.shown.as_ref().is_none_or(|s| {
+                s.painted
+                    .pieces
+                    .iter()
+                    .any(|p| matches!(p.kind, loquax::ui::maploading::Kind::Loading { .. }))
+            })
     }
 
     /// The pins as the frame draws them, and the radar where no region
@@ -2686,43 +2802,25 @@ impl App {
     }
 
     /// The tracks at the view's tile zoom, as the frame draws them: kept
-    /// while the zoom step, the window, the minute and the fixes stay, so
-    /// a drag does not derive a year of fixes every frame.
+    /// while the zoom step, the window, the fixes and their ages stay
+    /// ([`loquax::ui::tracks::TrackKey`]), so a drag does not derive a
+    /// year of fixes every frame, nor a minute of the clock that moved no
+    /// age.
     fn tracks(&self) -> Vec<loquax::ui::tracks::Track> {
         let Some(now) = self.seen.now else {
             return Vec::new();
         };
-        let key = TrackKey {
-            zoom: self.view.tile_zoom(),
-            scale: self.scale.to_bits(),
-            window: self.seen.track_window,
-            minute: now.unix_secs.div_euclid(60),
-            fixes: self
-                .seen
-                .tracks
-                .iter()
-                .map(|(peer, _, f)| (*peer, Arc::as_ptr(f) as usize, f.len()))
-                .collect(),
-        };
-        let mut cache = self.track_cache.borrow_mut();
-        if let Some((held, tracks)) = cache.as_ref() {
-            if *held == key {
-                return tracks.clone();
-            }
-        }
         // A screen pixel at the tile zoom, so the decimation and the
         // places' cells hold while the wheel turns within the step.
-        let unit = libm::exp2(24.0 - f64::from(key.zoom));
-        let tracks = loquax::ui::tracks::tracks(
+        let unit = libm::exp2(24.0 - f64::from(self.view.tile_zoom()));
+        self.track_cache.tracks(
             &self.seen.tracks,
             self.seen.track_window,
             &now,
             unit,
             self.scale,
             self.lang,
-        );
-        *cache = Some((key, tracks.clone()));
-        tracks
+        )
     }
 
     /// Whether the window has frames to show by itself (1431): the
@@ -3364,6 +3462,20 @@ impl App {
             .width(Length::Fill)
             .align_right(Length::Fill)
             .clip(true),
+            // "Try now" while an area of the view failed and waits (1812).
+            match self.seen.loads.failed() {
+                true => Element::from(
+                    pressable(
+                        StrId::MapLoadTryNow.text(self.lang).to_string(),
+                        Message::MapRetry,
+                        chat::colour(t.text),
+                        chat::colour(t.panel),
+                        chat::colour(t.bar),
+                    )
+                    .padding([5, 12]),
+                ),
+                false => Space::new().into(),
+            },
             // The zoom is a debug overlay's, with the frame counter (1447).
             line(match leviculum_ui_iced::fps::enabled() {
                 true => format!("  z{:.1}", self.view.zoom()),
@@ -3796,6 +3908,18 @@ impl canvas::Program<Message> for QrCanvas {
     }
 }
 
+/// What the map's picture is drawn of (1694 C): the frame on screen, where
+/// it lies (`x`, `y`, `k` as [`App::onto`] says, as bits), whether it is
+/// scaled smoothly, the ground's colour and the canvas's size.
+#[derive(Clone, Debug, PartialEq)]
+struct PictureKey {
+    handle: Option<Handle>,
+    at: [u64; 3],
+    smooth: bool,
+    ground: [u8; 3],
+    size: [u32; 2],
+}
+
 impl canvas::Program<Message> for PictureCanvas<'_> {
     type State = ();
 
@@ -3807,7 +3931,35 @@ impl canvas::Program<Message> for PictureCanvas<'_> {
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        let mut frame = Frame::new(renderer, bounds.size());
+        let app = self.app;
+        let onto = app.onto();
+        let smooth = onto.is_some_and(|(_, _, _, k)| (k - 1.0).abs() >= 1e-9 && !app.moving());
+        let ground = leviculum_mapfill::frame::rgb888(app.map_style().theme.palette().background);
+        let key = PictureKey {
+            handle: onto.map(|(shown, ..)| shown.handle.clone()),
+            at: onto.map_or([0; 3], |(_, x, y, k)| {
+                [x.to_bits(), y.to_bits(), k.to_bits()]
+            }),
+            smooth,
+            ground,
+            size: [bounds.width.to_bits(), bounds.height.to_bits()],
+        };
+        let mut held = app.picture_key.borrow_mut();
+        if held.as_ref() != Some(&key) {
+            app.picture.clear();
+            *held = Some(key);
+        }
+        vec![app.picture.draw(renderer, bounds.size(), |frame| {
+            app.picture_draws.set(app.picture_draws.get() + 1);
+            self.paint(frame, bounds);
+        })]
+    }
+}
+
+impl PictureCanvas<'_> {
+    /// The picture: the frame on screen where it lies, and the ground
+    /// round it.
+    fn paint(&self, frame: &mut Frame, bounds: Rectangle) {
         let whole = Rectangle::with_size(bounds.size());
         let mut covered = None;
         if let Some((shown, x, y, k)) = self.app.onto() {
@@ -3846,7 +3998,6 @@ impl canvas::Program<Message> for PictureCanvas<'_> {
         for strip in uncovered(whole, covered) {
             frame.fill_rectangle(strip.position(), strip.size(), Color::from_rgb8(r, g, b));
         }
-        vec![frame.into_geometry()]
     }
 }
 
@@ -3958,38 +4109,38 @@ impl canvas::Program<Message> for MapCanvas<'_> {
                 ((ty + k * f64::from(y)) / s) as f32,
             )
         };
-        // The map's table, the one its tracks were drawn in: the pins take
-        // the same set of hues (1693) and the labels a ground of that table.
-        let dark = shown.order.style.theme == leviculum_mapfill::style::MapTheme::Dark;
+        // The names' ground and ink follow the map's own table, as the
+        // phone's frame draws them (`screenmap::pin_ink`, 1730).
+        let dark = app.map_style().theme == leviculum_mapfill::style::MapTheme::Dark;
+        let (label_ground, label_ink) = match dark {
+            true => (
+                Color::from_rgb8(0x18, 0x18, 0x18),
+                Color::from_rgb8(0xe6, 0xe6, 0xe6),
+            ),
+            false => (Color::WHITE, Color::from_rgb8(0x10, 0x10, 0x10)),
+        };
         for pin in &shown.placed {
-            // Every peer in its hue, the one its track is drawn in, with a
-            // track or without, chosen or not; the name too (1385, 1693).
-            let [hr, hg, hb] = map::pin_hue(&pin.peer, dark);
-            let hue = Color::from_rgb8(hr, hg, hb);
+            // A peer with a track in its hue, the name too (1385).
+            let hue = map::pin_hue(&shown.order.tracks, &pin.peer, dark)
+                .filter(|_| !pin.nearby)
+                .map(|[r, g, b]| Color::from_rgb8(r, g, b));
+            let blue = hue.unwrap_or(Color::from_rgb8(0x20, 0x50, 0xc0));
             let [or, og, ob] = map::OWN_DOT;
-            let ink = match (pin.nearby, pin.stale) {
+            let ink = match (pin.selected, pin.nearby, pin.stale) {
+                (true, ..) => Color::from_rgb8(0xd0, 0x30, 0x30),
                 // Our own position, the blue dot (1449 item 2).
-                (_, stale) if pin.own => {
+                (false, _, stale) if pin.own => {
                     Color::from_rgb8(or, og, ob).scale_alpha(if stale { 0.45 } else { 1.0 })
                 }
                 // A node nearby that is no contact (1302): a neutral grey.
-                (true, false) => Color::from_rgb8(0x80, 0x80, 0x80),
-                (true, true) => Color::from_rgba8(0x80, 0x80, 0x80, 0.45),
-                (false, false) => hue,
-                (false, true) => hue.scale_alpha(0.45),
-            };
-            // The chosen pin is told by a wider ring of the text colour,
-            // never by a colour of its own (1693: it was red).
-            let (ring, ring_w) = match pin.selected {
-                true => {
-                    let [r, g, b] = map::CHOSEN_RING[usize::from(dark)];
-                    (Color::from_rgb8(r, g, b), map::RING_WIDTHS.0)
-                }
-                false => (Color::WHITE, map::RING_WIDTHS.1),
+                (false, true, false) => Color::from_rgb8(0x80, 0x80, 0x80),
+                (false, true, true) => Color::from_rgba8(0x80, 0x80, 0x80, 0.45),
+                (false, false, false) => blue,
+                (false, false, true) => blue.scale_alpha(0.45),
             };
             let centre = to(pin.x, pin.y);
             let radius = map::MARKER / 2.0;
-            frame.fill(&Path::circle(centre, radius + ring_w), ring);
+            frame.fill(&Path::circle(centre, radius + 1.5), Color::WHITE);
             frame.fill(&Path::circle(centre, radius), ink);
             // A battery below a fifth (1386), as the phone's frame draws it.
             if pin.low_battery {
@@ -4019,29 +4170,21 @@ impl canvas::Program<Message> for MapCanvas<'_> {
                 );
             }
             if let Some((x, y, words)) = &pin.label {
-                let plain = match dark {
-                    true => Color::from_rgb8(0xe6, 0xe6, 0xe6),
-                    false => Color::from_rgb8(0x10, 0x10, 0x10),
-                };
-                let text_ink = match (pin.nearby, pin.stale) {
-                    (true, true) => plain.scale_alpha(0.55),
-                    (true, false) => plain,
-                    (false, true) => hue.scale_alpha(0.55),
-                    (false, false) => hue,
+                let text_ink = match (pin.stale, hue) {
+                    (true, Some(hue)) => hue.scale_alpha(0.55),
+                    (false, Some(hue)) => hue,
+                    (true, None) => label_ink.scale_alpha(0.55),
+                    (false, None) => label_ink,
                 };
                 let at = to(*x, *y);
                 let width = pin.width / scale;
                 let line = map::LABEL * map::LINE;
-                // A light ground under the text, so a name reads on any
-                // street.
-                let ground = match dark {
-                    true => Color::from_rgba8(0x18, 0x18, 0x18, 0.75),
-                    false => Color::from_rgba8(0xff, 0xff, 0xff, 0.75),
-                };
+                // A ground under the text, light or dark with the map, so
+                // a name reads on any street.
                 frame.fill_rectangle(
                     Point::new(at.x - 2.0, at.y),
                     Size::new(width + 4.0, line),
-                    ground,
+                    label_ground.scale_alpha(0.75),
                 );
                 frame.fill_text(canvas::Text {
                     content: words.clone(),
@@ -4125,6 +4268,7 @@ mod tests {
             track_window: Default::default(),
             notice: None,
             loading: None,
+            loads: Loads::default(),
             maps,
             autoload: false,
             style: Style::SCREEN,
@@ -4178,6 +4322,72 @@ mod tests {
                 None => return (last, false),
             }
         }
+    }
+
+    /// Order 1694 C, the measurement: one minute of the window on
+    /// Florence with Carl sending a fix every 10 s, a view built and drawn
+    /// each second as iced does after a message. Counted: the worker's
+    /// frames, the views built, and the picture's geometry made. Carl in
+    /// Berlin draws no frame (before 1694 every fix made a new order, 6 a
+    /// minute, as Carl in Florence still does); the picture's geometry is
+    /// made once per frame that landed, not once per view built (before,
+    /// one per view: 60 a minute).
+    #[test]
+    fn a_peer_sending_every_ten_seconds_costs_frames_only_inside_the_view() {
+        let (w, h) = (480u32, 320u32);
+        let minute = |lat: f64, lon: f64| {
+            let alice = map::tests::pin(1, "alice", 43.7752, 11.2640);
+            let mut app = window_over_florence(vec![alice.clone()], 14 * MILLI);
+            run(&mut app);
+            let render = |app: &App| {
+                leviculum_ui_iced::headless::render(
+                    app.view(),
+                    &Theme::Light,
+                    Color::BLACK,
+                    Color::WHITE,
+                    w,
+                    h,
+                )
+                .expect("a renderer");
+            };
+            render(&app);
+            let (draws_at, mut frames, mut views) = (app.picture_draws.get(), 0, 0);
+            for s in 1..=60 {
+                if s % 10 == 0 {
+                    let mut seen = app.seen.clone();
+                    let carl = map::tests::pin(3, "Carl", lat + f64::from(s) * 1e-4, lon);
+                    seen.pins = vec![alice.clone(), carl];
+                    app.apply(Message::Seen(Box::new(seen)));
+                }
+                let mut drawn = 0;
+                while let Some(Job::Draw(order)) = app.next_job() {
+                    let shown = draw(&app.frames, *order);
+                    app.apply(Message::Painted(shown));
+                    drawn += 1;
+                }
+                app.busy = false;
+                frames += drawn;
+                render(&app);
+                views += 1;
+            }
+            (frames, views, app.picture_draws.get() - draws_at)
+        };
+        let (frames, views, pictures) = minute(52.52, 13.40);
+        eprintln!(
+            "WINDOW_MINUTE outside: worker frames {frames}/min, views {views}/min, picture geometry {pictures}/min"
+        );
+        assert_eq!(frames, 0, "a fix in Berlin draws no frame");
+        assert_eq!(pictures, 0, "and the picture is not made again");
+        let (frames, views, pictures) = minute(43.7745, 11.2620);
+        eprintln!(
+            "WINDOW_MINUTE inside: worker frames {frames}/min, views {views}/min, picture geometry {pictures}/min"
+        );
+        assert_eq!(frames, 6, "each fix in Florence draws its frame");
+        assert!(
+            pictures <= frames,
+            "{pictures} pictures for {frames} frames"
+        );
+        assert_eq!(views, 60);
     }
 
     fn rgba(shown: &Shown) -> Vec<u8> {
@@ -5235,6 +5445,7 @@ mod tests {
             track_window: model.track_window,
             notice: None,
             loading: None,
+            loads: Loads::default(),
             maps: 0,
             autoload: false,
             style: Style::SCREEN,
@@ -8270,6 +8481,33 @@ mod tests {
             [255, 255, 255],
             "past the picture"
         );
+    }
+
+    /// Order 1694 B: a fix far outside the view (Carl's, in Berlin, while
+    /// the window shows Florence) changes no [`Order`], so the worker
+    /// draws no frame for it; the control, a fix inside the view, does.
+    /// Before, every pin and track went into the order whole.
+    #[test]
+    fn a_fix_outside_the_view_changes_no_order() {
+        let (w, h) = (900, 560);
+        let (mut app, _rx) = florence_two("Anna", None, w, h);
+        let before = app.order().expect("an order");
+        assert!(!before.pins.is_empty(), "Florence's pins are in the order");
+        let mut seen = app.seen.clone();
+        seen.pins.push(map::tests::pin(3, "Carl", 52.52, 13.40));
+        app.apply(Message::Seen(Box::new(seen)));
+        assert_eq!(app.seen.pins.len(), before.pins.len() + 1);
+        assert_eq!(
+            app.order().expect("an order"),
+            before,
+            "Berlin draws nothing"
+        );
+        // The control: Carl comes to Florence.
+        let mut seen = app.seen.clone();
+        seen.pins.retain(|p| p.label != "Carl");
+        seen.pins.push(map::tests::pin(3, "Carl", 43.7745, 11.2580));
+        app.apply(Message::Seen(Box::new(seen)));
+        assert_ne!(app.order().expect("an order"), before, "Florence draws him");
     }
 
     /// 1699 3a: `map_theme = auto` follows the window, as the terminal

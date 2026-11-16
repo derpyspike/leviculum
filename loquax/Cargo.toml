@@ -531,6 +531,10 @@ required-features = ["picture"]
 # the rows of map_bench (1099), window_fps (1144) and names_cost (1225).
 # For the reviewer and the commit messages; never a gate, never packaged.
 [[example]]
+name = "heights_walk"
+required-features = ["mapload"]
+
+[[example]]
 name = "map_eye_bench"
 required-features = ["screenmap"]
 

@@ -2703,7 +2703,7 @@ async fn the_map_shows_the_pins_on_the_region_and_the_outline_in_braille_and_hal
         assert_eq!(
             line,
             format!(
-                "GRAPHICS backend={graphics} reason=forced detected=none between=none cell={} zooms=0-20 \
+                "GRAPHICS backend={graphics} reason=forced detected=none between=none ssh=no widths=none cell={} zooms=0-20 \
                  context=local:unknown",
                 match graphics {
                     "braille" => "2x4",
@@ -2846,7 +2846,7 @@ async fn the_map_drawing_cycles_through_the_text_techniques_in(lang: &str) -> St
         map_session_of("mapcycle", &format!("{lang}{MAP_CYCLE_SCRIPT}"), "octant").await;
     assert!(
         !en || log.contains(
-            "GRAPHICS backend=octant reason=forced detected=none between=none cell=2x4 zooms=0-20 \
+            "GRAPHICS backend=octant reason=forced detected=none between=none ssh=no widths=none cell=2x4 zooms=0-20 \
              context=local:unknown"
         ),
         "{log}"
@@ -3023,11 +3023,9 @@ async fn opening_the_map_at_a_place_loads_its_region_and_the_next_frame_draws_it
     .await;
     let before = frame(&frames, "before the load");
     // The place's region is what the screen shows: the title says so in
-    // words since 1527 (`MAP_LOADING_HERE`), not the older "loading map".
-    assert!(
-        !en || before.contains("loading the map of this area"),
-        "{before}"
-    );
+    // words since 1527, since 1812 the loads' one line with how far it is
+    // (`maploading::Loads::line`), not the older "loading map".
+    assert!(!en || before.contains("Loading the map · "), "{before}");
     // No region holds the place yet: the radar meanwhile (1386), centred
     // on the one pin, which it says, at the fit's zoom the region keeps.
     assert!(
@@ -3052,7 +3050,7 @@ async fn opening_the_map_at_a_place_loads_its_region_and_the_next_frame_draws_it
     );
     let loading = frame(&frames, "loading the area");
     assert!(
-        !en || loading.contains("─ loading the map of this area") && !loading.contains("z9"),
+        !en || loading.contains("─ Loading the map · ") && !loading.contains("z9"),
         "{loading}"
     );
     let lines: Vec<&str> = log

@@ -27,8 +27,9 @@
 //! and a frame while the finger moves draws them where the view moved
 //! them, so they never leave the picture (1134). While a pinch stays
 //! within a step of the tiles it started on, it keeps them, and a frame
-//! draws at most [`MOVING_TILES_PER_WORKER`] missing tiles a worker,
-//! showing the step before where the rest are owed. The frame itself is
+//! draws at most the machine's frame budget of missing tiles
+//! ([`loquax::budget::Budgets::frame_tiles`], rule 6), showing the step
+//! before where the rest are owed. The frame itself is
 //! [`loquax::mapframe`]'s, which the window draws through too (1144).
 //!
 //! A frame at rest that owes no tile leaves the view to prefetch (1135):
@@ -57,31 +58,32 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use leviculum_map::mercator::{project, LatLon, World};
+use leviculum_map::region::Bounds;
 use leviculum_map::viewport::{ExactView, MILLI};
 use leviculum_mapfill::style::{MapTheme, Style};
 use leviculum_ui::theme::{Theme, ThemeFlag};
 use loquax::mapframe::{frame_size, hold, Ask, DrawnName, Framed, Frames, PlaceCost};
-use loquax::mapload::{Loader, Source, Step, StepKind, CACHE_DEFAULT_MB};
+use loquax::mapload::{Loader, Source, Step, StepKind, Watch, CACHE_DEFAULT_MB};
 use loquax::picture::{map_theme, Maps};
 use loquax::screenmap;
 use loquax::tiles::Stats;
 use loquax::ui::map::{
     fit, fit_at, in_window, want_pins, want_place, want_view, zoom_floor, MapPin, MapWant,
 };
+use loquax::ui::maploading::{self, Loads, Look};
 use loquax::ui::radar;
 use loquax::ui::strings::Lang;
-use loquax::ui::tracks::{self, TrackWindow};
+use loquax::ui::tracks::TrackWindow;
+use loquax::ui::viewload::holding;
 use loquax::ui::viewload::ViewLoads;
 use loquax::when::WallTime;
 
 use crate::friends;
 use crate::schema::{
-    MapFlingChoice, MapMark, MapRegions, MapRequest, MapShown, MapThemeChoice, RegionRow,
-    TrackChoice, VERSION,
+    MapFlingChoice, MapMark, MapRegions, MapReliefChoice, MapRequest, MapShown, MapThemeChoice,
+    RegionRow, TrackChoice, VERSION,
 };
 use crate::session::pins_in;
-
-pub use loquax::mapframe::MOVING_TILES_PER_WORKER;
 
 /// What the map screen says on "load this area" over a view the regions
 /// hold already: the terminal's words.
@@ -107,12 +109,16 @@ pub struct Renderer {
     maps: Maps,
     frames: Frames,
     loader: Loader,
+    /// The loader's report as the map shows it (1812).
+    watch: Watch,
     /// What the screen needs from the loader, decided frame by frame
     /// (1292).
     loads: ViewLoads,
     autoload: bool,
     /// The config's `map_fling` (1188).
     fling: bool,
+    /// The config's `map_relief` (1863): the relief under the light map.
+    relief: bool,
     theme: Option<ThemeFlag>,
     origin: Instant,
     /// The clock a test holds instead of [`origin`](Self::origin)'s
@@ -153,14 +159,22 @@ impl Renderer {
         let maps = Maps::new(Some(dir.join("maps")));
         let source = Source::of(config.map_source.as_deref());
         let cache = config.map_cache_mb.unwrap_or(CACHE_DEFAULT_MB) << 20;
+        // The relief's height packs come with every region that lands
+        // (1863), the same path as the window's.
+        let heights = loquax::mapload::heights_url(
+            config.height_source.as_deref(),
+            config.map_source.as_deref(),
+        );
         Self {
             dir: dir.to_path_buf(),
             maps: maps.clone(),
             frames: Frames::new(maps.clone()),
-            loader: Loader::new(maps, source, cache),
+            loader: Loader::new(maps, source, cache).with_heights(heights),
+            watch: Watch::default(),
             loads: ViewLoads::new(),
             autoload: config.map_autoload.unwrap_or(true),
             fling: config.map_fling.unwrap_or(true),
+            relief: config.map_relief.unwrap_or(true),
             theme: config.map_theme,
             origin: Instant::now(),
             held_ms: None,
@@ -192,6 +206,9 @@ impl Renderer {
     /// landed.
     fn steps(&mut self, steps: Vec<Step>, notice: &mut Option<String>) -> bool {
         let mut landed = false;
+        // Height packs that came or went (1863): read again, but no region
+        // landed, so no refit.
+        let mut repaint = false;
         let now = self.now_ms();
         for step in steps {
             if step.kind() != StepKind::Skipped {
@@ -230,9 +247,42 @@ impl Renderer {
                     tracing::info!("MAPLOAD start reason={}", want.reason.word());
                 }
                 Step::Skipped { why, .. } => tracing::info!("MAPLOAD skipped why={why}"),
+                Step::Held { how, want } => {
+                    tracing::info!("MAPLOAD {} reason={}", how.word(), want.reason.word())
+                }
+                Step::Heights {
+                    landed: Ok(l),
+                    elapsed_ms,
+                    ..
+                } => {
+                    tracing::info!(
+                        event = "MAPHEIGHTS",
+                        ok = true,
+                        packs = l.packs.len(),
+                        had = l.had,
+                        fetched = l.fetched,
+                        elapsed_ms,
+                        names = %l.packs.join(","),
+                    );
+                    // A pack read again by every painter: the relief comes.
+                    repaint |= !l.packs.is_empty() || !l.evicted.is_empty();
+                }
+                Step::Heights {
+                    landed: Err(detail),
+                    elapsed_ms,
+                    ..
+                } => tracing::info!(
+                    event = "MAPHEIGHTS",
+                    ok = false,
+                    packs = 0,
+                    had = 0,
+                    fetched = 0,
+                    elapsed_ms,
+                    detail = %detail,
+                ),
             }
         }
-        if landed {
+        if landed || repaint {
             self.frames.refresh();
         }
         landed
@@ -285,6 +335,23 @@ impl Renderer {
             ok: true,
             theme_chosen: matches!(self.theme, Some(ThemeFlag::Light | ThemeFlag::Dark)),
             theme: theme_word(self.theme).to_string(),
+        })
+    }
+
+    /// The Advanced page's relief switch (1863): `set` stored as the
+    /// config's `map_relief` when given and drawn from the next frame;
+    /// the choice in force back, no frame drawn.
+    pub fn relief(&mut self, set: Option<bool>) -> Result<MapReliefChoice, String> {
+        if let Some(on) = set {
+            let word = if on { "on" } else { "off" };
+            loquax::config::save(&self.dir, "map_relief", word)
+                .map_err(|error| format!("map: the choice was not stored: {error}"))?;
+            self.relief = on;
+        }
+        Ok(MapReliefChoice {
+            v: VERSION,
+            ok: true,
+            relief: self.relief,
         })
     }
 
@@ -384,8 +451,9 @@ impl Renderer {
     /// One frame for `request` over `pins`, in a buffer of its own.
     pub fn frame(&mut self, request: &MapRequest, pins: &[MapPin]) -> (MapShown, Vec<u8>) {
         let mut rgba = Vec::new();
-        let shown = self.draw(request, pins, |frames, ask| {
-            let (pixels, framed) = frames.frame(ask).split();
+        let shown = self.draw(request, pins, |frames, ask, treat| {
+            let (mut pixels, framed) = frames.frame(ask).split();
+            treat.paint(&mut pixels, &framed.view);
             rgba = pixels;
             Ok(framed)
         });
@@ -401,12 +469,14 @@ impl Renderer {
         pins: &[MapPin],
         canvas: &mut dyn Canvas,
     ) -> MapShown {
-        self.draw(request, pins, |frames, ask| {
+        self.draw(request, pins, |frames, ask, treat| {
             let (w, h) = frame_size(ask);
             let pixels = canvas.pixels(w, h)?;
-            frames
+            let framed = frames
                 .frame_into(ask, pixels)
-                .ok_or_else(|| format!("map: the pixels are not {w}x{h}"))
+                .ok_or_else(|| format!("map: the pixels are not {w}x{h}"))?;
+            treat.paint(pixels, &framed.view);
+            Ok(framed)
         })
     }
 
@@ -416,7 +486,7 @@ impl Renderer {
         &mut self,
         request: &MapRequest,
         pins: &[MapPin],
-        draw: impl FnOnce(&mut Frames, &Ask<'_>) -> Result<Framed, String>,
+        draw: impl FnOnce(&mut Frames, &Ask<'_>, &Treat) -> Result<Framed, String>,
     ) -> MapShown {
         // The position sheet's map (1448, walk finding 16) shows the own
         // dot alone: nobody else's pin, cluster or track.
@@ -645,7 +715,12 @@ impl Renderer {
         // Unset follows the phone; the config's `map_theme` still wins.
         let flag = self.theme.or(Some(ThemeFlag::Auto));
         let table = map_theme(flag, Some(screen));
-        let style = Style::SCREEN.in_theme(table);
+        // The config's `map_relief` (1863); the dark table draws without
+        // relief in any case.
+        let style = Style {
+            relief: self.relief,
+            ..Style::SCREEN.in_theme(table)
+        };
         if request.time_zones_toggle {
             self.time_zones = !self.time_zones;
         }
@@ -700,7 +775,26 @@ impl Renderer {
                 .then(loquax::zoneclock::unix_minute)
                 .filter(|_| !request.own_only),
         };
-        let shot = match draw(&mut self.frames, &ask) {
+        // What of the view is still to come (1812), drawn over the frame
+        // in place; the stripes move with the frames Java asks while a
+        // load runs for the screen (`loading_here`, four a second).
+        let loads = self.watch.loads(&self.loader, now);
+        let held = match loads.areas.is_empty() {
+            true => Vec::new(),
+            false => holding(&setup.regions, view.tile_zoom()),
+        };
+        let treat = Treat {
+            held,
+            brush: maploading::Brush {
+                phase: loads.phase(now),
+                dark: table == MapTheme::Dark,
+                scale,
+                margin: (mx, my),
+                look: Look::default(),
+            },
+            loads,
+        };
+        let shot = match draw(&mut self.frames, &ask, &treat) {
             Ok(shot) => shot,
             Err(error) => return failed(error),
         };
@@ -794,6 +888,7 @@ impl Renderer {
             tapped_name: tapped.and_then(name),
             loading: self.loader.busy(),
             loading_here: self.loader.loading_here(),
+            load_line: treat.loads.line(lang),
             filling: shot.filling > 0,
             // A box waits to retry (1821): the instant of the loader's
             // next own move, so Java posts a frame for it and a box that
@@ -883,6 +978,21 @@ impl Renderer {
     }
 }
 
+/// What of the view is still to come as one frame draws it (1812).
+pub struct Treat {
+    pub loads: Loads,
+    /// The boxes of the regions that hold the view's zoom: left bare.
+    pub held: Vec<Bounds>,
+    pub brush: maploading::Brush,
+}
+
+impl Treat {
+    /// The treatment over `rgba`, which `view` drew.
+    pub fn paint(&self, rgba: &mut [u8], view: &ExactView) {
+        maploading::paint(rgba, view, &self.loads, &self.held, &self.brush);
+    }
+}
+
 /// The map menu's "Time window" sheet (1419) in `lang`: every window in
 /// the menu's order, the default first, `shown` chosen. Java draws the
 /// entries and sends the chosen one's word back.
@@ -940,8 +1050,6 @@ pub fn marks(
         .map(|members| {
             let (x, y) = points[members[0]];
             let pin = landed[members[0]].0;
-            // The peer's one colour on either map (1693).
-            let hue = |dark: bool| tracks::peer_colour(&pin.peer, dark);
             let way = radar
                 .filter(|r| members.len() == 1 && pin.at != r.centre)
                 .map(|r| radar::relative(r.centre, pin.at));
@@ -961,10 +1069,6 @@ pub fn marks(
                 ),
                 way,
                 low_battery: members.len() == 1 && pin.low_battery(),
-                hue: tracks::hex(hue(false)),
-                hue_dark: tracks::hex(hue(true)),
-                ink: tracks::hex(tracks::ink_on(hue(false))),
-                ink_dark: tracks::hex(tracks::ink_on(hue(true))),
             }
         })
         .collect()
@@ -1022,6 +1126,11 @@ pub fn theme(dir: &Path, set: Option<&str>) -> Result<MapThemeChoice, String> {
 /// the renderer the map draws with, so the next frame says it.
 pub fn fling(dir: &Path, set: Option<bool>) -> Result<MapFlingChoice, String> {
     with_dir(dir, |renderer| renderer.fling(set))
+}
+
+/// The relief switch (1863) for the renderer over `dir`.
+pub fn relief(dir: &Path, set: Option<bool>) -> Result<MapReliefChoice, String> {
+    with_dir(dir, |renderer| renderer.relief(set))
 }
 
 /// The map's ground in `table` as Android's `0xAARRGGBB` (1441): the
@@ -1297,6 +1406,7 @@ fn said_gesture(request: &MapRequest, shown: &MapShown) {
         turns = shown.turns,
         own_x = shown.own_x.unwrap_or(i32::MIN),
         own_y = shown.own_y.unwrap_or(i32::MIN),
+        ms = shown.ms,
     );
 }
 

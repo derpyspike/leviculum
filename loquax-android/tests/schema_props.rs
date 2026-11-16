@@ -13,10 +13,10 @@
 use loquax_android::schema::{
     self, AddressRow, Addresses, Backup, Bar, BarButton, Blob, CandidateRow, Chip, ContactCopy,
     ConversationRow, Conversations, Detail, Done, Event, FileRow, FriendRow, Friends, ImRow, Info,
-    InfoRow, LinkCode, LinkRow, Linked, Links, MapFlingChoice, MapMark, MapRegions, MapRequest,
-    MapShown, MapThemeChoice, Me, MessageRow, Messages, PositionRow, Query, Recents, Recording,
-    RegionRow, Request, Run, RunRow, ShareRow, Shared, SharedRow, Shares, Start, Started,
-    SuggestionRow, Suggestions,
+    InfoRow, LinkCode, LinkRow, Linked, Links, MapFlingChoice, MapMark, MapRegions,
+    MapReliefChoice, MapRequest, MapShown, MapThemeChoice, Me, MessageRow, Messages, PositionRow,
+    Query, Recents, Recording, RegionRow, Request, Run, RunRow, ShareRow, Shared, SharedRow,
+    Shares, Start, Started, SuggestionRow, Suggestions,
 };
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed};
@@ -316,6 +316,7 @@ fn query() -> impl Strategy<Value = Query> {
         }),
         opt_text().prop_map(|set| Query::MapTheme { set }),
         prop::option::of(any::<bool>()).prop_map(|set| Query::MapFling { set }),
+        prop::option::of(any::<bool>()).prop_map(|set| Query::MapRelief { set }),
         opt_text().prop_map(|set| Query::PhotoSize { set }),
         (text(), i64s(), u32s()).prop_map(|(peer, key, edge)| Query::Photo { peer, key, edge }),
         (text(), u32s()).prop_map(|(peer, edge)| Query::Staged { peer, edge }),
@@ -333,7 +334,11 @@ fn query() -> impl Strategy<Value = Query> {
 
 fn event() -> impl Strategy<Value = Event> {
     prop_oneof![
-        (u32s(), any::<u64>()).prop_map(|(v, counts)| Event::Changed { v, counts }),
+        (u32s(), any::<u64>(), any::<u64>()).prop_map(|(v, counts, map)| Event::Changed {
+            v,
+            counts,
+            map
+        }),
         (u32s(), text()).prop_map(|(v, text)| Event::Notice { v, text }),
         (u32s(), text(), text()).prop_map(|(v, state, detail)| Event::Sync { v, state, detail }),
         (u32s(), any::<bool>()).prop_map(|(v, up)| Event::Link { v, up }),
@@ -1161,24 +1166,15 @@ fn marks() -> impl Strategy<Value = Vec<MapMark>> {
             prop::option::of(u32s()),
             opt_text(),
             any::<bool>(),
-            (text(), text(), text(), text()),
         )
-            .prop_map(
-                |(x, y, peers, split_milli, way, low_battery, (hue, hue_dark, ink, ink_dark))| {
-                    MapMark {
-                        x,
-                        y,
-                        peers,
-                        split_milli,
-                        way,
-                        low_battery,
-                        hue,
-                        hue_dark,
-                        ink,
-                        ink_dark,
-                    }
-                },
-            ),
+            .prop_map(|(x, y, peers, split_milli, way, low_battery)| MapMark {
+                x,
+                y,
+                peers,
+                split_milli,
+                way,
+                low_battery,
+            }),
         0..4,
     )
 }
@@ -1191,7 +1187,6 @@ fn friend_row() -> BoxedStrategy<FriendRow> {
         live(),
         (text(), text(), text()),
         (any::<bool>(), text()),
-        (text(), text()),
     )
         .prop_map(
             |(
@@ -1201,15 +1196,12 @@ fn friend_row() -> BoxedStrategy<FriendRow> {
                 (liveness, cadence_s, last_fix_at),
                 (live, age, ring),
                 (nearby, announced),
-                (hue, ink),
             )| FriendRow {
                 peer,
                 name,
                 initials,
                 icon_fg,
                 icon_bg,
-                hue,
-                ink,
                 photo,
                 at,
                 lat_e6,
@@ -1443,6 +1435,7 @@ proptest! {
         round_trips(&MapRegions { v, ok, regions, region_bytes, autoload })?;
         round_trips(&MapThemeChoice { v, ok, theme, theme_chosen })?;
         round_trips(&MapFlingChoice { v, ok, fling: autoload })?;
+        round_trips(&MapReliefChoice { v, ok, relief: autoload })?;
     }
 
     #[test]

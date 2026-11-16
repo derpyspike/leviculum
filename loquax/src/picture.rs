@@ -44,7 +44,7 @@ use embedded_graphics::primitives::Rectangle;
 use leviculum_map::blend::Blend;
 use leviculum_map::choice::{drawn, view_zooms};
 use leviculum_map::draw::{
-    attach_buildings, draw_in_relief, draw_in_warped, draw_tiles, draws_buildings, Ink,
+    attach_buildings, draw_in_relief, draw_in_warped, draw_tiles, draws_buildings, DrawTile, Ink,
 };
 use leviculum_map::labels::ViewLabel;
 use leviculum_map::mercator::World;
@@ -81,6 +81,16 @@ pub fn maps_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| set("HOME").map(|home| PathBuf::from(home).join(".local/share")))?;
     Some(data.join("loquax").join("maps"))
+}
+
+/// The ground map's style the config's `map_ground` names (1743).
+pub fn ground_style(flag: crate::config::GroundFlag) -> Option<leviculum_map::ground::GroundStyle> {
+    use leviculum_map::ground::GroundStyle;
+    match flag {
+        crate::config::GroundFlag::Off => None,
+        crate::config::GroundFlag::Pastel => Some(GroundStyle::Pastel),
+        crate::config::GroundFlag::Strong => Some(GroundStyle::Strong),
+    }
 }
 
 /// The map's colour table for the config's `map_theme` (`flag`) and the
@@ -169,31 +179,31 @@ impl Maps {
     /// How many region files there are now and their bytes together, by
     /// the directory alone, none opened: the Maps page's "Delete all
     /// downloaded maps (1.2 GB)" (1290).
+    /// The autoloaded height packs (1863) count in the bytes, not as maps.
     pub fn usage(&self) -> (usize, u64) {
-        let lens: Vec<u64> = self
-            .dir()
-            .map(region_files)
-            .unwrap_or_default()
-            .iter()
-            .map(|path| std::fs::metadata(path).map_or(0, |m| m.len()))
-            .collect();
-        (lens.len(), lens.iter().sum())
+        let len = |path: &PathBuf| std::fs::metadata(path).map_or(0, |m| m.len());
+        let regions = self.dir().map(region_files).unwrap_or_default();
+        let packs = self.dir().map(auto_packs).unwrap_or_default();
+        (regions.len(), regions.iter().chain(&packs).map(len).sum())
     }
 
     /// Delete every region file, the hand placed ones too, and tell every
     /// painter (1290); how many went. One that will not go stops it with
     /// a line, the ones before it are gone. A region the autoload is
     /// writing lands after, as any area looked at does.
+    /// The autoloaded height packs go too (1863), after the regions, and
+    /// are not counted.
     pub fn delete_all(&self) -> Result<usize, String> {
         let paths = self.dir().map(region_files).unwrap_or_default();
+        let packs = self.dir().map(auto_packs).unwrap_or_default();
         let mut gone = 0;
-        let result = paths.iter().try_for_each(|path| {
+        let result = paths.iter().chain(&packs).try_for_each(|path| {
             std::fs::remove_file(path)
                 .map_err(|error| format!("map: {} was not deleted: {error}", path.display()))?;
-            gone += 1;
+            gone += usize::from(path.extension().is_some_and(|x| x == "lmr"));
             Ok(())
         });
-        if gone > 0 {
+        if gone > 0 || !packs.is_empty() {
             tracing::info!("MAPLOAD deleted all={gone}");
             self.changed();
         }
@@ -232,6 +242,25 @@ pub fn newest_first(regions: &[Installed]) -> Vec<&Installed> {
 /// The header check that refuses a region in the version 5 layout of
 /// before 1714 ([`load`]).
 const OLD_LAYOUT: &str = "reader version";
+
+/// The paths of every autoloaded height pack (`auto-*.lmh`, 1863) in
+/// `dir`, by name; none for a missing directory.
+fn auto_packs(dir: &Path) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = match std::fs::read_dir(dir) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension().is_some_and(|x| x == "lmh")
+                    && p.file_name().and_then(|n| n.to_str()).is_some_and(is_auto)
+                    && p.is_file()
+            })
+            .collect(),
+        Err(_) => return Vec::new(),
+    };
+    paths.sort();
+    paths
+}
 
 /// The paths of every `*.lmr` in `dir`, by name; none for a missing
 /// directory.
@@ -344,6 +373,9 @@ pub struct Painter {
     /// regions and their shade planes, laid under the ground where the
     /// style asks for it.
     relief: crate::relief::ReliefStore,
+    /// The ground side (1743): the `*.lmg` ground packs beside the
+    /// regions, laid under the areas where the style asks for it.
+    ground: crate::ground::GroundStore,
 }
 
 /// The filler's storage for one region drawn ([`region_into`]). The filler
@@ -384,6 +416,8 @@ impl Painter {
         let progress = maps.progress();
         let (regions, _) = maps.load();
         relief.refresh(maps.dir());
+        let ground = crate::ground::GroundStore::default();
+        ground.refresh(maps.dir());
         Self {
             maps,
             epoch,
@@ -397,6 +431,7 @@ impl Painter {
             time_zones: None,
             world_blend: false,
             relief,
+            ground,
         }
     }
 
@@ -418,6 +453,7 @@ impl Painter {
         // Lists the directory; indexes the packs again only when their
         // names, lengths or times moved, not on every progress tick.
         self.relief.refresh(self.maps.dir());
+        self.ground.refresh(self.maps.dir());
         true
     }
 
@@ -733,6 +769,17 @@ impl Painter {
             && ink == Ink::Colour
             && style.theme == MapTheme::Light
             && self.relief.any();
+        // The ground likewise: the class colours are tuned against light
+        // paper (1743).
+        let ground = style
+            .ground
+            .filter(|_| ink == Ink::Colour && style.theme == MapTheme::Light)
+            .filter(|_| self.ground.any())
+            .map(|g| (&self.ground, g));
+        // The areas complete regions drew, each with the zoom of its data
+        // there: a region still arriving draws no coarser stand-in over
+        // them (audit of 1836, finding 2).
+        let mut solid: Vec<(Rectangle, u8)> = Vec::new();
         for &i in &order {
             let installed = &self.regions[i];
             let area = installed.region.area(view);
@@ -740,10 +787,12 @@ impl Painter {
                 &installed.region,
                 view,
                 area,
+                &solid,
                 ink,
                 style,
                 percent,
                 shaded.then_some(&self.relief),
+                ground,
                 &mut self.read,
                 &mut self.buildings,
                 &mut self.scratch,
@@ -752,6 +801,10 @@ impl Painter {
                 attribution = installed.region.attribution().to_string();
                 shown.push(i);
                 pending += owed;
+                if owed == 0 {
+                    let data = installed.region.header().max_zoom.min(view.zoom());
+                    solid.push((area, data));
+                }
             }
         }
         for i in shown {
@@ -1143,10 +1196,15 @@ fn region_into<D>(
     region: &Region<File>,
     view: &Viewport,
     area: Rectangle,
+    solid: &[(Rectangle, u8)],
     ink: Ink,
     style: Style,
     percent: u32,
     relief: Option<&crate::relief::ReliefStore>,
+    ground: Option<(
+        &crate::ground::GroundStore,
+        leviculum_map::ground::GroundStyle,
+    )>,
     read: &mut Vec<(ViewTile, Vec<u8>)>,
     buildings: &mut Vec<(TileId, Vec<u8>)>,
     fill: &mut FillScratch,
@@ -1184,24 +1242,151 @@ where
         ring_ends: &mut fill.ring_ends,
     };
     let mut sampler = relief.and_then(|r| r.sampler(view));
-    let shade = sampler
-        .as_mut()
-        .map(|s| s as &mut dyn leviculum_map::relief::Shade);
-    let Ok(_) = draw_in_relief(
-        &tiles,
-        area,
-        Profile::Full,
-        ink,
-        style,
-        percent,
-        None,
-        shade,
-        frame,
-        &mut scratch,
-        &mut work,
-        &mut NoClock,
-    );
+    let mut grounds = ground.and_then(|(g, style)| g.sampler(view, style));
+    // A pass clears what it draws into to the ground colour first. A
+    // region still arriving, or paused (1836), clears only the squares of
+    // the tiles it has, stand-ins included, so where it has nothing yet
+    // the region under it stays drawn (Lew 2026-11-15, rule 8a: a
+    // finished area went white under a deeper region's empty box). Nor
+    // does it lay a coarser stand-in over a complete region drawn under
+    // it with sharper data there (audit of 1836, finding 2).
+    let parts = owned_areas(tiles.iter().map(|t| t.tile), area, pending, solid);
+    // Each part draws only the tiles that meet it (audit of 1836, finding
+    // 3): a region still arriving has a pass a square, and every pass
+    // walking every tile made the frame cost squares times tiles. A part
+    // with no tile still runs its pass: the pass clears it to the ground
+    // (a complete region with no tile in the view, 1910's tui frame).
+    let mut meeting: Vec<DrawTile<'_>> = Vec::new();
+    for part in parts {
+        let these: &[DrawTile<'_>] = match pending {
+            0 => &tiles,
+            _ => {
+                meeting.clear();
+                meeting.extend(tiles.iter().filter(|t| meets(t.tile, part)).copied());
+                &meeting
+            }
+        };
+        let shade = sampler
+            .as_mut()
+            .map(|s| s as &mut dyn leviculum_map::relief::Shade);
+        let laid = grounds
+            .as_mut()
+            .map(|s| s as &mut dyn leviculum_map::ground::Ground);
+        let Ok(_) = draw_in_relief(
+            these,
+            part,
+            Profile::Full,
+            ink,
+            style,
+            percent,
+            None,
+            shade,
+            laid,
+            frame,
+            &mut scratch,
+            &mut work,
+            &mut NoClock,
+        );
+    }
     Some(pending)
+}
+
+/// What a region's pass draws into of `area` (1836): all of it when the
+/// region owes no tile of the view; else the squares of the tiles it has,
+/// each cut to `area` and with every `solid` area taken out whose data is
+/// at least as deep as the tile (a complete region drawn under it, audit
+/// of 1836 finding 2), none inside another.
+fn owned_areas(
+    tiles: impl Iterator<Item = ViewTile>,
+    area: Rectangle,
+    pending: usize,
+    solid: &[(Rectangle, u8)],
+) -> Vec<Rectangle> {
+    if pending == 0 {
+        return vec![area];
+    }
+    let mut parts: Vec<Rectangle> = Vec::new();
+    for t in tiles {
+        let square = square_of(t).intersection(&area);
+        let mut left = vec![square];
+        for &(under, zoom) in solid {
+            if zoom >= t.id.z {
+                left = left.iter().flat_map(|r| minus(*r, under)).collect();
+            }
+        }
+        parts.extend(left.into_iter().filter(|r| !r.is_zero_sized()));
+    }
+    parts.sort_by_key(|r| core::cmp::Reverse(r.size.width * r.size.height));
+    let mut kept: Vec<Rectangle> = Vec::with_capacity(parts.len());
+    for r in parts {
+        let inside = kept
+            .iter()
+            .any(|k| k.contains(r.top_left) && k.contains(r.bottom_right().unwrap_or(r.top_left)));
+        if !inside {
+            kept.push(r);
+        }
+    }
+    kept
+}
+
+/// The pixels of `t`'s square, its sub-pixel edges rounded outward.
+fn square_of(t: ViewTile) -> Rectangle {
+    let sub = leviculum_mapfill::SUBPIXEL;
+    let size = 1i32 << (12 + u32::from(t.overzoom));
+    let (x0, y0) = (t.origin.x.div_euclid(sub), t.origin.y.div_euclid(sub));
+    let (x1, y1) = (
+        (t.origin.x + size + sub - 1).div_euclid(sub),
+        (t.origin.y + size + sub - 1).div_euclid(sub),
+    );
+    Rectangle::with_corners(Point::new(x0, y0), Point::new(x1 - 1, y1 - 1))
+}
+
+/// Pixels a tile's features may reach past its square: the tile's buffer
+/// and a wide line's half width.
+const TILE_REACH: i32 = 16;
+
+/// Whether `t` may draw into `part`: its square, grown by
+/// [`TILE_REACH`], meets it.
+fn meets(t: ViewTile, part: Rectangle) -> bool {
+    let sq = square_of(t);
+    let grown = Rectangle::new(
+        sq.top_left - Point::new(TILE_REACH, TILE_REACH),
+        embedded_graphics::prelude::Size::new(
+            sq.size.width + 2 * TILE_REACH as u32,
+            sq.size.height + 2 * TILE_REACH as u32,
+        ),
+    );
+    !grown.intersection(&part).is_zero_sized()
+}
+
+/// What of `r` lies outside `cut`: up to four rectangles, none
+/// overlapping, `r` itself when the two do not meet.
+fn minus(r: Rectangle, cut: Rectangle) -> Vec<Rectangle> {
+    let both = r.intersection(&cut);
+    if both.is_zero_sized() {
+        return vec![r];
+    }
+    let (rx0, ry0) = (r.top_left.x, r.top_left.y);
+    let (rx1, ry1) = (rx0 + r.size.width as i32, ry0 + r.size.height as i32);
+    let (cx0, cy0) = (both.top_left.x, both.top_left.y);
+    let (cx1, cy1) = (cx0 + both.size.width as i32, cy0 + both.size.height as i32);
+    let span = |x0: i32, y0: i32, x1: i32, y1: i32| {
+        Rectangle::new(
+            Point::new(x0, y0),
+            embedded_graphics::prelude::Size::new((x1 - x0) as u32, (y1 - y0) as u32),
+        )
+    };
+    [
+        // Above and below the cut, the whole width.
+        span(rx0, ry0, rx1, cy0),
+        span(rx0, cy1, rx1, ry1),
+        // Left and right of it, its height.
+        span(rx0, cy0, cx0, cy1),
+        span(cx1, cy0, rx1, cy1),
+    ]
+    .into_iter()
+    .filter(|p| !p.is_zero_sized())
+    .collect()
 }
 
 #[cfg(test)]
@@ -1347,6 +1532,299 @@ mod tests {
     /// vanishing into the world outline alone. The probes are the flat
     /// picture's own: pixels deep inside a uniformly coloured region
     /// feature keep their colour at the blend's place for their ground.
+    /// Cut the oltrarno fixture's box at `zooms` into `path`, `rounds` of
+    /// its rounds written: all of them for a whole region, fewer for one
+    /// still arriving or paused (1836).
+    fn oltrarno_region(path: &Path, zooms: core::ops::RangeInclusive<u8>, rounds: usize) {
+        use leviculum_mapcut::load::{plan, Loading, Want};
+        use leviculum_mapcut::pmtiles::Archive;
+        let source = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../leviculum-mapcut/fixtures/oltrarno.pmtiles");
+        let archive = Archive::open(&source).expect("archive");
+        let want = Want {
+            bounds: leviculum_map::region::Bounds {
+                west: 112_615_000,
+                south: 437_405_000,
+                east: 112_825_000,
+                north: 437_545_000,
+            },
+            zooms,
+            floor: 0,
+            cap: 64 << 20,
+            profile: leviculum_map::profile::CUT_2,
+            locale: None,
+            buildings: false,
+            pois: false,
+        };
+        let planned = plan(&archive, &want).expect("plan");
+        let out = File::create(path).expect("create");
+        let mut loading = Loading::begin(&archive, &want, planned, "test", 1, out).expect("begin");
+        for _ in 0..rounds {
+            if loading.step().expect("round").is_none() {
+                break;
+            }
+        }
+        if !loading.rounds_left() {
+            loading.finish().expect("finish");
+        }
+    }
+
+    /// The squares a region still arriving draws into (1836): each tile's
+    /// own, a tile of 256 pixels at its zoom and twice that a zoom past
+    /// it, cut to the region's area, none kept inside another; a region
+    /// that owes nothing draws its whole area.
+    #[test]
+    fn a_region_still_arriving_draws_into_its_tiles_squares_only() {
+        use embedded_graphics::prelude::Size;
+        use leviculum_map::region::TileId;
+        let area = Rectangle::new(Point::new(0, 0), Size::new(600, 300));
+        let tile = |x: i32, y: i32, overzoom: u8| ViewTile {
+            id: TileId { z: 14, x: 0, y: 0 },
+            overzoom,
+            origin: Point::new(x * 16, y * 16),
+        };
+        let tiles = [tile(-10, -20, 0), tile(300, 100, 1), tile(310, 120, 0)];
+        assert_eq!(owned_areas(tiles.into_iter(), area, 0, &[]), vec![area]);
+        assert_eq!(
+            owned_areas(tiles.into_iter(), area, 1, &[]),
+            vec![
+                // 512 px from (300, 100), cut to the area.
+                Rectangle::new(Point::new(300, 100), Size::new(300, 200)),
+                // 256 px from (-10, -20), cut to the area.
+                Rectangle::new(Point::new(0, 0), Size::new(246, 236)),
+            ]
+        );
+        // A sub-pixel origin rounds outward: no seam of the region under.
+        let half = ViewTile {
+            origin: Point::new(8, 8),
+            ..tile(0, 0, 0)
+        };
+        assert_eq!(
+            owned_areas([half].into_iter(), area, 1, &[]),
+            vec![Rectangle::new(Point::new(0, 0), Size::new(257, 257))]
+        );
+        assert!(owned_areas(core::iter::empty(), area, 3, &[]).is_empty());
+    }
+
+    /// Audit of 1836, finding 3: a region still arriving draws each of
+    /// its squares with only the tiles that meet it, and the picture is
+    /// the one every tile drawn into every square makes. Oltrarno at z15,
+    /// the region's box filling the frame, its z14 round written: the
+    /// painter's frame against the squares drawn with all tiles.
+    #[test]
+    fn audit_a_region_still_arriving_draws_the_same_with_only_the_tiles_a_square_meets() {
+        use leviculum_map::mercator::{project, LatLon};
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("auto-arriving.lmr");
+        oltrarno_region(&path, 14..=15, 1);
+        let mut painter = Painter::new(Maps::new(Some(dir.path().to_path_buf())));
+        let at = project(LatLon::from_degrees(43.7475, 11.272));
+        let view = Viewport::new(at, 15, 320, 240);
+        let drawn = painter.draw(&view, Ink::Colour, Style::SCREEN, 100);
+        assert!(drawn.pending > 0, "the region owes its z15 tiles");
+        let region = Region::open(File::open(&path).expect("open")).expect("read");
+        let area = region.area(&view);
+        assert_eq!(area.size, embedded_graphics::prelude::Size::new(320, 240));
+        let mut read = Vec::new();
+        let pending = region.read_view(&view, &mut read).expect("view");
+        let tiles = draw_tiles(&read).expect("tiles");
+        let parts = owned_areas(tiles.iter().map(|t| t.tile), area, pending, &[]);
+        assert!(parts.len() > 1, "{parts:?}");
+        let mut fb = vec![0u16; 320 * 240];
+        let mut frame = Frame::new(&mut fb, 320, 240).expect("frame");
+        let mut fill = FillScratch::new();
+        fill.heads.resize(240, 0);
+        for part in parts {
+            let mut scratch = Scratch {
+                edges: &mut fill.edges,
+                heads: &mut fill.heads,
+                active: &mut fill.active,
+            };
+            let mut work = Work {
+                points: &mut fill.points,
+                ring_ends: &mut fill.ring_ends,
+            };
+            let Ok(_) = draw_in_relief(
+                &tiles,
+                part,
+                Profile::Full,
+                Ink::Colour,
+                Style::SCREEN,
+                100,
+                None,
+                None,
+                None,
+                &mut frame,
+                &mut scratch,
+                &mut work,
+                &mut NoClock,
+            );
+        }
+        let differ = fb
+            .iter()
+            .zip(drawn.fb.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+        assert_eq!(
+            differ, 0,
+            "{differ} pixels differ from every tile in every square"
+        );
+        let first = fb[0];
+        assert!(fb.iter().any(|&c| c != first), "the region draws something");
+    }
+
+    /// The tiles a square draws with (audit of 1836, finding 3): those
+    /// whose own square, grown by [`TILE_REACH`], meets it.
+    #[test]
+    fn a_tile_meets_a_square_within_its_reach_only() {
+        use embedded_graphics::prelude::Size;
+        use leviculum_map::region::TileId;
+        let sub = leviculum_mapfill::SUBPIXEL;
+        let tile = |x: i32| ViewTile {
+            id: TileId { z: 15, x: 0, y: 0 },
+            overzoom: 0,
+            origin: Point::new(x * sub, 0),
+        };
+        let part = Rectangle::new(Point::new(0, 0), Size::new(256, 256));
+        assert!(meets(tile(0), part));
+        assert!(meets(tile(256), part), "the neighbour's buffer reaches in");
+        assert!(meets(tile(256 + TILE_REACH - 1), part));
+        assert!(!meets(tile(256 + TILE_REACH), part));
+        assert!(!meets(tile(-256 - TILE_REACH), part));
+        assert!(!meets(tile(5000), part));
+    }
+
+    /// Audit of 1836, finding 2: a complete region drawn under takes its
+    /// area out of a tile's square when its data there is as deep as the
+    /// tile or deeper, and leaves a square of deeper data alone; what is
+    /// left is the square outside it, no pixel twice.
+    #[test]
+    fn audit_a_solid_area_as_deep_as_a_tile_is_cut_out_of_its_square() {
+        use embedded_graphics::prelude::Size;
+        use leviculum_map::region::TileId;
+        let area = Rectangle::new(Point::new(0, 0), Size::new(600, 600));
+        let tile = |z: u8| ViewTile {
+            id: TileId { z, x: 0, y: 0 },
+            overzoom: 0,
+            origin: Point::new(0, 0),
+        };
+        // The left half of the 256-pixel square lies drawn under.
+        let under = Rectangle::new(Point::new(0, 0), Size::new(128, 600));
+        let right = vec![Rectangle::new(Point::new(128, 0), Size::new(128, 256))];
+        let whole = vec![Rectangle::new(Point::new(0, 0), Size::new(256, 256))];
+        assert_eq!(
+            owned_areas([tile(14)].into_iter(), area, 1, &[(under, 15)]),
+            right
+        );
+        assert_eq!(
+            owned_areas([tile(14)].into_iter(), area, 1, &[(under, 14)]),
+            right
+        );
+        assert_eq!(
+            owned_areas([tile(14)].into_iter(), area, 1, &[(under, 13)]),
+            whole
+        );
+        // A complete region over it all leaves nothing to draw.
+        assert!(owned_areas([tile(14)].into_iter(), area, 1, &[(area, 15)]).is_empty());
+        // A cut in the middle leaves four pieces around it, together the
+        // square's pixels less the cut's.
+        let r = Rectangle::new(Point::new(10, 20), Size::new(100, 50));
+        let hole = Rectangle::new(Point::new(40, 30), Size::new(20, 10));
+        let pieces = minus(r, hole);
+        assert_eq!(pieces.len(), 4, "{pieces:?}");
+        let px: u32 = pieces.iter().map(|p| p.size.width * p.size.height).sum();
+        assert_eq!(px, 100 * 50 - 20 * 10);
+        for (n, p) in pieces.iter().enumerate() {
+            assert!(p.intersection(&hole).is_zero_sized(), "{p:?}");
+            for q in &pieces[n + 1..] {
+                assert!(p.intersection(q).is_zero_sized(), "{p:?} {q:?}");
+            }
+        }
+        assert_eq!(
+            minus(r, Rectangle::new(Point::new(500, 500), Size::new(5, 5))),
+            vec![r]
+        );
+    }
+
+    /// Lew 2026-11-15, rule 8a of order 1836: a finished area went white.
+    /// A region drawn on top that has nothing yet where the view looks (a
+    /// load paused or still arriving, its file in place) must leave the
+    /// complete region under it showing there, not clear its whole box to
+    /// the ground colour. The load walk caught it as a blank z16 pause in
+    /// wheel-rested-slow, a paused z11-15 cell over a landed z14-15 one.
+    #[test]
+    fn a_region_with_nothing_here_yet_leaves_the_one_under_it_showing() {
+        use leviculum_map::mercator::{project, LatLon};
+        let dir = tempfile::tempdir().expect("tmp");
+        oltrarno_region(&dir.path().join("auto-lower.lmr"), 14..=14, usize::MAX);
+        let mut painter = Painter::new(Maps::new(Some(dir.path().to_path_buf())));
+        // The middle of the fixture's box.
+        let at = project(LatLon::from_degrees(43.7475, 11.272));
+        let view = Viewport::new(at, 15, 320, 240);
+        let alone = painter.draw(&view, Ink::Colour, Style::SCREEN, 100);
+        assert_eq!(painter.regions().len(), 1, "the lower region is read");
+        assert_eq!(alone.pending, 0);
+        use embedded_graphics::pixelcolor::raw::{RawData, RawU16};
+        let background = RawU16::from(Style::SCREEN.theme.palette().background)
+            .into_inner()
+            .to_be();
+        let ground = |fb: &[u16]| fb.iter().filter(|&&c| c == background).count();
+        assert!(
+            ground(&alone.fb) * 10 < alone.fb.len() * 9,
+            "the lower region draws the view: {} of {} ground, pending {}",
+            ground(&alone.fb),
+            alone.fb.len(),
+            alone.pending
+        );
+        // A deeper region over the same box, drawn on top, header and
+        // slots written and no round yet.
+        oltrarno_region(&dir.path().join("auto-upper.lmr"), 14..=15, 0);
+        painter.maps().changed();
+        let both = painter.draw(&view, Ink::Colour, Style::SCREEN, 100);
+        assert!(both.pending > 0, "the upper region is drawn and owes tiles");
+        assert_eq!(
+            ground(&both.fb),
+            ground(&alone.fb),
+            "the upper region's missing tiles cleared the lower one's picture"
+        );
+        assert!(both.fb == alone.fb, "the lower region shows unchanged");
+    }
+
+    /// Audit of 1836, finding 2 (rule 8a for stand-ins): a region still
+    /// arriving that owes the view's tiles draws its coarser stand-ins
+    /// only where nothing sharper lies drawn under it. A complete z14-15
+    /// region under a z14-15 region with one round written (its z14
+    /// tiles), view at z15: the upper one's z14 stand-ins must neither
+    /// clear nor overdraw the lower one's own z15 tiles, so the frame is
+    /// the lower region's alone.
+    #[test]
+    fn audit_a_region_still_arriving_draws_no_stand_in_over_a_sharper_one_under_it() {
+        use leviculum_map::mercator::{project, LatLon};
+        let dir = tempfile::tempdir().expect("tmp");
+        oltrarno_region(&dir.path().join("auto-lower.lmr"), 14..=15, usize::MAX);
+        let mut painter = Painter::new(Maps::new(Some(dir.path().to_path_buf())));
+        let at = project(LatLon::from_degrees(43.7475, 11.272));
+        let view = Viewport::new(at, 15, 320, 240);
+        let alone = painter.draw(&view, Ink::Colour, Style::SCREEN, 100);
+        assert_eq!(painter.regions().len(), 1, "the lower region is read");
+        assert_eq!(alone.pending, 0, "the lower region is complete");
+        oltrarno_region(&dir.path().join("auto-upper.lmr"), 14..=15, 1);
+        painter.maps().changed();
+        let both = painter.draw(&view, Ink::Colour, Style::SCREEN, 100);
+        assert_eq!(painter.regions().len(), 2, "the upper region is read");
+        assert!(both.pending > 0, "the upper region owes the view's tiles");
+        let differ = both
+            .fb
+            .iter()
+            .zip(alone.fb.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+        assert_eq!(
+            differ, 0,
+            "the upper region's stand-ins changed {differ} pixels of the lower one's picture"
+        );
+    }
+
     #[test]
     fn a_region_draws_through_the_blend_the_caller_holds() {
         use leviculum_map::blend::Blend;
@@ -1403,6 +1881,105 @@ mod tests {
             held * 10 >= probes * 8,
             "{held} of {probes} probes kept their colour at the blend's place"
         );
+    }
+
+    /// 1743: a ground pack beside the region lays the ground classes on
+    /// the land, under the region's other areas, through the whole
+    /// painter path every screen frontend draws by: the same view over
+    /// Erg Chebbi differs with the ground and without it on over a third of the
+    /// region's pixels, the two styles differ, and the dark table draws
+    /// none. (Laid before the land fill, the ground was covered whole by
+    /// the source's earth areas and no pixel changed.)
+    #[test]
+    fn the_ground_lies_on_the_land() {
+        use leviculum_map::ground::GroundStyle;
+        use leviculum_map::mercator::{project, LatLon};
+        let fixtures =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../leviculum-map/fixtures");
+        let dir = tempfile::tempdir().expect("tmp");
+        std::fs::copy(
+            fixtures.join("morocco/merzouga.lmr"),
+            dir.path().join("merzouga.lmr"),
+        )
+        .expect("copy the region");
+        std::fs::copy(
+            fixtures.join("ground-chebbi-z9.lmg"),
+            dir.path().join("ground-chebbi-z9.lmg"),
+        )
+        .expect("copy the ground");
+        let mut painter = Painter::new(Maps::new(Some(dir.path().to_path_buf())));
+        let view = Viewport::new(project(LatLon::from_degrees(31.10, -4.02)), 12, 320, 240);
+        let style = |ground| Style {
+            ground,
+            ..Style::SCREEN
+        };
+        let pastel = painter.draw_with(
+            &view,
+            None,
+            Ink::Colour,
+            style(Some(GroundStyle::Pastel)),
+            100,
+        );
+        let strong = painter.draw_with(
+            &view,
+            None,
+            Ink::Colour,
+            style(Some(GroundStyle::Strong)),
+            100,
+        );
+        let none = painter.draw_with(&view, None, Ink::Colour, style(None), 100);
+        if let Ok(dump) = std::env::var("LOQUAX_DUMP_GROUND") {
+            for (name, fb) in [
+                ("pastel", &pastel.fb),
+                ("strong", &strong.fb),
+                ("none", &none.fb),
+            ] {
+                let mut rgb = Vec::new();
+                Frame::new(&mut fb.clone(), 320, 240)
+                    .expect("frame")
+                    .rgb888_into(&mut rgb);
+                let f = std::fs::File::create(format!("{dump}/ground-{name}.png")).expect("png");
+                let mut enc = png::Encoder::new(std::io::BufWriter::new(f), 320, 240);
+                enc.set_color(png::ColorType::Rgb);
+                enc.write_header()
+                    .expect("hdr")
+                    .write_image_data(&rgb)
+                    .expect("data");
+            }
+        }
+        let area = painter.regions()[0].region.area(&view);
+        let count = |a: &[u16], b: &[u16]| {
+            let (mut inside, mut differ) = (0usize, 0usize);
+            for y in 0..240u32 {
+                for x in 0..320u32 {
+                    if area.contains(Point::new(x as i32, y as i32)) {
+                        inside += 1;
+                        let i = (y * 320 + x) as usize;
+                        differ += usize::from(a[i] != b[i]);
+                    }
+                }
+            }
+            (differ, inside)
+        };
+        let (d, n) = count(&pastel.fb, &none.fb);
+        assert!(n > 10_000, "the region covers the view: {n}");
+        assert!(d * 3 > n, "the ground changed {d} of {n} pixels");
+        let (d, _) = count(&strong.fb, &pastel.fb);
+        assert!(d * 4 > n, "the styles differ on {d} of {n} pixels");
+        // The dark table draws no ground.
+        let dark = |ground| Style {
+            ground,
+            ..Style::SCREEN.in_theme(MapTheme::Dark)
+        };
+        let a = painter.draw_with(
+            &view,
+            None,
+            Ink::Colour,
+            dark(Some(GroundStyle::Strong)),
+            100,
+        );
+        let b = painter.draw_with(&view, None, Ink::Colour, dark(None), 100);
+        assert_eq!(count(&a.fb, &b.fb).0, 0);
     }
 
     /// 1741: a height pack beside the region lays the relief under the

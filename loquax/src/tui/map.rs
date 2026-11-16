@@ -198,6 +198,86 @@ pub struct Facts {
     /// This host's glibc, asked only behind mosh: the mosh-server's
     /// `wcwidth` decides which glyphs reach the client.
     pub glibc: Option<(u32, u32)>,
+    /// Over ssh (`SSH_CONNECTION`, `SSH_CLIENT` or `SSH_TTY` set): the
+    /// client's tag ([`ssh_tag`]), a hash of its address, so the phone and
+    /// the desk keep separate memories. The terminal at the far end is
+    /// unknown: its font may lack the block elements (1880, Lew's map from
+    /// Termux over ssh, 2026-11-15).
+    pub ssh: Option<String>,
+    /// How far the cursor moved for one glyph of a family, as the terminal
+    /// itself reported it ([`Widths`]); measured over ssh only.
+    pub widths: Widths,
+}
+
+/// The cells one glyph advanced the cursor by, read from the terminal's
+/// cursor position report after printing it (1880): `None` where nothing
+/// was measured or the terminal did not answer.
+///
+/// What this can tell: a terminal whose width table makes the glyph two
+/// cells or none, which would shift every cell after it. What it cannot:
+/// whether the font has the glyph at all. A missing glyph is drawn as a
+/// box and still advances one cell, so a measured `1` decides nothing and
+/// the ladder's own facts do.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Widths {
+    /// An octant, U+1CD04.
+    pub octant: Option<u16>,
+    /// A braille cell, U+28FF.
+    pub braille: Option<u16>,
+}
+
+impl Widths {
+    /// The glyphs measured, in the order [`Widths::of`] takes the answers.
+    pub const GLYPHS: [char; 2] = ['\u{1CD04}', '\u{28FF}'];
+
+    /// The widths from the answers to [`Widths::GLYPHS`], in their order.
+    pub fn of(answers: &[Option<u16>]) -> Self {
+        Self {
+            octant: answers.first().copied().flatten(),
+            braille: answers.get(1).copied().flatten(),
+        }
+    }
+
+    /// `tui.log`'s `widths=`: `octant:1,braille:1`, `none` unmeasured.
+    pub fn words(&self) -> String {
+        let one = |name: &str, w: Option<u16>| w.map(|w| format!("{name}:{w}"));
+        let words: Vec<String> = [one("octant", self.octant), one("braille", self.braille)]
+            .into_iter()
+            .flatten()
+            .collect();
+        match words.is_empty() {
+            true => "none".to_string(),
+            false => words.join(","),
+        }
+    }
+}
+
+/// Whether `width`, where measured, is one cell.
+fn one_cell(width: Option<u16>) -> bool {
+    width.is_none_or(|w| w == 1)
+}
+
+/// The tag of an ssh session from its environment: `None` without ssh;
+/// over ssh `ssh-` and eight hex digits of a hash of the client's address
+/// (`SSH_CLIENT`'s or `SSH_CONNECTION`'s first word; the ports change on
+/// every connection and are left out), `ssh-unknown` where only `SSH_TTY`
+/// says ssh. The address itself is never written (no stored IP addresses).
+pub fn ssh_tag(client: Option<&str>, connection: Option<&str>, tty: bool) -> Option<String> {
+    let address = [client, connection]
+        .into_iter()
+        .flatten()
+        .find_map(|v| v.split_whitespace().next());
+    match (address, tty) {
+        (Some(address), _) => {
+            // FNV-1a, 32 bits: stable across builds and hosts.
+            let hash = address.bytes().fold(0x811c_9dc5_u32, |h, b| {
+                (h ^ u32::from(b)).wrapping_mul(0x0100_0193)
+            });
+            Some(format!("ssh-{hash:08x}"))
+        }
+        (None, true) => Some("ssh-unknown".to_string()),
+        (None, false) => None,
+    }
 }
 
 impl Facts {
@@ -213,6 +293,8 @@ impl Facts {
             program: String::new(),
             termux: false,
             glibc: None,
+            ssh: None,
+            widths: Widths::default(),
         }
     }
 
@@ -231,6 +313,12 @@ impl Facts {
                 true => glibc(),
                 false => None,
             },
+            ssh: ssh_tag(
+                std::env::var("SSH_CLIENT").ok().as_deref(),
+                std::env::var("SSH_CONNECTION").ok().as_deref(),
+                std::env::var_os("SSH_TTY").is_some(),
+            ),
+            widths: Widths::default(),
         }
     }
 
@@ -238,7 +326,9 @@ impl Facts {
     /// `TERM_PROGRAM`, or `TERM` where that is unset, so a desktop terminal
     /// and a mosh session from the phone each keep their own. Under tmux
     /// `TERM_PROGRAM` is `tmux` itself, so every terminal tmux runs in
-    /// shares one.
+    /// shares one. Over ssh the go-between carries the client's tag
+    /// (`local@ssh-1a2b3c4d:xterm-256color`): the same terminal name at the
+    /// desk and on the phone over ssh are different terminals (1880).
     pub fn context(&self) -> String {
         let between = match (self.between.mosh, self.between.tmux, self.between.screen) {
             (true, _, _) => "mosh",
@@ -251,7 +341,10 @@ impl Facts {
             (true, false) => self.term.as_str(),
             (true, true) => "unknown",
         };
-        format!("{between}:{term}")
+        match &self.ssh {
+            Some(tag) => format!("{between}@{tag}:{term}"),
+            None => format!("{between}:{term}"),
+        }
     }
 
     /// Whether the terminal draws octants itself, whatever its font: kitty,
@@ -268,6 +361,12 @@ impl Facts {
         !self.between.mosh || self.glibc.is_some_and(|v| v >= OCTANT_GLIBC)
     }
 
+    /// Whether an octant arrives and, where the terminal was asked, takes
+    /// one cell.
+    fn octants_fit(&self) -> bool {
+        self.octants_arrive() && one_cell(self.widths.octant)
+    }
+
     /// Whether a graphics protocol's picture is not taken by a go-between:
     /// mosh drops it, tmux passes it only where configured to.
     fn pictures_arrive(&self) -> bool {
@@ -279,15 +378,17 @@ impl Facts {
     pub fn expected(&self, graphics: Graphics) -> bool {
         let colour = self.tier != Tier::Mono;
         // The block elements: no Termux default font has them, and over
-        // mosh the client's font is unknown (Lew's `▀` came out a box).
-        let blocks = colour && !self.termux && !self.between.mosh;
+        // mosh or ssh the client's font is unknown (Lew's `▀` came out a
+        // box, over mosh 2026-10-28 and over ssh 2026-11-15).
+        let blocks = colour && !self.termux && !self.between.mosh && self.ssh.is_none();
         match graphics {
             Graphics::Kitty => self.detected == Some(ProtocolType::Kitty) && self.pictures_arrive(),
             Graphics::Sixel => self.detected == Some(ProtocolType::Sixel) && self.pictures_arrive(),
-            Graphics::Octant => colour && self.draws_octants() && self.octants_arrive(),
+            Graphics::Octant => colour && self.draws_octants() && self.octants_fit(),
             Graphics::Blocks | Graphics::Halfblocks => blocks,
-            Graphics::BrailleThin | Graphics::Mosaic => colour,
-            Graphics::Braille => true,
+            Graphics::BrailleThin => colour && one_cell(self.widths.braille),
+            Graphics::Mosaic => colour,
+            Graphics::Braille => one_cell(self.widths.braille),
         }
     }
 
@@ -362,6 +463,14 @@ impl Chosen {
 /// colour, plain braille without colour. A terminal that answered for
 /// iTerm2's protocol climbs on: the decision names kitty and sixel only.
 ///
+/// Over ssh (1880) the far terminal's font is unknown: a picture or octants
+/// it answered for or draws itself are still taken, block elements are not,
+/// `braille-thin` is, which every common terminal font draws; the reader
+/// steps up with `T` and the step is remembered for this client. Where the
+/// terminal reported a glyph as wider or narrower than one cell
+/// ([`Widths`]), its family is passed over (`octant-width`,
+/// `braille-width`, then `mosaic`, which needs no glyph).
+///
 /// Behind mosh no protocol is taken: mosh answers the protocol query itself
 /// and drops sixel and kitty pictures (1088). Behind tmux neither: it
 /// passes them only where its configuration allows. Nor are block elements
@@ -411,13 +520,14 @@ pub fn choose_graphics(flag: GraphicsFlag, facts: &Facts) -> Chosen {
     };
     let sixteen = facts.tier == Tier::Ansi16;
     match (facts.draws_octants(), facts.octants_arrive()) {
-        (true, true) if !sixteen => {
+        (true, true) if !sixteen && facts.octants_fit() => {
             reasons.extend(tier);
             return Chosen {
                 graphics: Graphics::Octant,
                 reasons,
             };
         }
+        (true, true) if !sixteen => take(&mut reasons, "octant-width"),
         (true, false) => take(&mut reasons, "old-glibc"),
         (false, _) => take(&mut reasons, "no-octants"),
         (true, true) => {}
@@ -428,10 +538,17 @@ pub fn choose_graphics(flag: GraphicsFlag, facts: &Facts) -> Chosen {
     if facts.between.mosh {
         take(&mut reasons, "mosh");
     }
+    if facts.ssh.is_some() {
+        take(&mut reasons, "ssh");
+    }
     reasons.extend(tier);
     let graphics = match facts.expected(Graphics::Blocks) && !sixteen {
         true => Graphics::Blocks,
-        false => Graphics::BrailleThin,
+        false if facts.expected(Graphics::BrailleThin) => Graphics::BrailleThin,
+        false => {
+            take(&mut reasons, "braille-width");
+            Graphics::Mosaic
+        }
     };
     Chosen { graphics, reasons }
 }
@@ -484,6 +601,73 @@ pub fn setup_of(painter: &MapPainter, facts: &Facts) -> MapSetup {
         drawing: painter.graphics().index(),
         ..painter.setup()
     }
+}
+
+/// Whether the map's footer offers `T finer drawing` (1880): over ssh, under
+/// `auto`, with nothing remembered for this context, where the ladder
+/// stepped down for ssh alone. The reader's first step answers it.
+pub fn finer_hint(flag: GraphicsFlag, remembered: Option<&str>, chosen: &Chosen) -> bool {
+    flag == GraphicsFlag::Auto && remembered.is_none() && chosen.reasons.contains(&"ssh")
+}
+
+/// `loquax tui --graphics-test` (1880): every way of drawing the map, best
+/// first, a labelled row of its glyphs as the map would set them, so the
+/// reader sees which rows come out as boxes and picks the first that does
+/// not with `t`/`T` on the map; the choice is remembered for this terminal.
+/// `colour` sets the colour rows in ANSI colours as the map does.
+pub fn graphics_test_page(colour: bool) -> String {
+    let rows = cells::glyph_test();
+    let glyphs = |family: &str| -> String {
+        rows.iter()
+            .find(|(name, _, _)| *name == family)
+            .map(|(_, g, _)| g.iter().collect())
+            .unwrap_or_default()
+    };
+    let paint = |text: &str| match colour {
+        true => format!("\u{1b}[38;2;31;78;140;48;2;222;234;206m{text}\u{1b}[0m"),
+        false => text.to_string(),
+    };
+    let mosaic = match colour {
+        true => {
+            [
+                (222, 234, 206),
+                (170, 211, 223),
+                (200, 250, 204),
+                (242, 239, 233),
+            ]
+            .iter()
+            .map(|(r, g, b)| format!("\u{1b}[48;2;{r};{g};{b}m   "))
+            .collect::<String>()
+                + "\u{1b}[0m"
+        }
+        false => "(colour cells, no glyph)".to_string(),
+    };
+    let mut out = String::from(
+        "The ways loquax draws the map, best first. A row with boxes, ? or gaps \
+         is one this terminal's font\ncannot draw; pick the first clean one on \
+         the map with t / T, it is remembered for this terminal.\n\n",
+    );
+    let mut row = |name: &str, shown: String| {
+        out.push_str(&format!("{name:<13}{shown}\n"));
+    };
+    row(
+        "kitty",
+        "(a picture, where the terminal answers for it)".into(),
+    );
+    row(
+        "sixel",
+        "(a picture, where the terminal answers for it)".into(),
+    );
+    row("octant", glyphs("octants"));
+    row(
+        "blocks",
+        format!("{} {}", glyphs("quadrants"), glyphs("eighths")),
+    );
+    row("halfblocks", glyphs("half blocks"));
+    row("braille-thin", paint(&glyphs("braille")));
+    row("mosaic", mosaic);
+    row("braille", glyphs("braille"));
+    out
 }
 
 /// The way of drawing the map the reader chose, and what the config holds
@@ -1058,6 +1242,10 @@ pub struct MapPainter {
     theme: MapTheme,
     /// The time zone view (1684, [`MapPainter::set_time_zones`]).
     time_zones: bool,
+    /// The config's `map_relief` ([`MapPainter::set_relief`], 1863).
+    relief: bool,
+    /// The config's `map_ground` ([`MapPainter::set_ground`], 1743).
+    ground: Option<leviculum_map::ground::GroundStyle>,
     /// The frame budget (1422): a drag is the gesture, the paint the
     /// ground, the names placed in cells a pass the minimal rung leaves
     /// to the frame at rest.
@@ -1118,6 +1306,8 @@ impl MapPainter {
             tier: Tier::Truecolor,
             theme: MapTheme::Light,
             time_zones: false,
+            relief: true,
+            ground: Some(leviculum_map::ground::GroundStyle::Pastel),
             ladder: Ladder::new(),
         }
     }
@@ -1154,6 +1344,19 @@ impl MapPainter {
         self.time_zones = on;
     }
 
+    /// Lay the relief under the picture, where its finish carries it, or
+    /// not, from the next frame on: the config's `map_relief` (1863), as
+    /// the window and the phone take it. A change paints the view again.
+    pub fn set_relief(&mut self, on: bool) {
+        self.relief = on;
+    }
+
+    /// The ground map's style under the picture, or none, from the next
+    /// frame on: the config's `map_ground` (1743).
+    pub fn set_ground(&mut self, ground: Option<leviculum_map::ground::GroundStyle>) {
+        self.ground = ground;
+    }
+
     /// The style a paint asks for: the PC's finish where the picture has
     /// the pixels for casings and round joins (kitty, sixel, octant), the
     /// M9's plain strokes in the coarser techniques.
@@ -1162,7 +1365,11 @@ impl MapPainter {
             Graphics::Kitty | Graphics::Sixel | Graphics::Octant => MapStyle::PC,
             _ => MapStyle::M9,
         };
-        finish.in_theme(self.theme)
+        MapStyle {
+            relief: finish.relief && self.relief,
+            ground: finish.ground.and(self.ground),
+            ..finish.in_theme(self.theme)
+        }
     }
 
     /// The same painter, drawing for a terminal behind tmux when `tmux`
@@ -1420,12 +1627,7 @@ impl MapPainter {
         let behind = fits && painted.view != ask.view && self.labels_view == Some(painted.view);
         let pins = match behind {
             true => self.labels.iter().filter(|l| !l.name).cloned().collect(),
-            false => labels_of(
-                shown,
-                muted,
-                self.tier,
-                matches!(painted.style.theme, MapTheme::Dark),
-            ),
+            false => labels_of(shown, muted),
         };
         // The map's names go where no pin and no pin's name is, placed for
         // the picture's own view so they never stand off its streets.
@@ -1584,26 +1786,18 @@ fn track_style(tier: Tier, dark: bool, hue: Option<u8>, level: u8) -> Style {
     }
 }
 
-/// The labels of `shown`'s pins, styled: a friend's in its hue at full
-/// strength, the colour its track takes on this `tier` and map (1693).
-fn labels_of(shown: &MapView, muted: Style, tier: Tier, dark: bool) -> Vec<Label> {
+/// The labels of `shown`'s pins, styled.
+fn labels_of(shown: &MapView, muted: Style) -> Vec<Label> {
     let mut labels = Vec::new();
     for pin in &shown.pins {
-        let mut style = match pin.own || pin.nearby {
-            true => Style::default(),
-            false => track_style(tier, dark, loquax::ui::tracks::hue(&pin.peer, false), 3),
-        };
+        let mut style = Style::default();
         // A node nearby that is no contact (1302): a neutral pin, in the
         // muted grey, its announced name beside it.
         if pin.nearby {
             style = style.patch(muted);
         }
-        // An old fix dims; a friend keeps its hue.
         if pin.stale {
-            if pin.nearby || pin.own {
-                style = style.patch(muted);
-            }
-            style = style.add_modifier(Modifier::DIM);
+            style = style.patch(muted).add_modifier(Modifier::DIM);
         }
         if pin.selected {
             style = style.add_modifier(Modifier::REVERSED);
@@ -1673,7 +1867,219 @@ mod tests {
             program: program.to_string(),
             termux,
             glibc,
+            ssh: None,
+            widths: Widths::default(),
         }
+    }
+
+    /// Termux's ssh session into a host with a 256-colour xterm entry:
+    /// what Lew's screenshot of 2026-11-15 ran under (1880).
+    fn over_ssh(detected: Option<ProtocolType>, term: (&str, &str)) -> Facts {
+        Facts {
+            ssh: ssh_tag(Some("10.0.0.7 40122 22"), None, true),
+            ..facts(
+                detected,
+                Tier::Ansi256,
+                Between::default(),
+                term,
+                false,
+                None,
+            )
+        }
+    }
+
+    /// Over ssh the ladder takes braille-thin, which every common font
+    /// draws, and says `ssh`; a terminal that answered for pictures, or
+    /// draws octants itself, keeps them; a family the terminal reported
+    /// wider than a cell is passed over.
+    #[test]
+    fn over_ssh_the_ladder_takes_braille_thin_unless_the_terminal_answered() {
+        let xterm = ("xterm-256color", "");
+        let named = |f: &Facts| {
+            let c = choose_graphics(GraphicsFlag::Auto, f);
+            (c.graphics, c.reason())
+        };
+        assert_eq!(
+            named(&over_ssh(None, xterm)),
+            (
+                Graphics::BrailleThin,
+                "no-graphics,no-octants,ssh,no-truecolor".into()
+            )
+        );
+        // The same terminal at the desk: blocks, as before.
+        let desk = Facts {
+            ssh: None,
+            ..over_ssh(None, xterm)
+        };
+        assert_eq!(named(&desk).0, Graphics::Blocks);
+        // Never a downgrade of a terminal that answered.
+        assert_eq!(
+            named(&over_ssh(Some(ProtocolType::Kitty), ("xterm-kitty", ""))),
+            (Graphics::Kitty, "best".into())
+        );
+        assert_eq!(
+            named(&over_ssh(Some(ProtocolType::Sixel), xterm)).0,
+            Graphics::Sixel
+        );
+        assert_eq!(
+            named(&over_ssh(None, ("foot", ""))),
+            (Graphics::Octant, "no-graphics,no-truecolor".into())
+        );
+        // A measured octant two cells wide: passed over, said why.
+        let wide = Facts {
+            widths: Widths {
+                octant: Some(2),
+                braille: Some(1),
+            },
+            ..over_ssh(None, ("foot", ""))
+        };
+        assert_eq!(
+            named(&wide),
+            (
+                Graphics::BrailleThin,
+                "no-graphics,octant-width,ssh,no-truecolor".into()
+            )
+        );
+        // One cell decides nothing: a box advances one cell too.
+        let narrow = Facts {
+            widths: Widths {
+                octant: Some(1),
+                braille: Some(1),
+            },
+            ..over_ssh(None, ("foot", ""))
+        };
+        assert_eq!(named(&narrow).0, Graphics::Octant);
+        // Braille two cells wide: the colour cells, which need no glyph.
+        let wide_braille = Facts {
+            widths: Widths {
+                octant: None,
+                braille: Some(2),
+            },
+            ..over_ssh(None, xterm)
+        };
+        assert_eq!(
+            named(&wide_braille),
+            (
+                Graphics::Mosaic,
+                "no-graphics,no-octants,ssh,no-truecolor,braille-width".into()
+            )
+        );
+        assert!(!wide_braille.expected(Graphics::BrailleThin));
+        // Offered over ssh: blocks and half-blocks marked unlikely.
+        let offers = over_ssh(None, xterm).offers();
+        let marked: Vec<(&str, bool)> = offers
+            .iter()
+            .map(|d| (d.name.as_str(), d.expected))
+            .collect();
+        assert!(marked.contains(&("blocks", false)) && marked.contains(&("halfblocks", false)));
+        assert!(marked.contains(&("braille-thin", true)));
+    }
+
+    /// Over ssh a choice remembered for this client wins; without one the
+    /// ladder's braille-thin with the footer's offer to step up, which a
+    /// remembered choice or a forced way does not show.
+    #[test]
+    fn over_ssh_a_remembered_choice_wins_and_without_one_the_footer_offers_finer() {
+        let f = over_ssh(None, ("xterm-256color", ""));
+        let (chosen, line) = choose_start(GraphicsFlag::Auto, Some("blocks"), &f);
+        assert_eq!(
+            (chosen.graphics, chosen.reason(), line),
+            (Graphics::Blocks, "remembered".into(), None)
+        );
+        assert!(!finer_hint(GraphicsFlag::Auto, Some("blocks"), &chosen));
+        let (chosen, line) = choose_start(GraphicsFlag::Auto, None, &f);
+        assert_eq!((chosen.graphics, line), (Graphics::BrailleThin, None));
+        assert!(finer_hint(GraphicsFlag::Auto, None, &chosen));
+        let (forced, _) = choose_start(GraphicsFlag::BrailleThin, None, &f);
+        assert!(!finer_hint(GraphicsFlag::BrailleThin, None, &forced));
+        // At the desk the ladder did not step down for ssh: no offer.
+        let desk = Facts { ssh: None, ..f };
+        let (chosen, _) = choose_start(GraphicsFlag::Auto, None, &desk);
+        assert!(!finer_hint(GraphicsFlag::Auto, None, &chosen));
+    }
+
+    /// The ssh tag: the client's address hashed, its ports left out, the
+    /// address itself nowhere in it; two clients two tags; and the context
+    /// keeps the desk, the phone over ssh and another client apart.
+    #[test]
+    fn the_ssh_tag_hashes_the_clients_address_into_the_context() {
+        let phone = ssh_tag(Some("192.168.1.23 51000 22"), None, true);
+        let again = ssh_tag(None, Some("192.168.1.23 40001 10.0.0.1 22"), false);
+        let other = ssh_tag(Some("192.168.1.42 51000 22"), None, true);
+        assert_eq!(phone, again, "the ports change, the client does not");
+        assert_ne!(phone, other);
+        let tag = phone.clone().expect("over ssh");
+        assert!(tag.starts_with("ssh-") && tag.len() == 12, "{tag}");
+        assert!(!tag.contains("192"), "{tag}");
+        assert_eq!(ssh_tag(None, None, true).as_deref(), Some("ssh-unknown"));
+        assert_eq!(ssh_tag(None, None, false), None);
+        let term = ("xterm-256color", "");
+        let desk = facts(None, Tier::Ansi256, Between::default(), term, false, None);
+        let on_phone = Facts {
+            ssh: phone,
+            ..desk.clone()
+        };
+        let on_other = Facts {
+            ssh: other,
+            ..desk.clone()
+        };
+        assert_eq!(desk.context(), "local:xterm-256color");
+        assert_eq!(on_phone.context(), format!("local@{tag}:xterm-256color"));
+        assert_ne!(on_phone.context(), on_other.context());
+        // The context is a config key that reads back.
+        let key = format!(
+            "{}{} = blocks\n",
+            loquax::config::MAP_DRAWING,
+            on_phone.context()
+        );
+        let config = loquax::config::parse(&key).expect("the context is a key");
+        assert_eq!(config.map_drawing(&on_phone.context()), Some("blocks"));
+        assert_eq!(config.map_drawing(&desk.context()), None);
+    }
+
+    /// The widths as measured and as `tui.log` names them.
+    #[test]
+    fn the_widths_read_the_answers_in_order() {
+        let w = Widths::of(&[Some(2), Some(1)]);
+        assert_eq!((w.octant, w.braille), (Some(2), Some(1)));
+        assert_eq!(w.words(), "octant:2,braille:1");
+        assert_eq!(Widths::of(&[]).words(), "none");
+        assert_eq!(Widths::of(&[None, Some(1)]).words(), "braille:1");
+    }
+
+    /// `--graphics-test`: a labelled row for every way, best first, each
+    /// with its glyphs; without colour no escape.
+    #[test]
+    fn the_graphics_test_page_has_a_row_for_every_way() {
+        let page = graphics_test_page(false);
+        let rows: Vec<&str> = page
+            .lines()
+            .filter_map(|l| l.split_whitespace().next())
+            .filter(|w| Graphics::named(w).is_some())
+            .collect();
+        let order: Vec<&str> = Graphics::ORDER.iter().map(|g| g.name()).collect();
+        assert_eq!(rows, order);
+        assert!(!page.contains('\u{1b}'));
+        let line = |name: &str| {
+            page.lines()
+                .find(|l| l.split_whitespace().next() == Some(name))
+                .unwrap_or_default()
+                .to_string()
+        };
+        assert!(
+            line("octant")
+                .chars()
+                .any(|c| ('\u{1CD00}'..='\u{1CDE5}').contains(&c)),
+            "{page}"
+        );
+        assert!(
+            line("blocks").contains('▖') && line("blocks").contains('▂'),
+            "{page}"
+        );
+        assert!(line("halfblocks").contains('▀'), "{page}");
+        assert!(line("braille").contains('⣿'), "{page}");
+        let coloured = graphics_test_page(true);
+        assert!(coloured.contains("\u{1b}[48;2;"));
     }
 
     /// Every combination of what the terminal answered, its colour tier,
@@ -2514,69 +2920,7 @@ mod tests {
         }
     }
 
-    /// 1693: a friend's pin is drawn in the peer's hue, the colour its
-    /// track takes at full strength (`track_style` at level 3), on a
-    /// truecolor terminal and at sixteen colours, chosen or not; a node
-    /// nearby stays grey.
-    #[test]
-    fn a_friends_pin_is_in_its_tracks_hue() {
-        use loquax::ui::tracks;
-        let dir =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../leviculum-map/fixtures");
-        for tier in [Tier::Truecolor, Tier::Ansi16] {
-            let mut painter =
-                MapPainter::new(Maps::new(Some(dir.clone())), Graphics::Braille, None);
-            painter.set_tier(tier);
-            let cell_px = painter.setup().cell_px;
-            let (cols, rows) = (60u16, 20u16);
-            let area = leviculum_ui::Rect::new(0, 0, cols, rows);
-            let at = project(LatLon::from_degrees(43.7755, 11.2672));
-            let pin = |peer: u8, row: u16, text: &str, selected: bool| PinCell {
-                peer: [peer; 16],
-                col: 2,
-                row,
-                text: text.to_string(),
-                apart: None,
-                stale: false,
-                nearby: false,
-                selected,
-                own: false,
-            };
-            let shown = MapView {
-                tracks: Vec::new(),
-                radar: None,
-                window_word: None,
-                moving: false,
-                area,
-                viewport: Viewport::new(
-                    at,
-                    15,
-                    u32::from(cols) * u32::from(cell_px.0),
-                    u32::from(rows) * u32::from(cell_px.1),
-                ),
-                cell_px,
-                pins: vec![
-                    pin(1, 1, "● bob · 4 min", false),
-                    pin(3, 4, "● ann · 2 min", true),
-                ],
-            };
-            let muted = Style::default().fg(Color::Rgb(0x80, 0x80, 0x80));
-            let mut terminal = Terminal::new(TestBackend::new(cols, rows + 1)).expect("terminal");
-            let Ok(_) = terminal.draw(|f| painter.render(f, &shown, muted));
-            let buffer = terminal.backend().buffer().clone();
-            let fg = |x: u16, y: u16| buffer.cell((x, y)).expect("cell").fg;
-            for (peer, row) in [(1u8, 1u16), (3, 4)] {
-                let want = track_style(tier, false, tracks::hue(&[peer; 16], false), 3)
-                    .fg
-                    .expect("a hue");
-                for x in 2..8 {
-                    assert_eq!(fg(x, row), want, "{tier:?} peer {peer} column {x}");
-                }
-            }
-        }
-    }
-
-    const PINNED_NAMES: &str ="\n  ● bob · 4 min  Giardino del Borgo\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n                           Piazza D'Azeglio\n";
+    const PINNED_NAMES: &str = "\n  ● bob · 4 min  Giardino del Borgo\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n                           Piazza D'Azeglio\n";
 
     /// The streets of the Florence fixture named in cells (1126): at z16
     /// by the Duomo over its picture in braille, each name on a level run of its street

@@ -54,10 +54,16 @@ renderer.
   - Centres: Germany (51 N 10 E), Morocco (31 N 5 W), both poles (85°),
     the antimeridian (17 S 179.99 E), and Berlin and Florence, where the
     fixture regions give street level from data, and Erg Chebbi and Erg
-    Chegaga (the z10 tiles at 31.20 N 4.04 W and 29.99 N 6.15 W), where
-    two Moroccan fixture regions lie over the height packs
-    `erg-chebbi-z10.lmh` and `erg-chegaga-z10.lmh` that every walk home
-    also holds: the desert relief under the vector map (1741, 1851).
+    Chegaga (the z10 tiles at 31.20 N 4.04 W and 29.99 N 6.15 W) and the
+    Bani escarpment (29.76 N 6.77 W, the middle of the `bani-z11.lmh`
+    block), where three Moroccan fixture regions lie over the height
+    packs `erg-chebbi-z10.lmh`, `erg-chegaga-z10.lmh` and `bani-z11.lmh`:
+    the desert relief under the vector map (1741, 1851, 1868). The packs
+    are not copied into a walk home: the regions are, under the names the
+    autoload gives them, and the shell's loader with `with_heights` finds
+    them on disk and fetches the blocks under them from a local range
+    server holding the packs and their catalogue, as a device fetches
+    them (the audit of 1863). The first home prints the packs it got.
   - Frame sizes: 1224x2197 at a density of 2.75 (Lew's phone), 1080x2400
     at 2.625, 1600x2560 at 2.0, 900x560 at 1.0 (the window), and
     2197x1224 (Lew's phone in landscape).
@@ -66,8 +72,14 @@ renderer.
     still.
   - `--quick` keeps the phone and the window, Germany, the north pole and
     Berlin, and the zooms 4 to 16 in steps of two plus the floor.
-- **Seven gestures** run on each frame size. `--quick` runs them on the
+- **The gestures** run on each frame size. `--quick` runs them on the
   phone only.
+  - `erg-pan-seam`: 40 px a frame for 24 frames east across the relief
+    tiles' seams at z12 over Erg Chebbi, from a fresh home, so the relief
+    store starts cold (order 1853).
+  - `erg-pinch-12-14`: over Erg Chebbi from z12 in to z14 and back out, a
+    quarter step a frame about the screen's middle, cold as above.
+  - `bani-pan-seam`: as `erg-pan-seam`, over the Bani escarpment (1868).
   - `pan-seam`: 40 px a frame across three tile seams at z13.
   - `pinch-out-in`: a quarter step a frame from z12 out to the world and
     back.
@@ -126,11 +138,12 @@ live in `loquax-android/src/render_walk.rs`.
 | `label_overlap` | every map frame | two shown names overlap |
 | `label_current_zoom` | a settled frame | a name is from a deeper zoom than the frame's, or is still fading out |
 | `label_on_world` | a turning globe | a name floats in space: three of its box's corners and middle are space |
-| `frame_p95` | a gesture | the 95th percentile frame time is over one frame at 60 Hz (16.7 ms, the host gate of 1799); the half-frame line (8.3 ms) stays in the note as information |
+| `frame_p95` | a gesture | the 95th percentile frame time is over half a frame at 60 Hz (8.3 ms; order 1853 moved it from the whole frame of 1799 to the line the note always named) |
 | `heap_returns` | a gesture | the live heap ends more than 160 MB above its start |
 | `heap_peak` | a gesture | the live heap grows more than 320 MB during the gesture |
 | `view_kept` | the rotation | the centre or the zoom moved |
 | `globe_disk_fixed` | a turning globe's gesture frame | the disk fitted from the frame's own pixels, placed where Java shows it (the leftover gesture transform, order 1883), differs from the gesture's reference frame at the same zoom by more than 1 px in centre or radius (order 1818, the wobble proof) |
+| `bare_paper` | a gesture frame | more than 10 % of the screen is bare paper where the same view, settled at rest after the gesture, shows map content (order 1853: a pan frame over Berlin was nearly empty and no rule saw it). Paper is counted in 16 px blocks, a block bare where 12 of its 16 samples are paper, and the rest frame's shown name boxes read as paper: names fade by design while a finger moves, so a gesture frame without them misses no map. Only frames with more than 10 % bare blocks are settled again; the others carry their share as the bound |
 | `view_only_by_input` | a settled frame, a gesture's rest held 120 s of held clock, the rotation's MapView made anew | a frame asked with no input shows another view than the one the last input left, by its centre or a thousandth of zoom (1819: the desktop's minute beat and the landed regions moved the view; the phone's recreated Activity fitted it anew) |
 | `zoom_keeps_the_place` | a zoom gesture's frame | the geographic point that started under the pinch focus is more than 2 px from it; the rest frame of an out-and-in pinch adds one row for "the start view is back" (order 1818, the Morocco-to-Spain jump) |
 | `screen_drawn` | a window or terminal screen | it drew nothing. For the window, that is at most two of four quarters with more than one colour. For the terminal, it is text on less than a tenth of its rows |
@@ -167,6 +180,7 @@ turn its rules red on a frame or gesture where the clean walk is green.
 | `view-lost` | `view_kept` |
 | `disk-shift` (every moving frame's picture 3 px right) | `globe_disk_fixed` |
 | `zoom-drift` (the view pushed 5 px once a zoom stands in the handover) | `zoom_keeps_the_place` |
+| `bare-frame` (every moving frame's lower half painted paper) | `bare_paper` |
 | `stray-view` (the second frame asked again at rest answers a zoom half a step out) | `view_only_by_input` |
 
 On the host the clean walk fails `frame_p95` on nearly every gesture. The

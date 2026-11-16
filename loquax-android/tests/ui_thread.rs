@@ -95,6 +95,11 @@ const WORKERS: &[(&str, &str, &str)] = &[
         "Core.mapFling(",
         "public void run() {",
     ),
+    (
+        "SettingsActivity.java",
+        "Core.mapRelief(",
+        "public void run() {",
+    ),
     ("WelcomeActivity.java", "Core.me(", "public void run() {"),
     // Not a thread: `Locator.tell` is a command itself, checked at its callers.
     (

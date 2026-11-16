@@ -49,6 +49,30 @@
 //!   instant at which a load can start, so a frame-driven frontend (the
 //!   phone, `MapShown::retry_in_ms`) woken at it never redraws for
 //!   nothing until the next real retry.
+//! - `pack_after_region` and `relief_drawn` (1868, the audit of 1863),
+//!   the desert sessions alone: over a desert archive with a height
+//!   catalogue beside it (the committed GLO-30 blocks of Erg Chebbi and
+//!   the Bani escarpment), the loader runs with
+//!   [`loquax::mapload::Loader::with_heights`] as the shell's does; the
+//!   block under the place lands as a pack after a region over it, and
+//!   the rested view with the relief on differs from the same view drawn
+//!   with it off on at least [`RELIEF_SHARE`] of the screen.
+//!
+//! - `loading_is_visible` (1812): at rest (no input for [`SETTLE_MS`]),
+//!   every point of the view the sampling of
+//!   [`loquax::ui::viewload::uncovered`] finds without its zoom's data
+//!   lies in a piece of the frame the loads' treatment
+//!   ([`loquax::ui::maploading::paint`]) was drawn over.
+//! - `progress_moves_with_bytes` (1812): a running area's bar is the
+//!   loader's bytes done of bytes planned at that instant, never another
+//!   number; it shows loading while bytes moved within the treatment's
+//!   stall time ([`TREAT_STALL_MS`]) and says it stands still once none
+//!   came for longer.
+//! - `no_treatment_when_complete` (1812): a pause that filled shows no
+//!   treatment on the screen.
+//! - `idle_draws_nothing` (1812): no frame is drawn only because the
+//!   stripes' step moved unless the frame on screen when it was asked
+//!   showed a moving treatment.
 //!
 //! With `LOQUAX_LOAD_WALK=DIR` the pictures go to `DIR/full/`, the
 //! verdicts to `DIR/rows-load.tsv` and the per-frame traces to
@@ -69,13 +93,16 @@ use leviculum_map::mercator::{project, LatLon, World};
 use leviculum_map::region::Bounds;
 use leviculum_map::viewport::{ExactView, MILLI};
 use leviculum_mapcut::serve::Serve;
-use loquax::mapload::{LoadState, Loader, Rank, Source, Step, MAX_AWAY, SCREEN_RETRY_MAX_MS};
+use loquax::mapload::{
+    Held, LoadState, Loader, Rank, Source, Step, Watch, MAX_AWAY, SCREEN_RETRY_MAX_MS,
+};
 use loquax::picture::Maps;
 use loquax::ui::map::MapWant;
-use loquax::ui::viewload::{uncovered, GAP_SHARE, MIN_ZOOM};
+use loquax::ui::maploading::{milli_of, Kind, Loads, STALL_MS as TREAT_STALL_MS};
+use loquax::ui::viewload::{gaps, uncovered, GAP_SHARE, MIN_ZOOM};
 
 use super::first_tile;
-use super::{draw, prefetch, App, Frames, Job, Message, Pointer, Screen, Want};
+use super::{draw, prefetch, App, Frames, Job, Message, Order, Pointer, Screen, Want};
 
 /// The window's map pane the walk drives, in pixels.
 pub const WALK_SIZE: (u32, u32) = (1120, 700);
@@ -111,6 +138,78 @@ pub const SPIN_STARTS: usize = 2;
 /// A frame whose most common colour covers more of the screen than this
 /// is blank.
 pub const BLANK_SHARE: f64 = 0.99;
+/// The share of a rested desert view the relief must move: the block lies
+/// under most of a z13 view at the place, and a relief that shades less
+/// than a fifth of it was not drawn.
+pub const RELIEF_SHARE: f64 = 0.2;
+/// The view rests this long after the last input before
+/// `loading_is_visible` judges its frames (1812): the scheduler's next
+/// decision ([`loquax::ui::viewload::DECIDE_MS`]) and two frames.
+pub const SETTLE_MS: u64 = 300;
+
+/// Where a walk starts and what its maps directory holds.
+struct Ground {
+    /// The view's middle and zoom.
+    at: World,
+    zoom: u8,
+    /// The autoload cache's cap.
+    cache_bytes: u64,
+    /// Old regions installed first ([`prefill_cache`]).
+    prefill: usize,
+}
+
+/// A desert place of the height sessions (1868): its name and the
+/// committed GLO-30 pack whose one block it lies in the middle of.
+pub struct Desert {
+    pub name: &'static str,
+    pub pack: &'static [u8],
+}
+
+/// Erg Chebbi, the z11 block of `erg-chebbi.lmh`.
+pub const ERG_CHEBBI: Desert = Desert {
+    name: "erg-chebbi",
+    pack: include_bytes!("../../../leviculum-map/fixtures/erg-chebbi.lmh"),
+};
+/// The Bani escarpment, the z11 block of `bani-z11.lmh`.
+pub const BANI: Desert = Desert {
+    name: "bani",
+    pack: include_bytes!("../../../leviculum-map/fixtures/bani-z11.lmh"),
+};
+
+impl Desert {
+    /// The block's ground: the place is its middle.
+    pub fn block(&self) -> Bounds {
+        let (dir, _) =
+            leviculum_map::elevation::Directory::parse_prefix(self.pack).expect("the pack");
+        let (x, y) = dir.block(0).expect("one block");
+        leviculum_mapcut::heights::block_bounds(dir.block_zoom(), x, y)
+    }
+
+    /// The place, the block's middle.
+    pub fn at(&self) -> World {
+        let b = self.block();
+        project(LatLon::from_degrees(
+            (f64::from(b.south) + f64::from(b.north)) / 2e7,
+            (f64::from(b.west) + f64::from(b.east)) / 2e7,
+        ))
+    }
+
+    /// The archive's box: the place and 0.2 degrees east and west, 0.12
+    /// north and south, so a z13 view and its screen box stay inside.
+    pub fn area(&self) -> Bounds {
+        let at = self.at();
+        let (lon, lat) = (
+            leviculum_map::mercator::lon_of_x(at.x),
+            leviculum_map::mercator::lat_of_y(at.y),
+        );
+        Bounds {
+            west: lon - 2_000_000,
+            south: lat - 1_200_000,
+            east: lon + 2_000_000,
+            north: lat + 1_200_000,
+        }
+    }
+}
 
 /// One frame interval of the trace.
 pub struct FrameRec {
@@ -135,6 +234,20 @@ pub struct FrameRec {
     /// a frame-driven frontend woken at it would start nothing and
     /// redraw for nothing until the next real retry.
     pub busy_wake: bool,
+    /// What of the view is still to come as the window is told it after
+    /// this interval (1812).
+    pub loads: Loads,
+    /// The loader's running boxes for the view at the same instant: their
+    /// bytes done and planned.
+    pub raw: Vec<(Bounds, u64, u64)>,
+    /// The drawn frame's points without data and how many of them carry
+    /// no treatment, when judged ([`SETTLE_MS`], the view at rest).
+    pub treat: Option<(usize, usize)>,
+    /// The drawn frame differs from the one before only in the stripes'
+    /// step, and the frame on screen when it was asked showed nothing moving.
+    pub idle_phase_draw: bool,
+    /// Pixels of the drawn frame the loads' treatment changed.
+    pub treated_px: u64,
 }
 
 /// A loader event on the walk's clock.
@@ -144,6 +257,8 @@ pub enum Ev {
     Done(Bounds, String, Vec<String>),
     Failed(Bounds, String),
     Skipped(Bounds, &'static str),
+    /// A running load paused, went on, or was dropped (1836).
+    Held(Bounds, Held),
 }
 
 /// A scripted pause's record: the view, its coverage, its picture.
@@ -165,6 +280,9 @@ pub struct Check {
     /// The screen's pixels, margins cut, RGBA.
     pub crop: Vec<u8>,
     pub blank: bool,
+    /// Pixels of the screen (margins cut) the pause's frame carries a
+    /// treatment on (1812).
+    pub treated_px: u64,
 }
 
 /// What a fault session did: when the fault ended on the walk's clock,
@@ -206,6 +324,20 @@ pub enum Inject {
     /// nothing starts (1835): `no_busy_wake`'s positive control, at the
     /// signal the rule reads.
     BusyWake,
+    /// A desert session's loader fetches no height packs (1868):
+    /// `pack_after_region` and `relief_drawn`'s positive control.
+    NoHeights,
+    /// The window is never told the loads (1812): `loading_is_visible`.
+    HideTreatment,
+    /// A loading area's bar shows the clock, not the bytes (1812):
+    /// `progress_moves_with_bytes`.
+    FakeProgress,
+    /// The last loads are kept once the loader has none (1812):
+    /// `no_treatment_when_complete`.
+    StaleTreatment,
+    /// After the first filled pause a frame is asked for the stripes'
+    /// next step while nothing loads (1812): `idle_draws_nothing`.
+    IdleTicks,
 }
 
 /// One verdict row, the render walk's columns.
@@ -247,6 +379,22 @@ pub struct Walk {
     done_wants: Vec<MapWant>,
     /// The last drawn frame said a name still fades.
     last_fading: bool,
+    /// The archive's box ([`inside_archive`]).
+    pub area: Bounds,
+    /// A desert session (1868): its loader fetches height packs, and the
+    /// block of its place, whose pack must land.
+    pub desert: Option<(String, Bounds)>,
+    /// Every height fetch that ended: when, the region's box, the packs
+    /// it wrote or why it failed.
+    pub heights: Vec<(u64, Bounds, Result<Vec<String>, String>)>,
+    /// The share of the rested view the relief moved ([`Walk::relief`]).
+    pub relief: Option<f64>,
+    /// The loader's report as the map shows it (1812), as the shell's.
+    watch: Watch,
+    /// The walk's clock at the last input (1812, [`SETTLE_MS`]).
+    last_input_ms: u64,
+    /// [`Inject::StaleTreatment`]'s kept loads.
+    stale: Option<Loads>,
 }
 
 impl Walk {
@@ -270,6 +418,78 @@ impl Walk {
         prefill: usize,
     ) -> Self {
         let serve = Serve::start(vec![("w.pmtiles".into(), wide_archive())]).expect("serve");
+        let at = project(LatLon::from_degrees(AREA_A.0, AREA_A.1));
+        let ground = Ground {
+            at,
+            zoom,
+            cache_bytes,
+            prefill,
+        };
+        Self::over(serve, name, rate, latency_ms, ground, inject)
+    }
+
+    /// A desert session's walk (1868): an archive over `place`'s box, its
+    /// height catalogue and the two committed packs beside it, the loader
+    /// fetching height packs as the shell's does, the view at the place.
+    pub fn desert(place: &Desert, rate: u64, latency_ms: u64, zoom: u8, inject: Inject) -> Self {
+        let area = place.area();
+        let mut catalogue = leviculum_mapcut::heights::Catalogue::default();
+        catalogue
+            .add_pack("chebbi.lmh", ERG_CHEBBI.pack)
+            .expect("chebbi");
+        catalogue.add_pack("bani.lmh", BANI.pack).expect("bani");
+        let serve = Serve::start(vec![
+            ("w.pmtiles".into(), archive_over(&area)),
+            ("chebbi.lmh".into(), ERG_CHEBBI.pack.to_vec()),
+            ("bani.lmh".into(), BANI.pack.to_vec()),
+            ("heights.tsv".into(), catalogue.write().into_bytes()),
+        ])
+        .expect("serve");
+        let ground = Ground {
+            at: place.at(),
+            zoom,
+            cache_bytes: 1 << 30,
+            prefill: 0,
+        };
+        let tag = if rate == 0 { "" } else { "-slow" };
+        let name = format!("desert-{}{tag}", place.name);
+        let mut walk = Self::over(serve, &name, rate, latency_ms, ground, inject);
+        walk.area = area;
+        let (dir, _) =
+            leviculum_map::elevation::Directory::parse_prefix(place.pack).expect("the pack");
+        let (x, y) = dir.block(0).expect("one block");
+        let pack = format!(
+            "{}h{}-{x}-{y}.lmh",
+            loquax::picture::AUTO_PREFIX,
+            dir.block_zoom()
+        );
+        walk.desert = Some((pack, place.block()));
+        let loader = std::mem::replace(
+            &mut walk.loader,
+            Loader::new(Maps::default(), Source::Url(String::new()), 0),
+        );
+        walk.loader = match inject {
+            Inject::NoHeights => loader,
+            _ => loader.with_heights(walk.serve.url("heights.tsv")),
+        };
+        walk
+    }
+
+    /// The walk over `serve`'s `w.pmtiles` and `ground`.
+    fn over(
+        serve: Serve,
+        name: &str,
+        rate: u64,
+        latency_ms: u64,
+        ground: Ground,
+        inject: Inject,
+    ) -> Self {
+        let Ground {
+            at,
+            zoom,
+            cache_bytes,
+            prefill,
+        } = ground;
         let dir = tempfile::tempdir().expect("home");
         let path = dir.path().join("maps");
         std::fs::create_dir_all(&path).expect("maps");
@@ -290,7 +510,6 @@ impl Walk {
         seen.autoload = true;
         seen.maps = maps.epoch();
         app.apply(Message::Seen(Box::new(seen)));
-        let at = project(LatLon::from_degrees(AREA_A.0, AREA_A.1));
         app.view = ExactView::new(at, u32::from(zoom) * MILLI, w, h);
         app.hold();
         // The walk's view is the user's: a region landing fits nothing.
@@ -318,6 +537,13 @@ impl Walk {
             last_ask: None,
             done_wants: Vec::new(),
             last_fading: false,
+            area: WIDE_BOX,
+            desert: None,
+            heights: Vec::new(),
+            relief: None,
+            watch: Watch::default(),
+            last_input_ms: 0,
+            stale: None,
         }
     }
 
@@ -350,9 +576,45 @@ impl Walk {
         let mut drew = false;
         let mut blank = None;
         let mut missing = self.frames.last().map_or(0, |f| f.missing);
-        match self.app.next_job() {
+        let mut treat = None;
+        let mut idle_phase_draw = false;
+        let mut treated_px = 0;
+        let job = match (self.inject, self.app.next_job()) {
+            // The positive control (1812): once a pause filled, a frame is
+            // asked for the stripes' next step though nothing loads, as a
+            // window would that ticked its animation while idle.
+            (Inject::IdleTicks, None) if self.checks.iter().any(|c| c.filled) => {
+                let step = self.app.shown.as_ref().map_or(0, |s| s.order.phase) + 1;
+                self.app
+                    .order()
+                    .map(|o| Job::Draw(Box::new(Order { phase: step, ..o })))
+            }
+            (_, job) => job,
+        };
+        match job {
             Some(Job::Draw(order)) => {
+                let before = self.app.shown.as_ref().map(|s| s.order.clone());
+                let moved_before = self.app.shown.as_ref().is_some_and(|s| {
+                    s.painted
+                        .pieces
+                        .iter()
+                        .any(|p| matches!(p.kind, Kind::Loading { .. }))
+                });
                 let shown = draw(&self.app.frames, *order);
+                // 1812: a frame drawn only for the stripes' next step must
+                // show stripes that move.
+                let phase_only = before.is_some_and(|b| {
+                    b.phase != shown.order.phase
+                        && Order {
+                            phase: shown.order.phase,
+                            ..b
+                        } == shown.order
+                });
+                // Asked while the frame on screen showed nothing moving:
+                // the frame that finds the stripes gone (their area came
+                // to be held) is the one the window learns it from.
+                idle_phase_draw = phase_only && !moved_before;
+                treated_px = shown.painted.pixels;
                 drew = true;
                 missing = shown.missing;
                 self.last_fading = shown.fading;
@@ -429,12 +691,79 @@ impl Walk {
                     self.events.push((t, Ev::Failed(b, detail.clone())));
                 }
                 Step::Skipped { why, .. } => self.events.push((t, Ev::Skipped(b, why))),
+                Step::Held { how, .. } => self.events.push((t, Ev::Held(b, *how))),
+                // A desert session's packs (1868): a pack written is a
+                // landing every painter reads again.
+                Step::Heights { landed: l, .. } => {
+                    let packs = l.as_ref().map(|l| l.packs.clone()).map_err(Clone::clone);
+                    landed |= packs.as_ref().is_ok_and(|p| !p.is_empty());
+                    self.heights.push((t, b, packs));
+                }
             }
         }
         if landed {
             let mut seen = self.app.seen.clone();
             seen.maps = self.maps.epoch();
             self.app.apply(Message::Seen(Box::new(seen)));
+        }
+        // What of the view is still to come (1812), as the shell tells
+        // the window: one report, so the bar and the bytes are the same
+        // instant's.
+        let report = self.loader.report(t);
+        let mut loads = self.watch.of(&report, self.loader.offline(), t);
+        let raw: Vec<(Bounds, u64, u64)> = report
+            .iter()
+            .filter_map(|(b, rank, state)| match state {
+                LoadState::Running {
+                    bytes_done, bytes, ..
+                } if rank.on_screen() => Some((*b, *bytes_done, *bytes)),
+                _ => None,
+            })
+            .collect();
+        match self.inject {
+            Inject::HideTreatment => loads = Loads::default(),
+            Inject::FakeProgress => {
+                for a in &mut loads.areas {
+                    if let Kind::Loading { milli } = &mut a.kind {
+                        *milli = ((t / 7) % 1000) as u16;
+                    }
+                }
+            }
+            Inject::StaleTreatment => match loads.areas.is_empty() {
+                true => loads = self.stale.clone().unwrap_or(loads),
+                false => self.stale = Some(loads.clone()),
+            },
+            _ => {}
+        }
+        if loads != self.app.seen.loads {
+            let mut seen = self.app.seen.clone();
+            seen.loads = loads.clone();
+            self.app.apply(Message::Seen(Box::new(seen)));
+        }
+        // 1812: at rest, every point without data carries the treatment
+        // in the frame on screen, once that frame is the one for what the
+        // window knows (its loads, its regions, its view): a change is
+        // drawn in the next interval, and judged then.
+        if let Some(shown) = self.app.shown.as_ref() {
+            let current = shown.order.loads == self.app.seen.loads
+                && shown.order.epoch == self.app.seen.maps
+                && shown.order.view == self.app.view;
+            let settled = t.saturating_sub(self.last_input_ms) >= SETTLE_MS && !self.app.moving();
+            if current
+                && settled
+                && self.app.view.tile_zoom() >= MIN_ZOOM
+                && inside_archive(&self.area, &self.view_now().bounds())
+            {
+                let lack = gaps(&self.view_now(), &self.maps.headers());
+                let bare = lack
+                    .iter()
+                    .filter(|&&p| {
+                        let (x, y) = shown.view.to_screen(p);
+                        !shown.painted.pieces.iter().any(|q| q.contains(x, y))
+                    })
+                    .count();
+                treat = Some((lack.len(), bare));
+            }
         }
         // The wake the loader would name a frame-driven frontend now,
         // right after its own poll: 0 while idle means a wake at which
@@ -458,8 +787,13 @@ impl Walk {
             missing,
             drew,
             blank,
-            inside: inside_archive(&self.view_now().bounds()),
+            inside: inside_archive(&self.area, &self.view_now().bounds()),
             busy_wake,
+            loads,
+            raw,
+            treat,
+            idle_phase_draw,
+            treated_px,
         });
         let next = t + 16;
         let now = self.now_ms();
@@ -498,6 +832,7 @@ impl Walk {
     /// One wheel notch of `milli` thousandths of a step at the middle,
     /// then the glide's frames.
     pub fn wheel(&mut self, milli: i32, settle_frames: u32) {
+        self.last_input_ms = self.now_ms();
         let (w, h) = WALK_SIZE;
         self.app.apply(Message::Pointer(Pointer::Wheel(
             Point::new(w as f32 / 2.0, h as f32 / 2.0),
@@ -514,6 +849,7 @@ impl Walk {
         self.app
             .apply(Message::Pointer(Pointer::Down(Point::new(x, y))));
         for k in 0..frames {
+            self.last_input_ms = self.now_ms();
             x += dx;
             y += dy;
             self.app
@@ -534,6 +870,7 @@ impl Walk {
     /// The view jumped to `(lat, lon)` at `zoom`, as "show where I am"
     /// moves it.
     pub fn jump(&mut self, to: (f64, f64), zoom: u8) {
+        self.last_input_ms = self.now_ms();
         self.app.settle();
         let at = project(LatLon::from_degrees(to.0, to.1));
         let (w, h) = WALK_SIZE;
@@ -608,6 +945,28 @@ impl Walk {
             shown = draw(&self.app.frames, order);
         }
         let crop = crop_screen(&shown, &self.app);
+        let mut treated_px = treated_on_screen(&shown);
+        // The positive control (1812): the stale loads painted as a
+        // painter would that forgot the regions holding the view, the
+        // treatment left over complete data.
+        if self.inject == Inject::StaleTreatment {
+            let mut scratch =
+                vec![0u8; shown.view.size().0 as usize * shown.view.size().1 as usize * 4];
+            let forgot = loquax::ui::maploading::paint(
+                &mut scratch,
+                &shown.view,
+                &shown.order.loads,
+                &[],
+                &loquax::ui::maploading::Brush {
+                    phase: shown.order.phase,
+                    dark: false,
+                    scale: shown.order.scale,
+                    margin: shown.order.margin,
+                    look: loquax::ui::maploading::Look::default(),
+                },
+            );
+            treated_px = pieces_on_screen(&shown, &forgot.pieces);
+        }
         let mut crop = crop;
         if self.inject == Inject::PerturbPicture {
             let seen_before = self.checks.iter().any(|c| {
@@ -620,7 +979,7 @@ impl Walk {
             }
         }
         let blank = blank_share(&crop) > BLANK_SHARE;
-        let inside = inside_archive(&self.view_now().bounds());
+        let inside = inside_archive(&self.area, &self.view_now().bounds());
         self.checks.push(Check {
             label: label.to_string(),
             t,
@@ -634,6 +993,7 @@ impl Walk {
             fill_took_ms: fill_took.unwrap_or(bound_ms),
             crop,
             blank,
+            treated_px,
         });
         if self.inject == Inject::DeleteRegion && !self.deleted && fill_took.is_some() {
             if let Some(dir) = self.maps.dir() {
@@ -680,6 +1040,44 @@ impl Walk {
             self.step();
         }
         self.run(4);
+    }
+
+    /// The share of the rested view's pixels the relief moves (1868): the
+    /// view drawn as the window draws it, with the relief, and again with
+    /// the config's `map_relief` off; recorded for `relief_drawn`.
+    pub fn relief(&mut self) {
+        let mut crops = Vec::new();
+        for relief in [true, false] {
+            let mut seen = self.app.seen.clone();
+            seen.style.relief = relief;
+            self.app.apply(Message::Seen(Box::new(seen)));
+            self.app.settle();
+            let Some(order) = self.app.order() else {
+                return;
+            };
+            let mut shown = draw(&self.app.frames, order);
+            for _ in 0..60 {
+                if !shown.fading && shown.missing == 0 {
+                    break;
+                }
+                self.step();
+                let Some(order) = self.app.order() else {
+                    break;
+                };
+                shown = draw(&self.app.frames, order);
+            }
+            crops.push(crop_screen(&shown, &self.app));
+        }
+        let mut seen = self.app.seen.clone();
+        seen.style.relief = true;
+        self.app.apply(Message::Seen(Box::new(seen)));
+        let (on, off) = (&crops[0], &crops[1]);
+        let moved = on
+            .chunks_exact(4)
+            .zip(off.chunks_exact(4))
+            .filter(|(a, b)| a != b)
+            .count();
+        self.relief = Some(moved as f64 / (on.len() / 4).max(1) as f64);
     }
 
     /// Mark the walk's fault as ended now; [`rules`] holds the recovery
@@ -743,6 +1141,12 @@ impl Walk {
 /// The two-area archive: [`first_tile`]'s z15 tile in every slot of
 /// [`WIDE_BOX`] from z10 to z15, padded to a dense city tile's size.
 pub fn wide_archive() -> Vec<u8> {
+    archive_over(&WIDE_BOX)
+}
+
+/// [`first_tile`]'s z15 tile in every slot of `area` from z10 to z15: the
+/// walk's archive over any box (the desert sessions', 1868).
+pub fn archive_over(area: &Bounds) -> Vec<u8> {
     use leviculum_mapcut::pmtiles::{padded, Archive};
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../leviculum-mapcut/fixtures/grunewald.pmtiles");
@@ -755,7 +1159,7 @@ pub fn wide_archive() -> Vec<u8> {
         .expect("a z15 tile");
     let mvt = archive.mvt(z15).expect("read").expect("the tile");
     let meta = archive.metadata().expect("metadata");
-    padded(&mvt, &WIDE_BOX, 10..=15, first_tile::FIRST_TILE_PAD, &meta).expect("the archive")
+    padded(&mvt, area, 10..=15, first_tile::FIRST_TILE_PAD, &meta).expect("the archive")
 }
 
 /// Install `copies` old autoloaded regions of a far corner of the
@@ -807,6 +1211,28 @@ fn prefill_cache(maps: &std::path::Path, url: &str, copies: usize) {
 }
 
 /// The screen's pixels of `shown`, margins cut, RGBA.
+/// Pixels of `shown`'s screen, its margins cut, its treatment's pieces
+/// cover (1812).
+fn treated_on_screen(shown: &super::Shown) -> u64 {
+    pieces_on_screen(shown, &shown.painted.pieces)
+}
+
+/// Pixels of `shown`'s screen, its margins cut, `pieces` cover.
+fn pieces_on_screen(shown: &super::Shown, pieces: &[loquax::ui::maploading::Piece]) -> u64 {
+    let (mx, my) = shown.order.margin;
+    let (w, h) = shown.view.size();
+    let (x0, y0) = (mx as i32, my as i32);
+    let (x1, y1) = (w as i32 - mx as i32, h as i32 - my as i32);
+    pieces
+        .iter()
+        .map(|p| {
+            let cw = (p.x1.min(x1) - p.x0.max(x0)).max(0);
+            let ch = (p.y1.min(y1) - p.y0.max(y0)).max(0);
+            (cw as u64) * (ch as u64)
+        })
+        .sum()
+}
+
 fn crop_screen(shown: &super::Shown, app: &App) -> Vec<u8> {
     let (fw, fh) = shown.view.size();
     let pixels: Vec<u8> = match &shown.handle {
@@ -845,17 +1271,17 @@ pub fn view_bytes(view: &leviculum_map::viewport::Viewport) -> u64 {
     (tiles(0) + tiles(1)) * first_tile::first_tile_blob()
 }
 
-/// Whether `view` lies inside [`WIDE_BOX`] with a margin of 0.03
-/// degrees (the screen box's growth): past the archive the world is
-/// empty, which is no loader's fault, so no fill or picture rule judges
-/// a view that reaches out.
-pub fn inside_archive(view: &Bounds) -> bool {
+/// Whether `view` lies inside the archive's box `area` ([`WIDE_BOX`],
+/// or a desert's) with a margin of 0.03 degrees (the screen box's
+/// growth): past the archive the world is empty, which is no loader's
+/// fault, so no fill or picture rule judges a view that reaches out.
+pub fn inside_archive(area: &Bounds, view: &Bounds) -> bool {
     const MARGIN: i32 = 300_000;
     let shrunk = Bounds {
-        west: WIDE_BOX.west + MARGIN,
-        south: WIDE_BOX.south + MARGIN,
-        east: WIDE_BOX.east - MARGIN,
-        north: WIDE_BOX.north - MARGIN,
+        west: area.west + MARGIN,
+        south: area.south + MARGIN,
+        east: area.east - MARGIN,
+        north: area.north - MARGIN,
     };
     shrunk.holds(view)
 }
@@ -889,11 +1315,26 @@ fn frame_blank(shown: &super::Shown) -> bool {
     let super::Handle::Rgba { pixels, .. } = &shown.handle else {
         return false;
     };
+    // The map's own pixels (1812): the loads' treatment says the data is
+    // still to come, it is no picture of the map. Plain ground under it,
+    // in any of the colours the treatment makes of the ground, is ground;
+    // a stand-in between the stripes is still a picture.
+    let width = shown.view.size().0 as usize;
     let ground = ground_rgba();
+    let dark = shown.order.style.theme == leviculum_mapfill::style::MapTheme::Dark;
+    let tints: std::collections::HashSet<[u8; 3]> =
+        loquax::ui::maploading::ground_tints([ground[0], ground[1], ground[2]], dark)
+            .into_iter()
+            .collect();
     let mut hits = 0u32;
     let mut total = 0u32;
-    for px in pixels.chunks_exact(4).step_by(16) {
-        hits += u32::from(px == ground);
+    for (n, px) in pixels.chunks_exact(4).enumerate().step_by(16) {
+        let plain = px == ground || {
+            let (x, y) = ((n % width) as f64 + 0.5, (n / width) as f64 + 0.5);
+            shown.painted.pieces.iter().any(|p| p.contains(x, y))
+                && tints.contains(&[px[0], px[1], px[2]])
+        };
+        hits += u32::from(plain);
         total += 1;
     }
     f64::from(hits) / f64::from(total.max(1)) > BLANK_SHARE
@@ -1202,7 +1643,9 @@ pub fn rules(walk: &Walk) -> Vec<Verdict> {
                 runs.retain(|rb| rb != b);
                 starts.remove(&format!("{b:?}"));
             }
-            Ev::Skipped(..) => {}
+            // A dropped load ends there; it starts again later.
+            Ev::Held(b, Held::Dropped) => runs.retain(|rb| rb != b),
+            Ev::Skipped(..) | Ev::Held(..) => {}
         }
     }
     out.push(v(
@@ -1256,7 +1699,7 @@ pub fn rules(walk: &Walk) -> Vec<Verdict> {
                 && prev.centre == f.centre
                 && prev.zoom_milli == f.zoom_milli
             {
-                blank_frames.push(f.t);
+                blank_frames.push((f.t, prev.treated_px));
             }
         }
         last_drawn = Some(f);
@@ -1296,7 +1739,12 @@ pub fn rules(walk: &Walk) -> Vec<Verdict> {
         blank_checks
             .iter()
             .map(|i| walk.checks[*i].label.clone())
-            .chain(blank_frames.iter().take(3).map(|t| format!("frame t={t}")))
+            .chain(
+                blank_frames
+                    .iter()
+                    .take(3)
+                    .map(|(t, px)| format!("frame t={t} (the frame before: {px} px treated)")),
+            )
             .take(3)
             .collect::<Vec<_>>()
             .join("; "),
@@ -1306,6 +1754,197 @@ pub fn rules(walk: &Walk) -> Vec<Verdict> {
             .unwrap_or_default(),
         String::new(),
     ));
+    // loading_is_visible (1812): at rest, every point without data
+    // carries the treatment in the drawn frame.
+    let judged: Vec<&FrameRec> = walk.frames.iter().filter(|f| f.treat.is_some()).collect();
+    let lacking: Vec<&FrameRec> = judged
+        .iter()
+        .copied()
+        .filter(|f| f.treat.is_some_and(|(n, _)| n > 0))
+        .collect();
+    let bare: Vec<&FrameRec> = lacking
+        .iter()
+        .copied()
+        .filter(|f| f.treat.is_some_and(|(_, b)| b > 0))
+        .collect();
+    out.push(v(
+        "loading_is_visible",
+        bare.is_empty(),
+        format!(
+            "{} of {} rested frames lacking data show a point without treatment ({} rested frames)",
+            bare.len(),
+            lacking.len(),
+            judged.len()
+        ),
+        "0".to_string(),
+        bare.iter()
+            .take(3)
+            .map(|f| {
+                let (n, b) = f.treat.unwrap_or_default();
+                format!("t={} {b} of {n} bare", f.t)
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
+        String::new(),
+        String::new(),
+    ));
+
+    // progress_moves_with_bytes (1812): the bar is the bytes, it says
+    // loading while they move and stands still once they stop.
+    let mut wrong = Vec::new();
+    let mut moved_at: HashMap<(i32, i32, i32, i32), (u64, u64)> = HashMap::new();
+    let mut shown_running = 0usize;
+    for f in &walk.frames {
+        for &(b, done, bytes) in &f.raw {
+            let key = (b.west, b.south, b.east, b.north);
+            let since = match moved_at.get(&key) {
+                Some(&(was, since)) if was == done => since,
+                _ => f.t,
+            };
+            moved_at.insert(key, (done, since));
+            let Some(area) = f.loads.areas.iter().find(|a| a.bounds == b) else {
+                continue;
+            };
+            shown_running += 1;
+            let want = milli_of(done, bytes);
+            let quiet = f.t - since;
+            let ok = match area.kind {
+                Kind::Loading { milli } => milli == want && quiet < TREAT_STALL_MS + 1_000,
+                Kind::Stalled { milli, .. } => milli == want && quiet + 1_000 >= TREAT_STALL_MS,
+                _ => false,
+            };
+            if !ok {
+                wrong.push(format!(
+                    "t={} {:?} for {done} of {bytes} bytes, quiet {quiet} ms",
+                    f.t, area.kind
+                ));
+            }
+        }
+        moved_at.retain(|k, _| {
+            f.raw
+                .iter()
+                .any(|(b, ..)| (b.west, b.south, b.east, b.north) == *k)
+        });
+    }
+    out.push(v(
+        "progress_moves_with_bytes",
+        wrong.is_empty(),
+        format!(
+            "{} of {} running areas shown otherwise than their bytes",
+            wrong.len(),
+            shown_running
+        ),
+        format!("0; stalled after {TREAT_STALL_MS} ms without a byte"),
+        wrong.iter().take(3).cloned().collect::<Vec<_>>().join("; "),
+        String::new(),
+        String::new(),
+    ));
+
+    // no_treatment_when_complete (1812): a filled pause shows none.
+    let stale: Vec<usize> = walk
+        .checks
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.filled && c.treated_px > 0)
+        .map(|(n, _)| n)
+        .collect();
+    out.push(v(
+        "no_treatment_when_complete",
+        stale.is_empty(),
+        format!(
+            "{} of {} filled pauses carry a treatment",
+            stale.len(),
+            walk.checks.iter().filter(|c| c.filled).count()
+        ),
+        "0".to_string(),
+        stale
+            .iter()
+            .take(3)
+            .map(|n| {
+                format!(
+                    "{} ({} px)",
+                    walk.checks[*n].label, walk.checks[*n].treated_px
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
+        stale
+            .first()
+            .map(|n| image_name(walk, *n))
+            .unwrap_or_default(),
+        String::new(),
+    ));
+
+    // idle_draws_nothing (1812): no frame for the stripes' step without
+    // stripes that move in it.
+    let idle: Vec<u64> = walk
+        .frames
+        .iter()
+        .filter(|f| f.idle_phase_draw)
+        .map(|f| f.t)
+        .collect();
+    out.push(v(
+        "idle_draws_nothing",
+        idle.is_empty(),
+        format!(
+            "{} frames drawn for the stripes' step with none moving",
+            idle.len()
+        ),
+        "0".to_string(),
+        idle.iter()
+            .take(3)
+            .map(|t| format!("t={t}"))
+            .collect::<Vec<_>>()
+            .join("; "),
+        String::new(),
+        String::new(),
+    ));
+
+    // pack_after_region, relief_drawn: the desert sessions (1868).
+    if let Some((pack, block)) = &walk.desert {
+        let landed = walk.heights.iter().find_map(|(t, _, r)| match r {
+            Ok(packs) if packs.contains(pack) => Some(*t),
+            _ => None,
+        });
+        let region = walk.events.iter().find_map(|(t, ev)| match ev {
+            Ev::Done(b, ..) if overlaps(b, block) => Some(*t),
+            _ => None,
+        });
+        let failed: Vec<String> = walk
+            .heights
+            .iter()
+            .filter_map(|(_, _, r)| r.as_ref().err().cloned())
+            .take(2)
+            .collect();
+        out.push(v(
+            "pack_after_region",
+            matches!((region, landed), (Some(r), Some(p)) if r <= p),
+            format!("region over the block at {region:?} ms, {pack} at {landed:?} ms"),
+            "the pack lands, after a region over its block".to_string(),
+            failed.join("; "),
+            String::new(),
+            String::new(),
+        ));
+        let share = walk.relief.unwrap_or(0.0);
+        let image = walk
+            .checks
+            .len()
+            .checked_sub(1)
+            .map(|n| image_name(walk, n))
+            .unwrap_or_default();
+        out.push(v(
+            "relief_drawn",
+            share >= RELIEF_SHARE,
+            format!("{share:.3} of the rested view moved with the relief on"),
+            format!(">= {RELIEF_SHARE:.3}"),
+            "the same view drawn with map_relief off".to_string(),
+            image,
+            walk.checks
+                .last()
+                .map(|c| format!("{}", c.zoom_milli / 1000))
+                .unwrap_or_default(),
+        ));
+    }
     out
 }
 
@@ -1397,6 +2036,7 @@ pub fn write_out(
             Ev::Done(b, name, evicted) => ("done", b, format!("{name} evicted={evicted:?}")),
             Ev::Failed(b, why) => ("failed", b, why.clone()),
             Ev::Skipped(b, why) => ("skipped", b, (*why).to_string()),
+            Ev::Held(b, how) => (how.word(), b, String::new()),
         };
         trace.push_str(&format!("{t}\t{kind}\t{},{}\t{detail}\n", b.west, b.south));
     }
@@ -1585,6 +2225,40 @@ pub fn cache_at_cap(rate: u64, latency: u64) -> Walk {
 
 /// The sessions of a set: `short` is the per-batch `cargo test` default,
 /// `quick` what fits two minutes released, `full` everything.
+/// A desert place loaded as a user does (1868, the audit of 1863): the
+/// view rests over the place at z13 until it fills, the loader brings
+/// the region and then the height pack of the block under it, the view
+/// rests again with the pack drawn, and the relief is measured against
+/// the same view drawn without it. One SMOKE line a step for the report.
+pub fn desert_rest(place: &Desert, rate: u64, latency: u64, inject: Inject) -> Walk {
+    let mut walk = Walk::desert(place, rate, latency, 13, inject);
+    let bound = walk.fill_bound();
+    walk.rest("z13", true);
+    walk.drain(bound);
+    walk.wheel(1000, 14);
+    walk.rest("z14", true);
+    walk.drain(bound);
+    walk.relief();
+    for (t, ev) in &walk.events {
+        if let Ev::Done(b, name, _) = ev {
+            eprintln!(
+                "SMOKE {} region t_ms={t} name={name} box={},{},{},{}",
+                place.name, b.west, b.south, b.east, b.north
+            );
+        }
+    }
+    for (t, _, r) in &walk.heights {
+        eprintln!("SMOKE {} heights t_ms={t} result={r:?}", place.name);
+    }
+    eprintln!(
+        "SMOKE {} relief_share={:.3} sent_bytes={}",
+        place.name,
+        walk.relief.unwrap_or(0.0),
+        walk.serve.sent()
+    );
+    walk
+}
+
 pub fn run_set(set: &str) -> Vec<(Walk, Vec<Verdict>)> {
     let mut walks: Vec<Walk> = Vec::new();
     match set {
@@ -1600,6 +2274,8 @@ pub fn run_set(set: &str) -> Vec<(Walk, Vec<Verdict>)> {
             walks.push(wheel_in_rested(0, 0, 4, 16, Inject::None));
             walks.push(in_out_in(0, 0, 2, Inject::None));
             walks.push(pan_slow_fast(0, 0));
+            walks.push(desert_rest(&ERG_CHEBBI, 0, 0, Inject::None));
+            walks.push(desert_rest(&BANI, 0, 0, Inject::None));
         }
         "full" => {
             walks.push(wheel_in_rested(0, 0, 4, 16, Inject::None));
@@ -1615,6 +2291,12 @@ pub fn run_set(set: &str) -> Vec<(Walk, Vec<Verdict>)> {
             walks.push(recovers_drop(0, 0));
             walks.push(recovers_stall(0, 0));
             walks.push(cache_at_cap(0, 0));
+            walks.push(desert_rest(&ERG_CHEBBI, 0, 0, Inject::None));
+            walks.push(desert_rest(&BANI, 0, 0, Inject::None));
+        }
+        // One session alone, for a look at it (1812).
+        "wheel-slow" => {
+            walks.push(wheel_in_rested(SLOW_RATE, 40, 12, 16, Inject::None));
         }
         other => panic!("no load walk set named {other}"),
     }
@@ -1677,6 +2359,24 @@ pub fn selftest_cases() -> Vec<(&'static str, Inject, &'static str)> {
             "same_view_same_picture",
         ),
         ("busy-wake", Inject::BusyWake, "no_busy_wake"),
+        ("no-heights", Inject::NoHeights, "pack_after_region"),
+        ("no-heights", Inject::NoHeights, "relief_drawn"),
+        (
+            "hide-treatment",
+            Inject::HideTreatment,
+            "loading_is_visible",
+        ),
+        (
+            "fake-progress",
+            Inject::FakeProgress,
+            "progress_moves_with_bytes",
+        ),
+        (
+            "stale-treatment",
+            Inject::StaleTreatment,
+            "no_treatment_when_complete",
+        ),
+        ("idle-ticks", Inject::IdleTicks, "idle_draws_nothing"),
     ]
 }
 
@@ -1693,6 +2393,22 @@ pub fn selftest_walk(inject: Inject) -> Walk {
             walk
         }
         Inject::NeverRecovers => recovers_503(0, 0, false),
+        // 1812: a slow source, so the view rests while it lacks data and
+        // the treatment's rules have frames to judge.
+        Inject::HideTreatment
+        | Inject::FakeProgress
+        | Inject::StaleTreatment
+        | Inject::IdleTicks => {
+            let mut walk = Walk::new("selftest-treat", SLOW_RATE, 40, 12, inject);
+            let bound = walk.fill_bound();
+            walk.wheel(1000, 14);
+            walk.rest_bounded("z13", bound, true);
+            walk.run(40);
+            walk.wheel(1000, 14);
+            walk.rest_bounded("z14", bound, true);
+            walk
+        }
+        Inject::NoHeights => desert_rest(&ERG_CHEBBI, 0, 0, Inject::NoHeights),
         Inject::DeleteRegion | Inject::PerturbPicture => {
             let mut walk = Walk::new(
                 match inject {
@@ -1778,4 +2494,431 @@ fn the_load_walk_selftest_fires_every_rule() {
         std::fs::write(out.join("rows-load-selftest.tsv"), &rows).expect("the rows");
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// One scene of 1812's comparison: where, how deep, which map, which
+/// screen.
+struct LooksScene {
+    name: &'static str,
+    /// The source: the walk's synthetic city, the Erg Chebbi desert, or a
+    /// real archive's bytes at its place.
+    ground: LooksGround,
+    zoom: u8,
+    dark: bool,
+    /// Logical width and height, and screen pixels a logical one.
+    size: (f32, f32, f32),
+    /// A region installed before the walk starts, its file's bytes: the
+    /// data a coarser or a neighbouring load leaves on screen, which the
+    /// treatment must not hide. Empty for none.
+    standin: &'static [u8],
+}
+
+#[derive(Clone, Copy)]
+enum LooksGround {
+    Synthetic,
+    Desert,
+    Real(&'static [u8], (f64, f64)),
+}
+
+/// The Protomaps sample's Oltrarno, south of the Arno in Florence: a city.
+const OLTRARNO: &[u8] = include_bytes!("../../../leviculum-mapcut/fixtures/oltrarno.pmtiles");
+/// The Grunewald forest in the west of Berlin: open land with paths.
+const GRUNEWALD: &[u8] = include_bytes!("../../../leviculum-mapcut/fixtures/grunewald.pmtiles");
+/// Central Florence, z11 to z15, north of the Oltrarno.
+const FIRENZE: &[u8] = include_bytes!("../../../leviculum-map/fixtures/firenze.lmr");
+
+impl Walk {
+    /// A walk over a real archive's `bytes` at `at`, the source at
+    /// `rate` bytes a second (1812's comparison pictures).
+    pub fn real(name: &str, bytes: &[u8], at: (f64, f64), rate: u64, zoom: u8) -> Self {
+        let serve = Serve::start(vec![("w.pmtiles".into(), bytes.to_vec())]).expect("serve");
+        let ground = Ground {
+            at: project(LatLon::from_degrees(at.0, at.1)),
+            zoom,
+            cache_bytes: 1 << 30,
+            prefill: 0,
+        };
+        Self::over(serve, name, rate, 40, ground, Inject::None)
+    }
+}
+
+/// The screen's pixels of a frame's `pixels` drawn as `frame`, cut to
+/// `screen` (as [`crop_screen`] does).
+fn crop_pixels(pixels: &[u8], frame: &ExactView, screen: &ExactView) -> Vec<u8> {
+    let (fw, fh) = frame.size();
+    let (x0, y0, _) = loquax::mapframe::onto(frame, screen);
+    let (w, h) = screen.size();
+    let mut crop = Vec::with_capacity((w * h * 4) as usize);
+    for sy in 0..h {
+        for sx in 0..w {
+            let fx = (f64::from(sx) - x0).round() as i64;
+            let fy = (f64::from(sy) - y0).round() as i64;
+            if (0..i64::from(fw)).contains(&fx) && (0..i64::from(fh)).contains(&fy) {
+                let i = ((fy as u32 * fw + fx as u32) * 4) as usize;
+                crop.extend_from_slice(&pixels[i..i + 4]);
+            } else {
+                crop.extend_from_slice(&[0xff, 0x00, 0xff, 0xff]);
+            }
+        }
+    }
+    crop
+}
+
+fn write_png(path: &std::path::Path, rgba: &[u8], (w, h): (u32, u32)) {
+    let mut png = Vec::new();
+    let mut e = png::Encoder::new(&mut png, w, h);
+    e.set_color(png::ColorType::Rgba);
+    e.set_depth(png::BitDepth::Eight);
+    let mut writer = e.write_header().expect("header");
+    writer.write_image_data(rgba).expect("data");
+    writer.finish().expect("finish");
+    std::fs::write(path, png).expect("the picture");
+}
+
+fn median(mut v: Vec<f64>) -> f64 {
+    v.sort_by(f64::total_cmp);
+    v.get(v.len() / 2).copied().unwrap_or(0.0)
+}
+
+/// 1812's comparison, a measuring tool: real loading scenes (the walk's
+/// city and the Erg Chebbi desert, light and dark, the desktop's and a
+/// phone's screen, zooms from the globe to the ground), each caught while
+/// a load for the screen runs with bytes arriving, drawn without the
+/// treatment and with each [`loquax::ui::maploading::Look`], with the
+/// frame's time with and without it. `LOQUAX_LOAD_LOOKS=DIR` writes the
+/// pictures, `looks.tsv` and `index.html` there; without it the test
+/// does nothing.
+#[test]
+fn the_loading_looks_side_by_side() {
+    use leviculum_mapfill::style::MapTheme;
+    use loquax::ui::maploading::{paint, Brush, Look};
+    let Some(out) = std::env::var_os("LOQUAX_LOAD_LOOKS").map(PathBuf::from) else {
+        return;
+    };
+    std::fs::create_dir_all(&out).expect("the out directory");
+    let desk = (1120.0, 700.0, 1.0);
+    let florence = LooksGround::Real(OLTRARNO, (43.7475, 11.2720));
+    let grunewald = LooksGround::Real(GRUNEWALD, (52.4715, 13.2280));
+    let florence_between = LooksGround::Real(OLTRARNO, (43.7620, 11.2660));
+    let phone = (412.0, 915.0, 2.625);
+    let scenes = [
+        LooksScene {
+            name: "globe-z3",
+            ground: LooksGround::Synthetic,
+            zoom: 3,
+            dark: false,
+            size: desk,
+            standin: &[],
+        },
+        LooksScene {
+            name: "city-z11",
+            ground: LooksGround::Synthetic,
+            zoom: 11,
+            dark: false,
+            size: desk,
+            standin: &[],
+        },
+        LooksScene {
+            name: "city-z13",
+            ground: LooksGround::Synthetic,
+            zoom: 13,
+            dark: false,
+            size: desk,
+            standin: &[],
+        },
+        LooksScene {
+            name: "city-z13-dark",
+            ground: LooksGround::Synthetic,
+            zoom: 13,
+            dark: true,
+            size: desk,
+            standin: &[],
+        },
+        LooksScene {
+            name: "city-z15",
+            ground: LooksGround::Synthetic,
+            zoom: 15,
+            dark: false,
+            size: desk,
+            standin: &[],
+        },
+        LooksScene {
+            name: "city-z14-phone",
+            ground: LooksGround::Synthetic,
+            zoom: 14,
+            dark: false,
+            size: phone,
+            standin: &[],
+        },
+        LooksScene {
+            name: "city-z14-phone-dark",
+            ground: LooksGround::Synthetic,
+            zoom: 14,
+            dark: true,
+            size: phone,
+            standin: &[],
+        },
+        LooksScene {
+            name: "desert-z12",
+            ground: LooksGround::Desert,
+            zoom: 12,
+            dark: false,
+            size: desk,
+            standin: &[],
+        },
+        LooksScene {
+            name: "desert-z12-dark",
+            ground: LooksGround::Desert,
+            zoom: 12,
+            dark: true,
+            size: desk,
+            standin: &[],
+        },
+        LooksScene {
+            name: "desert-z13-phone",
+            ground: LooksGround::Desert,
+            zoom: 13,
+            dark: false,
+            size: phone,
+            standin: &[],
+        },
+        LooksScene {
+            name: "florence-z15",
+            ground: florence,
+            zoom: 15,
+            dark: false,
+            size: desk,
+            standin: &[],
+        },
+        LooksScene {
+            name: "florence-z15-dark",
+            ground: florence,
+            zoom: 15,
+            dark: true,
+            size: desk,
+            standin: &[],
+        },
+        LooksScene {
+            name: "florence-z15-phone",
+            ground: florence,
+            zoom: 15,
+            dark: false,
+            size: phone,
+            standin: &[],
+        },
+        LooksScene {
+            name: "grunewald-z15",
+            ground: grunewald,
+            zoom: 15,
+            dark: false,
+            size: desk,
+            standin: &[],
+        },
+        LooksScene {
+            name: "grunewald-z15-dark",
+            ground: grunewald,
+            zoom: 15,
+            dark: true,
+            size: desk,
+            standin: &[],
+        },
+        LooksScene {
+            name: "grunewald-z14-phone-dark",
+            ground: grunewald,
+            zoom: 14,
+            dark: true,
+            size: phone,
+            standin: &[],
+        },
+        // Florence's centre installed (firenze.lmr), the Oltrarno south
+        // of it loading: half the screen has its data.
+        LooksScene {
+            name: "florence-mixed-z13-dark",
+            ground: florence_between,
+            zoom: 13,
+            dark: true,
+            size: desk,
+            standin: FIRENZE,
+        },
+        LooksScene {
+            name: "florence-mixed-z13-phone",
+            ground: florence_between,
+            zoom: 13,
+            dark: false,
+            size: phone,
+            standin: FIRENZE,
+        },
+        LooksScene {
+            name: "florence-mixed-z13-phone-dark",
+            ground: florence_between,
+            zoom: 13,
+            dark: true,
+            size: phone,
+            standin: FIRENZE,
+        },
+        LooksScene {
+            name: "florence-mixed-z13",
+            ground: florence_between,
+            zoom: 13,
+            dark: false,
+            size: desk,
+            standin: FIRENZE,
+        },
+    ];
+    let looks = [
+        ("stripes", Look::Stripes),
+        ("veil", Look::Veil),
+        ("edge", Look::Edge),
+    ];
+    let mut rows = String::from(
+        "scene\tsize\tzoom\tmilli\tdraw_ms_without_p50\tdraw_ms_with_p50\tlook\tpaint_ms_p50\tpainted_px\tpicture\n",
+    );
+    let mut html = String::from(
+        "<!doctype html><meta charset=utf-8><title>1812 loading looks</title>\
+         <style>body{font:13px sans-serif}img{max-width:420px;border:1px solid #888}\
+         td{vertical-align:top;padding:4px}</style><h1>1812: the loading looks</h1><table>",
+    );
+    for scene in &scenes {
+        let mut walk = match scene.ground {
+            LooksGround::Desert => {
+                Walk::desert(&ERG_CHEBBI, SLOW_RATE, 40, scene.zoom, Inject::None)
+            }
+            LooksGround::Synthetic => {
+                Walk::new(scene.name, SLOW_RATE, 40, scene.zoom, Inject::None)
+            }
+            // The fixtures are small: a slow link so the load is caught
+            // with part of the region drawn and the rest to come.
+            LooksGround::Real(bytes, at) => Walk::real(scene.name, bytes, at, 6_000, scene.zoom),
+        };
+        if !scene.standin.is_empty() {
+            let dir = walk.maps.dir().expect("maps").to_path_buf();
+            std::fs::write(dir.join("standin.lmr"), scene.standin).expect("the stand-in");
+            walk.maps.changed();
+            let mut seen = walk.app.seen.clone();
+            seen.maps = walk.maps.epoch();
+            walk.app.apply(Message::Seen(Box::new(seen)));
+        }
+        let (lw, lh, k) = scene.size;
+        walk.app.apply(Message::Scale(k));
+        walk.app.apply(Message::MapSize(iced::Size::new(lw, lh)));
+        let mut seen = walk.app.seen.clone();
+        if scene.dark {
+            seen.map_flag = Some(leviculum_ui::theme::ThemeFlag::Dark);
+            seen.style = seen.style.in_theme(MapTheme::Dark);
+        }
+        walk.app.apply(Message::Seen(Box::new(seen)));
+        walk.app.hold();
+        // Until a load for the screen runs with bytes arriving, between a
+        // tenth and nine tenths of the way; the globe asks for none.
+        let mut milli = 0u16;
+        for _ in 0..2_500 {
+            walk.step();
+            let running = walk.app.seen.loads.areas.iter().find_map(|a| match a.kind {
+                Kind::Loading { milli } if (100..900).contains(&milli) => Some(milli),
+                _ => None,
+            });
+            if let Some(m) = running {
+                milli = m;
+                break;
+            }
+            if scene.zoom < MIN_ZOOM && walk.frames.len() > 60 {
+                break;
+            }
+        }
+        let Some(order) = walk.app.order() else {
+            continue;
+        };
+        let bare = Order {
+            loads: Loads::default(),
+            phase: 0,
+            ..order.clone()
+        };
+        let mut without = Vec::new();
+        let mut with = Vec::new();
+        let mut last = None;
+        for _ in 0..9 {
+            let shown = draw(&walk.app.frames, bare.clone());
+            without.push(shown.ms);
+            last = Some(shown);
+            with.push(draw(&walk.app.frames, order.clone()).ms);
+        }
+        let Some(shown) = last else {
+            continue;
+        };
+        let base: Vec<u8> = match &shown.handle {
+            super::Handle::Rgba { pixels, .. } => pixels.to_vec(),
+            other => panic!("not raw pixels: {other:?}"),
+        };
+        let screen = walk.app.view;
+        let size = screen.size();
+        let dark = order.style.theme == MapTheme::Dark;
+        let held = loquax::ui::viewload::holding(&walk.maps.headers(), order.view.tile_zoom());
+        let name = format!("looks-{}-none.png", scene.name);
+        write_png(
+            &out.join(&name),
+            &crop_pixels(&base, &shown.view, &screen),
+            size,
+        );
+        html.push_str(&format!(
+            "<tr><td>{}<br>{}x{} z{}<br>{} ‰ loaded<br>draw {:.2} ms without, {:.2} ms with</td>\
+             <td><a href='{name}'><img src='{name}'></a><br>none</td>",
+            scene.name,
+            size.0,
+            size.1,
+            scene.zoom,
+            milli,
+            median(without.clone()),
+            median(with.clone())
+        ));
+        for (word, look) in looks {
+            let mut times = Vec::new();
+            let mut rgba = base.clone();
+            let mut painted = Default::default();
+            for _ in 0..9 {
+                rgba.copy_from_slice(&base);
+                let at = Instant::now();
+                painted = paint(
+                    &mut rgba,
+                    &shown.view,
+                    &order.loads,
+                    &held,
+                    &Brush {
+                        phase: order.phase,
+                        dark,
+                        scale: order.scale,
+                        margin: order.margin,
+                        look,
+                    },
+                );
+                times.push(at.elapsed().as_secs_f64() * 1e3);
+            }
+            let painted: loquax::ui::maploading::Painted = painted;
+            let name = format!("looks-{}-{word}.png", scene.name);
+            write_png(
+                &out.join(&name),
+                &crop_pixels(&rgba, &shown.view, &screen),
+                size,
+            );
+            rows.push_str(&format!(
+                "{}\t{}x{}\t{}\t{}\t{:.3}\t{:.3}\t{word}\t{:.3}\t{}\t{name}\n",
+                scene.name,
+                size.0,
+                size.1,
+                scene.zoom,
+                milli,
+                median(without.clone()),
+                median(with.clone()),
+                median(times.clone()),
+                painted.pixels
+            ));
+            html.push_str(&format!(
+                "<td><a href='{name}'><img src='{name}'></a><br>{word}, paint {:.3} ms</td>",
+                median(times)
+            ));
+        }
+        html.push_str("</tr>");
+    }
+    html.push_str("</table>");
+    std::fs::write(out.join("looks.tsv"), rows).expect("the rows");
+    std::fs::write(out.join("index.html"), html).expect("the sheet");
 }

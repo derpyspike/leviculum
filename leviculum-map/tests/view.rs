@@ -895,10 +895,11 @@ fn a_views_box_is_its_corners() {
     assert_eq!((world.west, world.east), (-1_800_000_000, 1_800_000_000));
 }
 
-/// Every region that reaches into a view is drawn, the deepest last; one
-/// outside the view or past its zooms is not.
+/// Every region that reaches into a view is drawn, the one whose deepest
+/// zoom is nearest the view's from above last (1836); one outside the
+/// view or past its zooms is not.
 #[test]
-fn every_region_in_a_view_is_drawn_the_deepest_last() {
+fn every_region_in_a_view_is_drawn_the_nearest_deeper_last() {
     let header = |west: i32, east: i32, max_zoom: u8| Header {
         bounds: Bounds {
             west,
@@ -935,8 +936,75 @@ fn every_region_in_a_view_is_drawn_the_deepest_last() {
     let order = drawn(regions.iter().map(|(n, h)| (*n, h)), &view);
     assert_eq!(
         order,
-        [1, 0],
-        "b (z14) under a (z15); far, and deep from z14 on, left out"
+        [0, 1],
+        "a (z15) under b (z14), nearer z12; far, and deep from z14 on, left out"
+    );
+}
+
+/// The same view draws the same picture whatever the order the regions
+/// landed in (1811's mechanism 2, order 1836 item 3): over a z13 view the
+/// screen's own z12-13 box keeps its unsimplified z13 on top of a z10-15
+/// cell that landed after it and holds the same z13 simplified (a cut
+/// simplifies every zoom but its deepest). Past every region's deepest
+/// zoom the deepest is on top, as it overzooms the finest data.
+#[test]
+fn the_region_whose_deepest_zoom_is_the_views_is_drawn_on_top() {
+    let header = |min_zoom: u8, max_zoom: u8| Header {
+        bounds: Bounds {
+            west: 86_000_000,
+            south: 500_000_000,
+            east: 87_600_000,
+            north: 502_000_000,
+        },
+        min_zoom,
+        max_zoom,
+        profile: leviculum_map::profile::CUT_2,
+        attribution: (0, 0),
+        notice: (0, 0),
+        tiles: 0,
+        index: 0,
+        len: 0,
+        labels: None,
+        buildings: None,
+        pois: None,
+        streamed: false,
+    };
+    let at = project(LatLon::from_degrees(50.1, 8.68));
+    let order = |regions: &[(&str, Header)], zoom: u8| -> Vec<String> {
+        let view = Viewport::new(at, zoom, 400, 200);
+        drawn(regions.iter().map(|(n, h)| (*n, h)), &view)
+            .into_iter()
+            .map(|i| regions[i].0.to_string())
+            .collect()
+    };
+    let screen = ("auto-b-z12-13.lmr", header(12, 13));
+    let cell = ("auto-a-z10-15.lmr", header(10, 15));
+    let shallow = ("auto-c-z9-11.lmr", header(9, 11));
+    // Landed in either order, listed in either order: one order.
+    let first = [screen, cell];
+    let later = [cell, screen];
+    assert_eq!(
+        order(&first, 13),
+        ["auto-a-z10-15.lmr", "auto-b-z12-13.lmr"]
+    );
+    assert_eq!(order(&later, 13), order(&first, 13));
+    // z14: the screen's box overzooms, the cell holds z14 itself.
+    assert_eq!(
+        order(&first, 14),
+        ["auto-b-z12-13.lmr", "auto-a-z10-15.lmr"]
+    );
+    // z12: both are deeper; the nearer, the screen's, on top.
+    let three = [cell, shallow, screen];
+    assert_eq!(
+        order(&three, 12),
+        ["auto-c-z9-11.lmr", "auto-a-z10-15.lmr", "auto-b-z12-13.lmr"]
+    );
+    // z11: the shallow one's own deepest zoom is the view's.
+    assert_eq!(order(&three, 11), ["auto-a-z10-15.lmr", "auto-c-z9-11.lmr"]);
+    // z17: past every deepest zoom, the deepest on top.
+    assert_eq!(
+        order(&three, 17),
+        ["auto-c-z9-11.lmr", "auto-b-z12-13.lmr", "auto-a-z10-15.lmr"]
     );
 }
 

@@ -9,9 +9,14 @@
 //! - The queue is ordered by what is on screen (1292,
 //!   [`crate::ui::viewload`]): a box asked for by hand or for the screen
 //!   first, then the boxes next to it, then those the view left, at most
-//!   [`MAX_AWAY`] of them. A load whose area left the screen cannot be
-//!   paused (the cut reads the archive in one call), so a load for the
-//!   screen starts beside it, two at most.
+//!   [`MAX_AWAY`] of them. A load runs a round of its cut at a time
+//!   ([`leviculum_mapcut::load::Loading`], 1836), and a load whose area
+//!   left the screen pauses at its next round while anything for the
+//!   screen runs or waits, its file kept and drawn as far as it came; it
+//!   goes on from there once the screen has what it wants, before any
+//!   new box starts. At most [`MAX_RUNNING`] loads run, at most
+//!   [`MAX_PAUSED`] wait paused; past that the worst-ranked paused load
+//!   is dropped, its file removed and its box queued again.
 //! - The screen's own box at its zoom (1527, [`LoadReason::Screen`]) goes
 //!   before the cells under the screen and starts beside any load but
 //!   another for the screen; a cell for the screen waits until it landed,
@@ -48,25 +53,55 @@
 //! - Autoloaded regions are a cache under a cap, named [`AUTO_PREFIX`],
 //!   evicted least recently viewed first (a painter marks a region viewed
 //!   by its file's modification time). A file without the prefix was placed
-//!   by hand and is never evicted, nor counted.
+//!   by hand and is never evicted, nor counted. A file a running load
+//!   writes is never evicted (1836); a landing for the screen takes the
+//!   files of paused loads first, each load stopped for it and its box
+//!   queued again (the audit of 1836, finding 4).
+//!
+//! - A region that landed wants its height packs (1863): the blocks of
+//!   the height catalogue ([`leviculum_mapcut::heights`]) under its box,
+//!   each fetched by one range request and written beside the region as
+//!   `auto-h<zoom>-<x>-<y>.lmh`, under a `.part` name first and renamed
+//!   once it checked whole, so a painter never indexes half a pack. The
+//!   packs queue behind the regions: one fetch at a time, the screen's
+//!   region's first, and none starts while a region for the screen runs
+//!   or waits. They count in the cache cap and go with the last
+//!   autoloaded region over them ([`evict`]). The autoloaded regions on
+//!   disk want theirs too, once a session from the view's first decision
+//!   on ([`Loader::schedule`], the autoload on), the most recently viewed
+//!   first, after every region that lands. A pack
+//!   that failed is retried on the long ladder; so is a catalogue the
+//!   server does not have (no such file, or not a catalogue), once a rung
+//!   for every pack waiting, since the default source's catalogue may come
+//!   after the first regions; until then the map draws as it did without
+//!   relief. No line is shown for a pack: the relief is a finish, its
+//!   absence is no fault. A block or directory past the catalogue's
+//!   limits ([`BLOCK_MAX`], [`DIRECTORY_MAX`]) is never asked for.
 //!
 //! The source is `map_source` from the config, or the newest Protomaps
 //! daily build ([`leviculum_mapcut::http::daily`]) found once a session.
+//! The height catalogue is `height_source` from the config, else
+//! [`CATALOGUE_NAME`] beside a configured `map_source`, else
+//! [`HEIGHTS_DEFAULT`] ([`heights_url`]).
 
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::string::{String, ToString};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Instant, SystemTime};
 use std::vec::Vec;
 
 use leviculum_map::region::{Bounds, Region};
-use leviculum_mapcut::cut::Progress;
-use leviculum_mapcut::http::{self, HttpRange};
-use leviculum_mapcut::load::{cut_planned, plan, Empty, Loaded, TooLarge, Want};
+use leviculum_mapcut::heights::{
+    local_pack, BlockEntry, Catalogue, BLOCK_MAX, CATALOGUE_NAME, DIRECTORY_MAX,
+};
+use leviculum_mapcut::http::{self, HttpError, HttpRange};
+use leviculum_mapcut::load::{plan, Empty, LoadProgress, Loaded, Loading, TooLarge, Want};
 use leviculum_mapcut::pmtiles::Archive;
+use leviculum_mapcut::pmtiles::RangeRead;
 
 use crate::picture::{is_auto, Maps, AUTO_PREFIX};
 use crate::ui::map::{LoadReason, MapWant};
@@ -94,6 +129,8 @@ pub const OFFLINE_RETRY_MS: u64 = 10_000;
 pub const MAX_RUNNING: usize = 2;
 /// The most queued boxes the view left that are kept, the newest.
 pub const MAX_AWAY: usize = 8;
+/// Loads paused at most (1836): each holds a thread and its file open.
+pub const MAX_PAUSED: usize = 4;
 /// The layer profile the autoload cuts under, the map tool's default:
 /// profile 2 (1707), whose deepest zoom keeps the source's geometry. A
 /// region cut the old way no longer covers the screen
@@ -108,6 +145,35 @@ const BY: &str = "loquax";
 /// The least time between two progress bumps of a region being written
 /// (1291): a frame on screen is drawn again at most four times a second.
 pub const PROGRESS_EVERY_MS: u64 = 250;
+
+/// The height catalogue when the config names neither `height_source`
+/// nor `map_source` (1863): the project's own map server.
+pub const HEIGHTS_DEFAULT: &str = "https://leviculum.network/maps/heights.tsv";
+/// The longest catalogue a device reads: a world of z9 blocks is about
+/// 80,000 lines, 8 MB.
+pub const CATALOGUE_MAX: u64 = 16 << 20;
+
+/// The height catalogue's URL: `height_source` when set, else the
+/// catalogue beside the configured `map_source` (a server of its own
+/// serves both from one directory), else [`HEIGHTS_DEFAULT`].
+pub fn heights_url(height_source: Option<&str>, map_source: Option<&str>) -> String {
+    match (height_source, map_source) {
+        (Some(url), _) => url.to_string(),
+        (None, Some(map)) => match map.rfind('/') {
+            Some(at) => format!("{}{CATALOGUE_NAME}", &map[..=at]),
+            None => HEIGHTS_DEFAULT.to_string(),
+        },
+        (None, None) => HEIGHTS_DEFAULT.to_string(),
+    }
+}
+
+/// The URL of `name` beside the catalogue at `catalogue`.
+fn beside(catalogue: &str, name: &str) -> String {
+    match catalogue.rfind('/') {
+        Some(at) => format!("{}{name}", &catalogue[..=at]),
+        None => name.to_string(),
+    }
+}
 
 /// The language of a locale setting (`de_DE.UTF-8` is `de`), `None` for
 /// the C and POSIX locales and an empty one.
@@ -172,6 +238,55 @@ pub enum Step {
         want: MapWant,
         why: &'static str,
     },
+    /// A running load was paused between two rounds, went on, or was
+    /// dropped to make room (1836): a line for the log.
+    Held {
+        want: MapWant,
+        how: Held,
+    },
+    /// The height packs of a region that landed (1863) were fetched, or
+    /// failed to be: a line for the log, never one for the screen.
+    Heights {
+        want: MapWant,
+        landed: Result<HeightsLanded, String>,
+        elapsed_ms: u64,
+    },
+}
+
+/// What became of a running load the screen no longer needs (1836).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Held {
+    /// It stopped after its round, its file kept.
+    Paused,
+    /// It goes on from the round it stopped at.
+    Resumed,
+    /// Too many waited paused: it stopped for good, its file removed and
+    /// its box queued again.
+    Dropped,
+}
+
+impl Held {
+    /// The word for the log.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Paused => "paused",
+            Self::Resumed => "resumed",
+            Self::Dropped => "dropped",
+        }
+    }
+}
+
+/// The height packs one fetch wrote (1863).
+#[derive(Debug, PartialEq, Eq)]
+pub struct HeightsLanded {
+    /// The packs' file names, the ones written now.
+    pub packs: Vec<String>,
+    /// Pack bytes fetched for them.
+    pub fetched: u64,
+    /// Blocks under the region that were there already.
+    pub had: usize,
+    /// Files removed to stay under the cap.
+    pub evicted: Vec<String>,
 }
 
 /// What a [`Step`] did, without its detail: what a frontend keeps of
@@ -182,6 +297,9 @@ pub enum StepKind {
     Done,
     Failed,
     Skipped,
+    /// Paused, resumed or dropped (1836).
+    Held(Held),
+    Heights,
 }
 
 impl Step {
@@ -192,6 +310,8 @@ impl Step {
             Self::Done { .. } => StepKind::Done,
             Self::Failed { .. } => StepKind::Failed,
             Self::Skipped { .. } => StepKind::Skipped,
+            Self::Held { how, .. } => StepKind::Held(*how),
+            Self::Heights { .. } => StepKind::Heights,
         }
     }
 
@@ -201,7 +321,9 @@ impl Step {
             Self::Started(want)
             | Self::Done { want, .. }
             | Self::Failed { want, .. }
-            | Self::Skipped { want, .. } => want,
+            | Self::Skipped { want, .. }
+            | Self::Held { want, .. }
+            | Self::Heights { want, .. } => want,
         }
     }
 }
@@ -236,7 +358,7 @@ pub enum Rank {
 
 impl Rank {
     /// Whether the box is for what the user looks at.
-    fn on_screen(self) -> bool {
+    pub fn on_screen(self) -> bool {
         self <= Self::Here
     }
 }
@@ -260,10 +382,91 @@ struct Running {
     rank: Rank,
     started: Instant,
     done: Receiver<Result<Landed, Failure>>,
-    /// Tiles written and planned, packed done << 32 | planned, as the
-    /// cut's rounds report them ([`LoadState::Running`]).
-    counts: Arc<std::sync::atomic::AtomicU64>,
+    /// How far the load came, as its rounds report it
+    /// ([`LoadState::Running`]).
+    progress: Arc<Mutex<LoadProgress>>,
+    /// Run, pause between rounds, or stop (1836).
+    gate: Arc<Gate>,
+    /// What the gate was last set to.
+    hold: Hold,
 }
+
+/// What a running load is to do at its next round (1836).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Hold {
+    #[default]
+    Run,
+    Pause,
+    Stop,
+}
+
+/// A running load's switch (1836): the loader sets it, the load's thread
+/// looks at it before every round and waits while it says pause.
+#[derive(Default)]
+struct Gate {
+    hold: Mutex<Hold>,
+    changed: Condvar,
+    /// The load is for what the user looks at ([`Rank::on_screen`]): its
+    /// landing may take a paused load's file first (audit of 1836,
+    /// finding 4). Kept by [`Loader::steer`].
+    screen: AtomicBool,
+}
+
+impl Gate {
+    /// Set the hold; a stop is for good, whoever set it.
+    fn set(&self, hold: Hold) {
+        let mut held = self.hold.lock().unwrap_or_else(PoisonError::into_inner);
+        if *held != Hold::Stop {
+            *held = hold;
+        }
+        self.changed.notify_all();
+    }
+
+    /// Stop a load that waits paused, for an eviction to take its file
+    /// (audit of 1836, finding 4): whether it was paused and is stopped
+    /// now. A load that runs is left alone.
+    fn claim(&self) -> bool {
+        let mut held = self.hold.lock().unwrap_or_else(PoisonError::into_inner);
+        let paused = *held == Hold::Pause;
+        if paused {
+            *held = Hold::Stop;
+            self.changed.notify_all();
+        }
+        paused
+    }
+
+    fn set_screen(&self, screen: bool) {
+        self.screen.store(screen, AtomicOrdering::Relaxed);
+    }
+
+    fn screen(&self) -> bool {
+        self.screen.load(AtomicOrdering::Relaxed)
+    }
+
+    /// Wait while paused; whether the load goes on (`false`: stop).
+    fn pass(&self) -> bool {
+        let mut hold = self.hold.lock().unwrap_or_else(PoisonError::into_inner);
+        while *hold == Hold::Pause {
+            hold = self
+                .changed
+                .wait(hold)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        *hold == Hold::Run
+    }
+}
+
+/// The load was told to stop between two rounds (1836).
+#[derive(Debug)]
+struct Stopped;
+
+impl core::fmt::Display for Stopped {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "the load was set aside")
+    }
+}
+
+impl std::error::Error for Stopped {}
 
 /// Why a load failed, as the thread hands it back.
 struct Failure {
@@ -273,6 +476,8 @@ struct Failure {
     /// The box itself cannot load (too large, no tiles there): retrying
     /// cannot help, the box is not requeued.
     permanent: bool,
+    /// The loader stopped it ([`Held::Dropped`]): no fault of the box.
+    stopped: bool,
 }
 
 /// One box's state as the loader tells it (1811, exposed for 1812's
@@ -281,12 +486,101 @@ struct Failure {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoadState {
     /// The load runs: tiles written, of the tiles planned (0 of 0 until
-    /// the plan is made).
-    Running { done: u32, planned: u32 },
+    /// the plan is made), and the tiles' archive bytes fetched of those
+    /// planned (1836).
+    Running {
+        done: u32,
+        planned: u32,
+        bytes_done: u64,
+        bytes: u64,
+    },
+    /// The load waits paused between two rounds, this far (1836).
+    Paused {
+        done: u32,
+        planned: u32,
+        bytes_done: u64,
+        bytes: u64,
+    },
     /// The box waits in the queue at this place, first is 0.
     Waiting { place: usize },
     /// The box failed and retries in this many milliseconds.
     Retrying { in_ms: u64 },
+}
+
+/// What of the view is still to come, as the map shows it (1812): the
+/// loader's report turned into [`crate::ui::maploading::Loads`], each
+/// running load's bytes watched so one that receives nothing for
+/// [`maploading::STALL_MS`](crate::ui::maploading::STALL_MS) is said to
+/// stand still instead of loading. Only boxes for what the user looks at
+/// count ([`Rank::on_screen`]).
+#[derive(Default)]
+pub struct Watch {
+    /// Each running box's bytes when they last moved, and since when.
+    moved: Vec<(Bounds, u64, u64)>,
+}
+
+impl Watch {
+    /// The loads of `loader` at `now_ms`.
+    pub fn loads(&mut self, loader: &Loader, now_ms: u64) -> crate::ui::maploading::Loads {
+        self.of(&loader.report(now_ms), loader.offline(), now_ms)
+    }
+
+    /// The loads of a report ([`Loader::report`]) at `now_ms`.
+    pub fn of(
+        &mut self,
+        report: &[(Bounds, Rank, LoadState)],
+        offline: bool,
+        now_ms: u64,
+    ) -> crate::ui::maploading::Loads {
+        use crate::ui::maploading::{milli_of, Area, Kind, Loads, STALL_MS};
+        let mut moved = Vec::new();
+        let mut areas = Vec::new();
+        for (bounds, rank, state) in report {
+            if !rank.on_screen() {
+                continue;
+            }
+            let (kind, bytes_done, bytes) = match *state {
+                LoadState::Running {
+                    bytes_done, bytes, ..
+                } => {
+                    let since = match self.moved.iter().find(|(b, _, _)| b == bounds) {
+                        Some(&(_, was, since)) if was == bytes_done => since,
+                        _ => now_ms,
+                    };
+                    moved.push((*bounds, bytes_done, since));
+                    let milli = milli_of(bytes_done, bytes);
+                    let quiet = now_ms.saturating_sub(since);
+                    let kind = match quiet >= STALL_MS {
+                        true => Kind::Stalled {
+                            milli,
+                            quiet_s: (quiet / 1000) as u32,
+                        },
+                        false => Kind::Loading { milli },
+                    };
+                    (kind, bytes_done, bytes)
+                }
+                LoadState::Paused {
+                    bytes_done, bytes, ..
+                } => (Kind::Waiting, bytes_done, bytes),
+                LoadState::Waiting { .. } => (Kind::Waiting, 0, 0),
+                LoadState::Retrying { in_ms } => (
+                    Kind::Failed {
+                        retry_s: in_ms.div_ceil(1000) as u32,
+                    },
+                    0,
+                    0,
+                ),
+            };
+            areas.push(Area {
+                bounds: *bounds,
+                kind,
+                bytes_done,
+                bytes,
+            });
+        }
+        self.moved = moved;
+        Loads { areas, offline }
+    }
 }
 
 /// The loader the shell holds.
@@ -303,6 +597,102 @@ pub struct Loader {
     offline: bool,
     /// No internet was said, and no load landed since.
     offline_said: bool,
+    /// The height packs' side (1863), `None` without a catalogue.
+    heights: Option<Heights>,
+    /// The region files loads write in place now, running or paused
+    /// (1836): no eviction takes them.
+    writing: Writing,
+}
+
+/// The region files loads write now, shared by the loader and its jobs
+/// (1836).
+type Writing = Arc<Mutex<Vec<Writer>>>;
+
+/// A region file a load writes: its name, and the load's gate when the
+/// file is written in place under that name, so an eviction for the
+/// screen may stop the load while it waits paused and take the file
+/// (audit of 1836, finding 4). A file written beside the region it
+/// replaces has none: the name is the installed region's.
+struct Writer {
+    name: String,
+    gate: Option<Arc<Gate>>,
+}
+
+/// A file's place in [`Writing`] while its load holds it; gone with it.
+struct Written {
+    writing: Writing,
+    name: String,
+}
+
+impl Written {
+    fn new(writing: &Writing, name: &str, gate: Option<Arc<Gate>>) -> Self {
+        writing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Writer {
+                name: name.to_string(),
+                gate,
+            });
+        Self {
+            writing: Arc::clone(writing),
+            name: name.to_string(),
+        }
+    }
+}
+
+impl Drop for Written {
+    fn drop(&mut self) {
+        let mut names = self.writing.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(n) = names.iter().position(|w| w.name == self.name) {
+            names.remove(n);
+        }
+    }
+}
+
+/// The height packs' side of the loader (1863).
+struct Heights {
+    /// The catalogue's URL; the packs lie beside it.
+    url: String,
+    /// The catalogue read, kept for the session.
+    catalogue: Arc<Mutex<Option<Arc<Catalogue>>>>,
+    /// Landed regions whose packs are wanted, in the order to fetch them.
+    queue: Vec<HeightWant>,
+    running: Option<RunningHeights>,
+    /// The view scheduled ([`Loader::schedule`], which the frontends call
+    /// with the autoload on): the regions on disk want their packs.
+    scan_asked: bool,
+    /// The regions on disk were queued.
+    scanned: bool,
+    /// Asks of a catalogue the server did not have, in a row: the long
+    /// ladder's rung.
+    catalogue_failures: u32,
+    /// No height fetch starts before this time: the server had no
+    /// catalogue, and every pack waits on its ladder together.
+    catalogue_until: u64,
+}
+
+/// A landed region whose height packs are wanted.
+struct HeightWant {
+    want: MapWant,
+    /// The region's file name: kept by the eviction its packs run.
+    region: String,
+    rank: Rank,
+    /// Not started before this time; 0 is due.
+    retry_at: u64,
+    failures: u32,
+}
+
+struct RunningHeights {
+    want: HeightWant,
+    started: Instant,
+    done: Receiver<Result<HeightsLanded, HeightFailure>>,
+}
+
+/// Why a height fetch failed, as its thread hands it back.
+struct HeightFailure {
+    detail: String,
+    /// The server has no catalogue, or none this reader reads.
+    absent: bool,
 }
 
 impl Loader {
@@ -317,7 +707,51 @@ impl Loader {
             backoff: Vec::new(),
             offline: false,
             offline_said: false,
+            heights: None,
+            writing: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Fetch the height packs of every region that lands from the
+    /// catalogue at `catalogue` ([`heights_url`], 1863).
+    pub fn with_heights(mut self, catalogue: String) -> Self {
+        self.heights = Some(Heights {
+            url: catalogue,
+            catalogue: Arc::new(Mutex::new(None)),
+            queue: Vec::new(),
+            running: None,
+            scan_asked: false,
+            scanned: false,
+            catalogue_failures: 0,
+            catalogue_until: 0,
+        });
+        self
+    }
+
+    /// Whether height packs are fetched or wait to be, not counting those
+    /// waiting to retry.
+    fn heights_pending(&self) -> bool {
+        self.heights
+            .as_ref()
+            .is_some_and(|h| h.running.is_some() || h.queue.iter().any(|q| q.retry_at == 0))
+    }
+
+    /// Milliseconds until the next height fetch could start by the
+    /// heights' own clock, `None` when one runs or none waits.
+    fn heights_due_ms(&self, now_ms: u64) -> Option<u64> {
+        let h = self.heights.as_ref()?;
+        // A server without a catalogue wakes no frontend: the packs wait
+        // for its next rung and start at the first poll after it, which
+        // any frame brings; a still screen loses nothing meanwhile, and
+        // a phone is not woken every rung for a server that may never
+        // have one (the phone's load walk, 1868).
+        if h.running.is_some() || h.catalogue_failures > 0 {
+            return None;
+        }
+        h.queue
+            .iter()
+            .map(|q| q.retry_at.saturating_sub(now_ms))
+            .min()
     }
 
     /// Whether a load runs or waits to start. A box waiting to retry
@@ -325,7 +759,8 @@ impl Loader {
     /// retry in t" ([`LoadState::Retrying`]), and the chip and the
     /// offline word must not claim activity the loader postponed.
     pub fn busy(&self) -> bool {
-        if !self.running.is_empty() {
+        // A paused load waits for the screen's: it owes the view nothing.
+        if self.running.iter().any(|r| r.hold != Hold::Pause) || self.heights_pending() {
             return true;
         }
         // Mirror [`Loader::start_next`]: an off-screen box behind an
@@ -372,17 +807,31 @@ impl Loader {
     /// every 50 ms for nothing until the screen box's retry (the audit
     /// of 1821, finding 1). The wake named is the screen box's instead,
     /// and the held box starts, in order, once the screen is served.
+    ///
+    /// A height fetch waiting (1863) names its own wake, unless a region
+    /// for the screen loads or waits to: the packs start after it, and
+    /// the region's own end wakes the loader. Packs waiting for a
+    /// catalogue the server did not have name none (1868).
     pub fn next_due_ms(&self, now_ms: u64) -> Option<u64> {
-        if self.due_at(now_ms).is_some() {
-            return Some(0);
+        let regions = match self.due_at(now_ms) {
+            Some(_) => Some(0),
+            None => self
+                .queue
+                .iter()
+                .filter(|q| q.retry_at > now_ms)
+                .map(|q| q.retry_at)
+                .filter(|&at| self.due_at(at).is_some())
+                .min()
+                .map(|at| at - now_ms),
+        };
+        let heights = match self.loading_here() {
+            true => None,
+            false => self.heights_due_ms(now_ms),
+        };
+        match (regions, heights) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
         }
-        self.queue
-            .iter()
-            .filter(|q| q.retry_at > now_ms)
-            .map(|q| q.retry_at)
-            .filter(|&at| self.due_at(at).is_some())
-            .min()
-            .map(|at| at - now_ms)
     }
 
     /// Whether the last load that ended found no internet and none started
@@ -410,10 +859,22 @@ impl Loader {
             .running
             .iter()
             .map(|r| {
-                let packed = r.counts.load(std::sync::atomic::Ordering::Relaxed);
-                let state = LoadState::Running {
-                    done: (packed >> 32) as u32,
-                    planned: packed as u32,
+                let p = *r.progress.lock().unwrap_or_else(PoisonError::into_inner);
+                let (done, planned) = (p.tiles_done as u32, p.tiles as u32);
+                let (bytes_done, bytes) = (p.bytes_done, p.bytes);
+                let state = match r.hold {
+                    Hold::Pause => LoadState::Paused {
+                        done,
+                        planned,
+                        bytes_done,
+                        bytes,
+                    },
+                    _ => LoadState::Running {
+                        done,
+                        planned,
+                        bytes_done,
+                        bytes,
+                    },
                 };
                 (r.want.bounds, r.rank, state)
             })
@@ -426,6 +887,21 @@ impl Loader {
             out.push((q.want.bounds, q.rank, state));
         }
         out
+    }
+
+    /// "Try now" (1812): every box for what the user looks at that waits
+    /// to retry after a failure is due at once, its wait forgotten, and
+    /// the next is started.
+    pub fn retry_now(&mut self, now_ms: u64) -> Vec<Step> {
+        let mut retried = Vec::new();
+        for q in self.queue.iter_mut() {
+            if q.rank.on_screen() && q.retry_at > now_ms {
+                q.retry_at = 0;
+                retried.push(q.want.bounds);
+            }
+        }
+        self.backoff.retain(|b| !retried.contains(&b.bounds));
+        self.start_next(now_ms)
     }
 
     /// Whether `bounds` is queued or loading.
@@ -484,6 +960,11 @@ impl Loader {
     /// the screen starts when nothing for it runs. A box asked for by
     /// hand keeps its place.
     pub fn schedule(&mut self, here: Vec<MapWant>, ahead: Vec<MapWant>, now_ms: u64) -> Vec<Step> {
+        // The view decides: the autoload is on, and the regions on disk
+        // want their height packs as those that land (1868).
+        if let Some(h) = self.heights.as_mut() {
+            h.scan_asked = true;
+        }
         let place = |b: &Bounds| {
             here.iter()
                 .position(|w| w.bounds == *b)
@@ -597,13 +1078,196 @@ impl Loader {
                     unreachable: false,
                     too_large: false,
                     permanent: false,
+                    stopped: false,
                 }),
             };
             let running = self.running.remove(n);
             steps.push(self.ended(running, result, now_ms));
         }
+        steps.extend(self.heights_ended(now_ms));
         steps.extend(self.start_next(now_ms));
+        self.start_heights(now_ms);
         steps
+    }
+
+    /// The step of the height fetch that ended, if one did.
+    fn heights_ended(&mut self, now_ms: u64) -> Option<Step> {
+        let h = self.heights.as_mut()?;
+        let result = match h.running.as_ref()?.done.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return None,
+            Err(TryRecvError::Disconnected) => Err(HeightFailure {
+                detail: "the height fetch stopped".to_string(),
+                absent: false,
+            }),
+        };
+        let running = h.running.take()?;
+        let elapsed_ms = u64::try_from(running.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let mut item = running.want;
+        let want = item.want.clone();
+        let landed = match result {
+            Ok(landed) => {
+                h.catalogue_failures = 0;
+                h.catalogue_until = 0;
+                Ok(landed)
+            }
+            Err(failure) if failure.absent => {
+                // No catalogue there yet (the default source's comes after
+                // the first regions): asked again on the long ladder, once
+                // a rung, every pack waiting on it together.
+                h.catalogue_failures += 1;
+                let until = now_ms.saturating_add(ladder_ms(h.catalogue_failures));
+                h.catalogue_until = until;
+                for queued in &mut h.queue {
+                    queued.retry_at = queued.retry_at.max(until);
+                }
+                item.retry_at = until;
+                let at = h
+                    .queue
+                    .iter()
+                    .position(|q| q.rank > item.rank)
+                    .unwrap_or(h.queue.len());
+                h.queue.insert(at, item);
+                Err(failure.detail)
+            }
+            Err(failure) => {
+                // The long ladder, as a region away from the screen: the
+                // relief is a finish, it does not hurry a failing source.
+                item.failures += 1;
+                item.retry_at = now_ms.saturating_add(ladder_ms(item.failures));
+                let at = h
+                    .queue
+                    .iter()
+                    .position(|q| q.rank > item.rank)
+                    .unwrap_or(h.queue.len());
+                h.queue.insert(at, item);
+                Err(failure.detail)
+            }
+        };
+        Some(Step::Heights {
+            want,
+            landed,
+            elapsed_ms,
+        })
+    }
+
+    /// Queue the height packs of `region`, landed for `want` at `rank`:
+    /// after every region of its rank or before, the same region once.
+    fn want_heights(&mut self, want: &MapWant, region: &str, rank: Rank) {
+        let Some(h) = self.heights.as_mut() else {
+            return;
+        };
+        h.queue.retain(|q| q.region != region);
+        let at = h
+            .queue
+            .iter()
+            .position(|q| q.rank > rank)
+            .unwrap_or(h.queue.len());
+        h.queue.insert(
+            at,
+            HeightWant {
+                want: want.clone(),
+                region: region.to_string(),
+                rank,
+                retry_at: h.catalogue_until,
+                failures: 0,
+            },
+        );
+    }
+
+    /// Queue the height packs of every autoloaded region on disk that is
+    /// not queued yet, once a session after the view first scheduled (the
+    /// autoload is on: with it off nothing is fetched by itself), the most
+    /// recently viewed first, as boxes the view left: a region that landed
+    /// before heights were fetched (another session, a catalogue served
+    /// later) wants its packs as one that lands now. A region's packs on
+    /// disk already are counted, not fetched again.
+    fn want_heights_on_disk(&mut self, dir: &Path) {
+        let Some(h) = self.heights.as_mut() else {
+            return;
+        };
+        if !h.scan_asked || std::mem::replace(&mut h.scanned, true) {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut on_disk: Vec<(SystemTime, String, MapWant)> = entries
+            .filter_map(Result::ok)
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let want = disk_want(&name)?;
+                let viewed = e.metadata().and_then(|m| m.modified()).ok()?;
+                Some((viewed, name, want))
+            })
+            .collect();
+        on_disk.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        for (_, region, want) in on_disk {
+            if h.queue.iter().any(|q| q.region == region)
+                || h.running.as_ref().is_some_and(|r| r.want.region == region)
+            {
+                continue;
+            }
+            h.queue.push(HeightWant {
+                want,
+                region,
+                rank: Rank::Away,
+                retry_at: h.catalogue_until,
+                failures: 0,
+            });
+        }
+    }
+
+    /// Start the first due height fetch when none runs and no region for
+    /// the screen loads or waits to: the packs come after the regions.
+    fn start_heights(&mut self, now_ms: u64) {
+        if self.loading_here() {
+            return;
+        }
+        let Some(dir) = self.maps.dir().map(Path::to_path_buf) else {
+            return;
+        };
+        self.want_heights_on_disk(&dir);
+        let maps = self.maps.clone();
+        let cache_bytes = self.cache_bytes;
+        let writing = Arc::clone(&self.writing);
+        let Some(h) = self.heights.as_mut() else {
+            return;
+        };
+        if h.running.is_some() {
+            return;
+        }
+        let Some(n) = h.queue.iter().position(|q| q.retry_at <= now_ms) else {
+            return;
+        };
+        let item = h.queue.remove(n);
+        let job = HeightJob {
+            dir,
+            maps,
+            url: h.url.clone(),
+            catalogue: Arc::clone(&h.catalogue),
+            bounds: item.want.bounds,
+            region: item.region.clone(),
+            cache_bytes,
+            writing,
+        };
+        let (tx, rx) = channel();
+        let spawned = std::thread::Builder::new()
+            .name("map-heights".to_string())
+            .spawn(move || {
+                let _ = tx.send(job.run());
+            });
+        match spawned {
+            Ok(_) => {
+                h.running = Some(RunningHeights {
+                    want: item,
+                    started: Instant::now(),
+                    done: rx,
+                });
+            }
+            // No thread now: the item waits for the next poll.
+            Err(_) => h.queue.insert(n, item),
+        }
     }
 
     /// The step of `running`, which ended with `result`.
@@ -625,10 +1289,32 @@ impl Loader {
                     queued.retry_at = 0;
                 }
                 self.maps.changed();
+                self.want_heights(&want, &landed.name, running.rank);
                 Step::Done {
                     want,
                     landed,
                     elapsed_ms,
+                }
+            }
+            Err(failure) if failure.stopped => {
+                // Dropped to make room (1836): queued again at its rank's
+                // tail, due at once, no failure booked.
+                let at = self
+                    .queue
+                    .iter()
+                    .position(|q| q.rank > running.rank)
+                    .unwrap_or(self.queue.len());
+                self.queue.insert(
+                    at,
+                    Queued {
+                        want: want.clone(),
+                        rank: running.rank,
+                        retry_at: 0,
+                    },
+                );
+                Step::Held {
+                    want,
+                    how: Held::Dropped,
                 }
             }
             Err(failure) => {
@@ -727,19 +1413,103 @@ impl Loader {
         None
     }
 
+    /// Pause, resume and drop running loads by what the screen wants
+    /// (1836): while a box for the screen runs or waits, every load for
+    /// an area off the screen pauses at its next round, and the loads for
+    /// the screen run, the best ranked and oldest first, [`MAX_RUNNING`]
+    /// at most, a paused one back on the screen among them; once nothing for
+    /// the screen is left, the paused loads go on, the best ranked first,
+    /// [`MAX_RUNNING`] at most, before any new box starts. Past
+    /// [`MAX_PAUSED`] paused loads the worst ranked, the latest started
+    /// among equals, stops for good.
+    fn steer(&mut self) -> Vec<Step> {
+        let screen_wants = self
+            .running
+            .iter()
+            .any(|r| r.hold == Hold::Run && r.rank.on_screen())
+            || self.queue.iter().any(|q| q.rank.on_screen());
+        let mut steps = Vec::new();
+        for r in &self.running {
+            r.gate.set_screen(r.rank.on_screen());
+        }
+        let set = |r: &mut Running, hold: Hold, steps: &mut Vec<Step>| {
+            if r.hold == hold || r.hold == Hold::Stop {
+                return;
+            }
+            let how = match hold {
+                Hold::Run => Held::Resumed,
+                Hold::Pause => Held::Paused,
+                Hold::Stop => Held::Dropped,
+            };
+            r.hold = hold;
+            r.gate.set(hold);
+            // A drop says so when its thread hands the box back.
+            if hold != Hold::Stop {
+                steps.push(Step::Held {
+                    want: r.want.clone(),
+                    how,
+                });
+            }
+        };
+        // While the screen wants, only loads for it may run; a load paused
+        // when the view left and back on the screen now is one of them
+        // (audit of 1836, finding 1): it goes on, best ranked and oldest
+        // first, before a box queued later takes its slot.
+        let mut order: Vec<usize> = (0..self.running.len())
+            .filter(|&n| self.running[n].hold != Hold::Stop)
+            .filter(|&n| !screen_wants || self.running[n].rank.on_screen())
+            .collect();
+        order.sort_by_key(|&n| (self.running[n].rank, self.running[n].started));
+        for (k, &n) in order.iter().enumerate() {
+            let hold = match k < MAX_RUNNING {
+                true => Hold::Run,
+                false => Hold::Pause,
+            };
+            set(&mut self.running[n], hold, &mut steps);
+        }
+        if screen_wants {
+            for r in &mut self.running {
+                if !r.rank.on_screen() {
+                    set(r, Hold::Pause, &mut steps);
+                }
+            }
+        }
+        let mut paused: Vec<usize> = (0..self.running.len())
+            .filter(|&n| self.running[n].hold == Hold::Pause)
+            .collect();
+        paused.sort_by_key(|&n| {
+            (
+                std::cmp::Reverse(self.running[n].rank),
+                std::cmp::Reverse(self.running[n].started),
+            )
+        });
+        for &n in paused.iter().take(paused.len().saturating_sub(MAX_PAUSED)) {
+            set(&mut self.running[n], Hold::Stop, &mut steps);
+        }
+        steps
+    }
+
     /// Start the queue's first boxes ([`due_at`](Self::due_at)): one
     /// when nothing runs, one for the screen beside loads for areas the
     /// view left, and the screen's own box (1527) beside any load but
     /// another for the screen itself.
     fn start_next(&mut self, now_ms: u64) -> Vec<Step> {
-        let mut steps = Vec::new();
+        let mut steps = self.steer();
         while let Some(n) = self.due_at(now_ms) {
+            let active: Vec<&Running> = self
+                .running
+                .iter()
+                .filter(|r| r.hold == Hold::Run)
+                .collect();
+            // Loads paused or stopping make way: a box waits only for one
+            // that runs ([`steer`](Self::steer) resumes the paused before
+            // a box off the screen is due).
             let beside = match self.queue[n].rank {
-                Rank::Screen => !self.running.iter().any(|r| r.rank <= Rank::Screen),
-                rank if rank.on_screen() => !self.running.iter().any(|r| r.rank.on_screen()),
+                Rank::Screen => !active.iter().any(|r| r.rank <= Rank::Screen),
+                rank if rank.on_screen() => !active.iter().any(|r| r.rank.on_screen()),
                 _ => false,
             };
-            if !(self.running.is_empty() || self.running.len() < MAX_RUNNING && beside) {
+            if !(active.is_empty() || active.len() < MAX_RUNNING && beside) {
                 break;
             }
             let queued = self.queue.remove(n);
@@ -755,7 +1525,9 @@ impl Loader {
             return Vec::new();
         };
         let (tx, rx) = channel();
-        let counts = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let progress = Arc::new(Mutex::new(LoadProgress::default()));
+        let gate = Arc::new(Gate::default());
+        gate.set_screen(rank.on_screen());
         let job = Job {
             dir: dir.to_path_buf(),
             maps: self.maps.clone(),
@@ -763,7 +1535,9 @@ impl Loader {
             resolved: Arc::clone(&self.resolved),
             want: want.clone(),
             cache_bytes: self.cache_bytes,
-            counts: Arc::clone(&counts),
+            progress: Arc::clone(&progress),
+            gate: Arc::clone(&gate),
+            writing: Arc::clone(&self.writing),
         };
         let spawned = std::thread::Builder::new()
             .name("map-load".to_string())
@@ -784,9 +1558,21 @@ impl Loader {
             rank,
             started: Instant::now(),
             done: rx,
-            counts,
+            progress,
+            gate,
+            hold: Hold::Run,
         });
         vec![Step::Started(want)]
+    }
+}
+
+impl Drop for Loader {
+    /// A paused load's thread waits on its gate: told to stop, it removes
+    /// its unfinished file and ends instead of waiting for ever (1836).
+    fn drop(&mut self) {
+        for r in &self.running {
+            r.gate.set(Hold::Stop);
+        }
     }
 }
 
@@ -807,9 +1593,12 @@ struct Job {
     resolved: Arc<Mutex<Option<String>>>,
     want: MapWant,
     cache_bytes: u64,
-    /// Tiles written and planned, packed done << 32 | planned, for
-    /// [`Loader::report`].
-    counts: Arc<std::sync::atomic::AtomicU64>,
+    /// How far the load came, for [`Loader::report`].
+    progress: Arc<Mutex<LoadProgress>>,
+    /// Looked at before every round (1836).
+    gate: Arc<Gate>,
+    /// Holds this load's file while it writes it in place (1836).
+    writing: Writing,
 }
 
 impl Job {
@@ -820,6 +1609,7 @@ impl Job {
                 unreachable: http::unreachable(e.as_ref()),
                 too_large,
                 permanent: too_large || e.downcast_ref::<Empty>().is_some(),
+                stopped: e.downcast_ref::<Stopped>().is_some(),
                 detail: e.to_string(),
             }
         })
@@ -874,16 +1664,19 @@ impl Job {
             true => self.dir.join(format!("{name}{PART_SUFFIX}")),
             false => path.clone(),
         };
+        // No other load's eviction takes the file while this one runs
+        // (1836); while it waits paused, a landing for the screen may
+        // stop it and take the file written in place (audit of 1836,
+        // finding 4).
+        let gate = (!replaces).then(|| Arc::clone(&self.gate));
+        let _held = Written::new(&self.writing, &name, gate);
         // As wide as the tile painters (1473): one core count for the map.
         let threads = crate::picture::cores();
         let maps = self.maps.clone();
         let mut bumped: Option<Instant> = None;
-        let counts = Arc::clone(&self.counts);
-        let mut progress = |p: Progress| {
-            counts.store(
-                (p.done as u64) << 32 | p.tiles as u64 & u64::from(u32::MAX),
-                std::sync::atomic::Ordering::Relaxed,
-            );
+        let shared = Arc::clone(&self.progress);
+        let mut progress = |p: LoadProgress| {
+            *shared.lock().unwrap_or_else(PoisonError::into_inner) = p;
             let due =
                 bumped.is_none_or(|at| at.elapsed().as_millis() >= u128::from(PROGRESS_EVERY_MS));
             // A file written beside the region it replaces is no painter's
@@ -895,15 +1688,25 @@ impl Job {
         };
         let write = || -> leviculum_mapcut::Res<Loaded> {
             let mut out = BufWriter::new(File::create(&written)?);
-            let loaded = cut_planned(
-                &archive,
-                &want,
-                planned,
-                BY,
-                threads,
-                &mut out,
-                &mut progress,
-            )?;
+            // A round at a time (1836): before each the gate says whether
+            // to go on, wait paused, or stop.
+            let mut loading = Loading::begin(&archive, &want, planned, BY, threads, &mut out)?;
+            progress(loading.progress());
+            loop {
+                if !self.gate.pass() {
+                    return Err(Box::new(Stopped));
+                }
+                match loading.step()? {
+                    Some(p) => progress(p),
+                    None => break,
+                }
+            }
+            let last = loading.progress();
+            let loaded = loading.finish()?;
+            progress(LoadProgress {
+                complete: true,
+                ..last
+            });
             let file = out.into_inner().map_err(|e| e.into_error())?;
             file.sync_all()?;
             let region = Region::open(File::open(&written)?).map_err(|e| format!("{e:?}"))?;
@@ -927,7 +1730,17 @@ impl Job {
                 return Err(error);
             }
         };
-        let evicted = evict(&self.dir, self.cache_bytes, &name)?;
+        // A landing for the screen takes the paused loads' files first.
+        let first = match self.gate.screen() {
+            true => paused(&self.writing),
+            false => Vec::new(),
+        };
+        let evicted = evict_keeping(
+            &self.dir,
+            self.cache_bytes,
+            &kept(&self.writing, &name),
+            &first,
+        )?;
         Ok(Landed {
             bytes: loaded.stats.bytes,
             name,
@@ -936,6 +1749,164 @@ impl Job {
             evicted,
         })
     }
+}
+
+/// One height fetch, on its thread (1863).
+struct HeightJob {
+    dir: PathBuf,
+    maps: Maps,
+    url: String,
+    catalogue: Arc<Mutex<Option<Arc<Catalogue>>>>,
+    bounds: Bounds,
+    region: String,
+    cache_bytes: u64,
+    writing: Writing,
+}
+
+impl HeightJob {
+    fn run(self) -> Result<HeightsLanded, HeightFailure> {
+        let catalogue = self.catalogue().map_err(|e| HeightFailure {
+            absent: absent(e.as_ref()),
+            detail: e.to_string(),
+        })?;
+        self.fetch(&catalogue).map_err(|e| HeightFailure {
+            absent: false,
+            detail: e.to_string(),
+        })
+    }
+
+    /// The catalogue, read once a session.
+    fn catalogue(&self) -> leviculum_mapcut::Res<Arc<Catalogue>> {
+        let mut held = self
+            .catalogue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(catalogue) = held.as_ref() {
+            return Ok(Arc::clone(catalogue));
+        }
+        let bytes = HttpRange::new(&self.url).read_range(0, CATALOGUE_MAX)?;
+        let text = String::from_utf8(bytes).map_err(|_| NoCatalogue("not UTF-8".to_string()))?;
+        let catalogue = Arc::new(Catalogue::parse(&text).map_err(|e| NoCatalogue(e.to_string()))?);
+        *held = Some(Arc::clone(&catalogue));
+        Ok(catalogue)
+    }
+
+    /// Every block under the region's box not on disk yet, a range
+    /// request each, checked and written as a pack of its own.
+    fn fetch(&self, catalogue: &Catalogue) -> leviculum_mapcut::Res<HeightsLanded> {
+        let mut landed = HeightsLanded {
+            packs: Vec::new(),
+            fetched: 0,
+            had: 0,
+            evicted: Vec::new(),
+        };
+        // A pack file's directory, read once per fetch.
+        let mut directories: Vec<(usize, Vec<u8>)> = Vec::new();
+        for entry in catalogue.under(&self.bounds) {
+            let name = format!("{AUTO_PREFIX}{}", entry.local_name());
+            let path = self.dir.join(&name);
+            if path.exists() {
+                landed.had += 1;
+                continue;
+            }
+            let file = &catalogue.packs[entry.pack];
+            let source = HttpRange::new(&beside(&self.url, &file.name));
+            let directory = match directories.iter().find(|d| d.0 == entry.pack) {
+                Some(d) => d.1.clone(),
+                None => {
+                    let d = exact(&source, 0, file.directory, DIRECTORY_MAX)?;
+                    landed.fetched += d.len() as u64;
+                    directories.push((entry.pack, d.clone()));
+                    d
+                }
+            };
+            let block = exact(&source, entry.offset, entry.len, BLOCK_MAX)?;
+            landed.fetched += block.len() as u64;
+            let pack = local_pack(&directory, &block, &entry)?;
+            write_pack(&self.dir, &name, &pack)?;
+            landed.packs.push(name);
+            // Every painter indexes the packs again and shades with it.
+            self.maps.changed();
+        }
+        if !landed.packs.is_empty() {
+            landed.evicted = evict_keeping(
+                &self.dir,
+                self.cache_bytes,
+                &kept(&self.writing, &self.region),
+                &[],
+            )?;
+        }
+        Ok(landed)
+    }
+}
+
+/// A catalogue that is no catalogue this reader reads.
+#[derive(Debug)]
+struct NoCatalogue(String);
+
+impl core::fmt::Display for NoCatalogue {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "no height catalogue: {}", self.0)
+    }
+}
+
+impl std::error::Error for NoCatalogue {}
+
+/// The long ladder's wait after `failures` in a row: [`BACKOFF_FIRST_MS`]
+/// doubling to [`BACKOFF_MAX_MS`].
+fn ladder_ms(failures: u32) -> u64 {
+    BACKOFF_FIRST_MS
+        .saturating_mul(1 << failures.saturating_sub(1).min(16))
+        .min(BACKOFF_MAX_MS)
+}
+
+/// Whether `e` says the server has no catalogue: none at the URL, or one
+/// this reader does not read. Retrying this session cannot help.
+fn absent(e: &(dyn std::error::Error + 'static)) -> bool {
+    e.downcast_ref::<NoCatalogue>().is_some()
+        || matches!(
+            e.downcast_ref::<HttpError>(),
+            Some(HttpError::Status(403 | 404 | 410))
+        )
+}
+
+/// Exactly `len` bytes at `offset` of `source`, or an error: a server
+/// that sends fewer has not the file the catalogue named. A `len` past
+/// `max` is not asked for: the catalogue's reader refuses it already
+/// ([`Catalogue::parse`]), and this read holds the limit whatever made
+/// the entry.
+fn exact(source: &HttpRange, offset: u64, len: u64, max: u64) -> leviculum_mapcut::Res<Vec<u8>> {
+    if len > max {
+        return Err(format!("{}: {len} bytes at {offset}, more than {max}", source.url()).into());
+    }
+    let bytes = source.read_range(offset, len)?;
+    if bytes.len() as u64 != len {
+        return Err(format!(
+            "{}: {} bytes at {offset}, the catalogue says {len}",
+            source.url(),
+            bytes.len()
+        )
+        .into());
+    }
+    Ok(bytes)
+}
+
+/// Write `bytes` as `name` in `dir`: under a `.part` name first, synced,
+/// then renamed, so no painter indexes half a pack.
+fn write_pack(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    std::fs::create_dir_all(dir)?;
+    let part = dir.join(format!("{name}{PART_SUFFIX}"));
+    let written = (|| {
+        let mut file = File::create(&part)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&part, dir.join(name))
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    written
 }
 
 /// An autoloaded region's file name: the box in degrees times 10^7 and the
@@ -947,42 +1918,220 @@ pub fn auto_name(b: &Bounds, zooms: (u8, u8)) -> String {
     )
 }
 
+/// The box of an autoloaded region from its name ([`auto_name`]).
+fn auto_bounds(name: &str) -> Option<Bounds> {
+    let rest = name.strip_prefix(AUTO_PREFIX)?.strip_suffix(".lmr")?;
+    let (corners, _) = rest.split_once("-z")?;
+    let mut parts = corners.split('_').map(|p| p.parse::<i32>().ok());
+    let bounds = Bounds {
+        west: parts.next()??,
+        south: parts.next()??,
+        east: parts.next()??,
+        north: parts.next()??,
+    };
+    parts.next().is_none().then_some(bounds)
+}
+
+/// The want of an autoloaded region on disk from its name ([`auto_name`]):
+/// its box, its zooms, its centre.
+fn disk_want(name: &str) -> Option<MapWant> {
+    let bounds = auto_bounds(name)?;
+    let (_, zooms) = name.strip_suffix(".lmr")?.rsplit_once("-z")?;
+    let (low, high) = zooms.split_once('-')?;
+    let zooms = (low.parse().ok()?, high.parse().ok()?);
+    Some(MapWant {
+        bounds,
+        zooms,
+        floor: zooms.1,
+        reason: LoadReason::View,
+        centre: leviculum_map::mercator::World {
+            x: leviculum_map::mercator::x_of_lon(bounds.west / 2 + bounds.east / 2),
+            y: leviculum_map::mercator::y_of_lat(bounds.south / 2 + bounds.north / 2),
+        },
+    })
+}
+
+/// The block of an autoloaded height pack from its name
+/// ([`BlockEntry::local_name`] behind [`AUTO_PREFIX`]).
+fn pack_bounds(name: &str) -> Option<Bounds> {
+    let rest = name.strip_prefix(AUTO_PREFIX)?.strip_prefix('h')?;
+    let rest = rest.strip_suffix(".lmh")?;
+    let mut parts = rest.split('-').map(|p| p.parse::<u32>().ok());
+    let zoom = u8::try_from(parts.next()??).ok()?;
+    let (x, y) = (parts.next()??, parts.next()??);
+    if parts.next().is_some() || zoom > 31 || u64::from(x.max(y)) >= 1 << zoom {
+        return None;
+    }
+    let entry = BlockEntry {
+        pack: 0,
+        zoom,
+        x,
+        y,
+        offset: 0,
+        len: 0,
+    };
+    Some(entry.bounds())
+}
+
+/// Whether two boxes share ground; a common edge is none.
+fn overlaps(a: &Bounds, b: &Bounds) -> bool {
+    a.west < b.east && b.west < a.east && a.south < b.north && b.south < a.north
+}
+
 /// Remove autoloaded regions of `dir`, least recently viewed first, until
-/// they come to `cap` bytes or less; `keep` (the region just loaded) and
-/// every file without [`AUTO_PREFIX`] stay. The names removed.
+/// they and the autoloaded height packs come to `cap` bytes or less;
+/// `keep` (the region just loaded) and every file without [`AUTO_PREFIX`]
+/// stay. A height pack goes with the last autoloaded region over its
+/// block (1863), whether that went now or before. The names removed.
 pub fn evict(dir: &Path, cap: u64, keep: &str) -> std::io::Result<Vec<String>> {
+    evict_keeping(dir, cap, &[keep.to_string()], &[])
+}
+
+/// `keep` and every file a load writes now ([`Writing`], 1836).
+fn kept(writing: &Writing, keep: &str) -> Vec<String> {
+    let mut names: Vec<String> = writing
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .map(|w| w.name.clone())
+        .collect();
+    names.push(keep.to_string());
+    names
+}
+
+/// The files written in place by loads that wait paused now, each with
+/// its load's gate (audit of 1836, finding 4).
+fn paused(writing: &Writing) -> Vec<(String, Arc<Gate>)> {
+    writing
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .filter_map(|w| w.gate.as_ref().map(|g| (w.name.clone(), Arc::clone(g))))
+        .filter(|(_, g)| *g.hold.lock().unwrap_or_else(PoisonError::into_inner) == Hold::Pause)
+        .collect()
+}
+
+/// [`evict`] keeping every name of `keep`: the region just loaded and the
+/// files loads still write (1836). The files of `first`, paused loads'
+/// own, go before any other while the directory is over `cap`, each only
+/// if its load still waits paused and is stopped for it ([`Gate::claim`]):
+/// what the screen needs space for takes what the view left first (audit
+/// of 1836, finding 4).
+fn evict_keeping(
+    dir: &Path,
+    cap: u64,
+    keep: &[String],
+    first: &[(String, Arc<Gate>)],
+) -> std::io::Result<Vec<String>> {
     let mut auto: Vec<(SystemTime, String, u64)> = Vec::new();
+    let mut packs: Vec<(String, u64, Option<Bounds>)> = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !is_auto(&name) || !name.ends_with(".lmr") {
+        if !is_auto(&name) {
             continue;
         }
-        let meta = entry.metadata()?;
-        let viewed = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        auto.push((viewed, name, meta.len()));
+        // Gone since the listing: another writer evicted it.
+        let meta = match entry.metadata() {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            meta => meta?,
+        };
+        if name.ends_with(".lmr") {
+            let viewed = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            auto.push((viewed, name, meta.len()));
+        } else if name.ends_with(".lmh") {
+            let bounds = pack_bounds(&name);
+            packs.push((name, meta.len(), bounds));
+        }
     }
-    let mut total: u64 = auto.iter().map(|a| a.2).sum();
+    let mut total: u64 =
+        auto.iter().map(|a| a.2).sum::<u64>() + packs.iter().map(|p| p.1).sum::<u64>();
     auto.sort();
     let mut evicted = Vec::new();
-    for (_, name, len) in auto {
+    // The packs no region left covers: removed at once, before a region
+    // is weighed against the cap.
+    let mut orphans = |auto: &[(SystemTime, String, u64)],
+                       total: &mut u64,
+                       evicted: &mut Vec<String>|
+     -> std::io::Result<()> {
+        let regions: Vec<Bounds> = auto.iter().filter_map(|a| auto_bounds(&a.1)).collect();
+        let mut n = 0;
+        while n < packs.len() {
+            let covered = packs[n]
+                .2
+                .is_some_and(|b| regions.iter().any(|r| overlaps(r, &b)));
+            if covered {
+                n += 1;
+                continue;
+            }
+            let (name, len, _) = packs.remove(n);
+            remove_evicted(&dir.join(&name))?;
+            *total = total.saturating_sub(len);
+            evicted.push(name);
+        }
+        Ok(())
+    };
+    orphans(&auto, &mut total, &mut evicted)?;
+    for (name, gate) in first {
         if total <= cap {
             break;
         }
-        if name == keep {
+        let Some(n) = auto.iter().position(|a| a.1 == *name) else {
+            continue;
+        };
+        if !gate.claim() {
             continue;
         }
-        std::fs::remove_file(dir.join(&name))?;
+        let (_, name, len) = auto.remove(n);
+        remove_evicted(&dir.join(&name))?;
         total = total.saturating_sub(len);
         evicted.push(name);
+        orphans(&auto, &mut total, &mut evicted)?;
+    }
+    let mut n = 0;
+    while n < auto.len() && total > cap {
+        if keep.contains(&auto[n].1) {
+            n += 1;
+            continue;
+        }
+        let (_, name, len) = auto.remove(n);
+        remove_evicted(&dir.join(&name))?;
+        total = total.saturating_sub(len);
+        evicted.push(name);
+        orphans(&auto, &mut total, &mut evicted)?;
     }
     Ok(evicted)
+}
+
+/// Remove the evicted file at `path`. A file already gone is removed: the
+/// region jobs and the height fetch evict from listings of their own (1863),
+/// and the one that comes second finds the file the other took.
+fn remove_evicted(path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    tests::another_writer_removes(path);
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ui::map::LoadReason;
+
+    /// The directories in which another writer of the maps directory
+    /// removes each file an eviction listed, just before the eviction
+    /// removes it: the race of a region's eviction and a height fetch's
+    /// (audit 1863). Keyed by directory, so tests beside it run as ever.
+    static RACED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+    pub(super) fn another_writer_removes(path: &Path) {
+        let raced = RACED.lock().unwrap_or_else(PoisonError::into_inner);
+        if path.parent().is_some_and(|d| raced.iter().any(|r| r == d)) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
     use leviculum_map::mercator::World;
     use leviculum_mapcut::serve::Serve;
     use std::time::Duration;
@@ -1515,18 +2664,26 @@ mod tests {
             [Step::Started(t.clone())],
             "beside the cell"
         );
-        // A second screen box waits for the first, which the view left:
-        // it runs on as left, the new one waits for a free slot.
+        // A second screen box does not wait for the first, which the view
+        // left (1836): that one pauses at its next round, the new one
+        // starts beside the cell at once.
         let u = screen(4);
-        assert!(loader
-            .schedule(vec![u.clone(), a.clone()], Vec::new(), 500)
-            .is_empty());
+        assert_eq!(
+            loader.schedule(vec![u.clone(), a.clone()], Vec::new(), 500),
+            [
+                Step::Held {
+                    want: t.clone(),
+                    how: Held::Paused
+                },
+                Step::Started(u.clone())
+            ]
+        );
         assert_eq!(
             order(&loader),
             [
                 (2, Rank::Here, true),
                 (3, Rank::Away, true),
-                (4, Rank::Screen, false)
+                (4, Rank::Screen, true)
             ]
         );
     }
@@ -1566,8 +2723,8 @@ mod tests {
         assert!(loader.loading_here());
     }
 
-    /// A load whose area the view left runs on, as the cut cannot pause;
-    /// the box under the new screen starts beside it, and the chip's
+    /// A load whose area the view left pauses at its next round (1836);
+    /// the box under the new screen starts at once, and the chip's
     /// "here" names it, not the old one (1292).
     #[test]
     fn a_load_the_view_left_does_not_hold_up_the_screen() {
@@ -1580,7 +2737,15 @@ mod tests {
         assert!(loader.loading_here());
         // The view moved on: a is left, b is on screen.
         let steps = loader.schedule(vec![b.clone()], Vec::new(), 250);
-        assert_eq!(steps, [Step::Started(b.clone())], "beside the old load");
+        let paused = Step::Held {
+            want: a.clone(),
+            how: Held::Paused,
+        };
+        assert_eq!(
+            steps,
+            [paused, Step::Started(b.clone())],
+            "the old load pauses (1836)"
+        );
         assert_eq!(
             order(&loader),
             [
@@ -1589,8 +2754,15 @@ mod tests {
                 (5, Rank::Away, false)
             ]
         );
-        // Away only: no chip for the screen.
-        loader.schedule(Vec::new(), Vec::new(), 500);
+        // Away only: no chip for the screen; the paused load goes on.
+        let steps = loader.schedule(Vec::new(), Vec::new(), 500);
+        assert_eq!(
+            steps,
+            [Step::Held {
+                want: a.clone(),
+                how: Held::Resumed
+            }]
+        );
         assert!(loader.busy() && !loader.loading_here());
         // Never more than the queue's cap of left boxes.
         let left: Vec<MapWant> = (10..30).map(nth).collect();
@@ -1598,14 +2770,391 @@ mod tests {
         loader.schedule(Vec::new(), Vec::new(), 1000);
         let queued = order(&loader).iter().filter(|o| !o.2).count();
         assert_eq!(queued, MAX_AWAY);
-        // The screen's own box (1527) goes before every queued box, and
-        // waits only for a free slot: both run, for areas left.
+        // The screen's own box (1527) goes before every queued box and
+        // waits for no load for an area left (1836): both pause at their
+        // next round and it starts at once.
         let s = screen(40);
-        assert!(loader
-            .schedule(vec![s.clone()], Vec::new(), 1250)
-            .is_empty());
-        assert_eq!(order(&loader)[2], (40, Rank::Screen, false));
+        assert_eq!(
+            loader.schedule(vec![s.clone()], Vec::new(), 1250),
+            [
+                Step::Held {
+                    want: a.clone(),
+                    how: Held::Paused
+                },
+                Step::Held {
+                    want: b.clone(),
+                    how: Held::Paused
+                },
+                Step::Started(s.clone())
+            ]
+        );
+        assert_eq!(order(&loader)[2], (40, Rank::Screen, true));
         assert!(loader.loading_here());
+    }
+
+    /// Poll until `done` holds of every step seen, at most twenty seconds;
+    /// every step seen.
+    fn poll_until(loader: &mut Loader, now_ms: u64, done: impl Fn(&[Step]) -> bool) -> Vec<Step> {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut all = Vec::new();
+        loop {
+            all.extend(loader.poll(now_ms));
+            if done(&all) {
+                return all;
+            }
+            assert!(Instant::now() < deadline, "not reached: {all:?}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn landed(steps: &[Step], w: &MapWant) -> bool {
+        steps
+            .iter()
+            .any(|s| matches!(s, Step::Done { want, .. } if want.bounds == w.bounds))
+    }
+
+    fn state_of(loader: &Loader, w: &MapWant) -> Option<LoadState> {
+        loader
+            .report(0)
+            .into_iter()
+            .find(|r| r.0 == w.bounds)
+            .map(|r| r.2)
+    }
+
+    /// A load whose area the view left pauses between two rounds, its
+    /// file kept in the maps directory as far as it came, while the
+    /// screen's box loads alone; once that landed it goes on from where
+    /// it was and lands too (1836). Before, it ran on beside the screen's
+    /// and took half the link: at 200 kB/s the screen waited 43.6 s
+    /// behind two such loads (the load walk's wheel-rested-slow).
+    #[test]
+    fn a_load_the_view_left_pauses_until_the_screen_has_its_box() {
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut loader = Loader::new(
+            Maps::new(Some(dir.path().to_path_buf())),
+            Source::Url(serve.url("o.pmtiles")),
+            1 << 30,
+        );
+        // Both loads wait at the link until the view has moved.
+        serve.hold_at(0);
+        let (a, b) = (nth(2), nth(3));
+        assert_eq!(
+            loader.schedule(vec![a.clone()], Vec::new(), 0),
+            [Step::Started(a.clone())]
+        );
+        assert_eq!(
+            loader.schedule(vec![b.clone()], Vec::new(), 10),
+            [
+                Step::Held {
+                    want: a.clone(),
+                    how: Held::Paused
+                },
+                Step::Started(b.clone())
+            ]
+        );
+        serve.release();
+        // a planned, wrote its header and slots, and waits at its gate.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(LoadState::Paused { planned, bytes, .. }) = state_of(&loader, &a) {
+                if planned > 0 && bytes > 0 {
+                    break;
+                }
+            }
+            assert!(Instant::now() < deadline, "{:?}", state_of(&loader, &a));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let Some(LoadState::Paused {
+            done, bytes_done, ..
+        }) = state_of(&loader, &a)
+        else {
+            panic!("a runs: {:?}", state_of(&loader, &a));
+        };
+        assert_eq!((done, bytes_done), (0, 0), "paused before its first round");
+        let file = std::fs::read_dir(dir.path())
+            .expect("dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| {
+                p.file_name().and_then(|n| n.to_str()).and_then(auto_bounds) == Some(a.bounds)
+            })
+            .expect("the paused load's file is kept");
+        let region = Region::open(File::open(&file).expect("open")).expect("a paused file reads");
+        assert!(!region.is_complete());
+
+        let steps = poll_until(&mut loader, 20, |s| landed(s, &b));
+        assert!(
+            !landed(&steps, &a),
+            "a paused load does not land: {steps:?}"
+        );
+        assert!(
+            steps.contains(&Step::Held {
+                want: a.clone(),
+                how: Held::Resumed
+            }),
+            "it goes on once the screen's box landed: {steps:?}"
+        );
+        poll_until(&mut loader, 30, |s| landed(s, &a));
+        let region = Region::open(File::open(&file).expect("open")).expect("read");
+        region.verify().expect("the resumed load's region verifies");
+    }
+
+    /// A paused load's file is in the maps directory, an autoloaded region
+    /// like any other. When the screen needs space it is the first to go
+    /// (order 1836 item 5, its audit's finding 4): the screen's box lands
+    /// over a cap below two regions, the paused load's file is evicted,
+    /// the load is told to stop rather than write on into a file no
+    /// painter sees, hands its box back and lands later from the start.
+    #[test]
+    fn a_landing_for_the_screen_takes_a_paused_file_first_and_it_loads_again() {
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut loader = Loader::new(
+            Maps::new(Some(dir.path().to_path_buf())),
+            Source::Url(serve.url("o.pmtiles")),
+            1,
+        );
+        serve.hold_at(0);
+        let (a, b) = (nth(2), nth(3));
+        loader.schedule(vec![a.clone()], Vec::new(), 0);
+        loader.schedule(vec![b.clone()], Vec::new(), 10);
+        serve.release();
+        let a_file = || {
+            std::fs::read_dir(dir.path())
+                .expect("dir")
+                .filter_map(|e| e.ok())
+                .any(|e| auto_bounds(&e.file_name().to_string_lossy()) == Some(a.bounds))
+        };
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !(a_file()
+            && matches!(state_of(&loader, &a), Some(LoadState::Paused { bytes, .. }) if bytes > 0))
+        {
+            assert!(Instant::now() < deadline, "a never paused with its file");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let steps = poll_until(&mut loader, 20, |s| {
+            landed(s, &b)
+                && s.contains(&Step::Held {
+                    want: a.clone(),
+                    how: Held::Dropped,
+                })
+        });
+        let evicted: Vec<String> = steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::Done { landed, .. } => Some(landed.evicted.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert!(
+            evicted.iter().any(|n| auto_bounds(n) == Some(a.bounds)),
+            "the paused load's file went first: {evicted:?}"
+        );
+        assert!(!a_file(), "and it is gone");
+        assert!(!landed(&steps, &a), "{steps:?}");
+        // Nothing for the screen is left: a loads again and lands.
+        loader.schedule(Vec::new(), Vec::new(), 30);
+        let steps = poll_until(&mut loader, 40, |s| {
+            landed(s, &a) || s.iter().any(|s| matches!(s, Step::Failed { .. }))
+        });
+        assert!(landed(&steps, &a), "{steps:?}");
+    }
+
+    /// The eviction's order (audit of 1836, finding 4): four regions of
+    /// 100 bytes, a cap of 300, below the four. The paused load's file
+    /// goes first, though the oldest viewed is another; a running load's
+    /// file and the one just landed are kept; the paused load is stopped
+    /// for good. A paused file whose load runs again by the time the
+    /// eviction claims it stays, and the oldest goes instead.
+    #[test]
+    fn a_paused_file_goes_first_and_a_running_ones_stays() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let name = |n: i32| auto_name(&nth(n).bounds, (14, 15));
+        let at = |n: u64| SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000 + n);
+        for (n, viewed) in [(1, at(1)), (2, at(2)), (3, at(3)), (4, at(4))] {
+            let f = File::create(dir.path().join(name(n))).expect("create");
+            f.set_len(100).expect("len");
+            f.set_modified(viewed).expect("mtime");
+        }
+        // 1 is the oldest viewed, 2 a paused load's, 3 a running one's,
+        // 4 just landed.
+        let paused_gate = Arc::new(Gate::default());
+        paused_gate.set(Hold::Pause);
+        let running_gate = Arc::new(Gate::default());
+        let first = vec![
+            (name(2), Arc::clone(&paused_gate)),
+            (name(3), Arc::clone(&running_gate)),
+        ];
+        let keep = vec![name(2), name(3), name(4)];
+        let evicted = evict_keeping(dir.path(), 300, &keep, &first).expect("evict");
+        assert_eq!(evicted, [name(2)]);
+        assert_eq!(*paused_gate.hold.lock().expect("hold"), Hold::Stop);
+        assert_eq!(*running_gate.hold.lock().expect("hold"), Hold::Run);
+        // Stopped is for good: the loader's resume does not undo it.
+        paused_gate.set(Hold::Run);
+        assert_eq!(*paused_gate.hold.lock().expect("hold"), Hold::Stop);
+        // The same over again with the paused load resumed before the
+        // eviction claims it: its file stays, the oldest goes.
+        let f = File::create(dir.path().join(name(2))).expect("create");
+        f.set_len(100).expect("len");
+        f.set_modified(at(2)).expect("mtime");
+        let resumed = Arc::new(Gate::default());
+        let first = vec![(name(2), Arc::clone(&resumed))];
+        let evicted = evict_keeping(dir.path(), 300, &keep, &first).expect("evict");
+        assert_eq!(evicted, [name(1)]);
+        assert_eq!(*resumed.hold.lock().expect("hold"), Hold::Run);
+    }
+
+    /// Once nothing for the screen runs or waits, the paused loads go on,
+    /// the best ranked and among equals the oldest first, as many as may
+    /// run, before any queued box starts (1836): what was loading when the
+    /// user moved on is finished first, not started over.
+    #[test]
+    fn paused_loads_go_on_before_a_new_box_starts() {
+        let (_source, source) = stalling();
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut loader = Loader::new(Maps::new(Some(dir.path().to_path_buf())), source, 1 << 30);
+        let (a, b, c, n) = (nth(1), nth(2), nth(3), nth(9));
+        loader.schedule(vec![a.clone()], Vec::new(), 0);
+        loader.schedule(vec![b.clone()], Vec::new(), 10);
+        loader.schedule(vec![c.clone()], Vec::new(), 20);
+        let holds = |l: &Loader| -> Vec<(i32, Hold)> {
+            l.running
+                .iter()
+                .map(|r| ((r.want.bounds.west - 112_615_000) / 1000, r.hold))
+                .collect()
+        };
+        assert_eq!(
+            holds(&loader),
+            [(1, Hold::Pause), (2, Hold::Pause), (3, Hold::Run)]
+        );
+        // The view rests on an area with its regions: only a box next to
+        // it is wanted, and it waits for the paused loads.
+        let steps = loader.schedule(Vec::new(), vec![n.clone()], 30);
+        assert_eq!(
+            steps,
+            [
+                Step::Held {
+                    want: a.clone(),
+                    how: Held::Resumed
+                },
+                Step::Held {
+                    want: b.clone(),
+                    how: Held::Resumed
+                },
+                Step::Held {
+                    want: c.clone(),
+                    how: Held::Paused
+                },
+            ]
+        );
+        assert_eq!(
+            holds(&loader),
+            [(1, Hold::Run), (2, Hold::Run), (3, Hold::Pause)]
+        );
+        assert!(!order(&loader).contains(&(9, Rank::Ahead, true)));
+        assert!(loader.busy(), "two loads run");
+        assert!(matches!(
+            state_of(&loader, &c),
+            Some(LoadState::Paused { .. })
+        ));
+    }
+
+    /// A load paused when the view left goes on when the view comes back
+    /// (audit of 1836, finding 1): back on the screen it runs before any
+    /// later box for the screen starts, instead of waiting paused behind
+    /// a cell queued after it.
+    #[test]
+    fn audit_a_paused_load_back_on_screen_does_not_stay_paused_behind_a_cell() {
+        let (_source, source) = stalling();
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut loader = Loader::new(Maps::new(Some(dir.path().to_path_buf())), source, 1 << 30);
+        let (a, b, c) = (nth(1), nth(2), nth(3));
+        loader.schedule(vec![a.clone()], Vec::new(), 0);
+        loader.schedule(vec![b.clone()], Vec::new(), 10);
+        let holds = |l: &Loader| -> Vec<(i32, Hold)> {
+            l.running
+                .iter()
+                .map(|r| ((r.want.bounds.west - 112_615_000) / 1000, r.hold))
+                .collect()
+        };
+        assert_eq!(holds(&loader), [(1, Hold::Pause), (2, Hold::Run)]);
+        // The view comes back over a, with a new cell c queued after it.
+        let steps = loader.schedule(vec![a.clone(), c.clone()], Vec::new(), 20);
+        assert_eq!(
+            holds(&loader),
+            [(1, Hold::Run), (2, Hold::Pause)],
+            "a back on the screen runs again: {steps:?}"
+        );
+        assert!(
+            steps.contains(&Step::Held {
+                want: a.clone(),
+                how: Held::Resumed
+            }),
+            "{steps:?}"
+        );
+        assert!(
+            !steps.contains(&Step::Started(c.clone())),
+            "the later cell waits behind a: {steps:?}"
+        );
+        assert!(order(&loader).contains(&(3, Rank::Here, false)));
+    }
+
+    /// A paused load holds a thread and its file: past [`MAX_PAUSED`] the
+    /// worst ranked, the latest started among equals, stops for good, its
+    /// file removed and its box queued again, and it lands later like
+    /// every other (1836): nothing wanted is lost.
+    #[test]
+    fn past_the_paused_cap_the_worst_is_dropped_and_loads_again() {
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut loader = Loader::new(
+            Maps::new(Some(dir.path().to_path_buf())),
+            Source::Url(serve.url("o.pmtiles")),
+            1 << 30,
+        );
+        serve.hold_at(0);
+        let boxes: Vec<MapWant> = (0..=MAX_PAUSED as i32 + 1).map(nth).collect();
+        for (k, w) in boxes.iter().enumerate() {
+            loader.schedule(vec![w.clone()], Vec::new(), k as u64 * 10);
+        }
+        let dropped = &boxes[MAX_PAUSED];
+        let holds: Vec<Hold> = loader.running.iter().map(|r| r.hold).collect();
+        let mut want_holds = vec![Hold::Pause; MAX_PAUSED];
+        want_holds.push(Hold::Stop);
+        want_holds.push(Hold::Run);
+        assert_eq!(holds, want_holds);
+        serve.release();
+        let steps = poll_until(&mut loader, 100, |s| {
+            s.contains(&Step::Held {
+                want: dropped.clone(),
+                how: Held::Dropped,
+            })
+        });
+        assert!(!landed(&steps, dropped));
+        assert!(
+            !std::fs::read_dir(dir.path())
+                .expect("dir")
+                .filter_map(|e| e.ok())
+                .any(|e| auto_bounds(&e.file_name().to_string_lossy()) == Some(dropped.bounds)),
+            "the dropped load's file is gone"
+        );
+        assert!(order(&loader).contains(&(MAX_PAUSED as i32, Rank::Away, false)));
+        let early: Vec<Bounds> = steps
+            .iter()
+            .filter(|s| matches!(s, Step::Done { .. }))
+            .map(|s| s.want().bounds)
+            .collect();
+        // Nothing for the screen is left once the screen's box landed:
+        // every box lands, the dropped one too.
+        loader.schedule(Vec::new(), Vec::new(), 200);
+        poll_until(&mut loader, 300, |s| {
+            boxes
+                .iter()
+                .all(|w| early.contains(&w.bounds) || landed(s, w))
+        });
     }
 
     /// "Offline" is a state, not a latch (1292): a load that found no
@@ -1984,7 +3533,71 @@ mod tests {
         );
     }
 
-    /// Audit 1821: the phone wakes at `next_due_ms` (MapView.java:1252-1264,
+    /// The map's view of the loads (1812): a box that failed is "failed,
+    /// next try in s" until "try now" makes it due at once; a running
+    /// load is "loading" with its bytes' fraction while bytes move, and
+    /// "stalled" once none came for `STALL_MS`; a box off the screen is
+    /// not the view's.
+    #[test]
+    fn the_watch_tells_the_map_each_areas_state() {
+        use crate::ui::maploading::{Kind, STALL_MS};
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        serve.fail(true);
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut loader = Loader::new(maps, Source::Url(serve.url("o.pmtiles")), 1 << 30);
+        let mut watch = Watch::default();
+        loader.schedule(vec![screen(1)], Vec::new(), 0);
+        settle(&mut loader, 0);
+        let loads = watch.loads(&loader, 1_000);
+        let [area] = loads.areas.as_slice() else {
+            panic!("{loads:?}");
+        };
+        let Kind::Failed { retry_s } = area.kind else {
+            panic!("{area:?}");
+        };
+        assert!(retry_s >= 1, "{retry_s}");
+        // Try now: due at once, started again (and fails again here).
+        serve.fail(false);
+        let steps = loader.retry_now(1_000);
+        assert!(
+            steps.iter().any(|s| matches!(s, Step::Started(_))),
+            "{steps:?}"
+        );
+        // Running loads, by a report: bytes that move load, bytes that
+        // stand still past STALL_MS stall; an off-screen box is left out.
+        let b = screen(1).bounds;
+        let away = nth(5).bounds;
+        let running = |done: u64| LoadState::Running {
+            done: 0,
+            planned: 0,
+            bytes_done: done,
+            bytes: 1_000,
+        };
+        let mut watch = Watch::default();
+        let report = |done| {
+            vec![
+                (b, Rank::Screen, running(done)),
+                (away, Rank::Ahead, running(done)),
+            ]
+        };
+        let first = watch.of(&report(100), false, 0);
+        assert_eq!(first.areas.len(), 1, "{first:?}");
+        assert_eq!(first.areas[0].kind, Kind::Loading { milli: 100 });
+        let moved = watch.of(&report(400), false, STALL_MS - 1);
+        assert_eq!(moved.areas[0].kind, Kind::Loading { milli: 400 });
+        let still = watch.of(&report(400), false, 2 * STALL_MS);
+        assert_eq!(
+            still.areas[0].kind,
+            Kind::Stalled {
+                milli: 400,
+                quiet_s: ((STALL_MS + 1) / 1000) as u32
+            }
+        );
+        assert!(!still.animates());
+    }
+
+    /// Audit 1821: the phone wakes at `next_due_ms` (MapView.java:1264-1275,
     /// at least 50 ms). When the earliest due box is an off-screen one that
     /// cannot start because an on-screen box ahead of it still waits
     /// (start_next's screen_waits), a wake of 0 makes the phone redraw
@@ -2114,5 +3727,490 @@ mod tests {
             "{steps:?}"
         );
         assert_eq!(loader.next_due_ms(0), Some(0));
+    }
+
+    // 1863: the height packs come with the regions.
+
+    const CHEBBI: &[u8] = include_bytes!("../../leviculum-map/fixtures/erg-chebbi.lmh");
+
+    /// The block of `w`'s centre at the Erg Chebbi fixture's block zoom,
+    /// and a one-block pack file there: the fixture's block with its
+    /// coordinates moved under Florence, where the region fixture is (the
+    /// heights are data, a tile's checksum covers its heights alone).
+    fn pack_under(w: &MapWant) -> ((u32, u32), Vec<u8>) {
+        use leviculum_map::elevation::{split, write_directory, Directory, DirectoryInfo};
+        use leviculum_map::mercator::{x_of_lon, y_of_lat};
+        let (dir, ranges) = split(CHEBBI).expect("split");
+        let zoom = dir.block_zoom();
+        let shift = 32 - u32::from(zoom);
+        let x = x_of_lon((w.bounds.west + w.bounds.east) / 2) >> shift;
+        let y = y_of_lat((w.bounds.south + w.bounds.north) / 2) >> shift;
+        let mut block = CHEBBI[ranges[1].clone()].to_vec();
+        block[12..16].copy_from_slice(&x.to_le_bytes());
+        block[16..20].copy_from_slice(&y.to_le_bytes());
+        let (d, _) = Directory::parse_prefix(CHEBBI).expect("directory");
+        let mut pack = write_directory(
+            &DirectoryInfo {
+                tile_zoom: d.tile_zoom(),
+                block_zoom: zoom,
+                bounds: [w.bounds.west, w.bounds.south, w.bounds.east, w.bounds.north],
+                attribution: d.attribution(),
+                notice: d.notice(),
+            },
+            &[(x, y)],
+        )
+        .expect("write");
+        pack.extend_from_slice(&block);
+        ((x, y), pack)
+    }
+
+    /// A server of the region fixture, a height pack under `w` and its
+    /// catalogue; the pack's local name.
+    fn heights_server(w: &MapWant) -> (Serve, String) {
+        let (xy, pack) = pack_under(w);
+        let mut catalogue = Catalogue::default();
+        catalogue.add_pack("tuscany.lmh", &pack).expect("catalogue");
+        let serve = Serve::start(vec![
+            ("o.pmtiles".into(), FIXTURE.to_vec()),
+            ("tuscany.lmh".into(), pack),
+            (CATALOGUE_NAME.into(), catalogue.write().into_bytes()),
+        ])
+        .expect("serve");
+        (serve, format!("{AUTO_PREFIX}h11-{}-{}.lmh", xy.0, xy.1))
+    }
+
+    /// Poll until a heights step comes, at most ten seconds; the steps
+    /// before it too.
+    fn settle_heights(loader: &mut Loader, now_ms: u64) -> Vec<Step> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut all = Vec::new();
+        loop {
+            let steps = loader.poll(now_ms);
+            let done = steps.iter().any(|s| s.kind() == StepKind::Heights);
+            all.extend(steps);
+            if done {
+                return all;
+            }
+            assert!(Instant::now() < deadline, "no height fetch ended: {all:?}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .expect("dir")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_landed_region_brings_its_height_pack_after_it() {
+        let w = want(112_615_000);
+        let (serve, pack) = heights_server(&w);
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut loader = Loader::new(maps.clone(), Source::Url(serve.url("o.pmtiles")), 1 << 30)
+            .with_heights(serve.url(CATALOGUE_NAME));
+        loader.ask(w.clone(), 0);
+        let steps = settle_heights(&mut loader, 0);
+        let kinds: Vec<StepKind> = steps.iter().map(Step::kind).collect();
+        assert_eq!(kinds, [StepKind::Done, StepKind::Heights], "{steps:?}");
+        let Step::Heights {
+            want: got,
+            landed: Ok(landed),
+            ..
+        } = &steps[1]
+        else {
+            panic!("{steps:?}");
+        };
+        assert_eq!(got, &w);
+        assert_eq!(landed.packs, std::slice::from_ref(&pack));
+        assert_eq!(landed.had, 0);
+        assert!(landed.fetched > 0);
+        assert_eq!(
+            names(dir.path()),
+            [auto_name(&w.bounds, (14, 15)), pack.clone()]
+        );
+        // Every painter sees it: the relief has a pack to shade from.
+        let relief = crate::relief::ReliefStore::default();
+        relief.refresh(maps.dir());
+        assert!(relief.any());
+        assert!(!loader.busy());
+        // The same region again: the pack is there, nothing fetched.
+        std::fs::remove_file(dir.path().join(auto_name(&w.bounds, (14, 15)))).expect("rm");
+        loader.ask(w.clone(), 0);
+        let steps = settle_heights(&mut loader, 0);
+        let Some(Step::Heights {
+            landed: Ok(again), ..
+        }) = steps.last()
+        else {
+            panic!("{steps:?}");
+        };
+        assert_eq!((again.packs.len(), again.had, again.fetched), (0, 1, 0));
+    }
+
+    #[test]
+    fn a_region_on_disk_before_the_loader_starts_brings_its_pack() {
+        let w = want(112_615_000);
+        let (serve, pack) = heights_server(&w);
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut first = Loader::new(maps.clone(), Source::Url(serve.url("o.pmtiles")), 1 << 30);
+        first.ask(w.clone(), 0);
+        let steps = settle(&mut first, 0);
+        assert!(matches!(steps.as_slice(), [Step::Done { .. }]), "{steps:?}");
+        drop(first);
+        let region = auto_name(&w.bounds, (14, 15));
+        assert_eq!(names(dir.path()), std::slice::from_ref(&region));
+        let mut loader = Loader::new(maps, Source::Url(serve.url("o.pmtiles")), 1 << 30)
+            .with_heights(serve.url(CATALOGUE_NAME));
+        // With the autoload off the view never schedules: nothing is
+        // fetched by itself.
+        let requests = serve.requests();
+        for _ in 0..20 {
+            assert!(loader.poll(0).is_empty());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            serve.requests(),
+            requests,
+            "nothing fetched without the view"
+        );
+        // The view over the region: nothing uncovered, no region asked.
+        assert!(loader.schedule(Vec::new(), Vec::new(), 0).is_empty());
+        let steps = settle_heights(&mut loader, 0);
+        let Some(Step::Heights {
+            want: got,
+            landed: Ok(landed),
+            ..
+        }) = steps.last()
+        else {
+            panic!("{steps:?}");
+        };
+        assert_eq!(got.bounds, w.bounds);
+        assert_eq!(landed.packs, std::slice::from_ref(&pack));
+        assert_eq!(names(dir.path()), [region, pack]);
+        // Once a session: nothing more is fetched.
+        let requests = serve.requests();
+        for _ in 0..20 {
+            assert!(loader.poll(0).is_empty());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(serve.requests(), requests);
+        assert!(!loader.busy());
+    }
+
+    /// Audit 1863: a server without a catalogue (404) is asked again on
+    /// the long ladder, not given up for the session: the catalogue at
+    /// the default source comes after the first regions. One ask a rung,
+    /// however many regions wait on it.
+    #[test]
+    fn no_catalogue_is_asked_again_on_the_long_ladder_once_a_rung() {
+        let w = want(112_615_000);
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut loader = Loader::new(maps, Source::Url(serve.url("o.pmtiles")), 1 << 30)
+            .with_heights(serve.url(CATALOGUE_NAME));
+        loader.ask(w.clone(), 0);
+        let steps = settle_heights(&mut loader, 0);
+        assert!(
+            matches!(steps.last(), Some(Step::Heights { landed: Err(_), .. })),
+            "{steps:?}"
+        );
+        assert!(
+            !loader.busy(),
+            "a catalogue waiting to be asked is not loading"
+        );
+        assert_eq!(
+            loader.next_due_ms(0),
+            None,
+            "a missing catalogue wakes nothing"
+        );
+        // A second region lands meanwhile: its packs wait on the same rung.
+        loader.ask(want(112_825_000), 0);
+        let steps = settle(&mut loader, 0);
+        assert!(matches!(steps.as_slice(), [Step::Done { .. }]), "{steps:?}");
+        let requests = serve.requests();
+        for _ in 0..20 {
+            assert!(loader.poll(BACKOFF_FIRST_MS - 1).is_empty());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(serve.requests(), requests, "nothing asked before the rung");
+        let steps = settle_heights(&mut loader, BACKOFF_FIRST_MS);
+        assert!(
+            matches!(steps.last(), Some(Step::Heights { landed: Err(_), .. })),
+            "{steps:?}"
+        );
+        assert_eq!(serve.requests(), requests + 1, "one ask on the rung");
+        // The next rung is twice as far: nothing asked before it.
+        for _ in 0..20 {
+            assert!(loader.poll(3 * BACKOFF_FIRST_MS - 1).is_empty());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            serve.requests(),
+            requests + 1,
+            "nothing before the next rung"
+        );
+        let steps = settle_heights(&mut loader, 3 * BACKOFF_FIRST_MS);
+        assert!(
+            matches!(steps.last(), Some(Step::Heights { landed: Err(_), .. })),
+            "{steps:?}"
+        );
+        assert_eq!(serve.requests(), requests + 2, "one ask on the second rung");
+        assert_eq!(
+            names(dir.path())
+                .iter()
+                .filter(|n| n.ends_with(".lmh"))
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn a_failed_height_fetch_retries_on_the_long_ladder() {
+        let w = want(112_615_000);
+        let (serve, pack) = heights_server(&w);
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut loader = Loader::new(maps, Source::Url(serve.url("o.pmtiles")), 1 << 30)
+            .with_heights(serve.url(CATALOGUE_NAME));
+        loader.ask(w.clone(), 0);
+        let steps = settle(&mut loader, 0);
+        assert!(matches!(steps.as_slice(), [Step::Done { .. }]), "{steps:?}");
+        // The source breaks before the packs start.
+        serve.fail(true);
+        let steps = settle_heights(&mut loader, 1_000);
+        assert!(
+            matches!(steps.last(), Some(Step::Heights { landed: Err(_), .. })),
+            "{steps:?}"
+        );
+        assert!(!loader.busy(), "a pack waiting to retry is not loading");
+        assert_eq!(loader.next_due_ms(1_000), Some(BACKOFF_FIRST_MS));
+        assert!(loader.poll(1_000 + BACKOFF_FIRST_MS - 1).is_empty());
+        serve.fail(false);
+        let steps = settle_heights(&mut loader, 1_000 + BACKOFF_FIRST_MS);
+        let Some(Step::Heights {
+            landed: Ok(landed), ..
+        }) = steps.last()
+        else {
+            panic!("{steps:?}");
+        };
+        assert_eq!(landed.packs, [pack]);
+    }
+
+    #[test]
+    fn the_packs_wait_while_a_region_for_the_screen_loads() {
+        let w = want(112_615_000);
+        let (serve, _) = heights_server(&w);
+        let (_listener, source) = stalling();
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut loader = Loader::new(maps, source, 1 << 30).with_heights(serve.url(CATALOGUE_NAME));
+        // A landed region's packs are wanted; a box asked by hand runs
+        // against a source that never answers.
+        loader.want_heights(&w, &auto_name(&w.bounds, (14, 15)), Rank::Here);
+        loader.ask(nth(1), 0);
+        for _ in 0..20 {
+            loader.poll(0);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(loader.loading_here());
+        let h = loader.heights.as_ref().expect("heights");
+        assert!(
+            h.running.is_none(),
+            "a pack started beside the screen's region"
+        );
+        assert_eq!(h.queue.len(), 1);
+        assert_eq!(serve.requests(), 0);
+        assert!(loader.busy());
+    }
+
+    #[test]
+    fn a_pack_goes_with_the_last_region_over_it_and_counts_in_the_cap() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let w = want(112_615_000);
+        let ((x, y), pack) = pack_under(&w);
+        let block = leviculum_mapcut::heights::block_bounds(11, x, y);
+        let pack_name = format!("{AUTO_PREFIX}h11-{x}-{y}.lmh");
+        // Two regions over the block, one far away, and a pack elsewhere
+        // that no region covers any more.
+        let inside = Bounds {
+            west: block.west + 10_000,
+            south: block.south + 10_000,
+            east: block.west + 20_000,
+            north: block.south + 20_000,
+        };
+        let a = auto_name(&inside, (14, 15));
+        let b = auto_name(&w.bounds, (14, 15));
+        let far = auto_name(
+            &Bounds {
+                west: 130_000_000,
+                south: 520_000_000,
+                east: 131_000_000,
+                north: 521_000_000,
+            },
+            (14, 15),
+        );
+        let stray = format!("{AUTO_PREFIX}h11-0-0.lmh");
+        let hand = "dunes.lmh";
+        let write = |name: &str, len: usize, age: u64| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, vec![0u8; len]).expect("write");
+            let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000 + age);
+            File::options()
+                .write(true)
+                .open(&path)
+                .expect("open")
+                .set_modified(at)
+                .expect("time");
+        };
+        write(&a, 100, 1);
+        write(&b, 100, 2);
+        write(&far, 100, 3);
+        std::fs::write(dir.path().join(&pack_name), &pack).expect("pack");
+        write(&stray, 50, 0);
+        write(hand, 70, 0);
+        // Under a large cap only the stray pack goes: no region over it.
+        let gone = evict(dir.path(), 1 << 30, &far).expect("evict");
+        assert_eq!(gone, std::slice::from_ref(&stray));
+        // The pack counts: 300 bytes of regions and the pack, one byte
+        // over the cap, take the oldest region; the pack stays under the
+        // other.
+        let cap = 299 + pack.len() as u64;
+        let gone = evict(dir.path(), cap, &far).expect("evict");
+        assert_eq!(gone, std::slice::from_ref(&a));
+        assert!(dir.path().join(&pack_name).exists());
+        // The last region over the block goes, the pack with it; the hand
+        // placed pack stays, whatever the cap.
+        let gone = evict(dir.path(), 0, &far).expect("evict");
+        assert_eq!(gone, [b, pack_name]);
+        assert_eq!(names(dir.path()), [far, hand.to_string()]);
+    }
+
+    /// Audit 1863: two writers evict from one listing (a region's job and
+    /// a height fetch). The one that finds a file gone counts it as gone:
+    /// the region that landed stays landed, not failed and queued again.
+    #[test]
+    fn a_region_lands_when_another_writer_removed_what_its_eviction_listed() {
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        let dir = tempfile::tempdir().expect("tmp");
+        let old = want(112_825_000);
+        let stale = installed(&serve, dir.path(), &old, leviculum_map::profile::CUT_1);
+        let stale_name = stale
+            .file_name()
+            .expect("name")
+            .to_string_lossy()
+            .into_owned();
+        let stray = format!("{AUTO_PREFIX}h11-0-0.lmh");
+        std::fs::write(dir.path().join(&stray), [0u8; 50]).expect("stray pack");
+        RACED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(dir.path().to_path_buf());
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        // A cap of one byte: the old region and the stray pack go.
+        let mut loader = Loader::new(maps, Source::Url(serve.url("o.pmtiles")), 1);
+        let w = want(112_615_000);
+        loader.ask(w.clone(), 0);
+        let steps = settle(&mut loader, 0);
+        let [Step::Done { landed, .. }] = steps.as_slice() else {
+            panic!("the region must land: {steps:?}");
+        };
+        let mut evicted = landed.evicted.clone();
+        evicted.sort();
+        let mut both = vec![stale_name, stray];
+        both.sort();
+        assert_eq!(evicted, both, "counted as gone");
+        assert_eq!(names(dir.path()), [auto_name(&w.bounds, (14, 15))]);
+        assert!(!loader.busy(), "nothing queued again");
+    }
+
+    /// Audit 1863, without the seam: eight evictions start together over
+    /// one directory of 400 orphan packs, each from its own listing, as
+    /// the region jobs and the height fetch run. Every one returns Ok and
+    /// the directory ends empty; one that took a NotFound for an error
+    /// fails here.
+    #[test]
+    fn evictions_from_one_listing_at_once_all_succeed() {
+        let dir = tempfile::tempdir().expect("tmp");
+        for n in 0..400u32 {
+            let name = format!("{AUTO_PREFIX}h11-{}-{}.lmh", n % 2048, n / 2048);
+            std::fs::write(dir.path().join(name), [0u8; 8]).expect("pack");
+        }
+        let start = Arc::new(std::sync::Barrier::new(8));
+        let results: Vec<std::io::Result<Vec<String>>> = (0..8)
+            .map(|_| {
+                let start = Arc::clone(&start);
+                let dir = dir.path().to_path_buf();
+                std::thread::spawn(move || {
+                    start.wait();
+                    evict(&dir, 1 << 30, "")
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|t| t.join().expect("the thread"))
+            .collect();
+        for r in &results {
+            assert!(r.is_ok(), "{r:?}");
+        }
+        assert!(names(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn the_names_an_eviction_reads_back() {
+        let b = Bounds {
+            west: -39_750_000,
+            south: 311_200_000,
+            east: -39_700_000,
+            north: 311_250_000,
+        };
+        assert_eq!(auto_bounds(&auto_name(&b, (10, 15))), Some(b));
+        assert_eq!(auto_bounds("auto-1_2_3-z1-2.lmr"), None);
+        assert_eq!(auto_bounds("dunes.lmr"), None);
+        assert_eq!(
+            pack_bounds("auto-h11-1001-837.lmh"),
+            Some(leviculum_mapcut::heights::block_bounds(11, 1001, 837))
+        );
+        for bad in [
+            "auto-h11-2048-1.lmh",
+            "auto-h11-1-2-3.lmh",
+            "auto-hx-1-2.lmh",
+            "h11-1-2.lmh",
+        ] {
+            assert_eq!(pack_bounds(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_height_catalogue_lies_beside_the_map_source() {
+        assert_eq!(heights_url(None, None), HEIGHTS_DEFAULT);
+        assert_eq!(
+            heights_url(None, Some("https://maps.example.org/planet.pmtiles")),
+            "https://maps.example.org/heights.tsv"
+        );
+        assert_eq!(
+            heights_url(
+                Some("https://h.example.org/x.tsv"),
+                Some("https://m/p.pmtiles")
+            ),
+            "https://h.example.org/x.tsv"
+        );
+    }
+
+    #[test]
+    fn the_maps_usage_and_delete_all_take_the_downloaded_packs() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        std::fs::write(dir.path().join("auto-h11-1-1.lmh"), [0u8; 40]).expect("pack");
+        std::fs::write(dir.path().join("dunes.lmh"), [0u8; 7]).expect("hand pack");
+        std::fs::write(dir.path().join("a.lmr"), [0u8; 10]).expect("region");
+        assert_eq!(maps.usage(), (1, 50));
+        assert_eq!(maps.delete_all(), Ok(1));
+        assert_eq!(names(dir.path()), ["dunes.lmh"]);
     }
 }

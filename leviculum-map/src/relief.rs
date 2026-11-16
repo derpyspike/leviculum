@@ -26,7 +26,11 @@
 //! same floor and exaggeration from either side of a tile seam; a
 //! value measured once per plane made neighbouring planes disagree
 //! along their shared edge (6 of 254 on Erg Chebbi, the audit of order
-//! 1741).
+//! 1741). Where the pack lacks a tile, its heights ([`stand_in`]) and
+//! its share of the field are filled by a rule that looks only at where
+//! the missing ground lies and which tiles the pack holds, never at
+//! which plane asks, so planes meeting at a pack's corner agree too
+//! (the audit of order 1851: 30 of 254 at a concave corner).
 //!
 //! Two pieces of the reference are reconstructions, since only
 //! `mo_shade2.py` and the parameter table travelled with the order, not
@@ -56,10 +60,19 @@ use libm::{expf, powf, sqrtf, tanhf};
 pub const TILE: usize = 256;
 
 /// The apron of neighbour samples a tile is computed with, each side:
-/// wide enough for the form band's blur (sigma 20, radius 80) and most
-/// of its normalisation window; beyond it the window truncates, which
-/// moves the local rms only in its far tails.
-pub const APRON: usize = 96;
+/// half a tile, wide enough for the form band's blur (sigma 20, radius
+/// 80) and most of its normalisation window (sigma 60); beyond it the
+/// window truncates. At 96 the truncation alone set two vertically
+/// adjacent planes of Erg Chebbi apart by 5 of 254 on their shared
+/// rows with every neighbour present (the audit of order 1851); at 128
+/// the seams of `every_corner_of_a_missing_tile_agrees` stay within 3.
+/// It must not exceed half a tile: [`stand_in`] relies on the apron
+/// reaching only the near half of a neighbour.
+pub const APRON: usize = 128;
+const _: () = assert!(
+    APRON <= TILE / 2,
+    "stand_in needs the apron within half a tile"
+);
 
 /// The rim of samples a [`ShadePlane`] keeps past its tile on each side,
 /// so a bicubic sample anywhere on the tile, its edges included, has its
@@ -80,6 +93,13 @@ pub const REF_METRES: f32 = 33.0;
 const SIGMAS: [f32; 4] = [0.7, 2.5, 7.0, 20.0];
 /// Normalisation window sigmas in reference samples.
 const RMS_SIGMA: [f32; 4] = [6.0, 12.0, 28.0, 60.0];
+/// The widest normalisation window a plane can hold, in samples: a
+/// third of the apron, so the window's reach (three sigma) stays on the
+/// plane. Only the form band's 60 at z12 and finer passes it; wider, it
+/// read different ground in two neighbouring planes and set their shared
+/// samples apart (4 of 254 at a pack corner on Erg Chegaga, the audit of
+/// order 1851).
+const RMS_SIGMA_MAX: f32 = APRON as f32 / 3.0;
 /// Target band amplitude.
 const REF: [f32; 4] = [0.040, 0.040, 0.040, 0.045];
 /// Fixed roll-off thresholds.
@@ -115,8 +135,9 @@ const SOFT: f32 = 1.4;
 /// Tone: `t = tanh(c V)`, shade and light sides.
 const C_NEG: f32 = 0.62;
 const C_POS: f32 = 0.48;
-/// The darkest multiplier (ambient lift).
-const FLOOR: f32 = 0.62;
+/// The darkest multiplier (ambient lift): the ground map's parameter
+/// table holds it beside the class colours (order 1743).
+const FLOOR: f32 = crate::ground_style::SHADOW_FLOOR;
 /// Shadow tint per unit darkening.
 const TINT: [f32; 3] = [-0.03, -0.03, 0.06];
 /// Skylight drift: shadows move this share toward their own luminance
@@ -178,10 +199,11 @@ impl Plane {
 
 /// The heights plane of one tile with its apron, from the 3 x 3
 /// neighbourhood of heights tiles ([`TILE`] squared samples each),
-/// row-major with the centre at index 4. A missing neighbour clamps to
-/// the edge of the tile [`stand_in`] names, so a pack's edge shades
-/// flat toward the void instead of inventing a cliff — and two
-/// neighbouring tiles, each assembled with what the pack has, extend
+/// row-major with the centre at index 4. A sample of a missing
+/// neighbour clamps to the edge of the tile [`stand_in`] names for it,
+/// so a pack's edge shades flat toward the void instead of inventing a
+/// cliff — and since that tile depends only on where the sample lies
+/// and what the pack holds, every plane that sees the sample extends
 /// the same edge the same way.
 pub fn assemble(tiles: &[Option<&[i16]>; 9]) -> Plane {
     let mut out = Plane::new(SIDE);
@@ -193,39 +215,104 @@ pub fn assemble(tiles: &[Option<&[i16]>; 9]) -> Plane {
             let (gx, gy) = (x - a, y - a);
             let (tx, ty) = (gx.div_euclid(t), gy.div_euclid(t));
             let n = ((ty + 1) * 3 + tx + 1) as usize;
-            let m = stand_in(n, present);
-            let Some(h) = tiles[m] else { continue };
-            // The sample's position in the stand-in's frame, clamped to
+            let (lx, ly) = ((gx - tx * t) as usize, (gy - ty * t) as usize);
+            let s = stand_in(n, lx, ly, present).unwrap_or(StandIn {
+                first: 4,
+                second: 4,
+                weight: 0.0,
+            });
+            // The sample's position in a stand-in's frame, clamped to
             // its extent along each axis the stand-in moved.
-            let (mx, my) = ((m % 3) as isize - 1, (m / 3) as isize - 1);
-            let lx = (gx - mx * t).clamp(0, t - 1) as usize;
-            let ly = (gy - my * t).clamp(0, t - 1) as usize;
-            out.v[(y * SIDE as isize + x) as usize] = f32::from(h[ly * TILE + lx]);
+            let from = |m: usize| -> Option<f32> {
+                let h = tiles[m]?;
+                let (mx, my) = ((m % 3) as isize - 1, (m / 3) as isize - 1);
+                let lx = (gx - mx * t).clamp(0, t - 1) as usize;
+                let ly = (gy - my * t).clamp(0, t - 1) as usize;
+                Some(f32::from(h[ly * TILE + lx]))
+            };
+            let Some(a) = from(s.first) else { continue };
+            let v = match from(s.second) {
+                Some(b) if s.weight > 0.0 => a + s.weight * (b - a),
+                _ => a,
+            };
+            out.v[(y * SIDE as isize + x) as usize] = v;
         }
     }
     out
 }
 
-/// The neighbourhood slot (row-major, centre 4) whose data stands in
-/// for slot `n`: `n` itself where `present`, else the slot one step
-/// toward the centre row, else one step toward the centre column, else
-/// the centre. The rule depends only on which ground exists, never on
-/// which tile is the centre, so two neighbouring tiles fill a shared
-/// missing neighbour from the same ground.
-pub fn stand_in(n: usize, present: impl Fn(usize) -> bool) -> usize {
+/// Where a sample's heights come from ([`stand_in`]): `first`, mixed
+/// with `second` at `weight` (0 is `first` alone).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StandIn {
+    pub first: usize,
+    pub second: usize,
+    pub weight: f32,
+}
+
+/// The neighbourhood slots (row-major, centre 4) whose heights stand in
+/// for sample (`lx`, `ly`) of slot `n` (the sample's place inside that
+/// tile, 0..[`TILE`] each way): `n` itself where `present`. Otherwise
+/// the sample lies in one quarter of the missing tile, and that quarter
+/// touches three tiles: the one beside it across the nearer vertical
+/// edge, the one across the nearer horizontal edge, and the one across
+/// the corner. Where the pack holds both edge tiles, the sample mixes
+/// their clamped edges, each weighted by the sample's distance from the
+/// OTHER edge, so the fill meets either tile's edge exactly and turns
+/// smoothly between them (a hard switch drew a cliff along the
+/// quarter's diagonal); where it holds one, that one; else the corner
+/// tile; `None` where the pack holds none of them or they lie outside
+/// the 3 x 3 neighbourhood.
+///
+/// Nothing in the rule names the centre: the choice is a function of
+/// the sample's absolute place and of which tiles the pack holds. Every
+/// plane whose apron reaches the sample sees all three candidates
+/// (the apron, [`APRON`] samples, is under half a tile, so it only ever
+/// reaches the quarter of a missing tile that touches the plane's own
+/// tile, and that quarter's three neighbours lie around the centre), so
+/// every such plane fills the sample from the same ground.
+pub fn stand_in(
+    n: usize,
+    lx: usize,
+    ly: usize,
+    present: impl Fn(usize) -> bool,
+) -> Option<StandIn> {
+    let alone = |m: usize| StandIn {
+        first: m,
+        second: m,
+        weight: 0.0,
+    };
     if present(n) {
-        return n;
+        return Some(alone(n));
     }
-    let (col, row) = (n % 3, n / 3);
-    let toward_row = 3 + col;
-    if row != 1 && present(toward_row) {
-        return toward_row;
+    let (col, row) = ((n % 3) as isize, (n / 3) as isize);
+    let half = TILE / 2;
+    let dx: isize = if lx < half { -1 } else { 1 };
+    let dy: isize = if ly < half { -1 } else { 1 };
+    let to_vertical_edge = if dx < 0 { lx } else { TILE - 1 - lx };
+    let to_horizontal_edge = if dy < 0 { ly } else { TILE - 1 - ly };
+    let slot = |c: isize, r: isize| {
+        ((0..3).contains(&c) && (0..3).contains(&r)).then_some((r * 3 + c) as usize)
+    };
+    let held = |m: Option<usize>| m.filter(|&m| present(m));
+    let beside = held(slot(col + dx, row));
+    let above_or_below = held(slot(col, row + dy));
+    match (beside, above_or_below) {
+        (Some(b), Some(a)) => {
+            // Distances to the two edges, from the sample's centre.
+            let (to_b, to_a) = (
+                to_vertical_edge as f32 + 0.5,
+                to_horizontal_edge as f32 + 0.5,
+            );
+            Some(StandIn {
+                first: b,
+                second: a,
+                weight: to_b / (to_a + to_b),
+            })
+        }
+        (Some(m), None) | (None, Some(m)) => Some(alone(m)),
+        (None, None) => held(slot(col + dx, row + dy)).map(alone),
     }
-    let toward_col = row * 3 + 1;
-    if col != 1 && present(toward_col) {
-        return toward_col;
-    }
-    4
 }
 
 /// `x` clamped to [0, 1], then the smooth step `3x^2 - 2x^3`.
@@ -488,10 +575,33 @@ fn percentile(p: &Plane, q: f32) -> f32 {
 /// fine rms is louder than Chegaga's), so the exaggeration only comes
 /// where the floor says the DEM is clean bare ground (0.002 to 0.003,
 /// against 0.012 and up on canopy). Both steps are smooth.
+///
+/// Stone desert must not wear the dune sky (Lew 2026-11-14: 95 % of
+/// the trip is hamada and reg). On GLO-30 the Jbel Bani hamada and its
+/// gullied escarpment measure a fine share of 0.38 to 0.70 and a floor
+/// of 0.0031 to 0.0054, so neither property alone sets it apart from
+/// Erg Chebbi's tiles (0.47 to 0.72, 0.0025 to 0.0068); together they
+/// do: the dune factor needs the fine band to carry more than half the
+/// slope energy (full from 0.6) AND a floor of clean sand (full under
+/// 0.004, none from 0.0055). `stone_desert_wears_no_dune_sky` in
+/// `tests/relief.rs` holds every Bani tile at or under 1.2 and the
+/// ergs above 1.5.
 pub fn sky_exaggeration(fine_rms_med: f32, form_rms_med: f32, noise_floor: f32) -> f32 {
     let ff = fine_rms_med / (fine_rms_med + form_rms_med + 1e-6);
-    let clean = smoothstep((0.008 - noise_floor) / 0.004);
-    1.0 + 1.5 * smoothstep((ff - 0.35) / 0.3) * clean
+    let clean = smoothstep((0.0055 - noise_floor) / 0.0015);
+    1.0 + 1.5 * smoothstep((ff - 0.5) / 0.1) * clean
+}
+
+/// Ground metres per sample at the centre row of tile row `y` of the
+/// relief grid at `zoom` (Web Mercator, 256 samples a tile): the one
+/// resolution a tile's [`measure`] and its plane use, whichever plane
+/// asks.
+pub fn tile_res(zoom: u8, y: u32) -> f32 {
+    let n = f64::from(1u32 << zoom);
+    let lat = libm::atan(libm::sinh(
+        core::f64::consts::PI * (1.0 - 2.0 * (f64::from(y) + 0.5) / n),
+    ));
+    (156_543.03 * libm::cos(lat) / n) as f32
 }
 
 /// What [`compute_in`] measures of one height tile's ground, on the
@@ -537,14 +647,31 @@ pub fn measure(tile: &[i16], res: f32) -> Ground {
     }
 }
 
-/// The nine grounds of a plane's neighbourhood, each missing one taken
-/// from its [`stand_in`] as [`assemble`] takes its heights; `None`
-/// without the centre's.
-pub fn fill_ground(g: &[Option<Ground>; 9]) -> Option<[Ground; 9]> {
-    let centre = g[4]?;
-    Some(core::array::from_fn(|n| {
-        g[stand_in(n, |m| g[m].is_some())].unwrap_or(centre)
-    }))
+/// The [`Ground`]s of a plane's 3 x 3 neighbourhood (row-major, centre
+/// 4) as [`compute_in`] takes them: a missing tile's is `None`, the
+/// centre's is always there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Grounds([Option<Ground>; 9]);
+
+impl Grounds {
+    /// The same ground on all nine tiles.
+    pub fn uniform(g: Ground) -> Self {
+        Self([Some(g); 9])
+    }
+
+    /// The grounds the pack has of the neighbourhood.
+    pub fn get(&self) -> &[Option<Ground>; 9] {
+        &self.0
+    }
+}
+
+/// The grounds of a plane's neighbourhood as the pack has them; `None`
+/// without the centre's. A missing tile needs no stand-in value: the
+/// field [`compute_in`] lays between the tile centres leaves it out of
+/// every cell it corners (`field_of`).
+pub fn fill_ground(g: &[Option<Ground>; 9]) -> Option<Grounds> {
+    g[4]?;
+    Some(Grounds(*g))
 }
 
 /// The centre tile of an aproned [`SIDE`] plane, as heights.
@@ -578,16 +705,37 @@ fn centre_weights() -> Vec<(usize, f32)> {
 }
 
 /// A per-tile value of the 3 x 3 neighbourhood laid over the plane,
-/// bilinear between the tile centres.
-fn field_of(values: &[f32; 9]) -> Plane {
+/// bilinear between the tile centres. A missing tile (`None`) drops out
+/// of each cell it corners and the cell's other corners share its
+/// weight: the value at a sample is then a function of the cell (four
+/// tile centres, fixed by the sample's absolute place) and of which of
+/// them the pack holds, whichever plane asks, and it stays continuous
+/// across the cells' edges (on an edge only its two ends weigh). The
+/// centre is always there and weighs at least 1/64 anywhere on the
+/// plane, so the sum is never empty.
+fn field_of(values: &[Option<f32>; 9]) -> Plane {
     let w = centre_weights();
     let mut out = Plane::new(SIDE);
     for (y, &(ry, fy)) in w.iter().enumerate() {
         for (x, &(rx, fx)) in w.iter().enumerate() {
-            let at = |r: usize, c: usize| values[r * 3 + c];
-            let top = at(ry, rx) * (1.0 - fx) + at(ry, rx + 1) * fx;
-            let bottom = at(ry + 1, rx) * (1.0 - fx) + at(ry + 1, rx + 1) * fx;
-            out.v[y * SIDE + x] = top * (1.0 - fy) + bottom * fy;
+            let corners = [
+                (ry, rx, (1.0 - fx) * (1.0 - fy)),
+                (ry, rx + 1, fx * (1.0 - fy)),
+                (ry + 1, rx, (1.0 - fx) * fy),
+                (ry + 1, rx + 1, fx * fy),
+            ];
+            let (mut sum, mut weight) = (0.0f32, 0.0f32);
+            for (r, c, k) in corners {
+                if let Some(v) = values[r * 3 + c] {
+                    sum += k * v;
+                    weight += k;
+                }
+            }
+            out.v[y * SIDE + x] = if weight > 0.0 {
+                sum / weight
+            } else {
+                values[4].unwrap_or(0.0)
+            };
         }
     }
     out
@@ -625,15 +773,15 @@ pub fn ao_of(q: u8) -> f32 {
 /// run and host.
 pub fn compute(dem: &Plane, res: f32, sky_m: f32) -> ShadePlane {
     let g = measure(&centre_tile(dem), res);
-    compute_in(dem, res, sky_m, &[g; 9])
+    compute_in(dem, res, sky_m, &Grounds::uniform(g))
 }
 
 /// [`compute`] with the [`Ground`] of each of the nine tiles of the
-/// plane's neighbourhood (row-major, centre 4; a missing neighbour
-/// takes the ground of its [`stand_in`]): the noise floor and the
-/// sky-view exaggeration are fields interpolated between the tile
-/// centres, so neighbouring planes agree on their shared ground.
-pub fn compute_in(dem: &Plane, res: f32, sky_m: f32, ground: &[Ground; 9]) -> ShadePlane {
+/// plane's neighbourhood ([`Grounds`]; a missing neighbour drops out of
+/// the interpolation, `field_of`): the noise floor and the sky-view
+/// exaggeration are fields interpolated between the tile centres, so
+/// neighbouring planes agree on their shared ground.
+pub fn compute_in(dem: &Plane, res: f32, sky_m: f32, ground: &Grounds) -> ShadePlane {
     // `denoise_all`: 0.7 samples on every source DEM.
     let dem = gblur(dem, PRE_SIGMA);
     // `metres`: the band scales are landform sizes, not samples.
@@ -659,9 +807,9 @@ pub fn compute_in(dem: &Plane, res: f32, sky_m: f32, ground: &[Ground; 9]) -> Sh
     let rms: Vec<Plane> = bands
         .iter()
         .zip(&RMS_SIGMA)
-        .map(|(b, &s)| local_rms(b, s * scale))
+        .map(|(b, &s)| local_rms(b, (s * scale).min(RMS_SIGMA_MAX)))
         .collect();
-    let floor = field_of(&ground.map(|g| g.floor));
+    let floor = field_of(&ground.0.map(|g| g.map(|g| g.floor)));
     // The normalised sum: amplify quiet bands, compress loud ones,
     // roll off under the noise threshold.
     let mut v = Plane::new(dem.side);
@@ -685,7 +833,7 @@ pub fn compute_in(dem: &Plane, res: f32, sky_m: f32, ground: &[Ground; 9]) -> Sh
     // Sky-view: normalised openness over the zoom's radius, its
     // exaggeration from each tile's slope-energy split, between the
     // tile centres like the floor.
-    let zf_sky = field_of(&ground.map(|g| g.zf()));
+    let zf_sky = field_of(&ground.0.map(|g| g.map(|g| g.zf())));
     let sigma = (sky_m / res / 3.0).max(2.0);
     let wide = gblur(&dem, sigma);
     let mut delta = diff(&dem, &wide);

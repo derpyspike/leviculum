@@ -204,9 +204,7 @@ fn the_frame_is_the_shared_renderers_with_names_and_a_pin() {
     let placed = &direct.placed[0];
     let (x, y) = (placed.x as usize, placed.y as usize);
     let at = (y * W as usize + x) * 4;
-    // The marker in alice's hue, the colour her track takes (1693).
-    let hue = loquax::ui::tracks::peer_colour(&[1; 16], false);
-    assert_eq!(&rgba[at..at + 3], &hue, "the marker in its peer's hue");
+    assert_eq!(&rgba[at..at + 3], &[0x20, 0x50, 0xc0], "the marker's blue");
 
     same_as("map-florence-z16.png", &rgba, W, H);
 }
@@ -587,6 +585,13 @@ fn a_missing_region_loads_by_itself_and_the_frame_says_so() {
         shown.loading && shown.notice.is_none(),
         "still loading: {shown:?}"
     );
+    // 1812: the chip's one line says how far the view is, here nothing
+    // of nothing planned yet; the picture shows where.
+    assert_eq!(
+        shown.load_line.as_deref(),
+        Some("Loading the map · 0 %"),
+        "{shown:?}"
+    );
 
     let home = self::home();
     source(home.path(), refused_port);
@@ -628,11 +633,16 @@ fn a_missing_region_loads_by_itself_and_the_frame_says_so() {
         assert!(last.notice.is_none(), "no internet said once: {last:?}");
     }
     assert!(last.offline && !last.loading_here, "{last:?}");
+    // 1812: offline is said once for the view, in the chip's line.
+    assert_eq!(
+        last.load_line.as_deref(),
+        Some("Offline · the map loads when the network is back"),
+        "{last:?}"
+    );
 }
 
-/// A tap on a pin's marker selects it and names it; the selected pin keeps
-/// its peer's hue (1693: it was drawn red), its ring tells the choice. A
-/// pan moves the centre by the pixels at the zoom.
+/// A tap on a pin's marker selects it and names it; the selected pin is
+/// drawn red. A pan moves the centre by the pixels at the zoom.
 #[test]
 fn a_tap_names_the_pin_and_a_pan_moves_the_view() {
     let home = home();
@@ -667,8 +677,7 @@ fn a_tap_names_the_pin_and_a_pan_moves_the_view() {
     assert_eq!(shown.tapped_name.as_deref(), Some("bob · 5m"));
     assert_eq!(shown.selected, shown.tapped);
     let at = (marker.y as usize * W as usize + marker.x as usize) * 4;
-    let hue = loquax::ui::tracks::peer_colour(&[7; 16], false);
-    assert_eq!(&rgba[at..at + 3], &hue, "the selected keeps its hue");
+    assert_eq!(&rgba[at..at + 3], &[0xd0, 0x30, 0x30], "the selected red");
 
     let pan = MapRequest {
         pan_x: 40,
@@ -975,8 +984,8 @@ fn a_frame_with_margins_covers_them() {
         moving: true,
         ..request(home.path(), false)
     };
-    // A frame while the finger moves draws a few missing tiles a worker
-    // and owes the rest (`MOVING_TILES_PER_WORKER`), so with few cores the
+    // A frame while the finger moves draws a few missing tiles a core and
+    // owes the rest (`loquax::budget::Budgets::frame_tiles`), so with few cores the
     // first one shows stand-ins: ask again while it owes any, as Java does
     // (1167). Each answer draws more, so this ends.
     let (mut shown, mut big) = frame(&loquax_android::map::render(&wide, Some(Vec::new()), now()));
@@ -1721,12 +1730,9 @@ fn avatar_pins_cluster_and_split_at_the_zoom_they_name() {
         (shown.marks[0].x, shown.marks[0].y),
         (ax.round() as i32, ay.round() as i32)
     );
-    // No marker drawn there: no peer's hue under anna.
+    // No marker drawn there: neither pin colour under anna.
     let at = (ay as usize * W as usize + ax as usize) * 4;
-    for peer in 1..=3u8 {
-        let hue = loquax::ui::tracks::peer_colour(&[peer; 16], false);
-        assert_ne!(&rgba[at..at + 3], &hue);
-    }
+    assert_ne!(&rgba[at..at + 3], &[0xd0, 0x30, 0x30]);
     let split = shown.marks[0].split_milli.expect("the regions part them");
     assert!(
         split > 13_000 && split <= u32::from(shown.max_zoom) * 1000,
@@ -1904,38 +1910,6 @@ fn a_pin_sits_on_its_ground_at_every_step_of_the_handover() {
         apart > 3.0,
         "the flat projection is {apart:.2} px from the blend's at most"
     );
-}
-
-/// 1693: each avatar pin carries its peer's hue for either map, the
-/// colour its track takes there (`loquax::ui::tracks::colour`), and the
-/// ink its initials take on it: the phone paints the pin in the hue,
-/// never in the icon the peer chose.
-#[test]
-fn a_mark_carries_its_peers_hue_on_either_map() {
-    use loquax::ui::tracks;
-    let shows = leviculum_map::viewport::ExactView::new(
-        project(LatLon::from_degrees(43.77, 11.25)),
-        14_000,
-        480,
-        320,
-    );
-    let pins = vec![pin(1, "bob", 43.771, 11.25), pin(3, "ann", 43.769, 11.26)];
-    let marks = loquax_android::map::marks(&pins, &shows, None, (0, 0), 1.0, 20_000, None);
-    assert_eq!(marks.len(), 2, "{marks:?}");
-    let hex = |[r, g, b]: [u8; 3]| format!("{r:02x}{g:02x}{b:02x}");
-    for mark in &marks {
-        let peer = loquax::address::parse(&mark.peers[0]).expect("hex");
-        let value = serde_json::to_value(mark).expect("json");
-        for (dark, hue, ink) in [(false, "hue", "ink"), (true, "hue_dark", "ink_dark")] {
-            let want = tracks::colour(tracks::hue(&peer, false), dark);
-            assert_eq!(value[hue], serde_json::json!(hex(want)), "{value}");
-            assert_eq!(
-                value[ink],
-                serde_json::json!(hex(tracks::ink_on(want))),
-                "{value}"
-            );
-        }
-    }
 }
 
 /// The Maps page's call (1201, 1207) for `home`: no frame, the regions;
@@ -3720,7 +3694,13 @@ impl PhoneWalk {
                     running.retain(|rb| *rb != b);
                     starts.remove(&format!("{b:?}"));
                 }
-                loquax::mapload::StepKind::Skipped => {}
+                // A dropped load ends there; it starts again later (1836).
+                loquax::mapload::StepKind::Held(loquax::mapload::Held::Dropped) => {
+                    running.retain(|rb| *rb != b)
+                }
+                loquax::mapload::StepKind::Skipped
+                | loquax::mapload::StepKind::Held(_)
+                | loquax::mapload::StepKind::Heights => {}
             }
         }
         out.push(PhoneVerdict {

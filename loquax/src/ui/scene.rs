@@ -401,21 +401,6 @@ impl Avatar {
             ring,
         }
     }
-
-    /// The avatar of a peer on the map (1693): its ground the peer's hue
-    /// ([`crate::ui::tracks::peer_colour`], the light set), the colour its
-    /// pin and track are drawn in, not the icon it chose; the letters in
-    /// the ink [`crate::ui::tracks::ink_on`] picks for it.
-    pub(super) fn hued(initials: String, peer: &[u8; 16], ring: Option<Ring>) -> Self {
-        let hue = crate::ui::tracks::peer_colour(peer, false);
-        let rgb = |[r, g, b]: [u8; 3]| u32::from_be_bytes([0, r, g, b]);
-        Self {
-            initials,
-            fg: rgb(crate::ui::tracks::ink_on(hue)),
-            bg: rgb(hue),
-            ring,
-        }
-    }
 }
 
 /// A conversation's row: the shared [`ListItem`] (id, selected, tap,
@@ -2179,13 +2164,45 @@ fn bubble_node(
 /// An age in the catalogue's words: `now`, else `2 min ago`, `3 h ago`,
 /// `4 d ago`, on the thresholds of [`liveness::ago`].
 pub fn ago(secs: i64) -> Text {
-    let amount = match secs {
-        ..60 => return Text::key(StrId::LiveNow),
-        60..3600 => Text::Key(StrId::MinutesAgo, Vec::from([Arg::Int(secs / 60)])),
-        3600..172_800 => Text::Key(StrId::HoursAgo, Vec::from([Arg::Int(secs / 3600)])),
-        _ => Text::Key(StrId::DaysAgo, Vec::from([Arg::Int(secs / 86_400)])),
+    let amount = match ago_step(secs) {
+        AgoStep::Now => return Text::key(StrId::LiveNow),
+        AgoStep::Minutes(n) => Text::Key(StrId::MinutesAgo, Vec::from([Arg::Int(n)])),
+        AgoStep::Hours(n) => Text::Key(StrId::HoursAgo, Vec::from([Arg::Int(n)])),
+        AgoStep::Days(n) => Text::Key(StrId::DaysAgo, Vec::from([Arg::Int(n)])),
     };
     Text::Key(StrId::LiveAgo, Vec::from([Arg::Text(Box::new(amount))]))
+}
+
+/// The step [`ago`] says an age of `secs` in (1694 A): two ages with one
+/// step read the same, so the clock moves a label only when its step
+/// moves, without saying the words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgoStep {
+    Now,
+    Minutes(i64),
+    Hours(i64),
+    Days(i64),
+}
+
+pub fn ago_step(secs: i64) -> AgoStep {
+    match secs {
+        ..60 => AgoStep::Now,
+        60..3600 => AgoStep::Minutes(secs / 60),
+        3600..172_800 => AgoStep::Hours(secs / 3600),
+        _ => AgoStep::Days(secs / 86_400),
+    }
+}
+
+impl AgoStep {
+    /// One word for a fingerprint.
+    pub fn word(self) -> u64 {
+        match self {
+            AgoStep::Now => 0,
+            AgoStep::Minutes(n) => (1 << 62) | n as u64,
+            AgoStep::Hours(n) => (2 << 62) | n as u64,
+            AgoStep::Days(n) => (3 << 62) | (n as u64 & ((1 << 62) - 1)),
+        }
+    }
 }
 
 /// A cadence in the catalogue's words: `every 10 min`, `every 2 h`, on the

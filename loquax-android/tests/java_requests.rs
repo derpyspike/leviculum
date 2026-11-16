@@ -930,6 +930,12 @@ fn queries() -> Vec<(&'static str, Vec<u8>, Query)> {
             java_map(&[("t", Java::Str("mapfling")), ("set", Java::Bool(false))]),
             Query::MapFling { set: Some(false) },
         ),
+        ("mapRelief", t("maprelief"), Query::MapRelief { set: None }),
+        (
+            "mapRelief (set)",
+            java_map(&[("t", Java::Str("maprelief")), ("set", Java::Bool(false))]),
+            Query::MapRelief { set: Some(false) },
+        ),
         ("links", t("links"), Query::Links),
         (
             "detail",

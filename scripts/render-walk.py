@@ -67,6 +67,7 @@ CONTROLS = {
     "view-lost": ["view_kept"],
     "disk-shift": ["globe_disk_fixed"],
     "zoom-drift": ["zoom_keeps_the_place"],
+    "bare-frame": ["bare_paper"],
     "stray-view": ["view_only_by_input"],
 }
 STEP = {"frame_p95": 15.0}

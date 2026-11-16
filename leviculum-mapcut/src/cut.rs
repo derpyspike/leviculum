@@ -69,6 +69,7 @@ pub const EDGE_EXACT: i32 = 64;
 pub const BUILDING_TOLERANCE: i64 = 0;
 
 /// What to cut.
+#[derive(Clone, Debug)]
 pub struct CutOptions {
     pub bounds: Bounds,
     pub zooms: RangeInclusive<u8>,
@@ -937,88 +938,194 @@ pub fn cut<S: TileSource + ?Sized, W: Write + Seek>(
 pub fn cut_streamed<S: TileSource + ?Sized, W: Write + Seek>(
     src: &S,
     opts: &CutOptions,
-    mut out: W,
+    out: W,
     progress: &mut dyn FnMut(Progress),
 ) -> Res<CutStats> {
-    let (lo, hi) = (*opts.zooms.start(), *opts.zooms.end());
-    if lo > hi || hi > leviculum_map::region::MAX_ZOOM {
-        return Err(format!("zoom range {lo}..={hi}").into());
+    let mut cut = Streaming::begin(src, opts, out)?;
+    while let Some(p) = cut.round(src)? {
+        progress(p);
     }
-    let mut ids: Vec<TileId> = src
-        .tiles_in(&opts.bounds, opts.zooms.clone())?
-        .into_iter()
-        .filter(|t| opts.zooms.contains(&t.z) && in_bounds(*t, &opts.bounds))
-        .collect();
-    ids.sort_unstable();
-    ids.dedup();
-    // The region's deepest zoom: the deepest the source actually has in
-    // the box. Its tiles are the ones every deeper view overzooms, so
-    // under profile 2 they keep the source's geometry (1707), and they
-    // carry the names only the deepest carries and the pois (1727: one
-    // definition for all three, a zoom asked for but absent moves none).
-    let deepest = ids.last().map_or(hi, |t| t.z);
-    let mut layers = BTreeMap::new();
-    for z in lo..=hi {
-        let l = profile::layers_deepest(opts.profile, z, z == deepest)
-            .ok_or(format!("unknown profile {}", opts.profile))?;
-        layers.insert(z, l);
-    }
+    let (stats, p) = cut.finish()?;
+    progress(p);
+    Ok(stats)
+}
 
-    let with_buildings = opts.buildings && opts.zooms.contains(&BUILDING_ZOOM);
-    // The pois are cut at the deepest zoom, which holds every poi the
-    // source has in the box (1685).
-    let with_pois = opts.pois;
-    let text = |s: &str, pos: &mut u64| -> Res<(u32, u32)> {
-        let at = u32::try_from(*pos)?;
-        *pos += s.len() as u64;
-        Ok((at, u32::try_from(s.len())?))
-    };
-    let mut header = Header {
-        bounds: opts.bounds,
-        min_zoom: lo,
-        max_zoom: hi,
-        profile: opts.profile,
-        attribution: (0, 0),
-        notice: (0, 0),
-        tiles: u32::try_from(ids.len())?,
-        index: 0,
-        len: 0,
-        labels: None,
-        buildings: None,
-        // A cut without pois stays version 4 ([`Header::version_of`]).
-        pois: with_pois.then(PoiTables::default),
-        streamed: true,
-    };
-    // The header, the texts and a slot per tile, all before any tile, so
-    // a reader opens the file from the first flush on.
-    let mut pos = header.header_len() as u64;
-    header.attribution = text(&opts.attribution, &mut pos)?;
-    header.notice = text(&opts.notice, &mut pos)?;
-    let index = pos;
-    header.index = index;
-    out.write_all(&header.encode())?;
-    out.write_all(opts.attribution.as_bytes())?;
-    out.write_all(opts.notice.as_bytes())?;
-    for id in &ids {
-        let slot = Entry {
-            id: *id,
-            offset: 0,
-            len: 0,
+/// A cut that lives across calls (1836): [`Streaming::begin`] writes the
+/// header and the slots, each [`Streaming::round`] fetches and writes one
+/// round, [`Streaming::finish`] the names, buildings, pois and the length.
+/// Between two rounds the caller may wait as long as it likes, the file a
+/// reader draws from staying as the last round left it: a load whose area
+/// the user left pauses there and goes on from the same round later.
+/// The bytes are those of [`cut_streamed`], however the rounds are spaced.
+pub struct Streaming<W: Write + Seek> {
+    out: W,
+    opts: CutOptions,
+    ids: Vec<TileId>,
+    /// The rounds, as index ranges into `ids` ([`rounds`]).
+    spans: Vec<(usize, usize)>,
+    /// The next round to write.
+    next: usize,
+    deepest: u8,
+    layers: BTreeMap<u8, ZoomLayers>,
+    with_buildings: bool,
+    with_pois: bool,
+    header: Header,
+    index: u64,
+    pos: u64,
+    done: usize,
+    stats: CutStats,
+    shared: HashMap<Vec<u8>, (u64, u32)>,
+    named: Vec<(TileId, TileLabels)>,
+    built: Vec<(TileId, Vec<u8>)>,
+    poied: Vec<(TileId, TilePoiData)>,
+}
+
+impl<W: Write + Seek> Streaming<W> {
+    /// List `src`'s tiles under `opts` and write the header, the texts and
+    /// a slot per tile: a reader opens the file from here on.
+    pub fn begin<S: TileSource + ?Sized>(src: &S, opts: &CutOptions, mut out: W) -> Res<Self> {
+        let (lo, hi) = (*opts.zooms.start(), *opts.zooms.end());
+        if lo > hi || hi > leviculum_map::region::MAX_ZOOM {
+            return Err(format!("zoom range {lo}..={hi}").into());
+        }
+        let mut ids: Vec<TileId> = src
+            .tiles_in(&opts.bounds, opts.zooms.clone())?
+            .into_iter()
+            .filter(|t| opts.zooms.contains(&t.z) && in_bounds(*t, &opts.bounds))
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        // The region's deepest zoom: the deepest the source actually has in
+        // the box. Its tiles are the ones every deeper view overzooms, so
+        // under profile 2 they keep the source's geometry (1707), and they
+        // carry the names only the deepest carries and the pois (1727: one
+        // definition for all three, a zoom asked for but absent moves none).
+        let deepest = ids.last().map_or(hi, |t| t.z);
+        let mut layers = BTreeMap::new();
+        for z in lo..=hi {
+            let l = profile::layers_deepest(opts.profile, z, z == deepest)
+                .ok_or(format!("unknown profile {}", opts.profile))?;
+            layers.insert(z, l);
+        }
+
+        let with_buildings = opts.buildings && opts.zooms.contains(&BUILDING_ZOOM);
+        // The pois are cut at the deepest zoom, which holds every poi the
+        // source has in the box (1685).
+        let with_pois = opts.pois;
+        let text = |s: &str, pos: &mut u64| -> Res<(u32, u32)> {
+            let at = u32::try_from(*pos)?;
+            *pos += s.len() as u64;
+            Ok((at, u32::try_from(s.len())?))
         };
-        out.write_all(&slot.encode())?;
-    }
-    pos += (ids.len() * ENTRY_LEN) as u64;
-    out.flush()?;
+        let mut header = Header {
+            bounds: opts.bounds,
+            min_zoom: lo,
+            max_zoom: hi,
+            profile: opts.profile,
+            attribution: (0, 0),
+            notice: (0, 0),
+            tiles: u32::try_from(ids.len())?,
+            index: 0,
+            len: 0,
+            labels: None,
+            buildings: None,
+            // A cut without pois stays version 4 ([`Header::version_of`]).
+            pois: with_pois.then(PoiTables::default),
+            streamed: true,
+        };
+        // The header, the texts and a slot per tile, all before any tile, so
+        // a reader opens the file from the first flush on.
+        let mut pos = header.header_len() as u64;
+        header.attribution = text(&opts.attribution, &mut pos)?;
+        header.notice = text(&opts.notice, &mut pos)?;
+        let index = pos;
+        header.index = index;
+        out.write_all(&header.encode())?;
+        out.write_all(opts.attribution.as_bytes())?;
+        out.write_all(opts.notice.as_bytes())?;
+        for id in &ids {
+            let slot = Entry {
+                id: *id,
+                offset: 0,
+                len: 0,
+            };
+            out.write_all(&slot.encode())?;
+        }
+        pos += (ids.len() * ENTRY_LEN) as u64;
+        out.flush()?;
 
-    let mut stats = CutStats::default();
-    let mut shared: HashMap<Vec<u8>, (u64, u32)> = HashMap::new();
-    let mut named: Vec<(TileId, TileLabels)> = Vec::new();
-    let mut built: Vec<(TileId, Vec<u8>)> = Vec::new();
-    let mut poied: Vec<(TileId, TilePoiData)> = Vec::new();
-    let threads = opts.threads.max(1);
-    let locale = opts.locale.as_deref();
-    let mut done = 0;
-    for round in rounds(&ids, opts.round) {
+        let spans = {
+            let mut spans = Vec::new();
+            let mut at = 0;
+            for r in rounds(&ids, opts.round) {
+                spans.push((at, at + r.len()));
+                at += r.len();
+            }
+            spans
+        };
+        Ok(Self {
+            out,
+            opts: opts.clone(),
+            ids,
+            spans,
+            next: 0,
+            deepest,
+            layers,
+            with_buildings,
+            with_pois,
+            header,
+            index,
+            pos,
+            done: 0,
+            stats: CutStats::default(),
+            shared: HashMap::new(),
+            named: Vec::new(),
+            built: Vec::new(),
+            poied: Vec::new(),
+        })
+    }
+
+    /// The tiles of the cut, and the rounds written of them: what a
+    /// load's progress counts.
+    pub fn tiles(&self) -> &[TileId] {
+        &self.ids
+    }
+
+    /// Tiles written so far.
+    pub fn done(&self) -> usize {
+        self.done
+    }
+
+    /// The tiles of the round [`round`](Self::round) writes next, `None`
+    /// once every round is written.
+    pub fn next_round(&self) -> Option<&[TileId]> {
+        self.spans.get(self.next).map(|&(a, b)| &self.ids[a..b])
+    }
+
+    /// Fetch and write the next round of `src`'s tiles; its progress, or
+    /// `None` when every round was written and only
+    /// [`finish`](Self::finish) is left.
+    pub fn round<S: TileSource + ?Sized>(&mut self, src: &S) -> Res<Option<Progress>> {
+        let Some(&(a, b)) = self.spans.get(self.next) else {
+            return Ok(None);
+        };
+        let round = &self.ids[a..b];
+        let lo = *self.opts.zooms.start();
+        let deepest = self.deepest;
+        let with_buildings = self.with_buildings;
+        let with_pois = self.with_pois;
+        let threads = self.opts.threads.max(1);
+        let locale = self.opts.locale.as_deref();
+        let layers = &self.layers;
+        let out = &mut self.out;
+        let index = self.index;
+        let done = self.done;
+        let pos = &mut self.pos;
+        let stats = &mut self.stats;
+        let shared = &mut self.shared;
+        let named = &mut self.named;
+        let built = &mut self.built;
+        let poied = &mut self.poied;
         src.want(round)?;
         let per = round.len().div_ceil(threads);
         let results: Vec<Res<CutTile>> = std::thread::scope(|s| {
@@ -1090,9 +1197,9 @@ pub fn cut_streamed<S: TileSource + ?Sized, W: Write + Seek>(
                         offset
                     }
                     None => {
-                        let offset = pos;
+                        let offset = *pos;
                         out.write_all(&blob)?;
-                        pos += blob.len() as u64;
+                        *pos += blob.len() as u64;
                         st.bytes += blob.len() as u64;
                         if blob.len() <= SHARE_MAX {
                             shared.insert(blob, (offset, len));
@@ -1126,155 +1233,185 @@ pub fn cut_streamed<S: TileSource + ?Sized, W: Write + Seek>(
             out.seek(SeekFrom::Start(first + (i * ENTRY_LEN) as u64 + 16))?;
             out.write_all(&s.len.to_le_bytes())?;
         }
-        out.seek(SeekFrom::Start(pos))?;
+        out.seek(SeekFrom::Start(*pos))?;
         out.flush()?;
-        done += round.len();
-        progress(Progress {
-            done,
-            tiles: ids.len(),
-            zoom: round.last().map_or(lo, |t| t.z),
-            bytes: pos,
+        let zoom = round.last().map_or(lo, |t| t.z);
+        let tiles = self.ids.len();
+        self.done += round.len();
+        self.next += 1;
+        Ok(Some(Progress {
+            done: self.done,
+            tiles,
+            zoom,
+            bytes: self.pos,
             complete: false,
-        });
+        }))
     }
 
-    // The names: every string once, sorted, numbered by its place in the
-    // table; the label sections after the tiles, then the table, then the
-    // label index right before the building index, which ends the file.
-    let mut strings: BTreeSet<&str> = named
-        .iter()
-        .flat_map(|(_, l)| {
-            let points = l.points.iter().map(|p| &p.3);
-            let lines = l.lines.iter().map(|p| &p.3);
-            points.chain(lines)
-        })
-        .flat_map(|n| std::iter::once(n.local.as_str()).chain(n.alternate.as_deref()))
-        .collect();
-    // The pois' strings go into the same table: kinds, names, attribute
-    // keys and values (1685).
-    for (_, tp) in &poied {
-        for p in &tp.pois {
-            strings.insert(p.kind.as_str());
-            if let Some(n) = &p.name {
-                strings.insert(n.local.as_str());
-                if let Some(a) = n.alternate.as_deref() {
-                    strings.insert(a);
-                    strings.insert("name:alt");
+    /// Write the names, the buildings, the pois and, last, the file's
+    /// length: the region is complete. Every round must be written.
+    pub fn finish(self) -> Res<(CutStats, Progress)> {
+        if self.next < self.spans.len() {
+            return Err(format!(
+                "the cut finishes after {} of {} rounds",
+                self.next,
+                self.spans.len()
+            )
+            .into());
+        }
+        let Self {
+            mut out,
+            opts,
+            ids,
+            with_pois,
+            mut header,
+            mut pos,
+            done,
+            mut stats,
+            named,
+            built,
+            poied,
+            ..
+        } = self;
+        let hi = *opts.zooms.end();
+        // The names: every string once, sorted, numbered by its place in the
+        // table; the label sections after the tiles, then the table, then the
+        // label index right before the building index, which ends the file.
+        let mut strings: BTreeSet<&str> = named
+            .iter()
+            .flat_map(|(_, l)| {
+                let points = l.points.iter().map(|p| &p.3);
+                let lines = l.lines.iter().map(|p| &p.3);
+                points.chain(lines)
+            })
+            .flat_map(|n| std::iter::once(n.local.as_str()).chain(n.alternate.as_deref()))
+            .collect();
+        // The pois' strings go into the same table: kinds, names, attribute
+        // keys and values (1685).
+        for (_, tp) in &poied {
+            for p in &tp.pois {
+                strings.insert(p.kind.as_str());
+                if let Some(n) = &p.name {
+                    strings.insert(n.local.as_str());
+                    if let Some(a) = n.alternate.as_deref() {
+                        strings.insert(a);
+                        strings.insert("name:alt");
+                    }
+                }
+                for (k, v) in &p.attrs {
+                    strings.insert(k);
+                    strings.insert(v.as_str());
                 }
             }
-            for (k, v) in &p.attrs {
-                strings.insert(k);
-                strings.insert(v.as_str());
+            for (_, attrs) in &tp.ways {
+                for (k, v) in attrs {
+                    strings.insert(k);
+                    strings.insert(v.as_str());
+                }
             }
         }
-        for (_, attrs) in &tp.ways {
-            for (k, v) in attrs {
-                strings.insert(k);
-                strings.insert(v.as_str());
-            }
+        let table: Vec<&str> = strings.into_iter().collect();
+        let mut label_entries: Vec<Entry> = Vec::new();
+        for (t, labels) in &named {
+            let bytes = section(labels, &table)?;
+            out.write_all(&bytes)?;
+            label_entries.push(Entry {
+                id: *t,
+                offset: pos,
+                len: u32::try_from(bytes.len())?,
+            });
+            pos += bytes.len() as u64;
+            stats.zooms.entry(t.z).or_default().label_bytes += bytes.len() as u64;
         }
-    }
-    let table: Vec<&str> = strings.into_iter().collect();
-    let mut label_entries: Vec<Entry> = Vec::new();
-    for (t, labels) in &named {
-        let bytes = section(labels, &table)?;
+        // The building sections after the label sections, before the table.
+        let mut building_entries: Vec<Entry> = Vec::new();
+        for (t, bytes) in &built {
+            out.write_all(bytes)?;
+            building_entries.push(Entry {
+                id: *t,
+                offset: pos,
+                len: u32::try_from(bytes.len())?,
+            });
+            pos += bytes.len() as u64;
+            let z = stats.zooms.entry(t.z).or_default();
+            z.building_sections += 1;
+            z.building_bytes += bytes.len() as u64;
+        }
+        // The poi sections after the building sections (1685).
+        let mut poi_entries: Vec<Entry> = Vec::new();
+        for (t, tp) in &poied {
+            let bytes = poi_section(tp, &table)?;
+            out.write_all(&bytes)?;
+            poi_entries.push(Entry {
+                id: *t,
+                offset: pos,
+                len: u32::try_from(bytes.len())?,
+            });
+            pos += bytes.len() as u64;
+            let z = stats.zooms.entry(t.z).or_default();
+            z.poi_sections += 1;
+            z.poi_bytes += bytes.len() as u64;
+        }
+        let (count, bytes) = encode_strings(table.iter().copied());
+        let strings_at = pos;
         out.write_all(&bytes)?;
-        label_entries.push(Entry {
-            id: *t,
-            offset: pos,
-            len: u32::try_from(bytes.len())?,
-        });
         pos += bytes.len() as u64;
-        stats.zooms.entry(t.z).or_default().label_bytes += bytes.len() as u64;
-    }
-    // The building sections after the label sections, before the table.
-    let mut building_entries: Vec<Entry> = Vec::new();
-    for (t, bytes) in &built {
-        out.write_all(bytes)?;
-        building_entries.push(Entry {
-            id: *t,
-            offset: pos,
-            len: u32::try_from(bytes.len())?,
-        });
-        pos += bytes.len() as u64;
-        let z = stats.zooms.entry(t.z).or_default();
-        z.building_sections += 1;
-        z.building_bytes += bytes.len() as u64;
-    }
-    // The poi sections after the building sections (1685).
-    let mut poi_entries: Vec<Entry> = Vec::new();
-    for (t, tp) in &poied {
-        let bytes = poi_section(tp, &table)?;
-        out.write_all(&bytes)?;
-        poi_entries.push(Entry {
-            id: *t,
-            offset: pos,
-            len: u32::try_from(bytes.len())?,
-        });
-        pos += bytes.len() as u64;
-        let z = stats.zooms.entry(t.z).or_default();
-        z.poi_sections += 1;
-        z.poi_bytes += bytes.len() as u64;
-    }
-    let (count, bytes) = encode_strings(table.iter().copied());
-    let strings_at = pos;
-    out.write_all(&bytes)?;
-    pos += bytes.len() as u64;
-    stats.strings = u64::from(count);
-    stats.string_bytes = bytes.len() as u64;
-    let label_index = pos;
-    for e in &label_entries {
-        out.write_all(&e.encode())?;
-    }
-    pos += (label_entries.len() * ENTRY_LEN) as u64;
-    let building_index = pos;
-    for e in &building_entries {
-        out.write_all(&e.encode())?;
-    }
-    pos += (building_entries.len() * ENTRY_LEN) as u64;
-    // The poi index last (1685), where the building index ended before.
-    let poi_index = pos;
-    for e in &poi_entries {
-        out.write_all(&e.encode())?;
-    }
-    pos += (poi_entries.len() * ENTRY_LEN) as u64;
-    out.flush()?;
+        stats.strings = u64::from(count);
+        stats.string_bytes = bytes.len() as u64;
+        let label_index = pos;
+        for e in &label_entries {
+            out.write_all(&e.encode())?;
+        }
+        pos += (label_entries.len() * ENTRY_LEN) as u64;
+        let building_index = pos;
+        for e in &building_entries {
+            out.write_all(&e.encode())?;
+        }
+        pos += (building_entries.len() * ENTRY_LEN) as u64;
+        // The poi index last (1685), where the building index ended before.
+        let poi_index = pos;
+        for e in &poi_entries {
+            out.write_all(&e.encode())?;
+        }
+        pos += (poi_entries.len() * ENTRY_LEN) as u64;
+        out.flush()?;
 
-    // The names', buildings' and pois' fields, then the length alone: a
-    // reader takes the file as complete only once the length is there.
-    header.labels = Some(LabelTables {
-        index: label_index,
-        sections: u32::try_from(label_entries.len())?,
-        strings: count,
-        table: strings_at,
-        table_len: bytes.len() as u64,
-    });
-    header.buildings = Some(BuildingTables {
-        index: building_index,
-        sections: u32::try_from(building_entries.len())?,
-    });
-    if with_pois {
-        header.pois = Some(PoiTables {
-            index: poi_index,
-            sections: u32::try_from(poi_entries.len())?,
+        // The names', buildings' and pois' fields, then the length alone: a
+        // reader takes the file as complete only once the length is there.
+        header.labels = Some(LabelTables {
+            index: label_index,
+            sections: u32::try_from(label_entries.len())?,
+            strings: count,
+            table: strings_at,
+            table_len: bytes.len() as u64,
         });
+        header.buildings = Some(BuildingTables {
+            index: building_index,
+            sections: u32::try_from(building_entries.len())?,
+        });
+        if with_pois {
+            header.pois = Some(PoiTables {
+                index: poi_index,
+                sections: u32::try_from(poi_entries.len())?,
+            });
+        }
+        out.seek(SeekFrom::Start(0))?;
+        out.write_all(&header.encode())?;
+        out.flush()?;
+        out.seek(SeekFrom::Start(LEN_AT))?;
+        out.write_all(&pos.to_le_bytes())?;
+        out.seek(SeekFrom::Start(pos))?;
+        out.flush()?;
+        stats.bytes = pos;
+        let p = Progress {
+            done,
+            tiles: ids.len(),
+            zoom: hi,
+            bytes: pos,
+            complete: true,
+        };
+        Ok((stats, p))
     }
-    out.seek(SeekFrom::Start(0))?;
-    out.write_all(&header.encode())?;
-    out.flush()?;
-    out.seek(SeekFrom::Start(LEN_AT))?;
-    out.write_all(&pos.to_le_bytes())?;
-    out.seek(SeekFrom::Start(pos))?;
-    out.flush()?;
-    stats.bytes = pos;
-    progress(Progress {
-        done,
-        tiles: ids.len(),
-        zoom: hi,
-        bytes: pos,
-        complete: true,
-    });
-    Ok(stats)
 }
 
 #[cfg(test)]

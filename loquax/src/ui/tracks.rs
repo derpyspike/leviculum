@@ -469,20 +469,17 @@ pub fn hue(peer: &[u8; 16], own: bool) -> Option<u8> {
 }
 
 /// The eight hues on a light map (rule 6): blue, orange, green, red,
-/// violet, teal, magenta, ochre; apart in hue and in lightness, so two stay
-/// apart at a quarter of their opacity. Each in a hue bucket of its own (the
-/// wheel in twelve), each at least 3:1 against the light land `#f2efe9`
-/// and the labels' white (1693: orange darkened from `#e07000`, 2.82:1, and
-/// the brown `#8a5a1e`, which shared orange's bucket, turned to ochre).
+/// violet, teal, magenta, brown; apart in hue and in lightness, so two stay
+/// apart at a quarter of their opacity.
 pub const HUE_LIGHT: [[u8; 3]; 8] = [
     [0x1f, 0x5f, 0xd0],
-    [0xd0, 0x64, 0x00],
+    [0xe0, 0x70, 0x00],
     [0x12, 0x8f, 0x4a],
     [0xd0, 0x22, 0x2e],
     [0x7a, 0x3f, 0xc8],
     [0x00, 0x8c, 0x96],
     [0xc0, 0x2a, 0x90],
-    [0x85, 0x70, 0x00],
+    [0x8a, 0x5a, 0x1e],
 ];
 /// The same hues on the dark map, lighter, so they hold against its
 /// ground.
@@ -494,7 +491,7 @@ pub const HUE_DARK: [[u8; 3]; 8] = [
     [0xb8, 0x8c, 0xff],
     [0x3c, 0xd4, 0xd8],
     [0xff, 0x7a, 0xd0],
-    [0xd8, 0xc0, 0x50],
+    [0xd8, 0xa8, 0x68],
 ];
 /// Our own track: neutral grey on either map.
 pub const OWN_LIGHT: [u8; 3] = [0x60, 0x60, 0x60];
@@ -508,53 +505,6 @@ pub fn colour(hue: Option<u8>, dark: bool) -> [u8; 3] {
         (None, false) => OWN_LIGHT,
         (None, true) => OWN_DARK,
     }
-}
-
-/// A peer's colour on a light or a dark map: its [`hue`]'s ([`colour`]).
-/// Every target paints a peer's pin marker, its name, its track, its entry
-/// in the people list and the card's avatar from this one function (1693);
-/// the pin's shape differs per target, the colour does not.
-pub fn peer_colour(peer: &[u8; 16], dark: bool) -> [u8; 3] {
-    colour(hue(peer, false), dark)
-}
-
-/// The ink on a ground of `colour`: [`INK_LIGHT`] or [`INK_DARK`], whichever
-/// holds the higher contrast, so a phone's initials stay legible inside the
-/// pin of every hue (1693; at least 4.5:1 on all sixteen).
-pub fn ink_on(colour: [u8; 3]) -> [u8; 3] {
-    match contrast(colour, INK_LIGHT) >= contrast(colour, INK_DARK) {
-        true => INK_LIGHT,
-        false => INK_DARK,
-    }
-}
-
-/// The light ink on a hue: white.
-pub const INK_LIGHT: [u8; 3] = [0xff, 0xff, 0xff];
-/// The dark ink on a hue: near black.
-pub const INK_DARK: [u8; 3] = [0x10, 0x10, 0x10];
-
-/// The WCAG contrast ratio of two sRGB colours, 1 to 21.
-pub fn contrast(a: [u8; 3], b: [u8; 3]) -> f32 {
-    let (a, b) = (luminance(a), luminance(b));
-    (a.max(b) + 0.05) / (a.min(b) + 0.05)
-}
-
-/// The WCAG relative luminance of an sRGB colour.
-fn luminance([r, g, b]: [u8; 3]) -> f32 {
-    let lin = |c: u8| {
-        let c = f32::from(c) / 255.0;
-        if c <= 0.039_28 {
-            c / 12.92
-        } else {
-            libm::powf((c + 0.055) / 1.055, 2.4)
-        }
-    };
-    0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
-}
-
-/// `colour` as `rrggbb`, as the phone's facade carries a colour.
-pub fn hex([r, g, b]: [u8; 3]) -> String {
-    format!("{r:02x}{g:02x}{b:02x}")
 }
 
 /// The ANSI colour of a hue for a terminal of sixteen: blue, yellow,
@@ -984,6 +934,162 @@ pub fn inside(input: &TrackInput, window: TrackWindow, now: &WallTime) -> Vec<[u
         })
         .map(|(peer, _, _)| *peer)
         .collect()
+}
+
+/// The ages [`Age::of`] steps at, and the episode's floor: a fix that
+/// crosses one of them changes how the track is drawn.
+const AGE_STEPS: [i64; 4] = [10 * 60, 3600, 6 * 3600, EPISODE_FLOOR_SECS];
+
+/// What of `input` the clock moves at `now` in `window` (1694 A): every
+/// track drawn the same at two moments has the same marks. The windows'
+/// bounds move by the local day; a part of a track changes its look when
+/// its fix crosses an `AGE_STEPS` age, which the fixes, in time order,
+/// count by bisection. A dwell's end and a segment's newer end are fixes,
+/// so they are counted too. Cheap enough for every clock event:
+/// `O(peers · log fixes)`.
+pub fn age_marks(input: &TrackInput, window: TrackWindow, now: &WallTime) -> u64 {
+    let mut hash = crate::ui::Fnv::new();
+    hash.word(window as u64);
+    let local = now.unix_secs.saturating_add(i64::from(now.offset_secs));
+    hash.word(local.div_euclid(86_400) as u64);
+    for (peer, own, fixes) in input {
+        hash.bytes(peer);
+        hash.word(u64::from(*own));
+        hash.word(fixes.len() as u64);
+        for step in AGE_STEPS {
+            let edge = now.unix_secs.saturating_sub(step);
+            // Younger than the step, and the window's `>=` at the floor.
+            hash.word(fixes.partition_point(|f| f.t <= edge) as u64);
+            hash.word(fixes.partition_point(|f| f.t < edge) as u64);
+        }
+    }
+    hash.done()
+}
+
+/// What a set of tracks was derived at (1694 E): the zoom's world units
+/// per screen pixel and the drawing scale, the window, the clock's marks
+/// ([`age_marks`]) and each peer's fixes by identity and length. Two equal
+/// keys derive equal tracks; the fixes are shared ([`TrackInput`]) and
+/// only grow by a new `Arc`, so a pointer and a length name them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrackKey {
+    unit: u64,
+    scale: u32,
+    window: TrackWindow,
+    lang: Lang,
+    ages: u64,
+    fixes: Vec<([u8; 16], bool, usize, usize)>,
+}
+
+impl TrackKey {
+    /// The key of [`tracks`] over these arguments.
+    pub fn of(
+        input: &TrackInput,
+        window: TrackWindow,
+        now: &WallTime,
+        unit: f64,
+        scale: f32,
+        lang: Lang,
+    ) -> Self {
+        Self {
+            unit: unit.to_bits(),
+            scale: scale.to_bits(),
+            window,
+            lang,
+            ages: age_marks(input, window, now),
+            fixes: input
+                .iter()
+                .map(|(peer, own, f)| (*peer, *own, alloc::sync::Arc::as_ptr(f) as usize, f.len()))
+                .collect(),
+        }
+    }
+}
+
+/// The tracks last derived and their key (1694 E): every target asks it
+/// instead of [`tracks`], so a frame, a drag within a zoom step or a clock
+/// tick that moved no age derives nothing. Before, the terminal derived
+/// every peer's year of fixes on every frame and the phone on every ask;
+/// only the window kept them.
+#[derive(Default)]
+pub struct TrackCache {
+    held: core::cell::RefCell<Option<(TrackKey, Vec<Track>)>>,
+    derived: core::cell::Cell<u64>,
+}
+
+impl TrackCache {
+    /// [`tracks`] over the arguments, derived only when its [`TrackKey`]
+    /// moved since the last call.
+    pub fn tracks(
+        &self,
+        input: &TrackInput,
+        window: TrackWindow,
+        now: &WallTime,
+        unit: f64,
+        scale: f32,
+        lang: Lang,
+    ) -> Vec<Track> {
+        let key = TrackKey::of(input, window, now, unit, scale, lang);
+        let mut held = self.held.borrow_mut();
+        if let Some((at, tracks)) = held.as_ref() {
+            if *at == key {
+                return tracks.clone();
+            }
+        }
+        let derived = tracks(input, window, now, unit, scale, lang);
+        self.derived.set(self.derived.get().wrapping_add(1));
+        *held = Some((key, derived.clone()));
+        derived
+    }
+
+    /// How many times the cache derived (a measure for the tests).
+    pub fn derived(&self) -> u64 {
+        self.derived.get()
+    }
+}
+
+impl Clone for TrackCache {
+    /// A copy starts empty: a cache is a cost, never a state.
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl core::fmt::Debug for TrackCache {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("TrackCache")
+    }
+}
+
+/// Whether any part of `track` lies inside the world rectangle `area`
+/// (`[x0, x1) x [y0, y1)`, x may run past either end of the world, which
+/// wraps) grown by `margin` world units (1694 B): a track wholly outside
+/// the view and its margin is no part of the frame. A segment counts by
+/// its box, so a line across the view from two fixes outside it is in.
+pub fn touches(track: &Track, area: (i64, i64, i64, i64), margin: i64) -> bool {
+    let (x0, y0, x1, y1) = (
+        area.0 - margin,
+        area.1 - margin,
+        area.2 + margin,
+        area.3 + margin,
+    );
+    const WORLD: i64 = 1 << 32;
+    let hits = |lo: World, hi: World| {
+        let (ly, hy) = (i64::from(lo.y.min(hi.y)), i64::from(lo.y.max(hi.y)));
+        if hy < y0 || ly >= y1 {
+            return false;
+        }
+        let (lx, hx) = (i64::from(lo.x.min(hi.x)), i64::from(lo.x.max(hi.x)));
+        [-WORLD, 0, WORLD]
+            .iter()
+            .any(|shift| hx + shift >= x0 && lx + shift < x1)
+    };
+    let point = |w: World| hits(w, w);
+    track.segments.iter().any(|s| hits(s.from, s.to))
+        || track.dots.iter().any(|d| point(d.at))
+        || track.dwells.iter().any(|b| point(b.at))
+        || track.places.iter().any(|p| point(p.at))
+        || track.wedge.is_some_and(|w| point(w.at))
+        || track.head.is_some_and(point)
 }
 
 /// The last `budget` of `items`.
@@ -1417,130 +1523,6 @@ mod tests {
         assert_eq!(seen.len(), 8);
     }
 
-    /// The WCAG relative luminance of an sRGB colour, for the tests' own
-    /// check of the palette (independent of [`contrast`]).
-    fn luminance_of([r, g, b]: [u8; 3]) -> f64 {
-        let lin = |c: u8| {
-            let c = f64::from(c) / 255.0;
-            if c <= 0.039_28 {
-                c / 12.92
-            } else {
-                ((c + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
-    }
-
-    fn ratio(a: [u8; 3], b: [u8; 3]) -> f64 {
-        let (a, b) = (luminance_of(a), luminance_of(b));
-        (a.max(b) + 0.05) / (a.min(b) + 0.05)
-    }
-
-    /// The hue angle of a colour in degrees, 0..360.
-    fn degrees([r, g, b]: [u8; 3]) -> f64 {
-        let (r, g, b) = (f64::from(r), f64::from(g), f64::from(b));
-        let (max, min) = (r.max(g).max(b), r.min(g).min(b));
-        let d = max - min;
-        if d == 0.0 {
-            return 0.0;
-        }
-        let h = if max == r {
-            ((g - b) / d).rem_euclid(6.0)
-        } else if max == g {
-            (b - r) / d + 2.0
-        } else {
-            (r - g) / d + 4.0
-        };
-        h * 60.0
-    }
-
-    /// Rule 6 (1693): each of the eight holds against the ground it is
-    /// drawn on, at least 3:1 (WCAG's floor for graphics): the light set
-    /// on the light map's land (`#f2efe9`) and on the labels' white, the
-    /// lighter set on the dark map's (`#161616`, `#181818`).
-    #[test]
-    fn every_hue_holds_against_its_ground() {
-        for (i, (&light, &dark)) in HUE_LIGHT.iter().zip(HUE_DARK.iter()).enumerate() {
-            for ground in [[0xf2, 0xef, 0xe9], [0xff, 0xff, 0xff]] {
-                let r = ratio(light, ground);
-                assert!(
-                    r >= 3.0,
-                    "light hue {i} {light:02x?} on {ground:02x?}: {r:.2}"
-                );
-            }
-            for ground in [[0x16, 0x16, 0x16], [0x18, 0x18, 0x18]] {
-                let r = ratio(dark, ground);
-                assert!(
-                    r >= 3.0,
-                    "dark hue {i} {dark:02x?} on {ground:02x?}: {r:.2}"
-                );
-            }
-        }
-    }
-
-    /// Rule 6 (1693): no two of the eight share a hue bucket, the colour
-    /// wheel cut in twelve of 30 degrees with red's centred on 0 (red,
-    /// orange, yellow, ... rose), in either set; so two peers never differ
-    /// by lightness alone.
-    #[test]
-    fn no_two_hues_share_a_bucket() {
-        for set in [HUE_LIGHT, HUE_DARK] {
-            let buckets: Vec<u32> = set
-                .iter()
-                .map(|&c| (((degrees(c) + 15.0) / 30.0).floor() as u32) % 12)
-                .collect();
-            for (i, a) in buckets.iter().enumerate() {
-                for (j, b) in buckets.iter().enumerate().skip(i + 1) {
-                    assert_ne!(
-                        a, b,
-                        "hues {i} {:02x?} and {j} {:02x?} share bucket {a}",
-                        set[i], set[j]
-                    );
-                }
-            }
-            // And each sits inside its bucket, not on an edge.
-            for &c in &set {
-                let off = (degrees(c) + 15.0).rem_euclid(30.0);
-                assert!((2.0..28.0).contains(&off), "{c:02x?} on a bucket edge");
-            }
-        }
-    }
-
-    /// 1693: the initials inside a phone's pin take one rule, white or near
-    /// black by the hue's luminance, and hold at least 4.5:1 on every one
-    /// of the sixteen; [`contrast`] agrees with the tests' own reckoning.
-    #[test]
-    fn the_ink_on_every_hue_is_legible() {
-        for c in HUE_LIGHT.iter().chain(HUE_DARK.iter()).copied() {
-            let ink = ink_on(c);
-            assert!(ink == INK_LIGHT || ink == INK_DARK);
-            let r = ratio(c, ink);
-            assert!(r >= 4.5, "ink {ink:02x?} on {c:02x?}: {r:.2}");
-            let other = if ink == INK_LIGHT {
-                INK_DARK
-            } else {
-                INK_LIGHT
-            };
-            assert!(r >= ratio(c, other), "the better of the two on {c:02x?}");
-            assert!((f64::from(contrast(c, ink)) - r).abs() < 0.01);
-        }
-    }
-
-    /// 1693: a peer's colour is its track's, from the first byte of the
-    /// address, on either map; ours stays grey.
-    #[test]
-    fn a_peers_colour_is_its_tracks() {
-        for b in 0..=255u8 {
-            let peer = [b; 16];
-            for dark in [false, true] {
-                assert_eq!(peer_colour(&peer, dark), colour(hue(&peer, false), dark));
-            }
-        }
-        assert_eq!(peer_colour(&[3; 16], false), HUE_LIGHT[3]);
-        assert_eq!(colour(hue(&[3; 16], true), false), OWN_LIGHT);
-        assert_eq!(hex([0x0a, 0xbc, 0xff]), "0abcff");
-    }
-
     /// Rule 7: a wedge above 1.5 m/s, along the field's bearing, or along
     /// the last two fixes when the field says nothing.
     #[test]
@@ -1600,5 +1582,102 @@ mod tests {
         }
         let ts: Vec<i64> = v.iter().map(|f| f.t).collect();
         assert_eq!(ts, [1, 3, 5, 9]);
+    }
+
+    /// A walk of `n` fixes two minutes apart ending at `end`, 30 m a step.
+    fn walk(end: i64, n: i64) -> alloc::sync::Arc<Vec<TrackFix>> {
+        alloc::sync::Arc::new(
+            (0..n)
+                .map(|i| at(end - (n - 1 - i) * 120, i as f64 * 30.0, 0.0))
+                .collect(),
+        )
+    }
+
+    /// Order 1694 A and E: the clock's marks of a track move when a fix
+    /// crosses an age step and not in between, so the cache derives a
+    /// track once per step, and a frame, a drag or a quiet minute derive
+    /// nothing. A new fix (a new `Arc`) derives again.
+    #[test]
+    fn the_cache_derives_a_track_again_only_when_a_fix_or_an_age_moved() {
+        let now = noon();
+        let peer = [7u8; 16];
+        // The newest fix five minutes old: it turns Strong at ten.
+        let input: TrackInput = vec![(peer, false, walk(now.unix_secs - 300, 20))];
+        let later = |s: i64| WallTime {
+            unix_secs: now.unix_secs + s,
+            ..now
+        };
+        let marks = age_marks(&input, TrackWindow::Episode, &now);
+        // The fixes are 300, 420, 540 ... s old: 59 s on, none crossed
+        // 600 s nor any later step.
+        assert_eq!(
+            age_marks(&input, TrackWindow::Episode, &later(59)),
+            marks,
+            "no fix crossed a step"
+        );
+        assert_ne!(
+            age_marks(&input, TrackWindow::Episode, &later(301)),
+            marks,
+            "the newest fix turned ten minutes old"
+        );
+        let cache = TrackCache::default();
+        let derive = |c: &TrackCache, input: &TrackInput, t: &WallTime| {
+            c.tracks(input, TrackWindow::Episode, t, 50.0, 1.0, Lang::En)
+        };
+        let first = derive(&cache, &input, &now);
+        assert_eq!(cache.derived(), 1);
+        for _ in 0..10 {
+            assert_eq!(derive(&cache, &input, &later(30)), first);
+        }
+        assert_eq!(
+            cache.derived(),
+            1,
+            "frames and quiet seconds derive nothing"
+        );
+        derive(&cache, &input, &later(301));
+        assert_eq!(cache.derived(), 2, "an age step derives");
+        let grown: TrackInput = vec![(peer, false, walk(now.unix_secs + 301, 21))];
+        derive(&cache, &grown, &later(301));
+        assert_eq!(cache.derived(), 3, "a new fix derives");
+        // The day moves the windows' bounds.
+        assert_ne!(
+            age_marks(&input, TrackWindow::Today, &later(13 * 3600)),
+            age_marks(&input, TrackWindow::Today, &later(11 * 3600 + 59 * 60 + 59)),
+        );
+    }
+
+    /// Order 1694 B: a track counts as inside an area when any of its
+    /// parts is, a line across the area from two fixes outside it too,
+    /// and the world wraps at the antimeridian.
+    #[test]
+    fn a_track_touches_an_area_by_any_part_and_across_the_antimeridian() {
+        let now = noon();
+        let input: TrackInput = vec![([1u8; 16], false, walk(now.unix_secs, 20))];
+        let t = tracks(&input, TrackWindow::Episode, &now, 1.0, 1.0, Lang::En).remove(0);
+        let head = t.head.expect("a head");
+        let (x, y) = (i64::from(head.x), i64::from(head.y));
+        assert!(touches(&t, (x - 10, y - 10, x + 10, y + 10), 0));
+        assert!(!touches(&t, (x + 100_000, y, x + 200_000, y + 10), 0));
+        assert!(touches(&t, (x + 100_000, y, x + 200_000, y + 10), 100_001));
+        // The same area a world to the east.
+        let w = 1i64 << 32;
+        assert!(touches(&t, (x - 10 + w, y - 10, x + 10 + w, y + 10), 0));
+        // A segment from far west to far east of a narrow area crosses it.
+        let line = Track {
+            peer: [2u8; 16],
+            hue: None,
+            segments: vec![Segment {
+                from: World { x: 1000, y: 5000 },
+                to: World { x: 9000, y: 5000 },
+                age: Age::Fresh,
+                late: false,
+            }],
+            dots: Vec::new(),
+            dwells: Vec::new(),
+            places: Vec::new(),
+            wedge: None,
+            head: None,
+        };
+        assert!(touches(&line, (4000, 4000, 4100, 6000), 0));
     }
 }

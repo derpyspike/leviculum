@@ -347,3 +347,28 @@ fn a_real_glo30_header_places_its_pixels_where_its_metadata_says() {
     assert!((g.lon0 - -4.0).abs() < 1e-9, "lon0 {}", g.lon0);
     assert!((g.lat0 - 32.0).abs() < 1e-9, "lat0 {}", g.lat0);
 }
+
+/// 1863: the catalogue of packs lying beside it names every block at its
+/// range and reads back; a pack elsewhere is refused, since a device
+/// fetches the packs by name beside the catalogue.
+#[test]
+fn the_catalogue_lists_the_packs_beside_it() {
+    const CHEBBI: &[u8] = include_bytes!("../../leviculum-map/fixtures/erg-chebbi.lmh");
+    const BANI: &[u8] = include_bytes!("../../leviculum-map/fixtures/bani-z11.lmh");
+    let dir = tempfile::tempdir().expect("dir");
+    let (a, b) = (dir.path().join("chebbi.lmh"), dir.path().join("bani.lmh"));
+    std::fs::write(&a, CHEBBI).expect("a");
+    std::fs::write(&b, BANI).expect("b");
+    let out = dir.path().join("heights.tsv");
+    let written =
+        leviculum_map_tool::heights::write_catalogue(&[a.clone(), b], &out).expect("catalogue");
+    assert_eq!((written.packs.len(), written.blocks.len()), (2, 2));
+    let text = std::fs::read_to_string(&out).expect("read");
+    let read = leviculum_mapcut::heights::Catalogue::parse(&text).expect("parse");
+    assert_eq!(read, written);
+    assert!(!dir.path().join("heights.tsv.part").exists());
+    let other = tempfile::tempdir().expect("other");
+    let elsewhere = other.path().join("heights.tsv");
+    assert!(leviculum_map_tool::heights::write_catalogue(&[a], &elsewhere).is_err());
+    assert!(!elsewhere.exists());
+}

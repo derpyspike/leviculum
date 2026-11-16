@@ -13,11 +13,18 @@
 //! place loads its region by itself; `map_source`, the URL of the PMTiles
 //! archive regions are cut from (unset: the newest Protomaps daily build);
 //! and `map_cache_mb`, how many megabytes the autoloaded regions may take
-//! (500 by default). `map_theme`, `light`, `dark` or `auto` (1099): the
-//! map's colour table, `auto` following the theme the screen is drawn in
-//! (the terminal's, the window's, the phone's). Unset follows the window
-//! and the phone as `auto` does (1730) and is light in the terminal.
-//! `map_fling`, `on` (the default) or `off`
+//! (500 by default). `height_source` (1863), the URL of the height
+//! catalogue the relief's packs are fetched by (unset: `heights.tsv`
+//! beside `map_source`, or the project's server when that is unset too,
+//! `crate::mapload::heights_url`), and `map_relief`, `on` (the default)
+//! or `off`, whether the map lays the ground relief under the light map
+//! (the dark table has none yet). `map_ground` (1743), `pastel` (the
+//! default), `strong` or `off`: the desert ground map's style under the
+//! light map, where ground packs lie in the maps directory. `map_theme`, `light`, `dark` or `auto`
+//! (1099): the map's colour table, `auto` following the theme the screen
+//! is drawn in (the terminal's, the window's, the phone's). Unset follows
+//! the window and the phone as `auto` does (1730) and is light in the
+//! terminal. `map_fling`, `on` (the default) or `off`
 //! (1188): whether the phone's map coasts on after a finger that panned
 //! lifts. `read_receipts`, `on` (the default) or `off` (1231): whether
 //! this messenger says it takes read receipts and sends them for what the
@@ -58,6 +65,11 @@
 //! # the club's own copy of the map, and no more than 200 MB of it here
 //! map_source = https://maps.example.org/planet.pmtiles
 //! map_cache_mb = 200
+//! # the relief's heights from the club's server too, and no relief here
+//! height_source = https://maps.example.org/heights.tsv
+//! map_relief = off
+//! # the ground map in its strong colours
+//! map_ground = strong
 //! # the map in its dark colours whenever the terminal is dark
 //! map_theme = auto
 //! # written by the terminal: octants in foot, braille over mosh
@@ -178,6 +190,13 @@ pub struct Config {
     pub map_source: Option<String>,
     /// `map_cache_mb`, when the file sets it.
     pub map_cache_mb: Option<u64>,
+    /// `height_source`, when the file sets it (1863): the height
+    /// catalogue's URL.
+    pub height_source: Option<String>,
+    /// `map_relief`, when the file sets it; unset is on (1863).
+    pub map_relief: Option<bool>,
+    /// `map_ground`, when the file sets it; unset is pastel (1743).
+    pub map_ground: Option<GroundFlag>,
     /// `archive_cap_mb`, when the file sets it: the home node's archive cap.
     pub archive_cap_mb: Option<u64>,
     /// `home_token_hours`, when the file sets it: an admission token's life.
@@ -329,6 +348,18 @@ pub fn unset(text: &str, key: &str) -> String {
     out
 }
 
+/// The ground map's style as the config names it (1743).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GroundFlag {
+    /// No ground map.
+    Off,
+    /// Light colours, stones on hamada: the default.
+    #[default]
+    Pastel,
+    /// The full colour table with every signature.
+    Strong,
+}
+
 /// Read the config file's text.
 pub fn parse(text: &str) -> Result<Config, ConfigError> {
     let mut config = Config::default();
@@ -346,6 +377,7 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
             ("send_on_enter", &mut config.send_on_enter),
             ("home_wake", &mut config.home_wake),
             ("map_fling", &mut config.map_fling),
+            ("map_relief", &mut config.map_relief),
             ("read_receipts", &mut config.read_receipts),
             ("browse_tab", &mut config.browse_tab),
             ("explore_az", &mut config.explore_az),
@@ -364,6 +396,20 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
                     }
                 });
             }
+        }
+        if key.trim() == "map_ground" {
+            config.map_ground = Some(match value.trim().trim_matches('"') {
+                "pastel" => GroundFlag::Pastel,
+                "strong" => GroundFlag::Strong,
+                "off" => GroundFlag::Off,
+                other => {
+                    return Err(ConfigError::BadValue {
+                        line: index + 1,
+                        key: "map_ground",
+                        detail: alloc::format!("{other:?} is not pastel, strong or off"),
+                    });
+                }
+            });
         }
         for (name, slot) in [
             ("theme", &mut config.theme),
@@ -419,16 +465,21 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
                 }
             });
         }
-        if key.trim() == "map_source" {
-            let url = value.trim().trim_matches('"');
-            if !(url.starts_with("http://") || url.starts_with("https://")) {
-                return Err(ConfigError::BadValue {
-                    line: index + 1,
-                    key: "map_source",
-                    detail: alloc::format!("{url:?} is not an http or https URL"),
-                });
+        for (name, slot) in [
+            ("map_source", &mut config.map_source),
+            ("height_source", &mut config.height_source),
+        ] {
+            if key.trim() == name {
+                let url = value.trim().trim_matches('"');
+                if !(url.starts_with("http://") || url.starts_with("https://")) {
+                    return Err(ConfigError::BadValue {
+                        line: index + 1,
+                        key: name,
+                        detail: alloc::format!("{url:?} is not an http or https URL"),
+                    });
+                }
+                *slot = Some(url.to_string());
             }
-            config.map_source = Some(url.to_string());
         }
         if key.trim() == "map_cache_mb" {
             let text = value.trim().trim_matches('"');
@@ -946,6 +997,30 @@ mod tests {
             Some("https://maps.example.org/p.pmtiles")
         );
         assert_eq!(set.map_cache_mb, Some(200));
+        // 1863: the height catalogue and the relief switch.
+        assert_eq!((empty.height_source, empty.map_relief), (None, None));
+        let heights =
+            parse_str("height_source = \"https://maps.example.org/h.tsv\"\nmap_relief = off\n")
+                .expect("heights");
+        assert_eq!(
+            heights.height_source.as_deref(),
+            Some("https://maps.example.org/h.tsv")
+        );
+        assert_eq!(heights.map_relief, Some(false));
+        // 1743: the ground map's style.
+        assert_eq!(empty.map_ground, None);
+        for (word, flag) in [
+            ("pastel", GroundFlag::Pastel),
+            ("strong", GroundFlag::Strong),
+            ("\"off\"", GroundFlag::Off),
+        ] {
+            assert_eq!(
+                parse_str(&alloc::format!("map_ground = {word}\n"))
+                    .expect("ground")
+                    .map_ground,
+                Some(flag)
+            );
+        }
         assert_eq!(empty.map_theme, None);
         assert_eq!(
             parse_str("map_theme = auto\n").expect("auto").map_theme,
@@ -959,6 +1034,9 @@ mod tests {
             ("map_theme = sepia\n", "map_theme"),
             ("map_autoload = sometimes\n", "map_autoload"),
             ("map_source = ftp://x/p.pmtiles\n", "map_source"),
+            ("height_source = /srv/heights.tsv\n", "height_source"),
+            ("map_relief = sometimes\n", "map_relief"),
+            ("map_ground = loud\n", "map_ground"),
             ("map_cache_mb = lots\n", "map_cache_mb"),
         ] {
             match parse_str(text) {

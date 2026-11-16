@@ -12,7 +12,7 @@
 //! |---|---|
 //! | `start` | [`Start`] |
 //! | `command` | [`Request`], tagged by `t`: `open`, `close`, `send`, `react`, `reply`, `forward`, `delete`, `used`, `pull`, `front`, `link`, `unlink`, `notnow`, `rename`, `relink`, `share`, `addcontact`, `draft`, `stage`, `unstage`, `sheet`, `fix`, `nofix`, `sharefix`, `startshare`, `stopshare`, `record`, `recording`, `browse`, `rooms` |
-//! | `query` | [`Query`], tagged by `t`: `conversations`, `messages`, `info`, `recents`, `suggest`, `contact`, `links`, `run`, `friends`, `shared`, `profile`, `lxma`, `mapregions`, `maptheme`, `mapfling`, `staged`, `bar`, `shares`, `recording`, `linkdevice`, `linked`, `browse`, `rooms`, `people` |
+//! | `query` | [`Query`], tagged by `t`: `conversations`, `messages`, `info`, `recents`, `suggest`, `contact`, `links`, `run`, `friends`, `shared`, `profile`, `lxma`, `mapregions`, `maptheme`, `mapfling`, `maprelief`, `staged`, `bar`, `shares`, `recording`, `linkdevice`, `linked`, `browse`, `rooms`, `people` |
 //! | `renderMapInto` | [`MapRequest`], and the Bitmap to draw into (null for a prefetch) |
 //!
 //! Rust to Java:
@@ -21,7 +21,7 @@
 //! |---|---|
 //! | `start` | [`Started`] |
 //! | `command` | [`Done`] |
-//! | `query` | [`Conversations`], [`Messages`], [`Info`], [`Recents`], [`Suggestions`], [`Addresses`], [`Links`], [`Run`], [`Friends`], [`Shared`], [`Profile`], [`Lxma`], [`MapRegions`], [`MapThemeChoice`], [`MapFlingChoice`] or [`ReceiptsChoice`], or [`Done`] with the error |
+//! | `query` | [`Conversations`], [`Messages`], [`Info`], [`Recents`], [`Suggestions`], [`Addresses`], [`Links`], [`Run`], [`Friends`], [`Shared`], [`Profile`], [`Lxma`], [`MapRegions`], [`MapThemeChoice`], [`MapFlingChoice`], [`MapReliefChoice`] or [`ReceiptsChoice`], or [`Done`] with the error |
 //! | `nextEvent` | [`Event`], tagged by `t`: `changed`, `notice`, `sync`, `link`, `stopped`; none when the wait ran out |
 //! | `renderMapInto` | [`MapShown`]; its `w` times `h` RGBA pixels are in the Bitmap |
 //!
@@ -90,7 +90,8 @@
 //! and both pages showed their empty defaults; those fields are gone. No
 //! new version: an app that sent them got nothing but the error, and the
 //! frame's own fields are unchanged. The Advanced page's switch of the
-//! map's fling (1188) is [`Query::MapFling`] with its [`MapFlingChoice`];
+//! map's fling (1188) is [`Query::MapFling`] with its [`MapFlingChoice`],
+//! the relief switch (1863) [`Query::MapRelief`] with its [`MapReliefChoice`];
 //! the frame says the choice as `fling`, and how far its view may still
 //! move north and south before the world's edge as `room_north` and
 //! `room_south`, which a coast stops at. An older app reads none of them.
@@ -863,6 +864,12 @@ pub enum Query {
         #[serde(default)]
         set: Option<bool>,
     },
+    /// The Advanced page's relief switch (1863): `set` stored as the
+    /// config's `map_relief` when given, the choice in force answered.
+    MapRelief {
+        #[serde(default)]
+        set: Option<bool>,
+    },
     /// The Advanced page's public rooms' hub (1577): `set` chosen when
     /// given (`none`, or a hub's address, shipped or pasted), the choice
     /// in force answered as [`RoomsHubChoice`].
@@ -1163,6 +1170,16 @@ pub struct MapFlingChoice {
     pub fling: bool,
 }
 
+/// What [`Query::MapRelief`] answers: whether the map lays the ground
+/// relief under the light map (on unless the config's `map_relief` says
+/// off, 1863).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MapReliefChoice {
+    pub v: u32,
+    pub ok: bool,
+    pub relief: bool,
+}
+
 /// What [`Query::Receipts`] answers: whether this phone sends read
 /// receipts and shows them (on unless the config's `read_receipts` says
 /// off, 1233).
@@ -1263,15 +1280,6 @@ pub struct FriendRow {
     pub icon_fg: Option<String>,
     #[serde(default)]
     pub icon_bg: Option<String>,
-    /// The peer's hue, `rrggbb` (1693, `loquax::ui::tracks::peer_colour`
-    /// on the light map): the colour its pin and its track are drawn in.
-    /// The sheet's entry and the card's avatar fill their circle with it,
-    /// not with `icon_bg`, so a peer has one colour wherever the map shows
-    /// it; `ink` is its initials' colour on it.
-    #[serde(default)]
-    pub hue: String,
-    #[serde(default)]
-    pub ink: String,
     #[serde(default)]
     pub photo: Option<String>,
     /// When the fix was taken, unix seconds: its claim, or when it came
@@ -2809,6 +2817,14 @@ pub enum Event {
         v: u32,
         #[serde(default)]
         counts: u64,
+        /// What the map draws, as one word (1694 D): the friends' answer
+        /// without the own position, which the phone adds itself, and the
+        /// tracks ([`loquax::ui::UiModel::map_marks`]). The map asks its
+        /// friends and draws its frame again only when it moved, not for a
+        /// chat line, a link or a sync; and a `changed` comes for it alone
+        /// when only the clock aged a pin.
+        #[serde(default)]
+        map: u64,
     },
     /// A line for the user: what the terminal shows as a toast.
     Notice { v: u32, text: String },
@@ -3045,20 +3061,6 @@ pub struct MapMark {
     /// The pin's battery is below a fifth (1386): a battery beside it.
     #[serde(default)]
     pub low_battery: bool,
-    /// The pin's peer's hue, `rrggbb`, on the light map and on the dark
-    /// one (1693, `loquax::ui::tracks::peer_colour`): the avatar pin is
-    /// filled with the one of the map's table, the colour the peer's
-    /// track is drawn in there, its initials in `ink` or `ink_dark` (white
-    /// or near black by the hue's luminance). The first peer's on a
-    /// cluster.
-    #[serde(default)]
-    pub hue: String,
-    #[serde(default)]
-    pub hue_dark: String,
-    #[serde(default)]
-    pub ink: String,
-    #[serde(default)]
-    pub ink_dark: String,
 }
 
 /// The map frame's description; its pixels follow it (see the table
@@ -3203,6 +3205,13 @@ pub struct MapShown {
     /// area the view left, which the chip does not name.
     #[serde(default)]
     pub loading_here: bool,
+    /// What of the view is still to come, in one line in the phone's
+    /// language (1812): how far it loads, that no data came for a while,
+    /// when a failed area tries again, offline. The map shows where in
+    /// the picture; the chip says this line in place of "Loading the map
+    /// of this area". Absent when all of the view is there.
+    #[serde(default)]
+    pub load_line: Option<String>,
     /// The frame shows tiles of a region still arriving (1291): ask again
     /// in [`FILLING_MS`], when more of it may be there.
     #[serde(default)]

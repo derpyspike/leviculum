@@ -12,6 +12,8 @@
 //!   profile, written as a region file.
 //! - [`load`]: a box of a remote archive cut into a region under a size
 //!   cap, which lowers the deepest zoom rather than asking.
+//! - [`heights`]: the height catalogue a server publishes beside its
+//!   height packs, and the one-block pack a device writes (1863).
 //! - [`serve`]: a loopback HTTP server of archives with range requests,
 //!   the map source of the tests.
 //!
@@ -19,6 +21,7 @@
 //! out of `leviculum-map` and the loquax core.
 
 pub mod cut;
+pub mod heights;
 #[cfg(feature = "http")]
 pub mod http;
 pub mod load;

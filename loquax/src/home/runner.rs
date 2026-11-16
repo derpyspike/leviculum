@@ -216,6 +216,29 @@ pub fn show_restored<B: leviculum_ui::input::InputBuffer>(
         .map_err(|e| e.to_string())
 }
 
+/// The end of a pull that imported history, under the frontend's lock:
+/// what [`read_imported`] read off it shown with [`show_restored`]. A read
+/// that failed is done again on `store`, the frontend's own connection
+/// ([`show_imported`]): the side read runs while the frontend commits a
+/// message at a time, and under a slow host it waited out the store's busy
+/// time ("database is locked", 1894). The rows were in the store, and the
+/// next pulls found them held and read nothing again, so a missed read hid
+/// them until a restart. The frontend's own connection is not locked out
+/// by its own commits.
+pub fn show_pulled<B: leviculum_ui::input::InputBuffer>(
+    model: &mut crate::ui::UiModel<B>,
+    store: &Store,
+    read: Result<Vec<crate::ui::history::Restored>, String>,
+) -> Result<(), String> {
+    match read {
+        Ok(stored) => show_restored(model, store, stored),
+        Err(missed) => {
+            tracing::info!("HOME imported read missed ({missed}); read on the screen's store");
+            show_imported(model, store)
+        }
+    }
+}
+
 /// Write the imported history entries of a pull
 /// ([`crate::home::KIND_IMPORTED`]) into the store of the home identity's
 /// address under `home`, one conversation at a time, as the import on the

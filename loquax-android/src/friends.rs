@@ -17,7 +17,7 @@
 
 use loquax::telemetry::Fix;
 use loquax::ui::strings::Lang;
-use loquax::ui::{chat, scene, tracks, UiModel};
+use loquax::ui::{chat, scene, UiModel};
 
 use crate::schema::{self, FriendRow, VERSION};
 
@@ -148,8 +148,6 @@ pub fn friends<B>(
             initials: list.initials,
             icon_fg: list.icon.as_ref().map(|(fg, _)| fg.clone()),
             icon_bg: list.icon.map(|(_, bg)| bg),
-            hue: tracks::hex(tracks::peer_colour(peer, false)),
-            ink: tracks::hex(tracks::ink_on(tracks::peer_colour(peer, false))),
             photo: photo(peer),
             at,
             lat_e6: place.0,
@@ -184,6 +182,52 @@ pub fn friends<B>(
         v: VERSION,
         friends: rows,
         me,
+    }
+}
+
+/// What the phone's map draws, as one word (1694 D,
+/// [`schema::Event::Changed::map`]): the [`friends`] answer the map asks,
+/// without the own position, which the phone adds itself, and the model's
+/// [`UiModel::map_marks`] for the tracks and their ages.
+pub fn map_word<B>(
+    model: &UiModel<B>,
+    now: i64,
+    lang: Lang,
+    photo: impl Fn(&[u8; 16]) -> Option<String>,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    schema::encode(&friends(model, now, None, lang, photo)).hash(&mut hash);
+    model.map_marks().hash(&mut hash);
+    hash.finish()
+}
+
+/// The map's word as last said (1694 D): the pump asks [`MapGate::moved`]
+/// each turn, and the word is taken again only when the model's revision
+/// moved, so a turn that folded nothing reads nothing.
+#[derive(Debug, Default)]
+pub struct MapGate {
+    word: u64,
+    at: Option<u64>,
+}
+
+impl MapGate {
+    /// Whether the map's word moved since it was last said, `word` taking
+    /// it, at the model's `revision`.
+    pub fn moved(&mut self, revision: u64, word: impl FnOnce() -> u64) -> bool {
+        if self.at == Some(revision) {
+            return false;
+        }
+        self.at = Some(revision);
+        let now = word();
+        let moved = now != self.word;
+        self.word = now;
+        moved
+    }
+
+    /// The word as last taken.
+    pub fn word(&self) -> u64 {
+        self.word
     }
 }
 
@@ -232,6 +276,94 @@ mod tests {
             "{pins:?}"
         );
         assert!(!row.live.contains("fix") && !row.age.contains("fix"));
+    }
+
+    /// Order 1694 D, the measurement: a minute of pump turns, one a
+    /// second, the clock folded each turn as the pump does. With a chat
+    /// line every second and no position moving, every turn said
+    /// `changed` and the map asked its friends and drew a frame for each,
+    /// 60 asks; behind the map's word it asks once, for the minute the
+    /// pin's age said. With a fix every 10 s it asks for each fix.
+    #[test]
+    fn the_map_asks_for_positions_and_ages_and_not_for_chat_lines() {
+        use loquax::outbox::OutboxEvent;
+        use loquax::ui::UiEvent;
+        const NOW: i64 = 1_793_500_000;
+        let mut model = UiModel::<crate::session::Line>::new(&[]);
+        update_clock(&mut model, NOW);
+        let place = |lat: i32, at: i64| leviculum_lxmf::telemetry::Location {
+            latitude_e6: lat,
+            longitude_e6: 11_256_000,
+            altitude_e2: 0,
+            speed_e2: 0,
+            bearing_e2: 0,
+            accuracy_e2: 0,
+            last_update: at,
+        };
+        let walker = [1u8; 16];
+        let position = |model: &mut UiModel<crate::session::Line>, lat: i32, at: i64| {
+            loquax::ui::update(
+                model,
+                UiEvent::MeshPosition {
+                    identity: walker,
+                    fix: place(lat, at),
+                    name: Some("Walker".to_string()),
+                    age: 0,
+                },
+            );
+        };
+        position(&mut model, 43_773_100, NOW - 30);
+        let chatter = [9u8; 16];
+        let mut gate = MapGate::default();
+        let word =
+            |m: &UiModel<crate::session::Line>, now: i64| map_word(m, now, Lang::En, |_| None);
+        assert!(
+            gate.moved(model.revision, || word(&model, NOW)),
+            "the first word"
+        );
+        // One pump turn: what came, then the clock, then the gate.
+        let minute = |model: &mut UiModel<crate::session::Line>,
+                      gate: &mut MapGate,
+                      start: i64,
+                      fix_every: Option<i64>| {
+            let (mut said, mut asked) = (0, 0);
+            for s in 1..=60 {
+                let now = start + s;
+                loquax::ui::update(
+                    model,
+                    UiEvent::Engine(OutboxEvent::Received {
+                        sent_at: now,
+                        message_id: [(s % 250) as u8; 32],
+                        source: chatter,
+                        title: Vec::new(),
+                        body: format!("line {now}").into_bytes(),
+                        fields: Vec::new(),
+                        verified: true,
+                    }),
+                );
+                if fix_every.is_some_and(|every| s % every == 0) {
+                    position(model, 43_773_100 + (s as i32) * 100, now);
+                }
+                update_clock(model, now);
+                // Every turn with an engine event said `changed`, and the
+                // map asked for each before the word.
+                said += 1;
+                if gate.moved(model.revision, || word(model, now)) {
+                    asked += 1;
+                }
+            }
+            (said, asked)
+        };
+        let (said, asked) = minute(&mut model, &mut gate, NOW, None);
+        eprintln!("MAP_ASKS chat only: before {said}/min, after {asked}/min");
+        assert_eq!(said, 60);
+        assert_eq!(asked, 1, "the one minute the pin's age said");
+        let (said, asked) = minute(&mut model, &mut gate, NOW + 60, Some(10));
+        eprintln!("MAP_ASKS chat and a fix every 10 s: before {said}/min, after {asked}/min");
+        assert!(
+            (6..=7).contains(&asked),
+            "{asked}: each fix, and an age at most"
+        );
     }
 
     /// 1302: a node the mesh announced is a row of the sheet, marked
@@ -285,52 +417,6 @@ mod tests {
         };
         assert!(!row(&walker).nearby, "added, a friend");
         assert!(row(&loquax::mesh_position::delivery_of(&[2u8; 16])).nearby);
-    }
-
-    /// 1693: a friend's row carries the peer's hue, the one its pin and
-    /// its track are drawn in (`loquax::ui::tracks`), and the ink its
-    /// initials take on it, so the sheet's entry and the card's avatar are
-    /// in that hue whatever icon the peer chose.
-    #[test]
-    fn a_friends_row_carries_its_hue_and_the_ink_on_it() {
-        use loquax::ui::tracks;
-        use loquax::ui::UiEvent;
-        const NOW: i64 = 1_793_500_000;
-        let mut model = UiModel::<crate::session::Line>::new(&[]);
-        update_clock(&mut model, NOW);
-        for (identity, lat) in [([1u8; 16], 43_773_100), ([3u8; 16], 43_774_100)] {
-            loquax::ui::update(
-                &mut model,
-                UiEvent::MeshPosition {
-                    identity,
-                    fix: leviculum_lxmf::telemetry::Location {
-                        latitude_e6: lat,
-                        longitude_e6: 11_256_000,
-                        altitude_e2: 0,
-                        speed_e2: 0,
-                        bearing_e2: 0,
-                        accuracy_e2: 0,
-                        last_update: NOW - 60,
-                    },
-                    name: Some("Walker".to_string()),
-                    age: 0,
-                },
-            );
-        }
-        let sheet = friends(&model, NOW, None, Lang::En, |_| None);
-        assert_eq!(sheet.friends.len(), 2);
-        for row in &sheet.friends {
-            let peer = loquax::address::parse(&row.peer).expect("hex");
-            let hue = tracks::colour(tracks::hue(&peer, false), false);
-            let hex = |[r, g, b]: [u8; 3]| format!("{r:02x}{g:02x}{b:02x}");
-            let value = serde_json::to_value(row).expect("json");
-            assert_eq!(value["hue"], serde_json::json!(hex(hue)), "{value}");
-            assert_eq!(
-                value["ink"],
-                serde_json::json!(hex(tracks::ink_on(hue))),
-                "{value}"
-            );
-        }
     }
 
     /// The model's clock at `now`, unix seconds.

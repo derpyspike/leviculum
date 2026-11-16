@@ -65,6 +65,7 @@ run   leviculum-std   doc_build_paths            # reads .cargo/config.toml and 
 run   leviculum-std   doc_radio_policy           # reads docs/src/**/*.md; no page may describe a radio-regulatory refusal
 run   leviculum-std   doc_security_policy        # reads SECURITY.md and the commit-trailer baseline the addresses come from
 run   leviculum-std   doc_self_hosted_infra      # reads the design record against the artifacts of it that now exist in the tree
+run   leviculum-std   audit1876_merge_kept_both_sides # reads the four concept pages the 1876 merges took whole; lane4's rows 48/49 and passages must stay
 run   leviculum-std   lnode_debug_log_format     # reads the firmware sources for the debug-line shapes and the RX-defer sites
 run   leviculum-std   msgpack_single_decoder     # reads leviculum-core's sources; exactly one hand-rolled msgpack reader may exist
 run   leviculum-std   nrf_boot_no_spin           # reads leviculum-nrf/src/bin/*.rs; no nop spin above 10 000 may hold the executor at boot
@@ -178,6 +179,7 @@ skip  leviculum-map pois                      # the poi section format and its r
 skip  leviculum-map region_header_refusals    # reads the committed region, but the subject is the header checks of the reader (1919)
 skip  leviculum-map projection                # in-process projection and viewport arithmetic; subject is the code
 skip  leviculum-map blend                   # the blended world projection in-process: ramps, areas, inverses; subject is the code
+skip  leviculum-map ground                  # the ground pack format, its reader and painter; reads the committed fixtures, but the subject is the code
 skip  leviculum-map globe                   # the globe's horizon cut, ground, names and turn in-process; subject is the code
 skip  leviculum-map region                    # reads the committed region, but the subject is the reader and the draw (golden counts)
 skip  leviculum-map timezones                 # the zone lookup, TZif and POSIX readers and the board table; reads host tzdata, takes seconds; subject is the code
@@ -186,9 +188,12 @@ skip  leviculum-map elevation               # reads the committed Erg Chebbi hei
 skip  leviculum-map elevation_alloc         # the height reader against hostile lengths under a counting allocator; subject is the code
 skip  leviculum-map relief                  # the relief kernels on synthetic ground and the committed Erg Chebbi pack; subject is the code
 skip  leviculum-map-tool heights            # the GLO-30 height cut over synthetic cells written to a temp dir; subject is the code
+skip  leviculum-map-tool ground             # the ground cut over synthetic inputs written to a temp dir, on worker threads; subject is the code
 skip  leviculum-mapcut cut                    # synthetic tiles through the cut; subject is the code
 skip  leviculum-mapcut geometry               # cuts the fixture and holds joins, buffers and goldens; subject is the code
 skip  leviculum-mapcut http                   # a loopback server and threads; subject is the HTTP reader and the load
+skip  leviculum-mapcut loading                # a load paused between rounds and resumed, in memory; subject is the code
+skip  leviculum-mapcut heights                # the catalogue and the device pack over the GLO-30 fixtures; subject is the code
 skip  leviculum-mapcut partial                # cuts in memory and reads every round back; subject is the writer and the reader
 skip  leviculum-mapcut pmtiles                # writes a temp archive and reads it back; subject is the reader
 skip  leviculum-mapcut simplify               # in-process geometry arithmetic; subject is the code

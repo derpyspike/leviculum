@@ -17,8 +17,8 @@ use std::time::Instant;
 
 use leviculum_map::elevation::{split, Block, TileDecoder, TILE_CELLS};
 use leviculum_map::relief::{
-    self, assemble, fill_ground, measure, sample, shade_rgb, sky_radius_m, Ground, Plane,
-    ShadePlane,
+    self, assemble, fill_ground, measure, sample, shade_rgb, sky_radius_m, tile_res, Ground,
+    Grounds, Plane, ShadePlane,
 };
 
 /// The light table's paper (leviculum-mapfill's LIGHT.background).
@@ -74,7 +74,7 @@ impl<'a> Pack<'a> {
 
     /// The aproned plane of relief tile (x, y) at `zoom`, each
     /// neighbour decoded once across tiles.
-    fn plane(&mut self, zoom: u8, x: u32, y: u32) -> (Plane, [Ground; 9]) {
+    fn plane(&mut self, zoom: u8, x: u32, y: u32) -> (Plane, Grounds) {
         let grid = i64::from(1u32 << zoom);
         let at = |i: usize| {
             let (dx, dy) = ((i % 3) as i64 - 1, (i / 3) as i64 - 1);
@@ -92,23 +92,17 @@ impl<'a> Pack<'a> {
                 .get(&(zoom, nx as u32, ny as u32))
                 .and_then(|o| o.as_deref())
         });
-        // Each tile's ground measured on the tile alone, as the
-        // product's store does, so the sheet shows the product's seams.
-        let res = ground_res(zoom, y);
-        let grounds: [Option<Ground>; 9] =
-            core::array::from_fn(|i| refs[i].map(|t| measure(t, res)));
-        let ground = fill_ground(&grounds).unwrap_or([measure(&[0; TILE_CELLS], res); 9]);
+        // Each tile's ground measured on the tile alone at its own
+        // row's resolution, as the product's store does, so the sheet
+        // shows the product's seams.
+        let grounds: [Option<Ground>; 9] = core::array::from_fn(|i| {
+            let (_, ny) = at(i);
+            refs[i].map(|t| measure(t, tile_res(zoom, ny as u32)))
+        });
+        let ground = fill_ground(&grounds)
+            .unwrap_or_else(|| Grounds::uniform(measure(&[0; TILE_CELLS], tile_res(zoom, y))));
         (assemble(&refs), ground)
     }
-}
-
-/// Ground metres per relief sample at the centre row of tile row `y`.
-fn ground_res(zoom: u8, y: u32) -> f32 {
-    let n = f64::from(1u32 << zoom);
-    let lat = (core::f64::consts::PI * (1.0 - 2.0 * (f64::from(y) + 0.5) / n))
-        .sinh()
-        .atan();
-    (156_543.03 * lat.cos() / n) as f32
 }
 
 /// The plain comparator: one NW light at a mountain gain, damped.
@@ -140,6 +134,9 @@ fn percentiles(px: &[[u8; 3]]) -> (f32, f32, f32) {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// A relief tile's R′ plane and its comparator's tone.
+type Shaded = (ShadePlane, Vec<f32>);
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 8 {
@@ -162,7 +159,9 @@ fn main() {
     let (x0, y0) = (cx - w as f64 / 2.0, cy - h as f64 / 2.0);
     let step = f64::from(1u32 << (zoom - rz)); // display px per relief sample
                                                // Every relief tile the view touches, computed once.
-    let mut shades: HashMap<(u32, u32), (ShadePlane, Vec<f32>)> = HashMap::new();
+                                               // A tile the pack lacks stays paper, as the product's store draws
+                                               // nothing there (the sheet drew the clamped void as stripes).
+    let mut shades: HashMap<(u32, u32), Option<Shaded>> = HashMap::new();
     let mut out = vec![[0u8; 3]; w * h * 2];
     let mut tile_ms: Vec<f64> = Vec::new();
     for py in 0..h {
@@ -171,16 +170,23 @@ fn main() {
             // The relief sample coordinate and its tile.
             let (sx, sy) = (wx / step, wy / step);
             let (tx, ty) = ((sx / 256.0) as u32, (sy / 256.0) as u32);
-            let (sp, plain) = shades.entry((tx, ty)).or_insert_with(|| {
+            let entry = shades.entry((tx, ty)).or_insert_with(|| {
+                pack.tile(rz, tx, ty)?;
                 let t0 = Instant::now();
+                let res = tile_res(rz, ty);
                 let (dem, ground) = pack.plane(rz, tx, ty);
                 let sp = relief::compute_in(&dem, res, sky_radius_m(zoom), &ground);
                 let plain = plain_tone(&dem, res);
                 let ms = t0.elapsed().as_secs_f64() * 1e3;
                 println!("RELIEF tile={rz}/{tx}/{ty} ms={ms:.1}");
                 tile_ms.push(ms);
-                (sp, plain)
+                Some((sp, plain))
             });
+            let Some((sp, plain)) = entry else {
+                out[py * 2 * w + px] = PAPER;
+                out[py * 2 * w + w + px] = PAPER;
+                continue;
+            };
             let (u, v) = (
                 (sx - f64::from(tx) * 256.0) as f32,
                 (sy - f64::from(ty) * 256.0) as f32,

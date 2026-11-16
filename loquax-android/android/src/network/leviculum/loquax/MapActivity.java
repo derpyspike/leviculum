@@ -31,6 +31,8 @@ public class MapActivity extends Activity implements Events.Listener {
     static final String ZOOM_MILLI = "zoom_milli";
 
     private MapPane map;
+    /** The map's word as the library said it last (1694 D): asked again only when it moved. */
+    private long mapWord;
     private final ServiceLink link = new ServiceLink(this);
 
     @Override
@@ -145,9 +147,14 @@ public class MapActivity extends Activity implements Events.Listener {
     @Override
     public void onEvent(Map<String, Object> event) {
         String kind = Core.str(event, "t");
-        // A position that came moves its pin: the view is drawn anew.
+        // A position that came moves its pin: the view is drawn anew, only
+        // when the map's word moved (1694 D), not for a chat line.
         if ("changed".equals(kind)) {
-            map.ask();
+            long word = Core.num(event, "map");
+            if (word != mapWord) {
+                mapWord = word;
+                map.ask();
+            }
             return;
         }
         if ("stopped".equals(kind)) {

@@ -65,25 +65,46 @@ impl Bounds {
 
 /// The regions a view draws, as indices into `regions` (file name,
 /// header), in the order they are drawn: every region whose box reaches
-/// into the view and whose zooms reach the view's ([`useful_zooms`]),
-/// shallower data first, then the older layer profile, then by file name,
-/// so the deepest is drawn last, on top, and of two as deep the newer
-/// profile (1727: a hand-placed profile 1 region under the profile 2 copy
-/// the autoload brought for its box, `crate::profile`). Each is drawn into its own box (1077), so regions loaded
-/// side by side join up (1089). Empty for the outline alone.
+/// into the view and whose zooms reach the view's ([`useful_zooms`]).
+/// On top, drawn last, the region whose data at the view's zoom is the
+/// least changed: the one whose deepest zoom is the view's, then those
+/// deeper the nearer the deeper (a cut simplifies every zoom but its
+/// deepest, 1707), then those shallower, overzoomed, the deepest of them
+/// on top ([`draw_rank`], 1836); of two as near the older layer profile
+/// under, then by file name, so of two as deep the newer profile shows
+/// (1727: a hand-placed profile 1 region under the profile 2 copy the
+/// autoload brought for its box, `crate::profile`). The order depends on
+/// the regions alone, not on which landed first: the same view draws the
+/// same picture however the user came to it (1811's mechanism 2, where a
+/// z10-15 cell landing after the screen's z12-13 box overdrew the raw z13
+/// with its simplified one). Each is drawn into its own box (1077), so
+/// regions loaded side by side join up (1089). Empty for the outline
+/// alone.
 pub fn drawn<'a>(
     regions: impl IntoIterator<Item = (&'a str, &'a Header)>,
     view: &Viewport,
 ) -> Vec<usize> {
-    let mut found: Vec<(u8, u8, &str, usize)> = regions
+    let zoom = view.zoom();
+    let mut found: Vec<(u16, u8, &str, usize)> = regions
         .into_iter()
         .enumerate()
-        .filter(|(_, (_, h))| useful_zooms(h).contains(&view.zoom()))
+        .filter(|(_, (_, h))| useful_zooms(h).contains(&zoom))
         .filter(|(_, (_, h))| !view.area_of(&h.bounds).is_zero_sized())
-        .map(|(i, (name, h))| (h.max_zoom, h.profile, name, i))
+        .map(|(i, (name, h))| (draw_rank(h.max_zoom, zoom), h.profile, name, i))
         .collect();
     found.sort();
     found.into_iter().map(|(_, _, _, i)| i).collect()
+}
+
+/// Where a region of deepest zoom `max_zoom` goes in a view at `zoom`'s
+/// drawing order ([`drawn`]), higher on top: its own deepest zoom the
+/// view's highest, deeper ones next, the nearer the higher, shallower ones
+/// under all of them, the deeper the higher.
+pub fn draw_rank(max_zoom: u8, zoom: u8) -> u16 {
+    match max_zoom.checked_sub(zoom) {
+        Some(deeper) => 512 - u16::from(deeper),
+        None => u16::from(max_zoom),
+    }
 }
 
 /// The view zooms a region draws at: its shallowest, down to

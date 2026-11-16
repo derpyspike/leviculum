@@ -210,7 +210,7 @@ const WORLD_UNITS: u64 = 1 << 32;
 
 /// The longitude, degrees, of world x `v` (2^32 units, `v` up to the
 /// world's east edge inclusive: 180).
-fn lon_at(v: u64) -> f64 {
+pub(crate) fn lon_at(v: u64) -> f64 {
     if v >= WORLD_UNITS {
         return 180.0;
     }
@@ -219,17 +219,17 @@ fn lon_at(v: u64) -> f64 {
 
 /// The latitude, degrees, of world y `v` (2^32 units, clamped to the
 /// projection's south edge).
-fn lat_at(v: u64) -> f64 {
+pub(crate) fn lat_at(v: u64) -> f64 {
     f64::from(mercator::lat_of_y(v.min(WORLD_UNITS - 1) as u32)) / 1e7
 }
 
 /// World units per tile at zoom `z`, and per pixel.
-fn tile_units(z: u8) -> u64 {
+pub(crate) fn tile_units(z: u8) -> u64 {
     WORLD_UNITS >> z
 }
 
 /// The tile at zoom `z` holding a longitude; 180 is the last column.
-fn tile_x(lon: f64, z: u8) -> u32 {
+pub(crate) fn tile_x(lon: f64, z: u8) -> u32 {
     let x = if lon >= 180.0 {
         WORLD_UNITS - 1
     } else {
@@ -241,7 +241,7 @@ fn tile_x(lon: f64, z: u8) -> u32 {
 }
 
 /// The tile at zoom `z` holding a latitude, clamped to the projection.
-fn tile_y(lat: f64, z: u8) -> u32 {
+pub(crate) fn tile_y(lat: f64, z: u8) -> u32 {
     let y = mercator::y_of_lat(mercator::LatLon::from_degrees(lat, 0.0).lat_e7);
     (u64::from(y) / tile_units(z)) as u32
 }
@@ -516,4 +516,51 @@ pub fn cut_heights(
         }
     }
     Ok(stats)
+}
+
+/// Write the height catalogue (1863, `leviculum_mapcut::heights`) of
+/// `packs` to `output`: every block of every pack at its byte range,
+/// the packs named by their file names, so they must lie in the
+/// catalogue's own directory, where a device resolves those names. The
+/// file is written beside its place and renamed over it, so a server
+/// never serves half a catalogue.
+pub fn write_catalogue(
+    packs: &[std::path::PathBuf],
+    output: &std::path::Path,
+) -> Res<leviculum_mapcut::heights::Catalogue> {
+    let home = output
+        .parent()
+        .map(std::fs::canonicalize)
+        .transpose()?
+        .unwrap_or(std::env::current_dir()?);
+    let mut catalogue = leviculum_mapcut::heights::Catalogue::default();
+    for pack in packs {
+        let dir = pack
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(std::fs::canonicalize)
+            .transpose()?
+            .unwrap_or(std::env::current_dir()?);
+        if dir != home {
+            return Err(format!(
+                "{} is not beside the catalogue {}: a device fetches the packs by name beside it",
+                pack.display(),
+                output.display()
+            )
+            .into());
+        }
+        let name = pack
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| format!("{} has no file name", pack.display()))?;
+        catalogue.add_pack(name, &std::fs::read(pack)?)?;
+    }
+    let mut part = output.as_os_str().to_owned();
+    part.push(".part");
+    let part = std::path::PathBuf::from(part);
+    let mut file = std::fs::File::create(&part)?;
+    file.write_all(catalogue.write().as_bytes())?;
+    file.sync_all()?;
+    std::fs::rename(&part, output)?;
+    Ok(catalogue)
 }

@@ -47,9 +47,9 @@ use loquax::mapframe::DrawnName;
 use loquax::when::WallTime;
 use loquax_android::map;
 use loquax_android::render_walk::{
-    disk_fit, frame_rules, globe_disk_centred, globe_disk_fixed, java_margin, sequence_rules,
-    view_only_by_input, zoom_keeps_the_place, FrameFacts, JavaBitmap, Played, Screen, Verdict,
-    REST_HOLD_MS, SENTINEL,
+    bare_paper, disk_fit, frame_rules, globe_disk_centred, globe_disk_fixed, java_margin,
+    sequence_rules, view_only_by_input, zoom_keeps_the_place, FrameFacts, JavaBitmap, PaperMask,
+    Played, Screen, Verdict, BARE_MAX_PCT, BARE_PAPER, REST_HOLD_MS, SENTINEL,
 };
 use loquax_android::schema::{MapRequest, MapShown};
 
@@ -170,7 +170,7 @@ struct Centre {
     lon: f64,
 }
 
-const CENTRES: [Centre; 9] = [
+const CENTRES: [Centre; 10] = [
     Centre {
         name: "germany",
         lat: 51.0,
@@ -220,23 +220,53 @@ const CENTRES: [Centre; 9] = [
         lat: 29.9930,
         lon: -6.1523,
     },
+    // The Bani escarpment (1868, the audit of 1863): the middle of the
+    // `bani-z11.lmh` block, its region `morocco/bani.lmr` over it.
+    Centre {
+        name: "bani",
+        lat: 29.7643,
+        lon: -6.7676,
+    },
 ];
 
 /// The regions every walk home holds (`leviculum-map/fixtures`).
-const REGIONS: [&str; 6] = [
+const REGIONS: [&str; 4] = [
     "firenze.lmr",
     "berlin/wide.lmr",
     "berlin/mitte.lmr",
     "frankfurt/roemer.lmr",
-    "morocco/merzouga.lmr",
-    "morocco/chegaga.lmr",
 ];
 
-/// The height packs every walk home holds beside the regions: the relief
-/// under the two Moroccan regions from z10 down.
-const PACKS: [&str; 2] = ["erg-chebbi-z10.lmh", "erg-chegaga-z10.lmh"];
+/// The desert regions every walk home holds, under the names the autoload
+/// gives them ([`loquax::mapload::auto_name`]): regions on disk, whose
+/// height packs the loader brings (1868).
+const DESERT: [&str; 3] = [
+    "morocco/merzouga.lmr",
+    "morocco/chegaga.lmr",
+    "morocco/bani.lmr",
+];
+
+/// The height packs a local range server holds beside its catalogue, one
+/// block each under the desert regions: what the loader fetches into every
+/// home ([`fetch_heights`]), never copied there (the audit of 1863).
+const PACKS: [&str; 3] = ["erg-chebbi-z10.lmh", "erg-chegaga-z10.lmh", "bani-z11.lmh"];
+
+/// The ground packs every walk home holds (1743): one z9 block each under
+/// the desert centres, cut from the Morocco pilot box. No loader brings
+/// ground packs yet, so they are copied in, as a hand-installed pack is.
+const GROUND: [&str; 3] = [
+    "ground-chebbi-z9.lmg",
+    "ground-chegaga-z9.lmg",
+    "ground-bani-z9.lmg",
+];
 
 const HZ: f64 = 60.0;
+
+/// The light table's paper as the screen shows it (RGB 565 widened):
+/// what [`PaperMask`] calls bare.
+fn paper() -> [u8; 3] {
+    leviculum_mapfill::frame::rgb888(leviculum_mapfill::style::LIGHT.background)
+}
 const NOW: WallTime = WallTime {
     unix_secs: 1_790_000_000,
     offset_secs: 0,
@@ -257,6 +287,9 @@ enum Fault {
     /// The view's centre pushed five pixels while a zoom crosses the
     /// handover: the jump `zoom_keeps_the_place` must catch (order 1818).
     ZoomDrift,
+    /// Every moving frame's lower half painted bare paper: the emptied
+    /// frame `bare_paper` must catch (order 1853).
+    BareFrame,
     /// A view written with no input (1819): the second frame asked again
     /// at rest with the same view answers a zoom half a step out, as the
     /// desktop's minute beat and a landed region did; the stray view
@@ -277,6 +310,7 @@ impl Fault {
             "view-lost" => Self::ViewLost,
             "disk-shift" => Self::DiskShift,
             "zoom-drift" => Self::ZoomDrift,
+            "bare-frame" => Self::BareFrame,
             "stray-view" => Self::StrayView,
             _ => return None,
         })
@@ -411,6 +445,13 @@ impl Java {
                 }
             }
             Some(Fault::ErrorText) => shown.notice = Some("injected notice".to_string()),
+            Some(Fault::BareFrame) if ask.moving => {
+                let paper = paper();
+                let half = self.screen.rgba.len() / 8 * 4;
+                for px in self.screen.rgba[half..].chunks_exact_mut(4) {
+                    px.copy_from_slice(&[paper[0], paper[1], paper[2], 255]);
+                }
+            }
             Some(Fault::StrayLabel) => names.extend(stray(&shown, ask)),
             // The wobble: every moving frame's picture three pixels to
             // the right of where the frame drew it; the rest frame, the
@@ -559,6 +600,74 @@ fn stray(shown: &MapShown, ask: &MapRequest) -> Vec<DrawnName> {
     ]
 }
 
+/// Bring the height packs of the desert regions in `maps` as the device
+/// does (1868, the audit of 1863): a local range server holds [`PACKS`]
+/// and their catalogue, and the shell's loader with
+/// [`loquax::mapload::Loader::with_heights`] finds the regions on disk and
+/// fetches the blocks under them. Every pack must land; the first home
+/// says what came.
+fn fetch_heights(maps: &Path, fixtures: &Path) {
+    use leviculum_mapcut::heights::Catalogue;
+    use loquax::mapload::{Loader, Source, Step};
+    static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let mut catalogue = Catalogue::default();
+    let mut files = Vec::new();
+    for pack in PACKS {
+        let bytes =
+            std::fs::read(fixtures.join(pack)).unwrap_or_else(|e| die(&format!("{pack}: {e}")));
+        if let Err(e) = catalogue.add_pack(pack, &bytes) {
+            die(&format!("{pack}: {e}"));
+        }
+        files.push((pack.to_string(), bytes));
+    }
+    files.push(("heights.tsv".to_string(), catalogue.write().into_bytes()));
+    let serve = leviculum_mapcut::serve::Serve::start(files)
+        .unwrap_or_else(|e| die(&format!("the heights server: {e}")));
+    let started = Instant::now();
+    let mut loader = Loader::new(
+        loquax::picture::Maps::new(Some(maps.to_path_buf())),
+        Source::Url(serve.url("no-map.pmtiles")),
+        1 << 30,
+    )
+    .with_heights(serve.url("heights.tsv"));
+    // The view's decision, as the autoload makes it: the regions on disk
+    // want their packs from here on.
+    loader.schedule(Vec::new(), Vec::new(), 0);
+    let mut landed: Vec<String> = Vec::new();
+    loop {
+        for step in loader.poll(0) {
+            if let Step::Heights { landed: l, .. } = step {
+                match l {
+                    Ok(l) => landed.extend(l.packs),
+                    Err(e) => die(&format!("a height fetch failed: {e}")),
+                }
+            }
+        }
+        if !loader.busy() {
+            break;
+        }
+        if started.elapsed().as_secs() > 60 {
+            die("the height packs did not land in 60 s");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    landed.sort();
+    if landed.len() != PACKS.len() {
+        die(&format!(
+            "{} packs landed, {} served: {landed:?}",
+            landed.len(),
+            PACKS.len()
+        ));
+    }
+    if !SAID.swap(true, Ordering::Relaxed) {
+        println!(
+            "render_walk: heights through the loader: {landed:?}, {} bytes in {} ms",
+            serve.sent(),
+            started.elapsed().as_millis()
+        );
+    }
+}
+
 impl Walk {
     /// A fresh app home: the regions, no autoload.
     fn home(&self, name: &str) -> PathBuf {
@@ -569,10 +678,31 @@ impl Walk {
             die(&format!("{}: {e}", maps.display()));
         }
         let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../leviculum-map/fixtures");
-        for region in REGIONS.iter().chain(&PACKS) {
+        for region in REGIONS {
             let to = maps.join(region.replace('/', "-"));
             if let Err(e) = std::fs::copy(fixtures.join(region), &to) {
                 die(&format!("{region}: {e}"));
+            }
+        }
+        for region in DESERT {
+            let header = std::fs::File::open(fixtures.join(region))
+                .map_err(|e| e.to_string())
+                .and_then(|f| {
+                    leviculum_map::region::Region::open(f)
+                        .map(|r| *r.header())
+                        .map_err(|e| format!("{e:?}"))
+                })
+                .unwrap_or_else(|e| die(&format!("{region}: {e}")));
+            let name =
+                loquax::mapload::auto_name(&header.bounds, (header.min_zoom, header.max_zoom));
+            if let Err(e) = std::fs::copy(fixtures.join(region), maps.join(name)) {
+                die(&format!("{region}: {e}"));
+            }
+        }
+        fetch_heights(&maps, &fixtures);
+        for pack in GROUND {
+            if let Err(e) = std::fs::copy(fixtures.join(pack), maps.join(pack)) {
+                die(&format!("{pack}: {e}"));
             }
         }
         if let Err(e) = std::fs::write(
@@ -822,6 +952,31 @@ impl Walk {
         step: &dyn Fn(usize, &MapShown, MapRequest) -> Option<MapRequest>,
     ) {
         let home = self.home(&format!("gesture-{name}-{}", size.name));
+        self.gesture_in(
+            home,
+            name,
+            size,
+            centre,
+            zoom_milli,
+            steps,
+            while_drawn,
+            step,
+        );
+    }
+
+    /// [`gesture`](Self::gesture) in a home prepared by the caller.
+    #[allow(clippy::too_many_arguments)]
+    fn gesture_in(
+        &mut self,
+        home: PathBuf,
+        name: &str,
+        size: Size,
+        centre: Centre,
+        zoom_milli: u32,
+        steps: usize,
+        while_drawn: f64,
+        step: &dyn Fn(usize, &MapShown, MapRequest) -> Option<MapRequest>,
+    ) {
         let mut java = Java::new(&home, size);
         let at = project(LatLon::from_degrees(centre.lat, centre.lon));
         let start = MapRequest {
@@ -872,6 +1027,10 @@ impl Walk {
         // (1155), and feeding that back snapped the pinch to whole
         // steps and judged the step view instead of the screen's.
         let mut exact_zoom = last.zoom_milli;
+        // The frames with enough bare paper to fail `bare_paper`: their
+        // view and mask, judged against the same view at rest once the
+        // gesture's times and heap are taken.
+        let mut suspects: Vec<(String, MapShown, PaperMask)> = Vec::new();
         for i in 0..steps {
             let base = MapRequest {
                 x: Some(last.x),
@@ -945,6 +1104,28 @@ impl Walk {
             played.frame_ms.push(drawn.ms);
             let image = format!("{}-{name}-{}-f{i:03}", self.variant, size.name);
             let mut verdicts = self.judge(&java, &drawn, false, &image);
+            if drawn.shown.ok && !drawn.shown.dark {
+                let mask = PaperMask::of(&java.screen, paper());
+                match mask.share_pct() > BARE_MAX_PCT {
+                    true => {
+                        write_png(
+                            &self.out.join("full").join(format!("{image}.png")),
+                            &java.screen,
+                            u32::MAX,
+                        );
+                        suspects.push((image.clone(), drawn.shown.clone(), mask));
+                    }
+                    // Less paper than the limit: no rest frame can make
+                    // more of it bare.
+                    false => verdicts.push(Verdict {
+                        rule: BARE_PAPER,
+                        value: mask.share_pct(),
+                        limit: BARE_MAX_PCT,
+                        pass: true,
+                        note: "paper share, the bound".to_string(),
+                    }),
+                }
+            }
             if drawn.shown.ok {
                 let lo = i64::from(drawn.shown.min_zoom_milli);
                 let hi = i64::from(drawn.shown.max_zoom) * i64::from(MILLI);
@@ -1081,6 +1262,46 @@ impl Walk {
             ["sequence", name, size.name, centre.name, "", &image],
             &verdicts,
         );
+        // Each suspect frame's view settled at rest, its paper against
+        // the frame's: after the times and the heap, so the settles warm
+        // nothing the gesture measured.
+        for (image, shown, mask) in suspects {
+            let ask = MapRequest {
+                x: Some(shown.x),
+                y: Some(shown.y),
+                zoom_milli: Some(shown.zoom_milli),
+                ..java.ask(false)
+            };
+            let rest = java.settle(ask, None);
+            let verdict = match rest.shown.ok {
+                true => bare_paper(
+                    &mask,
+                    &PaperMask::of_rest(
+                        &java.screen,
+                        paper(),
+                        &rest.names,
+                        (rest.shown.margin_x, rest.shown.margin_y),
+                    ),
+                ),
+                false => Verdict {
+                    rule: BARE_PAPER,
+                    value: 100.0,
+                    limit: BARE_MAX_PCT,
+                    pass: false,
+                    note: "the rest frame of this view failed".to_string(),
+                },
+            };
+            write_png(
+                &self.out.join("thumb").join(format!("{image}-at-rest.png")),
+                &java.screen,
+                480,
+            );
+            let zoom = format!("{:.3}", f64::from(shown.zoom_milli) / f64::from(MILLI));
+            self.rows(
+                ["frame", name, size.name, centre.name, &zoom, &image],
+                &[verdict],
+            );
+        }
         map::tune_tiles(&home, None, true);
     }
 
@@ -1177,9 +1398,52 @@ impl Walk {
         map::tune_tiles(&home, None, true);
     }
 
-    /// The five gestures on `size`.
+    /// The gestures on `size`.
     fn gestures(&mut self, size: Size) {
-        let [germany, _, _, _, _, berlin, _, _, _] = CENTRES;
+        let [germany, _, _, _, _, berlin, _, erg, _, bani] = CENTRES;
+        // Over the relief (order 1853): Erg Chebbi's packs and region,
+        // each gesture in a fresh home, so the relief store starts cold.
+        // Across the relief tiles' seams at z12, 40 px a frame east, 24
+        // frames; then pinched from z12 to z14 and back, a quarter step
+        // a frame, about the screen's middle.
+        self.gesture(
+            "erg-pan-seam",
+            size,
+            erg,
+            12 * MILLI,
+            24,
+            0.0,
+            &|_, _, ask| Some(MapRequest { pan_x: 40, ..ask }),
+        );
+        self.gesture("erg-pinch-12-14", size, erg, 12 * MILLI, 16, 0.0, &{
+            let inward = std::cell::Cell::new(true);
+            move |_, _: &MapShown, ask| {
+                let zoom = ask.zoom_milli.unwrap_or(12 * MILLI);
+                if inward.get() && zoom >= 14 * MILLI {
+                    inward.set(false);
+                }
+                if !inward.get() && zoom <= 12 * MILLI {
+                    return None;
+                }
+                let by = if inward.get() { 250 } else { -250 };
+                Some(MapRequest {
+                    zoom_by_milli: by,
+                    ..ask
+                })
+            }
+        });
+        // Over the Bani escarpment's relief (1868): its region on disk,
+        // its pack brought by the loader; across the seams at z12 as
+        // over the erg.
+        self.gesture(
+            "bani-pan-seam",
+            size,
+            bani,
+            12 * MILLI,
+            24,
+            0.0,
+            &|_, _, ask| Some(MapRequest { pan_x: 40, ..ask }),
+        );
         // Across tile seams at z13 over Berlin's region: 40 px a frame
         // east, 24 frames, three seams.
         self.gesture(
@@ -1297,6 +1561,82 @@ impl Walk {
             },
         );
         self.rotation(size, germany);
+        self.partial(size);
+    }
+
+    /// Regions still arriving over a complete one (audit of 1836, finding
+    /// 3, order 1910), over Oltrarno, whose fixture archive holds z14 and
+    /// z15: a region still arriving has its z14 round written and owes
+    /// its z15 tiles, as a paused or arriving load leaves its file. The
+    /// files are named so that the arriving one draws on top where the
+    /// ranks tie. Three homes, each panned 8 px a frame east for 24
+    /// frames at z15: a complete z14-15 region under an arriving z14-15
+    /// one (the same max zoom), a complete z14 region under an arriving
+    /// z14-15 one (a differing max zoom, the arriving one on top by its
+    /// rank), and the control, the complete z14-15 region alone.
+    fn partial(&mut self, size: Size) {
+        let oltrarno = Centre {
+            name: "oltrarno",
+            lat: 43.7475,
+            lon: 11.272,
+        };
+        let pan: &dyn Fn(usize, &MapShown, MapRequest) -> Option<MapRequest> =
+            &|_, _, ask| Some(MapRequest { pan_x: 8, ..ask });
+        for (name, complete, arriving) in [
+            ("partial-same-z15-pan", 14..=15, true),
+            ("partial-deeper-z15-pan", 14..=14, true),
+            ("complete-z15-pan", 14..=15, false),
+        ] {
+            let home = self.home(&format!("gesture-{name}-{}", size.name));
+            let maps = home.join("maps");
+            oltrarno_region(&maps.join("oltrarno-a-complete.lmr"), complete, usize::MAX);
+            if arriving {
+                oltrarno_region(&maps.join("oltrarno-b-arriving.lmr"), 14..=15, 1);
+            }
+            self.gesture_in(home, name, size, oltrarno, 15 * MILLI, 24, 0.0, pan);
+        }
+    }
+}
+
+/// Cut the oltrarno fixture's box at `zooms` into `path`, `rounds` of its
+/// rounds written: all for a complete region, fewer for one still
+/// arriving or paused (1836).
+fn oltrarno_region(path: &Path, zooms: core::ops::RangeInclusive<u8>, rounds: usize) {
+    use leviculum_mapcut::load::{plan, Loading, Want};
+    use leviculum_mapcut::pmtiles::Archive;
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../leviculum-mapcut/fixtures/oltrarno.pmtiles");
+    let archive = Archive::open(&source).unwrap_or_else(|e| die(&format!("oltrarno: {e}")));
+    let want = Want {
+        bounds: leviculum_map::region::Bounds {
+            west: 112_615_000,
+            south: 437_405_000,
+            east: 112_825_000,
+            north: 437_545_000,
+        },
+        zooms,
+        floor: 0,
+        cap: 64 << 20,
+        profile: leviculum_map::profile::CUT_2,
+        locale: None,
+        buildings: false,
+        pois: false,
+    };
+    let planned = plan(&archive, &want).unwrap_or_else(|e| die(&format!("plan: {e}")));
+    let out = std::fs::File::create(path).unwrap_or_else(|e| die(&format!("{e}")));
+    let mut loading = Loading::begin(&archive, &want, planned, "render-walk", 1, out)
+        .unwrap_or_else(|e| die(&format!("begin: {e}")));
+    for _ in 0..rounds {
+        match loading.step() {
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(e) => die(&format!("round: {e}")),
+        }
+    }
+    if !loading.rounds_left() {
+        if let Err(e) = loading.finish() {
+            die(&format!("finish: {e}"));
+        }
     }
 }
 
@@ -1341,6 +1681,11 @@ fn die(why: &str) -> ! {
     std::process::exit(2);
 }
 
+/// Whether `--partial` was given: the partial-region gestures only.
+fn args_partial() -> bool {
+    std::env::args().any(|a| a == "--partial")
+}
+
 fn main() {
     let mut out = None;
     let mut variant = None;
@@ -1355,6 +1700,7 @@ fn main() {
             "--variant" => variant = args.next(),
             "--quick" => quick = true,
             "--strip" => strip = true,
+            "--partial" => {}
             "--selftest" => selftest = true,
             "--inject" => {
                 let word = args.next().unwrap_or_default();
@@ -1382,7 +1728,7 @@ fn main() {
     };
     let started = Instant::now();
     let [phone, _, _, window, _] = SIZES;
-    let [germany, _, north, _, _, berlin, _, _, _] = CENTRES;
+    let [germany, _, north, _, _, berlin, _, _, _, _] = CENTRES;
     if strip {
         // The 1799 item 0 proof strip: Germany and the Sahara on the
         // phone frame, every half zoom.
@@ -1398,6 +1744,12 @@ fn main() {
         // ladder over Berlin's data, and every gesture.
         walk.ladder(phone, berlin, true);
         walk.gestures(phone);
+    } else if args_partial() {
+        // The partial-region gestures alone (order 1910): their frame
+        // times before and after a change, at the phone's and the
+        // window's frame.
+        walk.partial(phone);
+        walk.partial(window);
     } else if quick {
         for size in [phone, window] {
             for centre in [germany, north, berlin] {

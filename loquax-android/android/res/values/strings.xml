@@ -251,6 +251,8 @@
     <string name="attach_position">My position</string>
     <string name="map_fling">Map keeps moving</string>
     <string name="map_fling_text">A swipe on the map lets it glide on and slow down after your finger lifts.</string>
+    <string name="map_relief">Relief on the map</string>
+    <string name="map_relief_text">Hills and dunes shaded where height data for the area has been downloaded. Only in the light map for now.</string>
     <string name="maps_auto">Download maps automatically</string>
     <string name="maps_auto_text">The map of the area you look at loads by itself and stays on the phone.</string>
     <string name="maps_none">No maps on this phone yet.</string>

@@ -88,20 +88,12 @@ public class AvatarView extends View {
 
     /**
      * The circle's and the letters' colours of `peer` as `row` describes
-     * it: the peer's hue where the row carries one (the map's people,
-     * 1693: the colour its pin and track are drawn in, its letters white
-     * or near black by the library's one rule), else its own icon
-     * appearance, else one of the palette by the address with white
-     * letters.
+     * it: its own icon appearance, else one of the palette by the address
+     * with white letters.
      */
     static int[] colours(String peer, Map<String, Object> row) {
         if (Core.bool(row, "nearby")) {
             return new int[] {NEARBY, Color.WHITE};
-        }
-        int hue = colour(Core.str(row, "hue"));
-        int ink = colour(Core.str(row, "ink"));
-        if (hue != 0 && ink != 0) {
-            return new int[] {hue, ink};
         }
         int bg = colour(Core.str(row, "icon_bg"));
         int fg = colour(Core.str(row, "icon_fg"));
@@ -125,15 +117,7 @@ public class AvatarView extends View {
      */
     static void drawAt(Canvas canvas, float cx, float cy, float side, String peer,
             Map<String, Object> row, Paint circle, Paint letters, Paint picture) {
-        drawAt(canvas, cx, cy, side, peer, row, colours(peer, row), circle, letters, picture);
-    }
-
-    /**
-     * As above in the given circle and letter `colours`: the map's pin
-     * takes its mark's hue for the map's table (1693).
-     */
-    static void drawAt(Canvas canvas, float cx, float cy, float side, String peer,
-            Map<String, Object> row, int[] colours, Paint circle, Paint letters, Paint picture) {
+        int[] colours = colours(peer, row);
         circle.setColor(colours[0]);
         letters.setColor(colours[1]);
         letters.setTextAlign(Paint.Align.CENTER);
@@ -196,7 +180,7 @@ public class AvatarView extends View {
     }
 
     /** An `rrggbb` as an opaque colour, 0 for anything else. */
-    static int colour(String hex) {
+    private static int colour(String hex) {
         if (hex.length() != 6) {
             return 0;
         }

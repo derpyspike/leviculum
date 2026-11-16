@@ -114,10 +114,12 @@ pub const OVERZOOM: u8 = 2;
 /// holds 16.1 MB of working planes at its peak (measured on the host,
 /// 2026-11-14), twice the board's 8 MiB of PSRAM, of which the UI heap
 /// is 2 MiB; and the M9 draws no height packs. The flag is off so the
-/// style says what the board draws.
+/// style says what the board draws. Nor does it load ground packs
+/// (1743): the ground is off for the same reason.
 pub fn style() -> Style {
     Style {
         relief: false,
+        ground: None,
         ..Style::SCREEN
     }
 }
@@ -140,6 +142,7 @@ pub fn setup_of(headers: &[Header]) -> MapSetup {
         regions: headers.to_vec(),
         drawings: Vec::new(),
         drawing: 0,
+        finer_hint: false,
     }
 }
 
@@ -1036,9 +1039,8 @@ impl Painter {
 pub const ZONE_LINE: Rgb565 = Rgb565::new(0x8e >> 3, 0x44 >> 2, 0xad >> 3);
 
 /// The pins over the picture: each pin's text where the model placed it,
-/// in the atlas, on the bar's ground; a friend's in its hue ([`peer_rgb`],
-/// 1693), old or not; the chosen one reversed, a node's nearby and our own
-/// old one muted.
+/// in the atlas, on the bar's colours; the chosen one reversed, an old
+/// one's and a node's nearby muted.
 pub fn pins<D>(
     pins: &[PinCell],
     look: &Look,
@@ -1069,17 +1071,10 @@ where
         usize::from(next.min(crate::screen::COLS as u16).saturating_sub(col))
     };
     for pin in pins {
-        // A friend in its hue, the lighter set of the dark map the M9's
-        // panel is (1693): the colour its pin and track take on every other
-        // target. Our own and a node nearby keep the bar's ink.
-        let ink = match pin.own || pin.nearby {
-            true => fg,
-            false => peer_rgb(&pin.peer).into(),
-        };
-        let (fg, bg) = match (pin.selected, pin.nearby, pin.stale && pin.own) {
-            (true, ..) => (bg, ink),
-            (false, true, _) | (false, _, true) => (dim, bg),
-            (false, false, false) => (ink, bg),
+        let (fg, bg) = match (pin.selected, pin.stale || pin.nearby) {
+            (true, _) => (bg, fg),
+            (false, true) => (dim, bg),
+            (false, false) => (fg, bg),
         };
         let style = MonoTextStyleBuilder::new()
             .font(font)
@@ -1103,12 +1098,6 @@ where
         }
     }
     Ok(())
-}
-
-/// A peer's colour on the M9's dark panel ([`loquax::ui::tracks::peer_colour`]).
-pub fn peer_rgb(peer: &[u8; 16]) -> Rgb888 {
-    let [r, g, b] = loquax::ui::tracks::peer_colour(peer, true);
-    Rgb888::new(r, g, b)
 }
 
 /// `words` cut to `cols` cells with an ellipsis where they do not fit; a
@@ -1205,7 +1194,10 @@ impl<'r> Map<'r> {
     }
 
     /// The region `view` draws (1477): the detailed region under it whose
-    /// zooms reach the view's, the deepest first; else the world while
+    /// zooms reach the view's, by the one rule every frontend stacks
+    /// regions by ([`leviculum_map::choice::draw_rank`], 1910): its own
+    /// deepest zoom the view's first, then deeper ones the nearer the
+    /// better, then shallower ones the deeper the better; else the world while
     /// its zooms reach (two past its deepest and the map core's overzoom
     /// beyond); else a detailed region under the view at any zoom, as the
     /// board drew before it carried the world; else nothing.
@@ -1218,7 +1210,12 @@ impl<'r> Map<'r> {
         let useful = under
             .iter()
             .filter(|(_, r)| leviculum_map::choice::useful_zooms(r.header()).contains(&view.zoom()))
-            .max_by_key(|(i, r)| (r.header().max_zoom, core::cmp::Reverse(*i)));
+            .max_by_key(|(i, r)| {
+                (
+                    leviculum_map::choice::draw_rank(r.header().max_zoom, view.zoom()),
+                    core::cmp::Reverse(*i),
+                )
+            });
         if let Some((i, _)) = useful {
             return Drawn::Detail(*i);
         }
@@ -1472,6 +1469,7 @@ mod words_1531 {
             style(),
             Style {
                 relief: false,
+                ground: None,
                 ..Style::SCREEN
             }
         );
