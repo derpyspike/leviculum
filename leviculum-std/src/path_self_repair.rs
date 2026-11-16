@@ -19,19 +19,30 @@
 //! above the interface, in the shared-instance client of leviculum-std.
 //! The transport stays Python's, and boards are unaffected.
 //!
-//! What the check can and cannot see through the drop-in RPC: a relayed
-//! path (the miauhaus field case of 2026-11-15, a 7-hop capture via a
-//! backbone for two hours) and a vanished path are visible on every
-//! daemon. A sibling local client holding the path at hops 0 is visible
-//! only when the daemon names client attachments apart: on a TCP shared
-//! instance each client is named by its peer port
-//! (`LocalInterface.py:433`), while on an abstract-socket daemon every
-//! client renders as the same `LocalInterface[rns/<name>]`
-//! (`leviculum-std/src/interfaces/inventory.rs#local_client_name`,
-//! `LocalInterface.py:372-374`), so there the sibling case is caught only
-//! once the path leaves the local attachment. Such a capture needs an
-//! unresponsive mark first — a request toward the owner that the owner
-//! itself let die — and ends with the owner's next announce.
+//! What the check can and cannot see through the drop-in RPC, as bounds:
+//!
+//! - A relayed path (the miauhaus field case of 2026-11-15, a 7-hop
+//!   capture via a backbone for two hours) and a vanished path are visible
+//!   on every daemon. A first capture is repaired at the next beat; under a
+//!   flapping path the wait doubles per recapture, so a recapture can stay
+//!   off-box for up to [`PATH_SELF_REPAIR_MAX_INTERVAL_MS`] (15 min).
+//! - A sibling local client holding the path at hops 0 on an abstract-socket
+//!   daemon is invisible: every client renders as the same
+//!   `LocalInterface[rns/<name>]`
+//!   (`leviculum-std/src/interfaces/inventory.rs#local_client_name`,
+//!   `LocalInterface.py:372-374`). Such a capture needs an unresponsive mark
+//!   first (a request toward the owner that the owner itself let die) and
+//!   ends only at the owner's next regular announce, 6 h for the Loquax home
+//!   (`loquax/src/home/daemon.rs#ANNOUNCE_EVERY`), unless a relayed copy
+//!   takes the path first and the beat repairs that.
+//! - On a TCP shared instance each client is named by its peer port
+//!   (`LocalInterface.py:439`, `incoming_connection`, at reference pin
+//!   d5e62d4e15c5), and the beat compares against a baseline name learned
+//!   from the first direct sight after start and after each repair
+//!   announce. A sibling capture installed before the first beat after
+//!   start, or between a repair announce and the next direct sight, becomes
+//!   that baseline and ends only at the owner's next regular announce, as
+//!   above.
 
 /// How often the client asks its daemon about its own path. Thirty
 /// seconds (the reviewer decision's starting point): the field case is
@@ -159,6 +170,47 @@ impl SelfRepair {
                 Verdict::Repair { was }
             }
         }
+    }
+}
+
+/// What the beat says about its own ability to ask the daemon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum HealthNotice {
+    /// The daemon cannot be asked, for a cause not reported before: warn.
+    Failing { reason: String },
+    /// The daemon answers again after a reported failure: say so once.
+    Resumed { after: String },
+}
+
+/// Whether the beat can ask its daemon, so a beat that cannot is visible at
+/// the default log level without repeating itself every beat: one warning
+/// on the first failure and on each change of cause, one info line when the
+/// answers come back.
+#[derive(Debug, Default)]
+pub(crate) struct BeatHealth {
+    /// The cause of the failure last reported, `None` while answers flow.
+    failing: Option<String>,
+}
+
+impl BeatHealth {
+    /// One query failed for `reason`. Returns the warning to log, or `None`
+    /// when the same cause was reported already.
+    pub(crate) fn failed(&mut self, reason: &str) -> Option<HealthNotice> {
+        if self.failing.as_deref() == Some(reason) {
+            return None;
+        }
+        self.failing = Some(reason.to_string());
+        Some(HealthNotice::Failing {
+            reason: reason.to_string(),
+        })
+    }
+
+    /// One query was answered. Returns the resume line to log, or `None`
+    /// when nothing failed before.
+    pub(crate) fn answered(&mut self) -> Option<HealthNotice> {
+        self.failing
+            .take()
+            .map(|after| HealthNotice::Resumed { after })
     }
 }
 
@@ -354,6 +406,44 @@ mod tests {
             s.assess(quiet_end + 30_000 + 61_000, &relayed()),
             Verdict::Repair { .. }
         ));
+    }
+
+    /// Audit of 1939: a beat that cannot ask its daemon warns on the first
+    /// failure, stays quiet while the cause repeats, warns again when the
+    /// cause changes, and says once at info that answers resumed.
+    #[test]
+    fn a_failing_beat_warns_once_per_cause_and_once_on_resume() {
+        let mut h = BeatHealth::default();
+        assert_eq!(h.answered(), None, "nothing to resume before any failure");
+        assert_eq!(
+            h.failed("RPC failed: auth"),
+            Some(HealthNotice::Failing {
+                reason: "RPC failed: auth".into()
+            })
+        );
+        assert_eq!(h.failed("RPC failed: auth"), None, "no repeat per beat");
+        assert_eq!(h.failed("RPC failed: auth"), None, "no repeat per beat");
+        assert_eq!(
+            h.failed("RPC failed: refused"),
+            Some(HealthNotice::Failing {
+                reason: "RPC failed: refused".into()
+            }),
+            "a changed cause is reported"
+        );
+        assert_eq!(
+            h.answered(),
+            Some(HealthNotice::Resumed {
+                after: "RPC failed: refused".into()
+            })
+        );
+        assert_eq!(h.answered(), None, "the resume is said once");
+        assert_eq!(
+            h.failed("RPC failed: auth"),
+            Some(HealthNotice::Failing {
+                reason: "RPC failed: auth".into()
+            }),
+            "a failure after a resume is reported afresh"
+        );
     }
 
     /// The two RPC answers of a healthy client read as a direct sight,

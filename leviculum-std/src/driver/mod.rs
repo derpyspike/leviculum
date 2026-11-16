@@ -7175,8 +7175,11 @@ pub(crate) async fn shared_instance_first_hop_timeout_ms(
 /// `PATH_SELF_REPAIR dest=… was=…`.
 ///
 /// A beat whose RPC fails (the daemon restarting, a wrong key) repairs
-/// nothing and says so at debug: announcing blind on every RPC hiccup
-/// would turn a daemon restart into an announce burst.
+/// nothing: announcing blind on every RPC hiccup would turn a daemon
+/// restart into an announce burst. It is visible at the default log level
+/// all the same: `PATH_SELF_REPAIR_SKIP` at warn on the first failure and
+/// again when the cause changes, `PATH_SELF_REPAIR_RESUMED` at info once
+/// when the daemon answers again (`crate::path_self_repair::BeatHealth`).
 pub(crate) async fn run_path_self_repair(
     client: crate::rpc::SharedInstanceClient,
     inner: Arc<Mutex<StdNodeCore>>,
@@ -7184,8 +7187,9 @@ pub(crate) async fn run_path_self_repair(
     beat_ms: u64,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
-    use crate::path_self_repair::{sight_from_answers, SelfRepair, Verdict};
+    use crate::path_self_repair::{sight_from_answers, BeatHealth, SelfRepair, Verdict};
     let started = std::time::Instant::now();
+    let mut health = BeatHealth::default();
     let mut states: std::collections::HashMap<leviculum_core::DestinationHash, SelfRepair> =
         std::collections::HashMap::new();
     loop {
@@ -7208,10 +7212,7 @@ pub(crate) async fn run_path_self_repair(
             let authkey = match authkey {
                 Ok(k) => k,
                 Err(e) => {
-                    tracing::debug!(
-                        "PATH_SELF_REPAIR_SKIP dest={} reason=\"no RPC authkey: {e}\"",
-                        dest
-                    );
+                    report_beat_health(&dest, health.failed(&format!("no RPC authkey: {e}")));
                     continue;
                 }
             };
@@ -7233,13 +7234,11 @@ pub(crate) async fn run_path_self_repair(
                         .or(ifn.err())
                         .map(|e| e.to_string())
                         .unwrap_or_default();
-                    tracing::debug!(
-                        "PATH_SELF_REPAIR_SKIP dest={} reason=\"RPC failed: {e}\"",
-                        dest
-                    );
+                    report_beat_health(&dest, health.failed(&format!("RPC failed: {e}")));
                     continue;
                 }
             };
+            report_beat_health(&dest, health.answered());
             let dest_hex = crate::storage::hex_encode(dest.as_bytes());
             let sight = sight_from_answers(&dest_hex, &next_hop, &if_name);
             let now_ms = started.elapsed().as_millis() as u64;
@@ -7262,6 +7261,29 @@ pub(crate) async fn run_path_self_repair(
                 }
             }
         }
+    }
+}
+
+/// Log what [`crate::path_self_repair::BeatHealth`] decided for one query of
+/// the self-repair beat: a warning for a new failure cause, an info line
+/// when answers resume, nothing otherwise.
+fn report_beat_health(
+    dest: &leviculum_core::DestinationHash,
+    notice: Option<crate::path_self_repair::HealthNotice>,
+) {
+    use crate::path_self_repair::HealthNotice;
+    match notice {
+        Some(HealthNotice::Failing { reason }) => tracing::warn!(
+            event = "PATH_SELF_REPAIR_SKIP",
+            dest = %dest,
+            reason = %reason,
+        ),
+        Some(HealthNotice::Resumed { after }) => tracing::info!(
+            event = "PATH_SELF_REPAIR_RESUMED",
+            dest = %dest,
+            after = %after,
+        ),
+        None => {}
     }
 }
 

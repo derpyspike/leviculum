@@ -5,15 +5,21 @@ guards and expects the tool to say so.
 scripts/check-citations-by-name.py (the guard) on a scratch repository:
   a renamed fn, an ambiguous name, a path into another repository and a base
   name are refused; a touched line citation must hold the census verdict
-  `agree` or an untouched citation's old, no-worse verdict (order 1940): a
+  `agree` or be excused by its own base self, or by a base citation the
+  change replaced, written the same and no better (orders 1940, 1955): a
   stale or label-less new number, an agreeing citation moved onto another
-  item, and a file moved under an agreeing citation are refused; a citation
-  fixed onto its item, one that agrees, one renumbered no worse, a moved
-  paragraph, a merge's untouched drift, a new citation into another
-  repository and a marked fixture line pass.
+  item (also beside an untouched drifting sibling), a new drifting or
+  label-less citation beside an untouched one, a drift renumbered while
+  still drifting, a moved drift that became nolabel, and a file moved under
+  an agreeing citation are refused; a citation fixed onto its item, one
+  that agrees, a drift carried word for word into a rewritten line, a
+  label-less citation renumbered in place, a moved paragraph, a merge's
+  untouched drift, a new citation into another repository and a marked
+  fixture line pass.
 scripts/citation-census.py (the drift census) on the same repository:
   agree, drift, nolabel, each foreign reason, a shortened path the page spells
-  out, the table-row rule, and the `//` comment-block rule; and on this
+  out, the table-row rule, and the `//` comment-block rule (a `cfg(test)`
+  is no test attribute); and on this
   repository's own history, the 64 citations commit 8482638d6 renumbered
   (scripts/citations-control-1908.tsv). A clone without that commit FAILS the
   control, unless LEVICULUM_CITATION_CONTROL_WAIVE is set, which turns the
@@ -230,9 +236,23 @@ def guard_controls(repo):
     control("guard: a drifting citation fixed onto its item passes", rc == 0, out)
     write(repo, DRIFTY, DRIFTY_PAGE.replace(L(LIB, 2), L(LIB, 6)))
     rc, out = run(GUARD, repo, "--base", "HEAD")
-    control("guard: a drifting citation renumbered while still drifting passes",
-            rc == 0, out)
+    control("guard: a drifting citation renumbered while still drifting is refused",
+            rc == 1 and "a new line citation" in out, out)
     reset(repo)
+    # The sentence is rewritten, so the citing line is one the diff
+    # changes; the citation in it is written as before.
+    rewritten = page("Text before.", f"Still drifting: `beta` (`{L(LIB, 2)}`).")
+    write(repo, DRIFTY, rewritten)
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a drifting citation carried word for word into a rewritten line passes",
+            rc == 0, out)
+    write(repo, LIB, LIB_RS.replace("fn beta", "fn gamma"))
+    write(repo, "docs/src/page.md", page(f"The first is `alpha` (`{L(LIB, 2)}`)."))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a moved drift that became nolabel is not excused by its base drift",
+            rc == 1 and "a new line citation (verdict nolabel" in out, out)
+    reset(repo)
+    sibling_controls(repo)
     write(repo, "docs/src/page.md", page(f"The last is `beta` (`{L(LIB, 20)}`).",
                                          f"Beta is `{N(LIB, 'beta')}`."))
     rc, out = run(GUARD, repo, "--base", "HEAD")
@@ -283,6 +303,44 @@ def guard_controls(repo):
     reset(repo)
 
 
+def sibling_controls(repo):
+    """An untouched citation keeps its own base entry: it never excuses a
+    touched one of the same cited file and label beside it (order 1955)."""
+    write(repo, "docs/src/page.md", BASE_PAGE + f"\nAgain `alpha` (`{L(LIB, 22)}`).\n")
+    git(repo, "commit", "-qam", "an agreeing and a drifting `alpha`")
+    with_sibling = BASE_PAGE + f"\nAgain `alpha` (`{L(LIB, 22)}`).\n"
+    write(repo, "docs/src/page.md", with_sibling.replace(L(LIB, 2), L(LIB, 6), 1))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: an agreeing citation moved beside an untouched drifting sibling "
+            "is refused", rc == 1 and "a new line citation" in out, out)
+    reset(repo)
+    git(repo, "reset", "-q", "--hard", "HEAD~1")
+
+    write(repo, DRIFTY, DRIFTY_PAGE + f"\nAlso drifting: `beta` (`{L(LIB, 2)}`).\n")
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a new drifting citation beside an untouched one is refused",
+            rc == 1 and "a new line citation" in out, out)
+    write(repo, DRIFTY, DRIFTY_PAGE + f"\nAnd `beta` (`{L(LIB, 9)}`).\n")
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: the base keeps a drift word for word, a second one of its label "
+            "on another item is refused", rc == 1 and "a new line citation" in out, out)
+    reset(repo)
+
+    write(repo, DRIFTY, DRIFTY_PAGE + f"\nSomewhere (`{L(LIB, 6)}`).\n")
+    git(repo, "commit", "-qam", "a label-less citation")
+    write(repo, DRIFTY, DRIFTY_PAGE + f"\nSomewhere (`{L(LIB, 6)}`).\n"
+          f"\nSomewhere else (`{L(LIB, 9)}`).\n")
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a new label-less citation beside an untouched one is refused",
+            rc == 1 and "a new line citation" in out, out)
+    write(repo, DRIFTY, DRIFTY_PAGE + f"\nSomewhere (`{L(LIB, 9)}`).\n")
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a label-less citation renumbered in place passes (no label, no claim "
+            "to judge)", rc == 0, out)
+    reset(repo)
+    git(repo, "reset", "-q", "--hard", "HEAD~1")
+
+
 def language_controls(repo):
     write(repo, "tools/tool.py", "class Klass:\n    def method(self):\n        return 1\n\n\nLIMIT = 3\n")
     write(repo, "Justfile", "# Build it.\nbuild:\n    true\n")
@@ -328,11 +386,13 @@ def census_controls(repo):
     write(repo, stray,
           "fn first() {}\n\n// other_thing: migrated to Storage trait\nfn second() {}\n\n"
           "struct S {\n    a: u32,\n\n    // b_field: moved away\n    c: u32,\n}\n\n"
-          "// third returns nothing.\nfn third() {}\n")
+          "// third returns nothing.\nfn third() {}\n\n"
+          "// other_name: kept for the tests\n#[cfg(test)]\nfn helper() {}\n")
     write(repo, "docs/src/stray.md", page(
         f"Stray: `second` (`{L(stray, 3)}`).",
         f"Field: `S::c` (`{L(stray, 9)}`).",
-        f"Named: `third` (`{L(stray, 13)}`)."))
+        f"Named: `third` (`{L(stray, 13)}`).",
+        f"Cfg: `helper` (`{L(stray, 16)}`)."))
     write(repo, "docs/src/spelled.md", page(
         f"The file is `{LIB}`.", f"Spelled: `alpha` (`{L('src/lib.rs', 3)}`)."))
     write(repo, "docs/src/foreign.md", page(
@@ -371,6 +431,8 @@ def census_controls(repo):
             v(st, 1).get("verdict") in ("drift", "nolabel"), out)
     control("census: a comment that names its item belongs to it",
             v(st, 2).get("verdict") == "agree", out)
+    control("census: `cfg(test)` is no test attribute: a stray comment above it "
+            "does not join the item", v(st, 3).get("verdict") in ("drift", "nolabel"), out)
     s = "docs/src/spelled.md"
     control("census: a shortened path the page spells out is placed",
             v(s, 0).get("verdict") == "agree" and v(s, 0).get("how") == "spelled", out)

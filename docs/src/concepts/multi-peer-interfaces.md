@@ -324,7 +324,7 @@ either way.
 Stack is likewise not per-interface: the send loop iterates, it does not
 recurse. What does scale with the interface count is the broadcast
 fan-out — an announce emits one action per entry in the routing map
-(`interface_names`, `leviculum-core/src/transport.rs:13925`), each
+(`interface_names`, `leviculum-core/src/transport.rs#Transport::interface_names`), each
 carrying a cloned packet. With three BLE children an announce would
 allocate three ~500 B action buffers where today it allocates one that
 `tx_fanout_task` clones per link (`leviculum-nrf/src/ble/mod.rs:302`).
@@ -339,7 +339,7 @@ parent to lean on. Measured against the tree, not assumed:
 |---|---|---|
 | Airtime credit bucket (`AirtimeCredit`, `leviculum-std/src/interfaces/airtime.rs:23`) | **medium** — one radio, one duty cycle | parent |
 | Pre-TX jitter / CSMA deference (`compute_jitter_max_ms`, `leviculum-std/src/interfaces/rnode.rs:369`) | **medium** — contention is on the air | parent |
-| Announce cap and egress slot (`interface_announce_caps`, `leviculum-core/src/transport.rs:3293`; `interface_next_slot_ms`, `leviculum-core/src/transport.rs:3581`) | **medium** — it rations a shared resource | parent (splitting it per link multiplies the budget by the link count) |
+| Announce cap and egress slot (`interface_announce_caps`, `leviculum-core/src/transport.rs#Transport::interface_announce_caps`; `interface_next_slot_ms`, `leviculum-core/src/transport.rs:3581`) | **medium** — it rations a shared resource | parent (splitting it per link multiplies the budget by the link count) |
 | Max-airtime backchannel (`interface_max_airtime_ms`, `leviculum-core/src/transport.rs:3607`) | **medium** | parent |
 | Advertising and scanning (`reconcile_advertising`, `leviculum-std/src/interfaces/ble/mod.rs:1547`; `ScanScheduler`, `leviculum-std/src/interfaces/ble/links.rs:1758`) | **medium** — one adapter | parent |
 | IFAC | **medium** — it is a property of the configured section | parent |

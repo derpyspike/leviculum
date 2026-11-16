@@ -1032,7 +1032,7 @@ Additions (decided):
      named writer, for the source and for the group address — a group
      is not a place and gets no pin of its own. Nothing of it shows in
      the pin, the store, the bubble's position line or the Info
-     (`Writers`, `loquax/src/ui.rs:7110`); each refused reading is said
+     (`Writers`, `loquax/src/ui.rs#Writers`); each refused reading is said
      in one structured `POSITION_REFUSED reason=…` event in `tui.log`,
      nothing on screen — exactly one, where the judging happens: at
      arrival for a verified message, at the valid verdict for a held

@@ -1275,6 +1275,20 @@ pub const EVENT_CATALOG: &[EventSchema] = &[
         name: "PATH_SELF_REPAIR",
         required_keys: &["dest", "was"],
     },
+    // Audit of 1939: the self-repair beat cannot ask its daemon (`reason`:
+    // no authkey, or the RPC failed). Logged at warn on the first failure
+    // and on each change of cause, never once per beat
+    // (`leviculum-std/src/driver/mod.rs#report_beat_health`).
+    EventSchema {
+        name: "PATH_SELF_REPAIR_SKIP",
+        required_keys: &["dest", "reason"],
+    },
+    // Audit of 1939: the daemon answers the beat again after a reported
+    // failure (`after` names its cause); logged once at info.
+    EventSchema {
+        name: "PATH_SELF_REPAIR_RESUMED",
+        required_keys: &["dest", "after"],
+    },
     // Remaining `leviculum-core` transport events.
     EventSchema {
         name: "ANN_SLOW",

@@ -152,9 +152,16 @@ def _plain_comment(line):
     return s.startswith("//") and not s.startswith("///") and not s.startswith("//!")
 
 
+# A test attribute: `#[test]`, or a path ending in `test` (`#[tokio::test]`,
+# `#[tokio::test(flavor = "multi_thread")]`). `#[cfg(test)]` and
+# `#[cfg(not(test))]` are no test attributes: a helper under them is not a
+# test case, and a comment above it is held to naming it like any other.
+TEST_ATTR = re.compile(r"^\s*#\[\s*(?:\w+\s*::\s*)*test\s*[\](]")
+
+
 def _trim_stray_comment(lines, start, head, name):
     """Where the block above an item opens with plain `//` lines, keep them
-    only when the block names the item or the item is a `#[test]`: the
+    only when the block names the item or the item is a test (`TEST_ATTR`): the
     comment a test carries above `#[test]` says what that test pins, but a
     comment naming another identifier (`// announce_rate_table: migrated`
     above `interface_announce_caps`) is not the item's and must not pull
@@ -164,7 +171,7 @@ def _trim_stray_comment(lines, start, head, name):
         k += 1
     if k == start:
         return start
-    if any(re.search(r"#\[[^\]]*\btest\b", lines[i - 1]) for i in range(k, head)):
+    if any(TEST_ATTR.match(lines[i - 1]) for i in range(k, head)):
         return start
     block = " ".join(lines[i - 1] for i in range(start, k))
     if re.search(rf"\b{re.escape(name)}\b", block):

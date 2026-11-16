@@ -695,7 +695,7 @@ because a refusal still leaves the citation red and a reader has to
 unpick it.
 
 Step 4 above, read from the other side, is the mechanism. The proof is
-`Placed::Proved` (`leviculum-std/tests/doc_citations.rs:3457`) — the
+`Placed::Proved` (`leviculum-std/tests/doc_citations.rs#Placed::Proved`) — the
 mapped line's text *now* against the text the *cited number* held in
 the base. The premise of the whole map is therefore that every number
 in the corpus is one the base was right about, and a citation an
@@ -892,19 +892,40 @@ never older than the commit that added the guard — or the cited file
 changed. There is no "unchanged since a merged parent" exemption and no
 line map to trust: a renumbered citation is right because the line it
 points at holds the item its text names, not because a map carried it
-there. The one excuse is a citation of the same cited file and label the
-base held with a verdict no better, each excusing one: a drifting
-citation may ride through a merge, a paragraph move or the fixer's
-renumbering ("guard: a merge with an untouched drifting citation
-passes"), but an agreeing citation moved onto another item is refused
-("guard: an agreeing citation moved onto another item is refused"), a
-file that moved under an agreeing citation refuses until the citation is
-renumbered onto its item ("guard: a file moved under an agreeing
-citation is refused until renumbered"), and a citation a merged
-pre-guard branch wrote against lines that then grew is refused ("guard:
-a merged pre-guard branch's stale number is refused"). A bare name the
-tree cannot place is held only to one of the same name and label having
-stood in the base. Citations into `reference/` and other repositories
+there.
+
+A touched citation that is not `agree` is paired with the base, and the
+pairing never lets one citation stand in for another (order 1955, after
+the audit of 1940 found an untouched sibling excusing a moved one). A
+citation whose citing line the diff left alone, but whose cited file
+changed, answers to its own base self and nothing else: it passes when
+its verdict is no better there in the order `agree`, `drift`, `nolabel`
+("guard: a merge with an untouched drifting citation passes"), and it is
+refused when it fell ("guard: a file moved under an agreeing citation is
+refused until renumbered"). A citation on a line the diff adds or
+changes is excused only by a base citation the change replaced or
+moved, that is, one on a line the diff removed or changed: of the same
+cited file and label, with a verdict no better (a base `drift` never
+excuses a head `nolabel`), and written the same, each excusing one. A
+base citation that still stands untouched keeps its own entry, so an
+agreeing citation moved onto another item is refused even when an
+untouched drifting citation of the same label into the same file stands
+beside it, and a new drifting or label-less citation added beside an
+untouched one of its key is refused (the controls "guard: an agreeing
+citation moved beside an untouched drifting sibling is refused", "guard:
+a new drifting citation beside an untouched one is refused", "guard: a
+new label-less citation beside an untouched one is refused"). Written the
+same means a drifting citation may move with its paragraph but not be
+renumbered while still drifting: a renumbering must land it on its item
+("guard: a drifting citation renumbered while still drifting is
+refused"; the reviewer's decision of 2026-11-16 13:55 says a citation a
+change moves must be `agree`). A citation with no label (`nolabel`)
+makes no claim the census can check and may be renumbered in place of a
+replaced label-less one of its file; a bare name the tree cannot place
+(`foreign`, `unplaced`) likewise, in place of a replaced one of the same
+name and label. A citation a merged pre-guard branch wrote against lines
+that then grew is refused ("guard: a merged pre-guard branch's stale
+number is refused"). Citations into `reference/` and other repositories
 keep the line form. A fixture line that must hold a citation-shaped
 string as data carries `citation-guard: line-fixture`.
 
@@ -912,7 +933,9 @@ The existing line citations are left alone on purpose. Order 1848
 converted 195 files in one pass and trusted numbers that had already
 drifted, so it wrote wrong names that resolved; the guard was green
 because it checks that a name exists, not that it is the item the text
-means. Conversion therefore waits for the measurement:
+means. The one exception so far: order 1955 converted the 32
+drifting citations the repaired guard refused, each to the item its text
+names, and its report lists them. Conversion therefore waits for the measurement:
 `just citation-census` prints, for every existing line citation, the
 label its text gives it, the item at the cited line, and a verdict
 (`agree`, `drift`, `nolabel`, `foreign`; the rule is in

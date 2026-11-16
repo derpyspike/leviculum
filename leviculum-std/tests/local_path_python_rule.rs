@@ -68,6 +68,11 @@ fn a_dead_request_marks_a_local_clients_path_and_the_relay_takes_it() {
 /// copy of a network-first emission installs by the same-emission
 /// fewer-hops clause, and the first dead request takes it away again. No
 /// record, no hold, no round survives in the transport.
+///
+/// This test is green at the base of the revert range (d2dfe0851) as well:
+/// the first-local hold of orders 1898 to 1931 also refused a network-first
+/// replayer. It pins behaviour common to Python's rule and the removed hold,
+/// and is kept as a regression pin, not as proof of the revert.
 #[test]
 fn a_replaying_local_client_holds_nothing() {
     let (mut t, clock) = transport();

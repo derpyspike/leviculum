@@ -4035,15 +4035,18 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.transport.hops_to(dest_hash.as_bytes())
     }
 
-    /// The destinations this node has announced before: registered, not
-    /// explicit-hash, with a cached announce — the same filter the
-    /// interface-up re-announce applies (`announce_local_destinations`).
+    /// The destinations this node would announce again on its own: registered,
+    /// not explicit-hash, with a cached announce (so the application announced
+    /// it before), and not suppressed by the installed [`AnnounceControl`] —
+    /// the four checks the interface-up re-announce
+    /// (`announce_local_destinations`) applies before it emits.
     ///
     /// This is the set whose paths the owner's self-repair watches on a
     /// shared-instance client (reviewer decision 2026-11-16, the beat in
     /// `leviculum-std/src/path_self_repair.rs`): announcing is the
     /// application's decision, so a destination the application never
-    /// announced is never repaired into the mesh either.
+    /// announced, or one its policy keeps off the announce stream, is never
+    /// repaired into the mesh either.
     pub fn announced_destination_hashes(&self) -> Vec<DestinationHash> {
         self.destinations
             .iter()
@@ -4055,6 +4058,10 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
                         .storage()
                         .get_announce_cache(h.as_bytes())
                         .is_some()
+                    && !self
+                        .announce_control
+                        .as_ref()
+                        .is_some_and(|policy| policy.should_suppress_announce(h))
             })
             .map(|(h, _)| *h)
             .collect()
@@ -5257,6 +5264,82 @@ mod tests {
                 .get_announce_cache(hide.as_bytes())
                 .is_some(),
             "after clearing policy the destination announces"
+        );
+    }
+
+    /// Audit of 1939: the set the owner's path self-repair beat watches is
+    /// exactly the destinations the application announced and would still
+    /// announce. Of a registered announced destination, an explicit-hash one
+    /// (with a cache entry), a registered one never announced, and an
+    /// announced one an installed `AnnounceControl` suppresses, only the
+    /// first is returned.
+    #[test]
+    fn announced_destination_hashes_is_what_the_app_would_announce() {
+        struct SuppressOne(DestinationHash);
+        impl crate::announce::AnnounceControl for SuppressOne {
+            fn should_suppress_announce(&self, h: &DestinationHash) -> bool {
+                *h == self.0
+            }
+        }
+        let new_dest = |aspect: &str| {
+            Destination::new(
+                Some(Identity::generate(&mut OsRng)),
+                Direction::In,
+                DestinationType::Single,
+                "app",
+                &[aspect],
+            )
+            .unwrap()
+        };
+
+        let clock = MockClock::new(TEST_TIME_MS);
+        let mut node = NodeCoreBuilder::new().build(OsRng, clock, MemoryStorage::with_defaults());
+
+        let announced = new_dest("announced");
+        let announced_hash = *announced.hash();
+        node.register_destination(announced);
+        let _ = node.announce_destination(&announced_hash, None).unwrap();
+
+        let explicit = Destination::with_explicit_hash(
+            Some(Identity::generate(&mut OsRng)),
+            Direction::In,
+            DestinationType::Single,
+            "app",
+            &["explicit"],
+            [0x5a; 16],
+        )
+        .unwrap();
+        let explicit_hash = *explicit.hash();
+        node.register_destination(explicit);
+        // An explicit-hash destination never announces, so plant the cache
+        // entry by hand: the filter must exclude it on the flag alone.
+        node.transport
+            .storage_mut()
+            .set_announce_cache(explicit_hash.into_bytes(), alloc::vec![0u8; 32]);
+
+        let silent = new_dest("silent");
+        let silent_hash = *silent.hash();
+        node.register_destination(silent);
+
+        let hidden = new_dest("hidden");
+        let hidden_hash = *hidden.hash();
+        node.register_destination(hidden);
+        let _ = node.announce_destination(&hidden_hash, None).unwrap();
+        node.set_announce_control(Some(Box::new(SuppressOne(hidden_hash))));
+
+        // Positive controls: each excluded entry is excluded for its own
+        // reason, not for a missing registration or cache entry.
+        assert!(node.transport.has_destination(explicit_hash.as_bytes()));
+        assert!(node.transport.has_destination(silent_hash.as_bytes()));
+        assert!(node
+            .transport
+            .storage()
+            .get_announce_cache(hidden_hash.as_bytes())
+            .is_some());
+
+        assert_eq!(
+            node.announced_destination_hashes(),
+            alloc::vec![announced_hash]
         );
     }
 

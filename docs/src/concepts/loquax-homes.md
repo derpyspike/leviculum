@@ -173,7 +173,7 @@ fresh random ratchet when it announces after its interval
 every 30 minutes, and keeps 512 (`reference/Reticulum/RNS/Destination.py:85`,
 `:90`). A sender keeps one ratchet per destination, the last it heard
 (`reference/Reticulum/RNS/Identity.py:440`); ours does the same
-(`known_remote_ratchet`, `leviculum-core/src/node/mod.rs:4134`). The
+(`known_remote_ratchet`, `leviculum-core/src/node/mod.rs#NodeCore::known_remote_ratchet`). The
 receiver tries its ring and then the identity key
 (`reference/Reticulum/RNS/Identity.py:910-912`), which cannot open a
 packet sealed to a ratchet. A packet routed to the home without the

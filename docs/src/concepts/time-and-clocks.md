@@ -222,7 +222,7 @@ that passes the sanity window and is refused anyway, because its
 estimate is recognisably behind real time and every expiry it
 computes is already in the past on every healed peer. The gate is
 `NodeCore::has_plausible_wall_clock`
-(`leviculum-core/src/node/mod.rs:4290`), and since Codeberg #247 it
+(`leviculum-core/src/node/mod.rs#NodeCore::has_plausible_wall_clock`), and since Codeberg #247 it
 asks the rank: `anchor_rank() < BIRTH_ANCHOR_RANK`.
 
 Fields the peer decides nothing on are always emitted. The LXMF
@@ -307,7 +307,7 @@ they stay keyed on the value:
   #161 §1 regression this page forbids — instead of healing in one
   step. It now asks `anchor_rank() == BIRTH_ANCHOR_RANK`.
 - **The ticket refusal.** `NodeCore::has_plausible_wall_clock`
-  (`leviculum-core/src/node/mod.rs:4290`) became vacuously true at
+  (`leviculum-core/src/node/mod.rs#NodeCore::has_plausible_wall_clock`) became vacuously true at
   the build floor: the refusal would never fire again, and a
   birth-anchored node would issue tickets whose expiry is already in
   the past on every healed peer — the silently-discarded field the
@@ -324,8 +324,8 @@ tickets or for capping adoption.
 Both switches landed in the same change as the build floor (#247),
 which is what that requirement meant: a port that plumbs the stamp
 without moving the predicates ships both regressions at once. The
-rank is `TimeSource::rank` (`leviculum-core/src/transport.rs:1856`)
-and `BIRTH_ANCHOR_RANK` (`leviculum-core/src/transport.rs:1935`) is
+rank is `TimeSource::rank` (`leviculum-core/src/transport.rs#TimeSource::rank`)
+and `BIRTH_ANCHOR_RANK` (`leviculum-core/src/transport.rs#BIRTH_ANCHOR_RANK`) is
 the constant every predicate compares against.
 
 ## The source ranking
@@ -344,9 +344,9 @@ costs, when it is unavailable, what it guarantees.
 > a different order and were corrected by the issue that implemented
 > this ranking: the rustdoc of `set_wall_time_unix_secs`
 > (`leviculum-core/src/node/mod.rs:1068`, and on the transport at
-> `transport.rs:4242`) said a platform wall clock always takes
+> `leviculum-core/src/transport.rs#Transport::set_wall_time_unix_secs`) said a platform wall clock always takes
 > precedence over an injection — the reverse of arms 2 and 3 — and its
-> `NodeCore::emission_secs` (`leviculum-core/src/node/mod.rs:4258`) rustdoc
+> `NodeCore::emission_secs` (`leviculum-core/src/node/mod.rs#NodeCore::emission_secs`) rustdoc
 > listed the chain as
 > "platform wall clock, learned announce timebase, host injection,
 > uptime". This page is the spec; both now say so, and both name the
@@ -394,7 +394,7 @@ serial channel (the radio-config envelope of
   `test_implausibly_low_wall_time_injection_is_refused`
   (`transport.rs:26095`) and
   `test_absurd_wall_time_injection_is_refused`
-  (`transport.rs:26553`).
+  (`leviculum-core/src/transport.rs#tests::transport_tests::test_absurd_wall_time_injection_is_refused`).
 - **Status:** wired (#238): the control envelope's wall-time frame
   (`docs/src/firmware/usb-control-envelope.md`) carries a u64 of unix
   seconds from the host to the seam; the seam's bool picks the
@@ -430,7 +430,7 @@ also carries anchors *back*: see
   today; a port that has both follows this ranking. The arm reports
   itself as `TimeSource::PlatformClock` only while its value passes
   the window (`time_source`,
-  `leviculum-core/src/transport.rs:5981`); below the build floor it
+  `leviculum-core/src/transport.rs#fn:Transport::time_source`); below the build floor it
   is a dead cell and the calendar stays birth-anchored, which is what
   refuses tickets on a node with a dead RTC.
 
@@ -439,7 +439,7 @@ also carries anchors *back*: see
 The sourceless fallback: `learn_emission_timebase`
 (`transport.rs:6086`) adopts the highest emission timestamp seen in
 any signature-valid announce as the calendar anchor, then advances it
-with the monotonic clock (`transport.rs:5291`). This includes the
+with the monotonic clock (`leviculum-core/src/transport.rs#Transport::learn_emission_timebase`). This includes the
 node's *own* pre-restart announce echoing back from a neighbour —
 learning deliberately runs before the own-destination echo drop, so a
 rebooted node re-seeds past exactly the value its next announce must
@@ -658,7 +658,7 @@ point of resolution (`transport.rs:5301`) and again at the wire
 producer (`announce.rs:167`), so truncation is unrepresentable
 regardless of which source produced the value. Incident: Codeberg
 #160. Pinned at `test_emission_secs_saturates_at_wire_field_max`
-(`transport.rs:26577`).
+(`leviculum-core/src/transport.rs#tests::transport_tests::test_emission_secs_saturates_at_wire_field_max`).
 
 ### The timebase never moves backwards, and adoption is windowed
 
@@ -900,9 +900,9 @@ attributed to a dead RTC, a lying neighbour, or a boot-order race.
 The healing loop raises the stakes: a re-anchor is a calendar jump,
 and an unattributed jump is indistinguishable from a bug. The core
 answers the first half: `Transport::time_source`
-(`leviculum-core/src/transport.rs:5981`) names the arm — including
+(`leviculum-core/src/transport.rs#fn:Transport::time_source`) names the arm — including
 the platform clock, which answers for itself — and
-`NodeCore::anchor_rank` (`leviculum-core/src/node/mod.rs:4296`) is
+`NodeCore::anchor_rank` (`leviculum-core/src/node/mod.rs#NodeCore::anchor_rank`) is
 the number the predicates use. The rest — which neighbour, when, and
 the cohort behind a median re-anchor — is still only the
 once-per-process implausible-own-clock warning
@@ -1018,7 +1018,7 @@ the shared filter to pass it. Arm 2 is
 `test_implausibly_low_wall_time_injection_is_refused`
 (`transport.rs:26095`) and
 `test_absurd_wall_time_injection_is_refused`
-(`transport.rs:26553`). Arm 3 is
+(`leviculum-core/src/transport.rs#tests::transport_tests::test_absurd_wall_time_injection_is_refused`). Arm 3 is
 `test_platform_clock_outside_the_window_is_not_a_time_source`
 (`leviculum-core/src/transport.rs:26272`). Arm 4's floor is
 `test_implausibly_low_floor_recovers_in_one_adoption`
@@ -1063,7 +1063,7 @@ microsecond producer describes the same instant, and that the value
 never repeats; the birth step asserts the clockless stamp is
 exactly build floor plus uptime. Wire saturation is also pinned at
 `test_emission_secs_saturates_at_wire_field_max`
-(`transport.rs:26577`).
+(`leviculum-core/src/transport.rs#tests::transport_tests::test_emission_secs_saturates_at_wire_field_max`).
 
 **5. Emitted high-water** ([healing loop](#the-healing-loop)).
 Unit: no re-anchor — including an arms-1–2-quality backwards

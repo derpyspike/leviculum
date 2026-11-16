@@ -1824,6 +1824,41 @@ mod tests {
     use crate::destination::DestinationHash;
     use alloc::vec;
 
+    /// Audit of 1939: `clear_all` empties what it clears. Six collections of
+    /// different kinds get one entry each, the census sees them, and after
+    /// `clear_all` every collection the census reports is empty.
+    #[test]
+    fn clear_all_empties_every_collection() {
+        let mut s = MemoryStorage::with_defaults();
+        let key = [0x11u8; TRUNCATED_HASHBYTES];
+        s.add_packet_hash([0x22; 32]);
+        s.set_announce_cache(key, vec![1, 2, 3]);
+        s.set_identity(key, Identity::generate(&mut rand_core::OsRng));
+        s.remember_known_ratchet(key, [0x33; RATCHET_SIZE], 1);
+        s.store_dest_ratchet_keys(key, vec![4, 5]);
+        s.retain_known_dest(&key);
+
+        let filled = |s: &MemoryStorage| -> Vec<&'static str> {
+            s.collection_counts()
+                .into_iter()
+                .filter(|c| c.entries > 0)
+                .map(|c| c.name)
+                .collect()
+        };
+        let before = filled(&s);
+        assert!(
+            before.len() >= 6,
+            "positive control: six collections hold an entry, got {before:?}"
+        );
+
+        s.clear_all();
+        assert_eq!(
+            filled(&s),
+            Vec::<&str>::new(),
+            "clear_all left entries behind"
+        );
+    }
+
     /// Codeberg #174: the census and the struct agree, in both directions.
     ///
     /// Rust has no reflection, so the binding is the source text of this very
