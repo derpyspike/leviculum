@@ -568,7 +568,8 @@ offsets from the start of the file:
 - a header: `LMR1`, the version (1, 2 since 1100 with names, 3 since
   1191 with buildings, 4 since 1291 in arrival order, 5 since 1685 with
   pois), the header length
-  (64, 96 for version 2, 112 for version 3 and 4, 128 for version 5),
+  (64, 96 for version 2, 112 for version 3 and 4, at least 128 from
+  version 5),
   the bounds in
   degrees x 10^7 (west, south, east, north; west greater than east means
   across the antimeridian), the zoom range (at most 16, so x and y fit a
@@ -576,7 +577,7 @@ offsets from the start of the file:
   the tile count, where the index lies and the file's length; version 2
   adds where the label index and the string table lie, version 3 where
   the building index lies and how many sections it lists, version 5 the
-  same pair for the poi index;
+  same pair for the poi index and the minimum reader version (below);
 - the two texts, UTF-8 and both required: the attribution, one line every
   map view shows ("© OpenStreetMap contributors"), and the notice, the
   ODbL text, the derived-database sentence and the source the region was
@@ -632,15 +633,35 @@ offsets from the start of the file:
   zoom that has any, after the building sections, and a poi index after
   the building index, last in the file. Every point of interest of the
   `pois` layer goes in, every kind verbatim, named or not, and with it
-  the travel attributes the source carries about ways and areas: the
-  state of a way (surface, track grade, hiking difficulty, trail
-  visibility, fords, access), a marked route's `ref` and `network`, a
-  protected or military area's kind. Kinds, names, attribute keys and
-  values are all indices into the region's one string table, so a reader
-  skips a kind or key it does not know and new ones need no new version.
-  The layout is `leviculum-map/src/pois.rs`'s module comment; the header
-  grows to 128 bytes. A cut without pois writes version 4, which a
-  version 4 reader still reads.
+  the travel attributes the source carries about ways and areas. The cut
+  keeps the state of a way (surface, track grade, hiking difficulty,
+  trail visibility, fords, access), a marked route's `ref` and `network`
+  and a protected or military area's kind wherever the source has them;
+  the Protomaps archives carry only some of it (the source gap,
+  [the expedition map](loquax-expedition-map.md), section 4). Kinds,
+  names, attribute keys and values are all indices into the region's one
+  string table, so a reader skips a kind or key it does not know and new
+  ones need no new version. A point the source gives no `min_zoom` is
+  stored with the rank "unknown" (255), never 0. The layout is
+  `leviculum-map/src/pois.rs`'s module comment; the header grows to 128
+  bytes. A cut without pois writes version 4, which a version 4 reader
+  still reads, and `leviculum-map-tool strip-pois` turns a version 5 file
+  into exactly that file (1714).
+
+**The format grows without shutting readers out (1714).** From version
+5 the header may be longer than a reader knows, and it carries a
+minimum reader version: the oldest reader that reads the file correctly
+by reading the fields it knows and skipping the rest. A later version
+that only adds (a header field, a section, an index after the poi index)
+keeps it at 5, so every version 5 reader reads the file as version 5; a
+change an old reader would misread raises it, and that reader refuses
+the file with `RegionError::Version`. The poi section says the length of
+its head and of each record kind, so a newer writer may lengthen a
+record or add arrays after the attributes and an older reader skips
+them. The map server's index carries a pack's format version and
+minimum reader version beside it ([the map server](map-server.md)), so a
+client skips a region it cannot read and says so before it fetches a
+byte.
 
 **Buildings** (1191, the format and the cut; 1192, the draw).
 Protomaps' z15 tiles carry every OSM building. They are not in the
@@ -679,7 +700,13 @@ it; Loquax cuts its own regions, so in practice only a file copied by hand
 meets an older reader. Since 1291 every cut writes version 4, with
 buildings or without (a section count of 0), and since 1685 version 5
 when pois are cut (the autoload cuts them); this reader reads versions 1
-to 5, a version 4 reader refuses version 5. No region file is
+to 5 and every later version whose minimum reader version is 5, a
+version 4 reader refuses version 5. lnflash says the version of every
+region it writes to an M9 and reads the image's app descriptor first,
+whose version names the region version the image reads (`0.1.7+lmr5`):
+it refuses a region the image would leave off the map, warns when an
+image from before the tag gets a version 5 region, and `--no-pois`
+writes the regions as version 4. No region file is
 published anywhere today: the autoload cuts its regions on the device
 from the Protomaps archive, and the committed fixtures stay version 1 to
 3, which this reader keeps reading.

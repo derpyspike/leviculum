@@ -53,6 +53,17 @@ section "Region file") and, since order 1740, `elevation` (a height
 file, § "Height packs" below); shading and pois-as-their-own-tier get
 their own `kind` strings in the same index without a format change.
 
+Each pack entry names the format version of its file and the oldest
+reader version that reads it (1714, `lnmapd/src/store.rs`): for a
+region the LMR version and the header's minimum reader version. A
+client skips a pack whose minimum reader version is newer than the
+region reader it was built with and tells the user in one sentence to
+update (`lnmapd::client::readable`, which the prefix fetch runs before
+it asks for the first piece); a newer format an old reader still reads
+keeps its minimum reader version, so the update notice appears only for
+a change that needs it. An index written before 1714 says 0 for both,
+and the region's own header decides once it arrives.
+
 ## The pieces: a prefix split of the region file
 
 The region format did the hard work already: from version 4 the file

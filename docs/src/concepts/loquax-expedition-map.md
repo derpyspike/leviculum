@@ -615,6 +615,56 @@ stable, later orders cite them.
   study of its own, at a convenient time.
 - **Place search** is wanted (Lew's opening list); scope is open.
 
+### The points of interest in a region (K3, 1685; 1714)
+
+Since 1685 a cut keeps every point of interest of the deepest zoom in a
+poi section of its own per tile (region version 5,
+`leviculum-map/src/pois.rs`). Measured on the two fixture archives: Oltrarno
+z14-15 holds 21 pois and grows by 6.5 %, Grunewald z12-15 holds 40 and
+grows by 3.2 %. Frankfurt is extrapolated, not measured: 168,433 pois at
+30 to 40 bytes are 5.1 to 6.7 MB. A board pays for them in flash, so
+`leviculum-map-tool strip-pois` and `lnflash --no-pois` write a region
+without them (version 4, the file a cut without pois writes).
+
+**The display rule (proposed, not built).** The source gives pois no
+population rank; its `min_zoom`, the shallowest view that shows a
+point, is the rank, and the record carries it.
+
+1. No pois below view zoom 13.
+2. A point shows at view zoom z when its `min_zoom` is at most z, the
+   filter the labels use. Frankfurt's named pois by `min_zoom`: 1,221
+   at z11-12, 1,640 at z13, 6,239 at z14, 34,540 at z15, of 168,433. A
+   z15 view shows every tier up to 15, so 43,640 named pois over
+   Frankfurt's 1,363 tiles, about 32 per 256-pixel tile (the 1685 report
+   said 25, counting the z15 tier alone; corrected in 1714).
+3. Unnamed pois (benches, waste baskets) only from view zoom 17.
+4. At most 16 per 256-pixel tile of the view, filled in ascending
+   `min_zoom`, ties in the source's order. The cap bites in dense city
+   tiles; 16 is the one number chosen by judgment.
+
+A point the source gives no `min_zoom` is stored as "unknown" (255),
+never 0, which would rank it with the most important points and show it
+at every zoom (1714). The rule treats it as the least important: it
+shows from view zoom 17 on, as the unnamed ones do, and fills a tile's
+cap after every ranked point. In both fixture archives Protomaps ranks
+every poi, so the rule is a guard for other sources.
+
+**The attributes the source does not carry (open decision, 1714).** The
+order of K3 asked for the travel attributes of item 1 below. The cut
+keeps all of them where the source has them, but the Protomaps archive
+has few: in both fixture archives it carries the poi kinds verbatim, a
+poi's `kind_detail`, and on ways `kind_detail`, `ref`, `network`,
+`oneway` (and `service`), asserted on the real data
+(`the_fixture_archives_measure_their_pois`). It carries no surface,
+track grade, hiking difficulty, trail visibility, ford, access, opening
+hours or fuel kind, and a marked route only as `ref` and `network` on
+road pieces, never as a whole named line. Its `kind`, `kind_detail` and
+`min_zoom` are Protomaps' own derivations, not OpenStreetMap tags. So
+those families are not delivered, and the choice is Lew's: an own
+profile cut from OpenStreetMap data (the tags as they are, route
+relations as lines, more cut work on the server), or Protomaps as it is
+(no way state, no opening hours).
+
 ### Other data for travel (decided: all of it, the light things first)
 
 Lew, 2026-11-11: note the ranking, build the low-hanging fruit first
@@ -1167,6 +1217,9 @@ which fetches missing pieces through it.
    phone.
 4. The sizes of everything but elevation in the store, known after the
    first cuts.
+5. The source of the travel attributes: an own OpenStreetMap-derived
+   profile or Protomaps as it is (section 4, "The attributes the source
+   does not carry").
 
 ## 11. What is left for the user to decide
 
