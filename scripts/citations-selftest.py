@@ -177,6 +177,24 @@ def guard_controls(repo):
     reset(repo)
 
 
+def language_controls(repo):
+    write(repo, "tools/tool.py", "class Klass:\n    def method(self):\n        return 1\n\n\nLIMIT = 3\n")
+    write(repo, "Justfile", "# Build it.\nbuild:\n    true\n")
+    write(repo, "crate/Cargo.toml", "[package]\nname = \"c\"\n")
+    names = [N("tools/tool.py", "Klass.method"), N("tools/tool.py", "LIMIT"), N("Justfile", "build"),
+             N("crate/Cargo.toml", "package.name"), N("docs/src/page.md", "page")]
+    write(repo, "docs/src/page.md", BASE_PAGE + "\n" + " ".join(f"`{n}`" for n in names) + "\n")
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: Python, Justfile, TOML and heading names resolve",
+            rc == 0 and f"{len(names) + 1} name citation(s) checked, 0 refused" in out, out)
+    write(repo, "docs/src/page.md", BASE_PAGE + f"\n`{N('tools/tool.py', 'Klass.gone')}` "
+          f"`{N('Justfile', 'gone')}` `{N('docs/src/page.md', 'gone')}`\n")
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a missing Python, recipe or heading name is refused",
+            rc == 1 and out.count("has no item") == 3, out)
+    reset(repo)
+
+
 def census_of(repo):
     rc, out = run(CENSUS, repo)
     recs = {}
@@ -255,6 +273,7 @@ def main():
     repo = scratch()
     try:
         guard_controls(repo)
+        language_controls(repo)
         census_controls(repo)
     finally:
         subprocess.run(["rm", "-rf", repo], check=False)
