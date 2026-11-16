@@ -868,6 +868,28 @@ pub const EVENT_CATALOG: &[EventSchema] = &[
             "prefetch_tiles",
         ],
     },
+    // The view watchdog (1934, `loquax/src/mapload.rs::say_view`, the
+    // watch itself in `loquax/src/ui/viewwatch.rs`): a settled view, the
+    // moment it is whole, a view not whole after 5 s, a drawn cell lost.
+    EventSchema {
+        name: "VIEW_SETTLED",
+        required_keys: &["view", "cells"],
+    },
+    EventSchema {
+        name: "VIEW_WHOLE",
+        required_keys: &["ms", "bytes"],
+    },
+    EventSchema {
+        name: "VIEW_INCOMPLETE",
+        required_keys: &[
+            "ms", "missing", "grey", "standin", "outline", "share", "first", "loads", "cache",
+            "disk",
+        ],
+    },
+    EventSchema {
+        name: "VIEW_REGRESSED",
+        required_keys: &["cell", "from", "to", "cause"],
+    },
     EventSchema {
         name: "LNMSG_ATTACHED",
         required_keys: &["instance", "address"],

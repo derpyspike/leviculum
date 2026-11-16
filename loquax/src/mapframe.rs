@@ -1436,6 +1436,11 @@ impl Frames {
         self.tiles.stats
     }
 
+    /// The tile cache's cap in bytes ([`crate::budget`]).
+    pub fn tile_cap(&self) -> usize {
+        self.budgets.tile_cache_bytes
+    }
+
     /// The tile cache's tiles and bytes.
     pub fn tile_memory(&self) -> (usize, usize) {
         (self.tiles.len(), self.tiles.bytes())
