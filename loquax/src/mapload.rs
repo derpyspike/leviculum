@@ -1369,7 +1369,9 @@ impl Loader {
 
     /// Pause, resume and drop running loads by what the screen wants
     /// (1836): while a box for the screen runs or waits, every load for
-    /// an area off the screen pauses at its next round; once nothing for
+    /// an area off the screen pauses at its next round, and the loads for
+    /// the screen run, the best ranked and oldest first, [`MAX_RUNNING`]
+    /// at most, a paused one back on the screen among them; once nothing for
     /// the screen is left, the paused loads go on, the best ranked first,
     /// [`MAX_RUNNING`] at most, before any new box starts. Past
     /// [`MAX_PAUSED`] paused loads the worst ranked, the latest started
@@ -1400,23 +1402,27 @@ impl Loader {
                 });
             }
         };
+        // While the screen wants, only loads for it may run; a load paused
+        // when the view left and back on the screen now is one of them
+        // (audit of 1836, finding 1): it goes on, best ranked and oldest
+        // first, before a box queued later takes its slot.
+        let mut order: Vec<usize> = (0..self.running.len())
+            .filter(|&n| self.running[n].hold != Hold::Stop)
+            .filter(|&n| !screen_wants || self.running[n].rank.on_screen())
+            .collect();
+        order.sort_by_key(|&n| (self.running[n].rank, self.running[n].started));
+        for (k, &n) in order.iter().enumerate() {
+            let hold = match k < MAX_RUNNING {
+                true => Hold::Run,
+                false => Hold::Pause,
+            };
+            set(&mut self.running[n], hold, &mut steps);
+        }
         if screen_wants {
             for r in &mut self.running {
                 if !r.rank.on_screen() {
                     set(r, Hold::Pause, &mut steps);
                 }
-            }
-        } else {
-            let mut order: Vec<usize> = (0..self.running.len())
-                .filter(|&n| self.running[n].hold != Hold::Stop)
-                .collect();
-            order.sort_by_key(|&n| (self.running[n].rank, self.running[n].started));
-            for (k, n) in order.into_iter().enumerate() {
-                let hold = match k < MAX_RUNNING {
-                    true => Hold::Run,
-                    false => Hold::Pause,
-                };
-                set(&mut self.running[n], hold, &mut steps);
             }
         }
         let mut paused: Vec<usize> = (0..self.running.len())
@@ -2814,6 +2820,46 @@ mod tests {
             state_of(&loader, &c),
             Some(LoadState::Paused { .. })
         ));
+    }
+
+    /// A load paused when the view left goes on when the view comes back
+    /// (audit of 1836, finding 1): back on the screen it runs before any
+    /// later box for the screen starts, instead of waiting paused behind
+    /// a cell queued after it.
+    #[test]
+    fn audit_a_paused_load_back_on_screen_does_not_stay_paused_behind_a_cell() {
+        let (_source, source) = stalling();
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut loader = Loader::new(Maps::new(Some(dir.path().to_path_buf())), source, 1 << 30);
+        let (a, b, c) = (nth(1), nth(2), nth(3));
+        loader.schedule(vec![a.clone()], Vec::new(), 0);
+        loader.schedule(vec![b.clone()], Vec::new(), 10);
+        let holds = |l: &Loader| -> Vec<(i32, Hold)> {
+            l.running
+                .iter()
+                .map(|r| ((r.want.bounds.west - 112_615_000) / 1000, r.hold))
+                .collect()
+        };
+        assert_eq!(holds(&loader), [(1, Hold::Pause), (2, Hold::Run)]);
+        // The view comes back over a, with a new cell c queued after it.
+        let steps = loader.schedule(vec![a.clone(), c.clone()], Vec::new(), 20);
+        assert_eq!(
+            holds(&loader),
+            [(1, Hold::Run), (2, Hold::Pause)],
+            "a back on the screen runs again: {steps:?}"
+        );
+        assert!(
+            steps.contains(&Step::Held {
+                want: a.clone(),
+                how: Held::Resumed
+            }),
+            "{steps:?}"
+        );
+        assert!(
+            !steps.contains(&Step::Started(c.clone())),
+            "the later cell waits behind a: {steps:?}"
+        );
+        assert!(order(&loader).contains(&(3, Rank::Here, false)));
     }
 
     /// A paused load holds a thread and its file: past [`MAX_PAUSED`] the
