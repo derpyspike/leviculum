@@ -566,3 +566,77 @@ fn a_zero_width_area_paints_no_ground() {
     assert_eq!(g.rows, 0);
     assert!(px.chunks(4).all(|p| p == [7, 8, 9, 255]));
 }
+
+/// A ground that has no pack anywhere, counting the rows it is asked.
+struct Nowhere(usize);
+
+impl ground::Ground for Nowhere {
+    fn row(&mut self, _x: i32, _y: i32, _px: &mut [[u8; 3]]) -> bool {
+        self.0 += 1;
+        false
+    }
+}
+
+#[test]
+fn a_ground_without_a_pack_or_a_target_that_cannot_read_leaves_the_frame() {
+    use embedded_graphics::prelude::{DrawTargetExt, Point, Size};
+    use embedded_graphics::primitives::Rectangle;
+    let area = Rectangle::new(Point::new(2, 2), Size::new(10, 6));
+    let mut px = [7u8, 8, 9, 255].repeat(16 * 12);
+    let mut frame = leviculum_mapfill::frame::RgbaFrame::new(&mut px, 16, 12).expect("frame");
+    // No pack covers any row: every row asked, none written.
+    let mut none = Nowhere(0);
+    let Ok(()) = ground::apply(&mut frame, area, &mut none);
+    assert_eq!(none.0, 6);
+    // A target that cannot read its pixels back is left before the ground
+    // is asked at all.
+    let mut g = reg_pack_ground();
+    let mut cropped = frame.cropped(&area);
+    let Ok(()) = ground::apply(
+        &mut cropped,
+        Rectangle::new(Point::zero(), area.size),
+        &mut g,
+    );
+    assert_eq!(g.rows, 0);
+    assert!(
+        px.chunks(4).all(|p| p == [7, 8, 9, 255]),
+        "the frame is untouched"
+    );
+}
+
+#[test]
+fn a_row_off_the_grid_has_no_ground() {
+    // Rows past the last of the world at z11 (2^19 pixel rows).
+    let mut f = Field(desert);
+    for y in [1u64 << 19, (1 << 19) + 5] {
+        let mut px = vec![[1, 2, 3]; 8];
+        assert!(
+            !paint_row(GroundStyle::Strong, 11, 0, y, &mut f, &mut px),
+            "row {y}"
+        );
+        assert!(px.iter().all(|p| *p == [1, 2, 3]), "row {y}");
+    }
+}
+
+#[test]
+fn a_pack_knows_its_kind_and_refuses_wrong_buffers() {
+    let file = pack(&[((250, 210), block(250, 210, stripes))]);
+    let index = PackIndex::of_kind(PackKind::Ground, &file).expect("index");
+    assert_eq!(index.kind(), PackKind::Ground);
+    assert_eq!(PackKind::Ground.tile_bytes(), TILE_CELLS);
+    assert_eq!(PackKind::Heights.tile_bytes(), elevation::TILE_BYTES);
+    let (_, ranges) = elevation::split_of(PackKind::Ground, &file).expect("split");
+    let piece = &file[ranges[1].clone()];
+    let (b, len) = Block::parse_prefix_of(PackKind::Ground, piece).expect("block");
+    assert_eq!((b.kind(), len), (PackKind::Ground, piece.len()));
+    // A heights reader refuses the ground block.
+    assert!(Block::parse_prefix(piece).is_err());
+    let mut dec = TileDecoder::new();
+    let (mut short, mut scratch) = (vec![0u8; 16], vec![0u8; TILE_CELLS]);
+    assert!(matches!(
+        b.classes(&mut dec, 11, 1000, 840, &mut short, &mut scratch),
+        Err(ElevationError::Buffer)
+    ));
+    let mut big = vec![0u8; elevation::TILE_BYTES + 1];
+    assert!(dec.decode_bytes(&[], &mut big).is_err());
+}
