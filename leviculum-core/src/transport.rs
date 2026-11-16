@@ -116,11 +116,11 @@ const ANNOUNCE_SLOW_MS: u64 = 100;
 /// (order 1905). The owner keeps the path through
 /// `LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT - 1` dead requests, which covers a
 /// client that missed a request or two while busy. A new first-heard
-/// install by the client, or a checked link proof over it of a link
-/// started outside the local clients, starts the count again; the proof of
-/// a probe the owner or a sibling client started itself does not (order
-/// 1909). A client that installed a path it cannot answer for (a replayed
-/// announce after an lnsd restart) loses it at the limit. Only expiries
+/// install by the client, or a checked proof over it of a link whose request
+/// entered at the ingress of the last counted dead request (order 1914),
+/// restarts the count; other proofs do not (orders 1909, 1914). A client that
+/// installed a path it cannot answer for (a replayed announce after an lnsd
+/// restart) loses it at the limit. Only expiries
 /// that reach the mark count: one inside `PATH_REQUEST_MIN_INTERVAL_MS` of
 /// the last path request for the destination is throttled before it. The
 /// expiry of a request set before the last checked proof counts as well,
@@ -3923,15 +3923,25 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// ownership ends and the path is marked like any other. A new
     /// first-heard install by the client starts the count again
     /// (`Storage::note_unproven_local_path_expiry`), and so does a checked
-    /// proof over it of a link started outside the local clients. The proof
-    /// of a probe the owner or a sibling client started itself leaves the
-    /// count as it is (order 1909): a client answering only its own probes
-    /// while network initiators' requests die loses the path at the bound.
-    /// A client that relays for a destination it does not host therefore
-    /// keeps the path while the destination keeps answering network
-    /// requests through it, which is a working path
-    /// (accepted under the deviation rule: wire unchanged, Python peers'
-    /// links still reach the destination, P1 keeps a proven route).
+    /// proof over it of a link whose request entered at the ingress
+    /// (interface and peer) of the last dead request counted (order 1914,
+    /// `Storage::note_local_path_proof`). The proof of a probe the owner or
+    /// a sibling client started itself leaves the count as it is (order
+    /// 1909), and so does one of a request from any other ingress: a local
+    /// process that also reaches lnsd over a TCP, LAN or backbone
+    /// connection and proves only probes it started there loses the path at
+    /// the bound. A proof grants an ownership the path does not have only
+    /// while the path is not marked, so a probe after the bound does not
+    /// hand it back.
+    ///
+    /// A kept path is not proven to be a working route. The check tells
+    /// link requests apart only by where they entered this node; a link
+    /// request names no initiator. A client whose own probes enter at the
+    /// same ingress as the dead requests (through the same backbone peer)
+    /// can still restart the count while other initiators' requests die.
+    /// Accepted under the deviation rule: wire unchanged, Python peers'
+    /// links still reach the destination, and P1 keeps a path whose last
+    /// failing neighbour is being answered again.
     ///
     /// A client that replays a destination the network announced first, or
     /// hands in a relayed HEADER_2 copy, owns nothing and its path is marked
@@ -3941,12 +3951,26 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// (Transport.py:746-753); the state is ours alone, the wire is
     /// unchanged (deviation rule, P1).
     pub fn mark_path_unresponsive(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
+        self.mark_path_unresponsive_from(dest_hash, None)
+    }
+
+    /// [`Self::mark_path_unresponsive`] for a dead link request that entered
+    /// at `ingress` (order 1914). An owned path remembers the ingress of the
+    /// last dead request it counted, and only a proof of a request from that
+    /// same ingress restarts its count (`Storage::note_local_path_proof`).
+    fn mark_path_unresponsive_from(
+        &mut self,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+        ingress: Option<crate::storage_types::LinkIngress>,
+    ) -> bool {
         let Some(path) = self.storage.get_path(dest_hash) else {
             return false;
         };
         let iface = path.interface_index;
         if self.local_client_owns(dest_hash, path) {
-            let unproven = self.storage.note_unproven_local_path_expiry(dest_hash);
+            let unproven = self
+                .storage
+                .note_unproven_local_path_expiry(dest_hash, ingress);
             if unproven < LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT {
                 crate::tracing::debug!(
                     event = "PATH_KEPT_LOCAL",
@@ -6671,7 +6695,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// recall source is the cached announce for the destination
     /// (`get_announce_cache`, keyed by destination hash, holding the raw announce
     /// whose payload starts with the 64-byte public key), the same source the
-    /// link-request path uses at transport.rs:8537. A destination with no cached
+    /// link-request path uses at transport.rs:8561. A destination with no cached
     /// announce cannot be associated with an identity, so it is left untouched,
     /// exactly as Python keeps a path whose `Identity.recall` returns `None`.
     ///
@@ -8932,7 +8956,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                         // NOT dest_hash — for a link packet dest_hash is the link
                         // id (Transport.py:1498), so the path table never keys on
                         // it and every field read `none`. The destination survives
-                        // only at IDX_LT_DSTHASH (storage_types.rs:84).
+                        // only at IDX_LT_DSTHASH (storage_types.rs:91).
                         let (path_hops_now, path_age_ms, path_next_hop, path_iface) =
                             self.path_entry_log_fields(&link_entry.destination_hash, now_ms);
                         if self.config.lrproof_rewrite_on_asymmetry {
@@ -9252,6 +9276,16 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     // the network sends, so it neither confirms ownership nor
                     // restarts the unproven-expiry count; otherwise a client
                     // answering only its own probes held the path forever.
+                    // Order 1914: "outside the local clients" is not "not
+                    // started by the client", because a local process can
+                    // also reach lnsd over a TCP, LAN or backbone connection
+                    // and start its probes there. So an owner's count
+                    // restarts only for a proof of a request that entered at
+                    // the ingress of the last dead request it counted (the
+                    // client answered the neighbour it had let down), and a
+                    // proof grants an ownership only to a path not already
+                    // marked unresponsive, so a probe after the bound does not
+                    // hand the path back.
                     if packet.context == PacketContext::Lrproof
                         && link_entry.peer_signing_key.is_some()
                         && self.is_local_client(interface_index)
@@ -9261,8 +9295,16 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                             .get_path(&link_entry.destination_hash)
                             .is_some_and(|p| p.interface_index == interface_index)
                     {
-                        self.storage
-                            .set_local_path_owner(link_entry.destination_hash, interface_index);
+                        let dest = link_entry.destination_hash;
+                        if self.storage.local_path_owner(&dest) == Some(interface_index) {
+                            let ingress = (
+                                link_entry.received_interface_index,
+                                link_entry.received_peer,
+                            );
+                            self.storage.note_local_path_proof(&dest, ingress);
+                        } else if !self.path_is_unresponsive(&dest) {
+                            self.storage.set_local_path_owner(dest, interface_index);
+                        }
                     }
                     if let Some(entry) = self.storage.get_link_entry_mut(&dest_hash) {
                         entry.validated = true;
@@ -14534,7 +14576,8 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     // this request die does not get the emission back.
                     // Order 1898: not for a path the mark kept, which
                     // stays and logs no PATH_UNRESPONSIVE.
-                    if self.mark_path_unresponsive(&dest_hash)
+                    let ingress = (entry.received_interface_index, entry.received_peer);
+                    if self.mark_path_unresponsive_from(&dest_hash, Some(ingress))
                         && !self.link_proven_since(&dest_hash, entry.timestamp_ms)
                     {
                         self.refuse_unresponsive_next_hop(&dest_hash);
@@ -19364,7 +19407,7 @@ mod tests {
             // stored timebase, must be rejected. Acceptance is observed via
             // the PathFound event, which fires only when the table updates.
             // (The rejected blob is still RECORDED for replay detection —
-            // `random_blobs` (transport.rs:8359), a deliberate anti-replay
+            // `random_blobs` (transport.rs:8383), a deliberate anti-replay
             // extension — so the blob count is not a rejection indicator.)
             transport
                 .clock

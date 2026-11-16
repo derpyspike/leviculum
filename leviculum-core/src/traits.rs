@@ -904,16 +904,37 @@ pub trait Storage {
     ///
     /// The default keeps nothing, which is right for a store that never
     /// serves local clients (the boards): no path is owned, every path is
-    /// markable. A store behind a shared instance must override all five.
+    /// markable. A store behind a shared instance must override all six.
     fn set_local_path_owner(&mut self, _dest_hash: [u8; TRUNCATED_HASHBYTES], _iface_id: usize) {}
 
     /// Count one more consecutive unproven link-request expiry against the
     /// owner of the path to `dest_hash` and return the count so far
-    /// (order 1905). `set_local_path_owner` starts the count at zero again.
-    /// The default owns nothing and returns `u8::MAX`, which no hold
-    /// survives.
-    fn note_unproven_local_path_expiry(&mut self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> u8 {
+    /// (order 1905). `ingress` is where the dead request entered, `None`
+    /// when the caller does not know; it replaces the ingress the last count
+    /// remembered (order 1914). `set_local_path_owner` starts the count at
+    /// zero again. The default owns nothing and returns `u8::MAX`, which no
+    /// hold survives.
+    fn note_unproven_local_path_expiry(
+        &mut self,
+        _dest_hash: &[u8; TRUNCATED_HASHBYTES],
+        _ingress: Option<crate::storage_types::LinkIngress>,
+    ) -> u8 {
         u8::MAX
+    }
+
+    /// A checked link proof came back over the owner of the path to
+    /// `dest_hash` for a link request that entered at `ingress` (order
+    /// 1914). Restart the unproven-expiry count, and return true, only when
+    /// `ingress` is where the last counted dead request entered: the client
+    /// answered the neighbour whose request it had let die. A proof of a
+    /// request from anywhere else, its own probes over a second connection
+    /// among them, leaves the count as it is. The default owns nothing.
+    fn note_local_path_proof(
+        &mut self,
+        _dest_hash: &[u8; TRUNCATED_HASHBYTES],
+        _ingress: crate::storage_types::LinkIngress,
+    ) -> bool {
+        false
     }
 
     /// The local client interface that owns the path to `dest_hash`, if any.

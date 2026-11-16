@@ -34,7 +34,7 @@ use crate::constants::{
 use crate::identity::Identity;
 use crate::storage_census::CollectionCount;
 use crate::storage_types::{
-    AnnounceEntry, AnnounceRateEntry, LinkEntry, PacketReceipt, PathEntry, PathState,
+    AnnounceEntry, AnnounceRateEntry, LinkEntry, LinkIngress, PacketReceipt, PathEntry, PathState,
     ReceiptStatus, ReverseEntry,
 };
 use crate::traits::Storage;
@@ -275,6 +275,11 @@ struct RateSlot {
 /// rather than one each (#715).
 pub const DEPARTED_REVERSE_IFACES_CAP: usize = 256;
 
+/// One owned local path (orders 1898, 1905, 1914): the owning local-client
+/// interface, the consecutive unproven link-request expiries counted since
+/// the owner was set, and the ingress of the last one counted.
+type LocalPathOwner = (usize, u8, Option<LinkIngress>);
+
 /// In-memory storage with configurable per-collection capacity limits.
 ///
 /// Uses BTreeMap/BTreeSet for all collections. Not persistent, all data is
@@ -452,14 +457,16 @@ pub struct MemoryStorage {
     /// Destination to the local client interface that owns its path
     /// (`Storage::set_local_path_owner`) and the consecutive unproven
     /// link-request expiries counted against it since the owner was set
-    /// (`Storage::note_unproven_local_path_expiry`). Removal: an announce
+    /// (`Storage::note_unproven_local_path_expiry`), with the ingress of the
+    /// last one counted, which a proof must match to restart the count
+    /// (`Storage::note_local_path_proof`, order 1914). Removal: an announce
     /// that installs the destination from elsewhere, the client's
     /// disconnect, the expiry bound.
     ///
     /// **Eviction: oldest first.** Same population as
     /// `local_client_dest_map`; an owner dropped early only makes its path
     /// markable again, the behaviour of every path that is not owned.
-    local_path_owners: BoundedMap<[u8; TRUNCATED_HASHBYTES], (usize, u8)>,
+    local_path_owners: BoundedMap<[u8; TRUNCATED_HASHBYTES], LocalPathOwner>,
 
     // Discovery path requests
     /// Pending discovery path requests: dest_hash → (requesting_interface, timeout_ms)
@@ -976,10 +983,10 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // local_path_owners: BTreeMap<[u8; 16], (usize, u8)>, 3x (orders 1898, 1905)
+        // local_path_owners: BTreeMap<[u8; 16], LocalPathOwner>, 3x (orders 1898, 1905, 1914)
         let n = self.local_path_owners.len();
         let raw = (n
-            * (HASH_ORDER_BYTES + TRUNCATED_HASHBYTES + core::mem::size_of::<(usize, u8)>()))
+            * (HASH_ORDER_BYTES + TRUNCATED_HASHBYTES + core::mem::size_of::<LocalPathOwner>()))
             as u64;
         let est = raw * 3;
         total += est;
@@ -1779,23 +1786,44 @@ impl Storage for MemoryStorage {
     }
 
     fn set_local_path_owner(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], iface_id: usize) {
-        self.local_path_owners.insert(dest_hash, (iface_id, 0));
+        self.local_path_owners
+            .insert(dest_hash, (iface_id, 0, None));
     }
 
-    fn note_unproven_local_path_expiry(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> u8 {
+    fn note_unproven_local_path_expiry(
+        &mut self,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+        ingress: Option<LinkIngress>,
+    ) -> u8 {
         match self.local_path_owners.get_mut(dest_hash) {
-            Some((_, expiries)) => {
+            Some((_, expiries, last_dead)) => {
                 *expiries = expiries.saturating_add(1);
+                *last_dead = ingress;
                 *expiries
             }
             None => u8::MAX,
         }
     }
 
+    fn note_local_path_proof(
+        &mut self,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+        ingress: LinkIngress,
+    ) -> bool {
+        match self.local_path_owners.get_mut(dest_hash) {
+            Some((_, expiries, last_dead)) if *last_dead == Some(ingress) => {
+                *expiries = 0;
+                *last_dead = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn local_path_owner(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<usize> {
         self.local_path_owners
             .get(dest_hash)
-            .map(|(iface, _)| *iface)
+            .map(|(iface, _, _)| *iface)
     }
 
     fn clear_local_path_owner(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) {
@@ -1803,7 +1831,7 @@ impl Storage for MemoryStorage {
     }
 
     fn clear_local_path_owners_of(&mut self, iface_id: usize) {
-        self.local_path_owners.retain(|_, (i, _)| *i != iface_id);
+        self.local_path_owners.retain(|_, (i, _, _)| *i != iface_id);
     }
 
     // Local Client Known Destinations
@@ -3128,7 +3156,7 @@ mod diagnostic_model_tests {
         );
         assert_eq!(
             raw_bytes_of(&dump, "local_path_owners"),
-            (HASH_ORDER_BYTES + TRUNCATED_HASHBYTES + size_of::<(usize, u8)>()) as u64,
+            (HASH_ORDER_BYTES + TRUNCATED_HASHBYTES + size_of::<LocalPathOwner>()) as u64,
         );
         assert_eq!(
             raw_bytes_of(&dump, "discovery_path_requests"),
