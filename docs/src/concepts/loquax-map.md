@@ -1039,7 +1039,10 @@ config, #471) says the map works without a step. Decided 2026-10-27
   the deeper the higher (1836; before, the deepest drew last and the
   same view drew differently by landing order). A region still arriving
   or paused draws only into the squares of the tiles it has, so where it
-  has nothing yet the region under it shows (1836, Lew's rule 8a). A
+  has nothing yet the region under it shows (1836, Lew's rule 8a), and
+  lays no coarser stand-in over a complete region drawn under it whose
+  data there is as deep or deeper (1910); each square draws only the
+  tiles that meet it. A
   place's map is fitted again to the region when it lands, unless the
   reader touched the map since (1819: any key, drag or wheel ends it);
   no other load moves the view.
@@ -1064,12 +1067,16 @@ config, #471) says the map works without a step. Decided 2026-10-27
   view left, of which it keeps the newest eight. A load runs a round of
   its cut at a time (1836): while anything for the screen runs or waits,
   a load the view left pauses at its next round, its file kept and drawn
-  as far as it came, and the screen's load starts at once; once the
-  screen has its box the paused loads go on, before any new box starts.
-  Two run at most, four wait paused at most, past that the worst ranked
-  is dropped and queued again. At 200 kB/s the load walk's
-  wheel-rested-slow measured the screen waiting 322 ms behind loads the
-  view left, 15.4 s before (43.6 s in 1811's walk). Measured with the facade
+  as far as it came, and the screen's load starts at once; a paused load
+  whose area is back on the screen goes on before any later box for the
+  screen starts (1910); once the screen has its box the paused loads go
+  on, before any new box starts. Two run at most, four wait paused at
+  most, past that the worst ranked is dropped and queued again. When a
+  landing for the screen needs space, the paused loads' files go first,
+  each load stopped and queued again (1910). At 200 kB/s the load walk's
+  wheel-rested-slow at the head of 1836 measured the screen waiting
+  308 ms behind loads the view left, 15.4 s before (43.6 s in 1811's
+  walk). Measured with the facade
   and a source that never answers (`a_pan_into_the_empty_loads_what_is_on_screen_at_once`,
   a frame every 16 ms): a pan of a screen and a half that rests, one that
   goes on slowly, a fling that coasts and a zoom out by two steps each

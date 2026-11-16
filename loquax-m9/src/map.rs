@@ -1193,7 +1193,10 @@ impl<'r> Map<'r> {
     }
 
     /// The region `view` draws (1477): the detailed region under it whose
-    /// zooms reach the view's, the deepest first; else the world while
+    /// zooms reach the view's, by the one rule every frontend stacks
+    /// regions by ([`leviculum_map::choice::draw_rank`], 1910): its own
+    /// deepest zoom the view's first, then deeper ones the nearer the
+    /// better, then shallower ones the deeper the better; else the world while
     /// its zooms reach (two past its deepest and the map core's overzoom
     /// beyond); else a detailed region under the view at any zoom, as the
     /// board drew before it carried the world; else nothing.
@@ -1206,7 +1209,12 @@ impl<'r> Map<'r> {
         let useful = under
             .iter()
             .filter(|(_, r)| leviculum_map::choice::useful_zooms(r.header()).contains(&view.zoom()))
-            .max_by_key(|(i, r)| (r.header().max_zoom, core::cmp::Reverse(*i)));
+            .max_by_key(|(i, r)| {
+                (
+                    leviculum_map::choice::draw_rank(r.header().max_zoom, view.zoom()),
+                    core::cmp::Reverse(*i),
+                )
+            });
         if let Some((i, _)) = useful {
             return Drawn::Detail(*i);
         }

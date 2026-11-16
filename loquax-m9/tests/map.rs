@@ -1083,3 +1083,43 @@ fn the_time_zone_view_draws_its_borders() {
         assert!(n > 50, "{n} zone border pixels, kept {keep}");
     }
 }
+
+/// Order 1910: the board picks its region by the rule every frontend
+/// stacks regions by (`leviculum_map::choice::draw_rank`): of two regions
+/// under the view, the one whose own deepest zoom is the view's, not a
+/// deeper one, whose data at the view's zoom a cut simplified. The second
+/// region is the fixture with a max zoom one shallower (header byte 25):
+/// at that zoom it is the one drawn, at the fixture's own the fixture.
+#[test]
+fn the_board_picks_the_region_the_frontends_draw_on_top() {
+    use leviculum_map::mercator::{project, LatLon};
+    use leviculum_map::region::Region;
+    use leviculum_map::viewport::Viewport;
+    let header = *Region::from_bytes(FIXTURE).expect("fixture").header();
+    let shallow = header.max_zoom - 1;
+    assert!(header.min_zoom <= shallow, "{header:?}");
+    let mut copy = FIXTURE.to_vec();
+    copy[25] = shallow;
+    assert_eq!(
+        Region::from_bytes(&copy).expect("copy").header().max_zoom,
+        shallow
+    );
+    let board = Map::board(FIXTURE, &[&copy]).expect("regions");
+    let b = header.bounds;
+    let at = project(LatLon::from_e6(
+        ((i64::from(b.south) + i64::from(b.north)) / 20) as i32,
+        ((i64::from(b.west) + i64::from(b.east)) / 20) as i32,
+    ));
+    let view = Viewport::new(at, shallow, 320, 240);
+    assert_eq!(
+        board.choose(&view),
+        map::Drawn::Detail(1),
+        "z{shallow}: the region whose deepest zoom is the view's"
+    );
+    let own = Viewport::new(at, header.max_zoom, 320, 240);
+    assert_eq!(
+        board.choose(&own),
+        map::Drawn::Detail(0),
+        "the fixture's own zoom"
+    );
+}
