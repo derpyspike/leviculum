@@ -67,6 +67,8 @@ pub mod address;
 pub mod body;
 #[cfg(feature = "browse")]
 pub mod browse_fetch;
+#[cfg(feature = "picture")]
+pub mod budget;
 pub mod clock;
 pub mod code;
 pub mod config;

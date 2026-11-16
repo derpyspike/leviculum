@@ -10,8 +10,9 @@
 //! map comes from [`TileCache`]: the tiles of the step nearest the zoom,
 //! scaled to it, and while the view moves the step the last frame was
 //! composed from as long as the zoom is within a step of it, with at most
-//! [`MOVING_TILES_PER_WORKER`] missing tiles drawn a worker, the rest
-//! shown from cached steps and owed ([`Shot::missing`]: ask again).
+//! the machine's frame budget of missing tiles drawn
+//! ([`crate::budget::Budgets::frame_tiles`], rule 6), the rest shown from
+//! cached steps and owed ([`Shot::missing`]: ask again).
 //!
 //! The names are placed at rest, over the frame after the pins, and kept
 //! as sprites; a pan at the zoom at rest draws them where the view moved
@@ -53,16 +54,11 @@ use leviculum_mapfill::style::{MapTheme, Style};
 use crate::mapnames::{self, Mask, Mip, PlacedName, Sprite, Typesetter, MIP_BELOW};
 use crate::picture::{Maps, Painter};
 use crate::screenmap::{self, Placed};
-use crate::tiles::{self, Frame as TileFrame, Motion, Plan, Stats, TileCache, BUDGET_MB};
+use crate::tiles::{self, Frame as TileFrame, Motion, Plan, Stats, TileCache};
 use crate::ui::map::MapPin;
 // The gesture maths every frontend shares, the terminal's too, which
 // carries no `screenmap` (audit of 1818, condition 8).
 pub use crate::mapgesture::{blends, drag, drag_about, ground_under, turns, zoom_about};
-
-/// Missing tiles a frame draws while the view moves, per worker thread:
-/// the rest are shown from the step before and drawn in the frames that
-/// follow.
-pub const MOVING_TILES_PER_WORKER: usize = 2;
 
 /// One frame asked of [`Frames::frame`].
 #[derive(Clone, Copy)]
@@ -240,6 +236,9 @@ pub struct Prefetched {
 /// cache, the painter the names are looked up in, the typesetter, the
 /// names the last frame at rest placed, the motion, the prefetch's plan.
 pub struct Frames {
+    /// The tile cache's bytes, the tiles a moving frame draws and those a
+    /// view at rest prefetches (rule 6, [`crate::budget`]).
+    budgets: crate::budget::Budgets,
     painter: Painter,
     type_: Typesetter,
     /// The map without names and pins, in tiles (1134).
@@ -477,17 +476,25 @@ pub struct DrawnName {
 }
 
 impl Frames {
-    /// The frames over `maps`, the cache within [`BUDGET_MB`].
+    /// The frames over `maps`, within the budgets of the machine this
+    /// runs on ([`crate::budget::here`], rule 6).
     pub fn new(maps: Maps) -> Self {
+        Self::with_budgets(maps, crate::budget::here())
+    }
+
+    /// The frames over `maps` within `budgets`: a measuring tool's or a
+    /// test's machine, the same on every host.
+    pub fn with_budgets(maps: Maps, budgets: crate::budget::Budgets) -> Self {
         let mut painter = Painter::new(maps.clone());
         // The frames draw whole views: their world views blend into
         // the globe (1710, 1809), in the picture (the cache
         // draws a blended frame whole) and in the names the painter
         // anchors; the cache's own tile painters stay Mercator-linear.
         painter.set_world_blend(true);
-        let mut tiles = TileCache::new(maps, BUDGET_MB << 20);
+        let mut tiles = TileCache::new(maps, budgets.tile_cache_bytes);
         tiles.set_world_blend(true);
         Self {
+            budgets,
             painter,
             type_: Typesetter::new(),
             tiles,
@@ -653,9 +660,7 @@ impl Frames {
             zoom: tile_zoom,
             style: ask.style,
             scale: ask.scale,
-            render_limit: ask
-                .moving
-                .then(|| self.tiles.workers() * MOVING_TILES_PER_WORKER),
+            render_limit: ask.moving.then_some(self.budgets.frame_tiles),
             fallback: self.last_zoom,
             moving: ask.moving,
             asked: shown,
@@ -1346,7 +1351,9 @@ impl Frames {
         let mut planned = None;
         if self.plan.is_none() {
             let heading = self.motion.rest_heading(now_ms);
-            self.plan = Some(tiles::plan(&frame, heading, self.motion.zoomed_out, zooms));
+            let mut plan = tiles::plan(&frame, heading, self.motion.zoomed_out, zooms);
+            plan.budget = plan.budget.min(self.budgets.prefetch_tiles);
+            self.plan = Some(plan);
             planned = Some(frame);
         }
         let workers = self.tiles.workers();
@@ -2165,10 +2172,9 @@ mod tests {
     fn the_fast_paths_give_the_frames_of_the_old_ones() {
         let centre = project(LatLon::from_degrees(43.7731, 11.2560));
         for (scale, theme) in [(1.0, MapTheme::Light), (2.75, MapTheme::Dark)] {
-            // Both on the same workers: a moving frame draws
-            // `MOVING_TILES_PER_WORKER` missing tiles a worker, so a side
-            // left on the host's count owes others where it has few cores
-            // (1167).
+            // Both on the same workers and the same machine's frame
+            // budget (`budget::Budgets::frame_tiles`): a side left on the
+            // host's count owes others where it has few cores (1167).
             let mut old = reference();
             old.set_workers(4);
             let mut new = florence();

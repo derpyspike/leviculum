@@ -856,6 +856,18 @@ pub const EVENT_CATALOG: &[EventSchema] = &[
         name: "LNMSG_SENDER",
         required_keys: &["from", "source"],
     },
+    // The map's budgets from the machine's facts, said once at start
+    // (`loquax/src/budget.rs`, rule 6 of order 1836, built in 1910).
+    EventSchema {
+        name: "MAP_BUDGET",
+        required_keys: &[
+            "ram_mb",
+            "cores",
+            "tile_cache_mb",
+            "frame_tiles",
+            "prefetch_tiles",
+        ],
+    },
     EventSchema {
         name: "LNMSG_ATTACHED",
         required_keys: &["instance", "address"],

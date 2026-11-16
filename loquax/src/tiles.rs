@@ -35,7 +35,7 @@
 //! screen's density). A tile drawn while a region in it was still being
 //! written, some of its data stood in for ([`crate::picture::Drawn::pending`],
 //! 1291), is held until the region gains tiles ([`Maps::progress`]) and
-//! then drawn again, so the map fills in while the region arrives. [`BUDGET_MB`] bounds it; a prefetched tile no frame
+//! then drawn again, so the map fills in while the region arrives. The budget it is made with bounds it (the machine's, `crate::budget`, rule 6; [`BUDGET_MB`] the tests'); a prefetched tile no frame
 //! used yet goes first, then the least recently used.
 //!
 //! A view at rest prefetches (1135): [`plan`] lists the zoom out of the
@@ -68,8 +68,9 @@ use crate::picture::{Maps, Painter};
 
 /// A tile's side in pixels of its zoom step.
 pub const TILE: u32 = 256;
-/// The cache's bound: 384 tiles of 256 KiB, a 1080 x 2400 screen with a
-/// quarter screen of margin three times over.
+/// A cache's bound for the tests and the measuring tools: 384 tiles of
+/// 256 KiB, a 1080 x 2400 screen with a quarter screen of margin three
+/// times over. The frames take the machine's (`crate::budget`, rule 6).
 pub const BUDGET_MB: usize = 96;
 /// A tile's bytes.
 pub const TILE_BYTES: usize = (TILE * TILE * 4) as usize;

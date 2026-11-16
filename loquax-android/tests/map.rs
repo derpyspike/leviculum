@@ -984,8 +984,8 @@ fn a_frame_with_margins_covers_them() {
         moving: true,
         ..request(home.path(), false)
     };
-    // A frame while the finger moves draws a few missing tiles a worker
-    // and owes the rest (`MOVING_TILES_PER_WORKER`), so with few cores the
+    // A frame while the finger moves draws a few missing tiles a core and
+    // owes the rest (`loquax::budget::Budgets::frame_tiles`), so with few cores the
     // first one shows stand-ins: ask again while it owes any, as Java does
     // (1167). Each answer draws more, so this ends.
     let (mut shown, mut big) = frame(&loquax_android::map::render(&wide, Some(Vec::new()), now()));

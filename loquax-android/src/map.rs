@@ -27,8 +27,9 @@
 //! and a frame while the finger moves draws them where the view moved
 //! them, so they never leave the picture (1134). While a pinch stays
 //! within a step of the tiles it started on, it keeps them, and a frame
-//! draws at most [`MOVING_TILES_PER_WORKER`] missing tiles a worker,
-//! showing the step before where the rest are owed. The frame itself is
+//! draws at most the machine's frame budget of missing tiles
+//! ([`loquax::budget::Budgets::frame_tiles`], rule 6), showing the step
+//! before where the rest are owed. The frame itself is
 //! [`loquax::mapframe`]'s, which the window draws through too (1144).
 //!
 //! A frame at rest that owes no tile leaves the view to prefetch (1135):
@@ -83,8 +84,6 @@ use crate::schema::{
     RegionRow, TrackChoice, VERSION,
 };
 use crate::session::pins_in;
-
-pub use loquax::mapframe::MOVING_TILES_PER_WORKER;
 
 /// What the map screen says on "load this area" over a view the regions
 /// hold already: the terminal's words.

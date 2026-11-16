@@ -410,7 +410,8 @@ pub const BLANK_MAX_PCT: f64 = 0.5;
 /// smoothing.
 pub const SPACE_MAX_PCT: f64 = 2.0;
 /// Megabytes the live heap may keep after a gesture: the tile cache's
-/// budget ([`loquax::tiles::BUDGET_MB`]) and the names' sprites with it.
+/// budget (at most [`loquax::budget::CACHE_CEILING_MB`], rule 6) and the
+/// names' sprites with it.
 pub const HEAP_KEPT_MAX_MB: f64 = 160.0;
 /// Megabytes the live heap may grow during a gesture: the kept budget
 /// and a few frames of the largest size in flight.
