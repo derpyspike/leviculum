@@ -1017,3 +1017,139 @@ pub fn render(
     );
     Rendered { picture, placed }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::tracks::{self, Track};
+
+    fn pin(peer: u8) -> Placed {
+        Placed {
+            peer: [peer; 16],
+            x: 10.0,
+            y: 10.0,
+            label: None,
+            width: 0.0,
+            stale: false,
+            nearby: false,
+            selected: false,
+            low_battery: false,
+            own: false,
+        }
+    }
+
+    fn track(peer: u8, hue: Option<u8>) -> Track {
+        Track {
+            peer: [peer; 16],
+            hue,
+            segments: Vec::new(),
+            dots: Vec::new(),
+            dwells: Vec::new(),
+            places: Vec::new(),
+            wedge: None,
+            head: None,
+        }
+    }
+
+    /// Rule 6 as it stands after order 1693 was taken back (d792e141f):
+    /// a pin takes its peer's hue only while the peer has a track; our own
+    /// grey track gives none.
+    #[test]
+    fn a_pin_takes_the_hue_only_of_a_peer_with_a_track() {
+        let tracks = [track(1, Some(1)), track(2, None)];
+        assert_eq!(
+            pin_hue(&tracks, &[1; 16], false),
+            Some(tracks::colour(Some(1), false))
+        );
+        assert_eq!(
+            pin_hue(&tracks, &[1; 16], true),
+            Some(tracks::colour(Some(1), true))
+        );
+        assert_eq!(pin_hue(&tracks, &[2; 16], false), None, "our own track");
+        assert_eq!(pin_hue(&tracks, &[3; 16], false), None, "no track");
+    }
+
+    #[test]
+    fn the_pins_colours_by_choice_track_nearness_and_age() {
+        let orange = tracks::colour(Some(1), false);
+        let plain = pin_ink(&pin(3), MapTheme::Light, None);
+        assert_eq!(plain.marker, ([0x20, 0x50, 0xc0], 1.0), "the pins' blue");
+        assert_eq!(plain.text.0, [0x10, 0x10, 0x10]);
+        assert_eq!(plain.ring, [0xff, 0xff, 0xff]);
+        let hued = pin_ink(&pin(1), MapTheme::Light, Some(orange));
+        assert_eq!((hued.marker, hued.text.0), ((orange, 1.0), orange));
+        let chosen = pin_ink(
+            &Placed {
+                selected: true,
+                ..pin(1)
+            },
+            MapTheme::Light,
+            Some(orange),
+        );
+        assert_eq!(chosen.marker.0, [0xd0, 0x30, 0x30], "the chosen pin is red");
+        let near = pin_ink(
+            &Placed {
+                nearby: true,
+                ..pin(1)
+            },
+            MapTheme::Light,
+            Some(orange),
+        );
+        assert_eq!((near.marker.0, near.text.0), ([0x80; 3], [0x10; 3]));
+        let stale = pin_ink(
+            &Placed {
+                stale: true,
+                ..pin(3)
+            },
+            MapTheme::Dark,
+            None,
+        );
+        assert_eq!(stale.marker.1, 0.45);
+        assert_eq!((stale.ground.0, stale.text), ([0x18; 3], ([0xe6; 3], 0.55)));
+        let own = pin_ink(
+            &Placed {
+                own: true,
+                ..pin(3)
+            },
+            MapTheme::Light,
+            None,
+        );
+        assert_eq!(own.marker, (OWN_DOT, 1.0));
+    }
+
+    #[test]
+    fn a_drawn_pin_is_in_its_ink_inside_a_white_ring() {
+        let (w, h) = (20u32, 20u32);
+        let tracks = [track(1, Some(1))];
+        let mut type_ = Typesetter::new();
+        for (placed, want) in [
+            (pin(1), tracks::colour(Some(1), false)),
+            (
+                Placed {
+                    selected: true,
+                    ..pin(1)
+                },
+                [0xd0, 0x30, 0x30],
+            ),
+            (pin(3), [0x20, 0x50, 0xc0]),
+        ] {
+            let mut rgba = [0x40u8, 0x40, 0x40, 0xff].repeat((w * h) as usize);
+            draw_pins(
+                &mut rgba,
+                w,
+                h,
+                std::slice::from_ref(&placed),
+                &tracks,
+                1.0,
+                MapTheme::Light,
+                &mut type_,
+            );
+            let at = |x: u32, y: u32| {
+                let i = ((y * w + x) * 4) as usize;
+                [rgba[i], rgba[i + 1], rgba[i + 2]]
+            };
+            assert_eq!(at(10, 10), want, "{placed:?}");
+            assert_eq!(at(0, 0), [0x40; 3], "a corner far from the pin");
+        }
+    }
+}
