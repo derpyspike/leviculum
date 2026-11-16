@@ -4035,6 +4035,31 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         self.transport.hops_to(dest_hash.as_bytes())
     }
 
+    /// The destinations this node has announced before: registered, not
+    /// explicit-hash, with a cached announce — the same filter the
+    /// interface-up re-announce applies ([`Self::announce_local_destinations`]).
+    ///
+    /// This is the set whose paths the owner's self-repair watches on a
+    /// shared-instance client (reviewer decision 2026-11-16, the beat in
+    /// `leviculum-std/src/path_self_repair.rs`): announcing is the
+    /// application's decision, so a destination the application never
+    /// announced is never repaired into the mesh either.
+    pub fn announced_destination_hashes(&self) -> Vec<DestinationHash> {
+        self.destinations
+            .iter()
+            .filter(|(h, dest)| {
+                !dest.is_explicit_hash()
+                    && self.transport.has_destination(h.as_bytes())
+                    && self
+                        .transport
+                        .storage()
+                        .get_announce_cache(h.as_bytes())
+                        .is_some()
+            })
+            .map(|(h, _)| *h)
+            .collect()
+    }
+
     /// The `app_data` of the last announce heard for `dest_hash`, whenever it
     /// was heard — Python's `Identity.recall_app_data`
     /// (`reference/Reticulum/RNS/Identity.py:162-172`).

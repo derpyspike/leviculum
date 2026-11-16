@@ -87,6 +87,9 @@ pub struct ReticulumNodeBuilder {
     /// Shared-instance transport override; see
     /// [`Self::shared_instance_transport`].
     shared_instance_transport_explicit: Option<crate::interfaces::SharedInstanceTransport>,
+    /// The owner's path self-repair beat; see
+    /// [`Self::path_self_repair_beat_ms`].
+    path_self_repair_beat_ms_explicit: Option<u64>,
     /// Whether the application event channel is constructed at all.
     /// Default true. Daemon-style nodes that have no application code
     /// to consume `NodeEvent`s should set this to false via
@@ -139,6 +142,7 @@ impl ReticulumNodeBuilder {
             connect_instance_name: None,
             shared_instance_config_dir: None,
             shared_instance_transport_explicit: None,
+            path_self_repair_beat_ms_explicit: None,
             events_enabled: true,
             discovery_job_interval_secs_explicit: None,
             core_processor: None,
@@ -835,6 +839,16 @@ impl ReticulumNodeBuilder {
         self
     }
 
+    /// How often a shared-instance client checks that the daemon still
+    /// routes each destination it announced to the client itself, in
+    /// milliseconds (reviewer decision 2026-11-16; the beat of
+    /// [`crate::path_self_repair`], default 30 s). For tests that must see
+    /// a repair inside seconds; a daemon or plain node has no such beat.
+    pub fn path_self_repair_beat_ms(mut self, beat_ms: u64) -> Self {
+        self.path_self_repair_beat_ms_explicit = Some(beat_ms);
+        self
+    }
+
     /// Serve or dial the shared instance over `transport`.
     ///
     /// Without this call the transport comes from the config the builder was
@@ -1244,6 +1258,9 @@ impl ReticulumNodeBuilder {
             shared_instance_rpc_key(&dir)
         });
         node.set_rpc_key(rpc_key);
+        if let Some(beat_ms) = self.path_self_repair_beat_ms_explicit {
+            node.set_path_self_repair_beat_ms(beat_ms);
+        }
         // What lnsd decided about the automatic layer (#471), for
         // `interface_stats` to serve; a node built in code has none.
         // And where the configuration came from, for the rows no section

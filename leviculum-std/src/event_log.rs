@@ -1248,6 +1248,14 @@ pub const EVENT_CATALOG: &[EventSchema] = &[
         name: "PATH_UNRESPONSIVE",
         required_keys: &["dst", "next_hop", "iface", "path_hops"],
     },
+    // Reviewer decision 2026-11-16: a shared-instance client found the
+    // daemon's path to its own announced destination (`dest`) off its own
+    // attachment (`was` says what the daemon answered) and announced
+    // afresh (`leviculum-std/src/driver/mod.rs#run_path_self_repair`).
+    EventSchema {
+        name: "PATH_SELF_REPAIR",
+        required_keys: &["dest", "was"],
+    },
     // Remaining `leviculum-core` transport events.
     EventSchema {
         name: "ANN_SLOW",

@@ -415,3 +415,35 @@ hands our link request back), the heal after a rebalance, the five
 expiries of the field, and the later-proof race with its positive
 control. Wire and semantics are unchanged: a copy is accepted or not,
 a path entry is ours alone.
+
+## 10. The owner repairs its own path (no local-client exemption)
+
+A transport marks a local client's hops-0 path unresponsive and lets a
+relayed copy of the same emission take it exactly as Python does
+(`Transport.py:746-753`, then `:1819-1824`) — the exemptions, holds and
+ownership records of orders 1881 to 1931 are gone (reviewer decision
+2026-11-16; six rounds of them were each bypassed, because the daemon
+cannot tell the genuine owner from a local process replaying its
+announces). The repair sits with the one party that can prove
+ownership: the client holding the destination's key. A shared-instance
+client beats every 30 s on the two `rnpath` RPC calls (`next_hop`,
+`next_hop_if_name`; served by both daemons,
+`leviculum-std/src/rpc/handlers.rs#get_next_hop` and
+Reticulum.py:1222-1223) and, when the daemon's path to a destination it
+announced is not its own local attachment, announces afresh — a newer
+emission wins by the ordinary rule on every stack
+(`leviculum-std/src/driver/mod.rs#run_path_self_repair`, the beat;
+`leviculum-std/src/path_self_repair.rs`, the decision and its rate
+limit: at most one repair announce a minute, doubling toward 15 min
+while the path keeps flipping, logged `PATH_SELF_REPAIR`). This is
+client behaviour above the interface, in leviculum-std; boards carry
+none of it. Worst case: a captured path stays off-box for at most one
+beat per hijack plus the announce's travel, and a replayer buys at most
+one extra announce per rate window. What the check cannot see: on an
+abstract-socket daemon every local client renders as the same
+`LocalInterface[rns/<name>]` through `next_hop_if_name`
+(`LocalInterface.py:372-374`), so a sibling client holding the captured
+path at hops 0 is told apart only where client names differ (TCP shared
+instances name clients by peer port, `LocalInterface.py:433`); such a
+capture needs a dead request the owner itself let die, and ends with
+the owner's next regular announce.

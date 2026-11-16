@@ -34,7 +34,7 @@ const VENDOR_RNS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../reference
 /// True when `python3` can import the vendored `RNS` package. Mirrors the
 /// python assumption `rpc_interop_tests` makes, but lets us skip cleanly
 /// (test passes) where the interpreter or package is absent.
-fn python_rns_available() -> bool {
+pub(crate) fn python_rns_available() -> bool {
     Command::new("python3")
         .args(["-c", "import RNS"])
         .env("PYTHONPATH", VENDOR_RNS_ROOT)
@@ -46,10 +46,10 @@ fn python_rns_available() -> bool {
 }
 
 /// A spawned Python `rnsd` subprocess, killed on drop.
-struct Rnsd {
-    config_dir: PathBuf,
-    instance_name: String,
-    authkey: [u8; 32],
+pub(crate) struct Rnsd {
+    pub(crate) config_dir: PathBuf,
+    pub(crate) instance_name: String,
+    pub(crate) authkey: [u8; 32],
     child: Child,
 }
 
@@ -64,7 +64,7 @@ impl Drop for Rnsd {
 /// Boot a vendored Python `rnsd` as a transport node with a shared instance and
 /// one TCP server, pre-seeding the transport identity so the RPC authkey is
 /// known before startup.
-fn spawn_rnsd(tcp_port: u16) -> Rnsd {
+pub(crate) fn spawn_rnsd(tcp_port: u16) -> Rnsd {
     let test_id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
     let instance_name = format!("revrpc_{}_{}", std::process::id(), test_id);
 
