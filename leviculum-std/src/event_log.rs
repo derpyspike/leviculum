@@ -856,18 +856,6 @@ pub const EVENT_CATALOG: &[EventSchema] = &[
         name: "LNMSG_SENDER",
         required_keys: &["from", "source"],
     },
-    // The map's budgets from the machine's facts, said once at start
-    // (`loquax/src/budget.rs`, rule 6 of order 1836, built in 1910).
-    EventSchema {
-        name: "MAP_BUDGET",
-        required_keys: &[
-            "ram_mb",
-            "cores",
-            "tile_cache_mb",
-            "frame_tiles",
-            "prefetch_tiles",
-        ],
-    },
     EventSchema {
         name: "LNMSG_ATTACHED",
         required_keys: &["instance", "address"],
@@ -897,15 +885,8 @@ pub const EVENT_CATALOG: &[EventSchema] = &[
     EventSchema {
         name: "MAPGESTURE",
         required_keys: &[
-            "w", "h", "moving", "x", "y", "z", "by", "to_x", "to_y", "to_z", "ms",
+            "w", "h", "moving", "x", "y", "z", "by", "to_x", "to_y", "to_z",
         ],
-    },
-    // One line per height fetch the phone's loader ended (order 1868, the
-    // audit of 1863): the packs it wrote, those it had, the bytes, or why
-    // it failed; without it a device's relief arrives unseen in logcat.
-    EventSchema {
-        name: "MAPHEIGHTS",
-        required_keys: &["ok", "packs", "had", "fetched", "elapsed_ms"],
     },
     EventSchema {
         name: "HOME_ABOUT",
@@ -1266,15 +1247,6 @@ pub const EVENT_CATALOG: &[EventSchema] = &[
     EventSchema {
         name: "PATH_UNRESPONSIVE",
         required_keys: &["dst", "next_hop", "iface", "path_hops"],
-    },
-    // Order 1881, bounded by order 1898: an unresponsive mark was refused
-    // because the path is a connected local client's own (`iface`, reason
-    // `local_client_owns`: hops 0, no next hop, installed by the client
-    // first or proven over it); the client cannot have moved, so the path
-    // stays on the box.
-    EventSchema {
-        name: "PATH_KEPT_LOCAL",
-        required_keys: &["dst", "iface", "reason"],
     },
     // Remaining `leviculum-core` transport events.
     EventSchema {
