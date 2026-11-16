@@ -816,6 +816,16 @@ check-processor-seam:
 citation-guard:
     {{manifest}} citation-guard -- cargo test -p leviculum-std --test doc_citations -- --nocapture
 
+# The drift census of the existing path:line citations (about 10 s): one
+# CITE line per citation with the label its text gives it, the item at the
+# cited line and a verdict (agree, drift, nolabel, foreign), then the counts
+# and the 20 files with the most drift. It changes nothing; it is what the
+# conversion waves are picked from. ARGS go to scripts/citation-census.py
+# (`--quiet`, `--table N`, `--rev REV`, `--only FILE...`).
+[doc('Print the drift census of the existing path:line citations')]
+citation-census *ARGS:
+    python3 -I scripts/citation-census.py --table 20 {{ARGS}}
+
 # Codeberg #205: no commit since the pinned baseline may carry a machine-
 # authorship trailer. ~20 ms — one `git log` over the range and one `awk`.
 #
