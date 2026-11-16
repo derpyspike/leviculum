@@ -49,7 +49,7 @@ use leviculum_map::draw::{
 use leviculum_map::labels::ViewLabel;
 use leviculum_map::mercator::World;
 use leviculum_map::outline;
-use leviculum_map::region::{Bounds, Header, Region, RegionError, TileId};
+use leviculum_map::region::{Header, Region, RegionError, TileId};
 use leviculum_map::timezones;
 use leviculum_map::viewport::{ViewTile, Viewport, MAX_VIEW_ZOOM};
 use leviculum_mapfill::coverage::{Coverage, Hard};
@@ -626,9 +626,6 @@ pub struct Painter {
     /// The ground side (1743): the `*.lmg` ground packs beside the
     /// regions, laid under the areas where the style asks for it.
     ground: crate::ground::GroundStore,
-    /// Region passes the last draw ran (order 1943): what the bench and
-    /// the culling test read.
-    drawn_last: usize,
 }
 
 /// The filler's storage for one region drawn ([`region_into`]). The filler
@@ -685,21 +682,12 @@ impl Painter {
             world_blend: false,
             relief,
             ground,
-            drawn_last: 0,
         }
     }
 
     /// The relief store this painter shades from.
     pub fn relief(&self) -> &crate::relief::ReliefStore {
         &self.relief
-    }
-
-    /// Region passes the last [`draw`](Self::draw) (or its whole-view
-    /// siblings) ran: the regions that reached into the view, less the
-    /// unreadable and those wholly hidden under a complete region drawn
-    /// over them ([`hidden_under`], order 1943).
-    pub fn regions_drawn(&self) -> usize {
-        self.drawn_last
     }
 
     /// Read the directory again when it changed since, or a region in it
@@ -940,42 +928,22 @@ impl Painter {
         );
         let mut shown: Vec<usize> = Vec::new();
         let mut unreadable = 0usize;
-        // Opened first: which regions are complete decides which of
-        // them are visible at all ([`hidden_under`], order 1943).
-        let opened: Vec<Opened> = order.iter().map(|&i| (i, self.regions[i].open())).collect();
-        let layers: Vec<(Bounds, bool)> = opened
-            .iter()
-            .map(|(i, r)| {
-                let complete = r.as_ref().is_ok_and(|r| r.is_complete());
-                (self.regions[*i].header.bounds, complete)
-            })
-            .collect();
-        let hide = hidden_under(&aux.bounds(), &layers);
-        for ((i, opened), hidden) in opened.iter().zip(&hide) {
-            let installed = &self.regions[*i];
+        for &i in &order {
+            let installed = &self.regions[i];
             let area = warped_area(aux.area_of(&installed.header.bounds), &warp, frame);
             if area.is_zero_sized() {
                 continue;
             }
-            let region = match opened {
+            let region = match installed.open() {
                 Ok(region) => region,
                 Err(cause) => {
-                    self.maps.read_failed(&installed.name, cause);
+                    self.maps.read_failed(&installed.name, &cause);
                     unreadable += 1;
                     continue;
                 }
             };
-            if *hidden {
-                // Counted and said even hidden (1942 item 5): one index
-                // entry probes the file under the open handle.
-                if let Err(cause) = probe(region) {
-                    self.maps.read_failed(&installed.name, &cause);
-                    unreadable += 1;
-                }
-                continue;
-            }
             match region_into_warped(
-                region,
+                &region,
                 &aux,
                 &rings,
                 area,
@@ -988,7 +956,7 @@ impl Painter {
             ) {
                 Ok(owed) => {
                     attribution = installed.attribution.clone();
-                    shown.push(*i);
+                    shown.push(i);
                     pending += owed;
                 }
                 Err(cause) => {
@@ -997,7 +965,6 @@ impl Painter {
                 }
             }
         }
-        self.drawn_last = shown.len();
         for i in shown {
             self.viewed(i);
         }
@@ -1073,39 +1040,19 @@ impl Painter {
         // them (audit of 1836, finding 2).
         let mut solid: Vec<(Rectangle, u8)> = Vec::new();
         let mut unreadable = 0usize;
-        // Opened first: which regions are complete decides which of
-        // them are visible at all ([`hidden_under`], order 1943).
-        let opened: Vec<Opened> = order.iter().map(|&i| (i, self.regions[i].open())).collect();
-        let layers: Vec<(Bounds, bool)> = opened
-            .iter()
-            .map(|(i, r)| {
-                let complete = r.as_ref().is_ok_and(|r| r.is_complete());
-                (self.regions[*i].header.bounds, complete)
-            })
-            .collect();
-        let hide = hidden_under(&view.bounds(), &layers);
-        for ((i, opened), hidden) in opened.iter().zip(&hide) {
-            let installed = &self.regions[*i];
+        for &i in &order {
+            let installed = &self.regions[i];
             let area = installed.area(view);
-            let region = match opened {
+            let region = match installed.open() {
                 Ok(region) => region,
                 Err(cause) => {
-                    self.maps.read_failed(&installed.name, cause);
+                    self.maps.read_failed(&installed.name, &cause);
                     unreadable += 1;
                     continue;
                 }
             };
-            if *hidden {
-                // Counted and said even hidden (1942 item 5): one index
-                // entry probes the file under the open handle.
-                if let Err(cause) = probe(region) {
-                    self.maps.read_failed(&installed.name, &cause);
-                    unreadable += 1;
-                }
-                continue;
-            }
             match region_into(
-                region,
+                &region,
                 view,
                 area,
                 &solid,
@@ -1121,7 +1068,7 @@ impl Painter {
             ) {
                 Ok(owed) => {
                     attribution = installed.attribution.clone();
-                    shown.push(*i);
+                    shown.push(i);
                     pending += owed;
                     if owed == 0 {
                         let data = installed.header.max_zoom.min(view.zoom());
@@ -1134,7 +1081,6 @@ impl Painter {
                 }
             }
         }
-        self.drawn_last = shown.len();
         for i in shown {
             self.viewed(i);
         }
@@ -1518,64 +1464,6 @@ where
         &mut NoClock,
     );
     Ok(pending)
-}
-
-/// Whether a region hidden under another still reads (order 1943, for
-/// 1942 item 5): a draw would notice a file broken under its open
-/// handle; a hidden region is probed with one index entry instead, so
-/// it is still counted and said, at the cost of one small read.
-fn probe(region: &Region<File>) -> Result<(), String> {
-    if region.header().tiles == 0 {
-        return Ok(());
-    }
-    region.entry(0).map(|_| ()).map_err(|e| format!("{e:?}"))
-}
-
-/// A region of the draw order as it opened: its index into the
-/// painter's regions, and the shared handle or the cause it did not
-/// open.
-type Opened = (usize, Result<Arc<Region<File>>, String>);
-
-/// Which of a view's regions are invisible under those drawn over them
-/// (order 1943): for each of `layers` (bottom to top, [`drawn`]'s
-/// order; its box, and whether it is complete and readable), whether a
-/// complete region above holds its whole visible box, so every pixel
-/// it would draw is drawn over. Lew's store of 2026-11-16 holds 94
-/// heavily overlapping autoloaded regions; a zoom 10 view found 18,
-/// and every hidden pass walked its whole geometry again, about 1 s a
-/// frame on the curved path that redraws whole. Only a complete region
-/// covers: one still arriving leaves its missing tiles to the regions
-/// under it. A box across the antimeridian neither hides nor covers,
-/// and a view across it hides nothing: the clip below does not wrap.
-fn hidden_under(view_box: &Bounds, layers: &[(Bounds, bool)]) -> Vec<bool> {
-    let mut hide = vec![false; layers.len()];
-    if view_box.west > view_box.east {
-        return hide;
-    }
-    let mut covers: Vec<Bounds> = Vec::new();
-    for (k, (b, covering)) in layers.iter().enumerate().rev() {
-        if b.west > b.east {
-            continue;
-        }
-        let visible = Bounds {
-            west: b.west.max(view_box.west),
-            south: b.south.max(view_box.south),
-            east: b.east.min(view_box.east),
-            north: b.north.min(view_box.north),
-        };
-        if visible.west > visible.east || visible.south > visible.north {
-            // Nothing of it on screen; the draw's area check skips it.
-            continue;
-        }
-        if covers.iter().any(|c| c.holds(&visible)) {
-            hide[k] = true;
-            continue;
-        }
-        if *covering {
-            covers.push(*b);
-        }
-    }
-    hide
 }
 
 /// Draw `region`'s tiles of `view` into `area` of `frame`, with their
@@ -2138,39 +2026,6 @@ mod tests {
     /// load paused or still arriving, its file in place) must leave the
     /// complete region under it showing there, not clear its whole box to
     /// the ground colour. The load walk caught it as a blank z16 pause in
-    /// A region wholly hidden under a complete one drawn over it is not
-    /// drawn at all (order 1943): Lew's store of 94 overlapping
-    /// autoloaded regions walked up to 18 full passes a frame where the
-    /// top one covered the view, about 1 s a curved frame. Two complete
-    /// cuts of the same box at the shallow one's deepest zoom: the
-    /// deeper ranks under ([`draw_rank`]) and is hidden, and the
-    /// picture is the top's alone, byte for byte.
-    #[test]
-    fn a_region_hidden_under_a_complete_one_is_not_drawn() {
-        use leviculum_map::mercator::{project, LatLon};
-        let both = tempfile::tempdir().expect("tmp");
-        oltrarno_region(&both.path().join("auto-under.lmr"), 14..=15, usize::MAX);
-        oltrarno_region(&both.path().join("auto-over.lmr"), 14..=14, usize::MAX);
-        let top = tempfile::tempdir().expect("tmp");
-        std::fs::copy(
-            both.path().join("auto-over.lmr"),
-            top.path().join("auto-over.lmr"),
-        )
-        .expect("copy");
-        let centre = project(LatLon::from_degrees(43.7475, 11.272));
-        let view = Viewport::new(centre, 14, 200, 200);
-        let mut painter = Painter::new(Maps::new(Some(both.path().to_path_buf())));
-        let with_both = painter.draw(&view, Ink::Colour, Style::PC, 100);
-        assert_eq!(
-            painter.regions_drawn(),
-            1,
-            "the region hidden under the complete top is not drawn"
-        );
-        let mut alone = Painter::new(Maps::new(Some(top.path().to_path_buf())));
-        let only_top = alone.draw(&view, Ink::Colour, Style::PC, 100);
-        assert_eq!(with_both.fb, only_top.fb, "the picture is the top's alone");
-    }
-
     /// wheel-rested-slow, a paused z11-15 cell over a landed z14-15 one.
     #[test]
     fn a_region_with_nothing_here_yet_leaves_the_one_under_it_showing() {
