@@ -62,13 +62,6 @@ impl PathEntry {
     }
 }
 
-/// Where a link request entered this node: the interface and, on an
-/// interface that multiplexes peers, the peer it came from
-/// (`LinkEntry::received_interface_index`, `LinkEntry::received_peer`).
-/// The local-path ownership rule matches a proof against the ingress of the
-/// last dead request it counted (order 1914).
-pub type LinkIngress = (usize, Option<[u8; TRUNCATED_HASHBYTES]>);
-
 // Link Types
 /// Link table entry (for active links routed through this transport node)
 #[derive(Debug, Clone)]

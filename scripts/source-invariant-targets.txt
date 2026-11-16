@@ -206,7 +206,6 @@ skip  leviculum-std   audit_1898_reused_index    # in-process transport: a reuse
 skip  leviculum-std   audit_1905_rehand_same_emission # in-process transport: what restarts an owner's unproven count (order 1909); subject is the code
 skip  leviculum-std   audit_1905_rereplay        # in-process transport: a re-replayed capture regains no ownership (order 1909); subject is the code
 skip  leviculum-std   audit_1905_self_proven_probe # in-process transport: self-proven probes do not restart the count (order 1909); subject is the code
-skip  leviculum-std   audit_1914_own_connection_probe # in-process transport: probes from the client's own network connection do not restart the count (order 1914); subject is the code
 skip  leviculum-std   ble_handshake_primer       # btvirt + bluetoothd, no daemon; the #[ignore]d 1004 reproduction, run by name
 skip  leviculum-std   ble_adapter_return         # btvirt + two lnsd + bluetoothd; the #[ignore]d 600 reproduction, run by name
 skip  leviculum-std   ble_link_gap_floor         # btvirt + two lnsd + bluetoothd; an #[ignore]d measurement grid, run by name

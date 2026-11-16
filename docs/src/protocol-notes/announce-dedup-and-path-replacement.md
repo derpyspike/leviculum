@@ -454,20 +454,13 @@ between, the ownership ends and the path is marked like any other; the
 network's copy of the emission then takes it back
 (`unresponsive_same_emission`). Two things start the count again: a new
 first-heard install by the client (a newer emission of a destination it
-holds the key to), and a checked proof over the client of a link whose
-request entered at the same ingress (interface and peer) as the last dead
-request the count holds (order 1914): the client answered the neighbour it
-had let down. The proof of a probe that the owner itself or a sibling
-local-client connection started leaves the count and the ownership as they
-are (order 1909), and so does the proof of a request from any other
-ingress. The interface class alone was not enough: a local process that
-also reaches lnsd over a TCP, LAN or backbone connection starts its probes
-there, and under order 1909 their proofs counted as network-initiated, so a
-client that answered only those, while every other initiator's request
-died, held the path without limit. A proof grants an ownership the path
-does not have only while the path is not marked unresponsive, so a
-self-started probe after the bound does not hand the path back. Handing in
-the same emission again is no first-heard
+holds the key to), and a checked proof over the client of a link that was
+started outside the local clients (order 1909). The proof of a probe that
+the owner itself or a sibling local-client connection started leaves the
+count and the ownership as they are: it says nothing about the requests
+the network sends, and before order 1909 a client that answered only its
+own probes, while every network initiator's request died, held the path
+without limit. Handing in the same emission again is no first-heard
 install and restarts nothing. The bound applies whichever way the client
 became the owner. An expiry counts only when it reaches the mark: one
 inside `PATH_REQUEST_MIN_INTERVAL_MS` (20 s) of the last path request for
@@ -487,24 +480,17 @@ install again and starts a new count of three. A local client can force
 the eviction itself: every announce of a fresh identity it generates
 installs a new path, and `path_table` is a `BoundedMap` that evicts the
 oldest entry once it holds `TableCaps::path_cap` entries
-(`leviculum-core/src/memory_storage.rs:310`, built at `:527`; 32 768 in
+(`leviculum-core/src/memory_storage.rs:305`, built at `:527`; 32 768 in
 the desktop profile, 8 192 in the compact one). Ingress control only
 holds such a burst and releases it later, it caps nothing, so `path_cap`
 is the only limit. A destination the network keeps announcing is
 re-inserted at the back on each announce, so the client has to install
 `path_cap` fresh paths between two of its announces, which also evicts
-every other path the node holds. A kept path is not proven to be a
-working route. A proof is matched only by where its link request entered
-this node; Reticulum link requests name no initiator, so lnsd cannot tell
-whose request it was. A client whose own probes enter at the same ingress
-as the network's requests (it reaches lnsd through the same backbone peer
-or the same multiplexed peer the dead requests came from) can still
-restart the count while other initiators' requests die. What the rule does
-guarantee is that a client relaying for a destination keeps the path only
-while some request from the neighbour whose request died last is answered
-through it; that is accepted under the deviation rule below and pinned by
-`a_relayed_proof_holds_the_path_only_up_to_the_bound` and
-`a_client_proving_probes_from_its_own_network_connection_loses_the_path`.
+every other path the node holds. A client that relays for a destination
+keeps the path only while the destination keeps answering network
+requests through it, which makes it a working route; that is accepted
+under the deviation rule below and pinned by
+`a_relayed_proof_holds_the_path_only_up_to_the_bound`.
 
 The hold also ends when the client disconnects (`set_local_client(id,
 false)`, which forgets every ownership of that interface, so a new client
