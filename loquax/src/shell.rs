@@ -1268,7 +1268,9 @@ impl Shell {
     }
 
     /// "Try now" on the map's failed areas (1812): every box for the view
-    /// that waits to retry is due at once.
+    /// that waits to retry is due at once. The window's button; the
+    /// terminal has none yet.
+    #[cfg(feature = "gui")]
     pub(crate) fn map_retry_now(&mut self) {
         let steps = self.loader.retry_now(self.elapsed_ms());
         self.map_steps(steps);
