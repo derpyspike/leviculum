@@ -165,10 +165,15 @@ impl Renderer {
             config.height_source.as_deref(),
             config.map_source.as_deref(),
         );
+        // The phone keeps no curved memo (order 1943): a world frame is
+        // drawn straight into the Bitmap and allocates nothing
+        // frame-sized beside it (1797, `map_heap`'s law).
+        let mut frames = Frames::new(maps.clone());
+        frames.set_curved_memo(false);
         Self {
             dir: dir.to_path_buf(),
             maps: maps.clone(),
-            frames: Frames::new(maps.clone()),
+            frames,
             loader: Loader::new(maps, source, cache).with_heights(heights),
             watch: Watch::default(),
             loads: ViewLoads::new(),
