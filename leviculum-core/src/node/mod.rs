@@ -5298,7 +5298,7 @@ mod tests {
         let announced = new_dest("announced");
         let announced_hash = *announced.hash();
         node.register_destination(announced);
-        node.announce_destination(&announced_hash, None).unwrap();
+        let _ = node.announce_destination(&announced_hash, None).unwrap();
 
         let explicit = Destination::with_explicit_hash(
             Some(Identity::generate(&mut OsRng)),
@@ -5324,7 +5324,7 @@ mod tests {
         let hidden = new_dest("hidden");
         let hidden_hash = *hidden.hash();
         node.register_destination(hidden);
-        node.announce_destination(&hidden_hash, None).unwrap();
+        let _ = node.announce_destination(&hidden_hash, None).unwrap();
         node.set_announce_control(Some(Box::new(SuppressOne(hidden_hash))));
 
         // Positive controls: each excluded entry is excluded for its own
