@@ -84,6 +84,11 @@ pub fn start(request: &[u8]) -> Vec<u8> {
     // The structured events to logcat, before the session emits any (1655).
     #[cfg(target_os = "android")]
     logcat::install();
+    // The soft descriptor limit is the launcher's default, not a budget
+    // (order 1942 item 3): the phone holds the store, the RPC and the
+    // map's regions open at once. Raised to the hard limit once, logged
+    // as FD_LIMIT.
+    leviculum_std::fd_limit::raise_to_hard();
     let started = match schema::decode::<schema::Start>(request) {
         Err(error) => Started {
             v: VERSION,

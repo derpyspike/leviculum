@@ -723,11 +723,23 @@ impl Shell {
         self.hand_petnames();
         self.hand_peer_states();
         self.hand_bookmarks();
-        // What this device heard (1632): the next start lists it again.
+        // What this device heard (1632): the next start lists it again. A
+        // failure is said on screen like a failed message write below —
+        // once, not one warning per event (order 1942 item 4): what is
+        // heard arrives steadily, and a store that cannot write (out of
+        // descriptors, out of disk) would otherwise only whisper into the
+        // log while the reader loses history.
         let heard = loquax::ui::explore::take_heard(&mut self.model);
         if heard != loquax::ui::explore::HeardOwed::default() {
             if let Err(error) = loquax::heard::keep(&mut self.store, &self.context.home, heard) {
-                tracing::warn!("HEARD not kept: {error}");
+                loquax::events::store_failed(&error);
+                match said_once(&mut self.store_failed, format!("not saved: {error}")) {
+                    Some(line) => {
+                        self.afterwards.push(format!("heard, not kept: {error}"));
+                        update(&mut self.model, UiEvent::Notice(line));
+                    }
+                    None => tracing::warn!("HEARD not kept: {error}"),
+                }
             }
         }
         let writes = self.model.take_writes();
@@ -2205,5 +2217,36 @@ fn home_path(typed: &str) -> std::path::PathBuf {
     match (typed.strip_prefix("~/"), std::env::var_os("HOME")) {
         (Some(rest), Some(home)) => std::path::PathBuf::from(home).join(rest),
         _ => std::path::PathBuf::from(typed),
+    }
+}
+
+/// Whether a failed history write still owes its visible line (order 1942
+/// item 4): the first failure gets the notice back — and sets the flag —
+/// every later one gets `None` and belongs in the log alone. One flag
+/// serves the message write and the heard keep: both fail because the
+/// store cannot write, and the reader needs one toast, not a stream.
+fn said_once(already: &mut bool, line: String) -> Option<String> {
+    match *already {
+        true => None,
+        false => {
+            *already = true;
+            Some(line)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Order 1942 item 4: a store that cannot keep what was heard says so
+    /// visibly once; what follows goes to the log alone.
+    #[test]
+    fn a_failed_heard_keep_is_said_once() {
+        let mut said = false;
+        assert_eq!(
+            super::said_once(&mut said, "not saved: no file left".into()),
+            Some("not saved: no file left".into())
+        );
+        assert_eq!(super::said_once(&mut said, "not saved: again".into()), None);
+        assert_eq!(super::said_once(&mut said, "not saved: still".into()), None);
     }
 }

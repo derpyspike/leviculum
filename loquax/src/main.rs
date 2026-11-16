@@ -1179,6 +1179,11 @@ fn main() -> ExitCode {
 
 #[tokio::main]
 async fn messenger() -> ExitCode {
+    // The soft descriptor limit is a shell default, not a budget (order
+    // 1942 item 3): the window, the terminal and the mailbox all hold
+    // files wide — the store, the RPC, the map's regions. Raised to the
+    // hard limit once, logged as FD_LIMIT.
+    leviculum_std::fd_limit::raise_to_hard();
     let (mut args, ask) = parse_args();
     VERBOSE.store(args.verbose, std::sync::atomic::Ordering::Relaxed);
     // Once, before any subcommand resolves the state directory: a first

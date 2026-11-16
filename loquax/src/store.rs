@@ -6884,4 +6884,82 @@ mod tests {
             "another's word in the reader's track: {track:?}"
         );
     }
+
+    /// Order 1942 item 4's contract at the store: with every descriptor
+    /// taken after the store opened, keeping a received message and a
+    /// heard announce either works over the kept connection or returns
+    /// the error the shell shows — never a silent loss. Run in a child
+    /// process, so the exhaustion cannot starve the tests beside it.
+    #[test]
+    fn exhausted_descriptors_store_or_say_so() {
+        let exe = std::env::current_exe().expect("test binary");
+        let out = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "store::tests::exhausted_descriptors_child",
+                "--nocapture",
+            ])
+            .env("LOQUAX_FD_EXHAUST_CHILD", "1")
+            .output()
+            .expect("child runs");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "child failed:\n{stdout}\n{stderr}");
+        assert!(stdout.contains("CHILD hoard="), "{stdout}");
+        assert!(stdout.contains("CHILD message="), "{stdout}");
+        assert!(stdout.contains("CHILD announce="), "{stdout}");
+    }
+
+    /// [`exhausted_descriptors_store_or_say_so`]'s child: a no-op unless
+    /// spawned by it. Every verdict it prints is checked here — an `Ok`
+    /// from the store must mean the row reads back once descriptors are
+    /// free again, an `Err` is the line the shell shows.
+    #[test]
+    fn exhausted_descriptors_child() {
+        if std::env::var("LOQUAX_FD_EXHAUST_CHILD").is_err() {
+            return;
+        }
+        let home = tempfile::tempdir().expect("home");
+        let mut store = Store::open_in(home.path(), US).expect("open");
+        put(&mut store, ALICE, message(1, false, "before"));
+        // Take every descriptor left, up to a cap against boxes whose
+        // soft limit is already huge.
+        let mut hoard = Vec::new();
+        while hoard.len() < 2_000_000 {
+            match std::fs::File::open("/dev/null") {
+                Ok(f) => hoard.push(f),
+                Err(_) => break,
+            }
+        }
+        println!("CHILD hoard={}", hoard.len());
+        let kept_message = store.write(&[StoreWrite::Message {
+            peer: ALICE,
+            message: message(2, false, "under exhaustion"),
+        }]);
+        let heard_announce = store.page_heard(&lnomad::discovery::DiscoveredNode {
+            dest_hash: [0x7c; 16],
+            name: Some("Relay".into()),
+            first_seen: 1,
+            last_seen: 1,
+            hops: None,
+        });
+        drop(hoard);
+        println!("CHILD message={kept_message:?}");
+        println!("CHILD announce={heard_announce:?}");
+        if kept_message.is_ok() {
+            let restored = store.restore().expect("read back");
+            let stored = restored
+                .iter()
+                .flat_map(|r| &r.messages)
+                .any(|m| m.body == "under exhaustion");
+            assert!(stored, "Ok from the store must mean the message is there");
+        }
+        if heard_announce.is_ok() {
+            let pages = store.pages_heard().expect("read back");
+            assert!(
+                pages.iter().any(|p| p.dest_hash == [0x7c; 16]),
+                "Ok from the store must mean the page is there"
+            );
+        }
+    }
 }

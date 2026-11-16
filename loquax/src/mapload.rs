@@ -2369,8 +2369,8 @@ mod tests {
         assert!(problems.is_empty(), "{problems:?}");
         let covering: Vec<(&str, u8)> = regions
             .iter()
-            .filter(|r| r.region.header().bounds.holds(&b))
-            .map(|r| (r.name.as_str(), r.region.header().profile))
+            .filter(|r| r.header.bounds.holds(&b))
+            .map(|r| (r.name.as_str(), r.header.profile))
             .collect();
         let name = auto_name(&b, w.zooms);
         assert_eq!(
@@ -2451,7 +2451,8 @@ mod tests {
         assert!(
             regions
                 .iter()
-                .any(|r| is_auto(&r.name) && r.region.min_reader() == 5),
+                .any(|r| is_auto(&r.name)
+                    && r.open().expect("the fresh cut opens").min_reader() == 5),
             "the place is cut again in the current layout"
         );
     }
