@@ -98,12 +98,33 @@ them all and added three refinements, marked *settled by the pictures*.
 6. **Colours.** Eight hues from the peer's address, the first byte
    modulo 8, the same on every device: blue, orange, green, red, violet,
    teal, magenta, brown, with a lighter set for the dark map so each
-   holds against its ground. The pin's marker and its name take the hue;
-   our own track is neutral grey. More than eight peers share hues; the
-   label tells them apart. In the terminal: the hue blended into the
-   map's ground by level on a colour terminal, the nearest of the sixteen
-   ANSI colours (dim below the top two levels) at sixteen, and plain
-   glyphs, dim below the top two, on a monochrome one.
+   holds against its ground. A peer's track takes its hue; our own track
+   is neutral grey. More than eight peers share hues; the label tells
+   them apart. In the terminal: the hue blended into the map's ground by
+   level on a colour terminal, the nearest of the sixteen ANSI colours
+   (dim below the top two levels) at sixteen, and plain glyphs, dim below
+   the top two, on a monochrome one.
+
+   On the window's map a peer's pin and its name take the hue only while
+   that peer has a track in the window; a peer without one keeps the pins'
+   blue, and the chosen pin is drawn red (`screenmap::pin_hue`,
+   `pin_ink`). The phone, the M9 and the terminal draw their pins without
+   the hue. This is the state after order 1693 was taken back (d792e141f,
+   order 1859): the audit of 2026-11-14 returned it for a stale pin on the M9 in the
+   full hue, a locations list without the colour, liveness rings lost on
+   some hues, a chosen pin on the dark map only 1.25:1 from an ordinary
+   one, names at 3.81:1 and a second copy of the pin styling. Order 1938
+   keeps that drop; one hue for pin, name and track on every target comes
+   back only as a new order that meets those conditions.
+
+   Every light hue holds 3:1 against the light map's land (`#f2efe9`) and
+   against the labels' white ground, measured by
+   `audit_every_light_hue_holds_three_to_one_on_the_land`: blue 5.07 and
+   5.82, orange 3.32 and 3.81, green 3.62 and 4.16, red 4.63 and 5.32,
+   violet 5.43 and 6.23, teal 3.52 and 4.04, magenta 4.60 and 5.28, brown
+   5.14 and 5.90. The orange was `#e07000` at 2.82:1 on the land and is
+   `#d06400` since order 1938. The dark set stands 6.4:1 to 10:1 against
+   the dark map's `#161616` and `#181818`.
 
 7. **Direction.** When the newest fix moves faster than **1.5 m/s**, by
    its own speed or, where it carries none, by the speed from the fix

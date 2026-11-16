@@ -424,3 +424,219 @@ fn the_short_way_inside_a_class_is_the_blend() {
         }
     }
 }
+
+/// The z11 tile (1000, 840) of a known ground pack, decoded, as a view's
+/// ground: view pixel (x, y) is pixel (x, y) of that tile at z11, and a
+/// view pixel off the tile has no class.
+struct PackGround {
+    cells: Vec<u8>,
+    rows: usize,
+}
+
+impl Classes for PackGround {
+    fn class(&mut self, _zoom: u8, x: u32, y: u32) -> u8 {
+        let (x, y) = (x as usize, y as usize);
+        let (x0, y0) = (1000 * TILE_EDGE, 840 * TILE_EDGE);
+        match (x.checked_sub(x0), y.checked_sub(y0)) {
+            (Some(c), Some(r)) if c < TILE_EDGE && r < TILE_EDGE => self.cells[r * TILE_EDGE + c],
+            _ => NONE,
+        }
+    }
+}
+
+impl ground::Ground for PackGround {
+    fn row(&mut self, x: i32, y: i32, px: &mut [[u8; 3]]) -> bool {
+        self.rows += 1;
+        let x0 = (1000 * TILE_EDGE) as u64 + x as u64;
+        let y0 = (840 * TILE_EDGE) as u64 + y as u64;
+        paint_row(GroundStyle::Strong, 11, x0, y0, self, px)
+    }
+}
+
+/// A pack whose block (250, 210) is reg in its left half and dune in its
+/// right, decoded at the tile the view shows.
+fn reg_pack_ground() -> PackGround {
+    let half = |c: usize, _r: usize| {
+        if c < 2 * TILE_EDGE {
+            Class::Reg as u8
+        } else {
+            Class::Dune as u8
+        }
+    };
+    let file = pack(&[((250, 210), block(250, 210, half))]);
+    let (_, ranges) = elevation::split_of(PackKind::Ground, &file).expect("split");
+    let index = PackIndex::of_kind(PackKind::Ground, &file).expect("index");
+    let mut dec = TileDecoder::new();
+    let (mut cells, mut scratch) = (vec![0u8; TILE_CELLS], vec![0u8; TILE_CELLS]);
+    index
+        .decode_classes(
+            &file[ranges[1].clone()],
+            (11, 1000, 840),
+            &mut dec,
+            &mut cells,
+            &mut scratch,
+        )
+        .expect("decode");
+    PackGround { cells, rows: 0 }
+}
+
+/// Draw no tiles into `area` of a 32 x 24 RGBA frame filled with
+/// `outside`, the ground laid through `leviculum_map::draw` as a view
+/// lays it (`draw_in_relief` into `ground::apply`).
+fn draw_ground(area: embedded_graphics::primitives::Rectangle, ground: &mut PackGround) -> Vec<u8> {
+    use embedded_graphics::prelude::Point;
+    use leviculum_map::draw::{draw_in_relief, Ink};
+    use leviculum_mapfill::fill::{Edge, Scratch};
+    use leviculum_mapfill::frame::RgbaFrame;
+    use leviculum_mapfill::render::{NoClock, Work};
+    use leviculum_mapfill::style::{Profile, Style};
+    let mut px = [7u8, 8, 9, 255].repeat(32 * 24);
+    let mut frame = RgbaFrame::new(&mut px, 32, 24).expect("frame");
+    let (mut edges, mut heads, mut active) =
+        (vec![Edge::default(); 64], vec![0u16; 24], vec![0u16; 64]);
+    let (mut points, mut ring_ends) = (vec![Point::zero(); 64], vec![0u16; 16]);
+    let mut scratch = Scratch {
+        edges: &mut edges,
+        heads: &mut heads,
+        active: &mut active,
+    };
+    let mut work = Work {
+        points: &mut points,
+        ring_ends: &mut ring_ends,
+    };
+    let Ok(_) = draw_in_relief(
+        &[],
+        area,
+        Profile::Full,
+        Ink::Colour,
+        Style::SCREEN,
+        100,
+        None,
+        None,
+        Some(ground),
+        &mut frame,
+        &mut scratch,
+        &mut work,
+        &mut NoClock,
+    );
+    px
+}
+
+#[test]
+fn a_ground_pack_drawn_through_the_view_paints_its_class_inside_the_area_only() {
+    use embedded_graphics::prelude::{Point, Size};
+    use embedded_graphics::primitives::Rectangle;
+    let reg = ground_style::of(Class::Reg).strong.expect("reg is tinted");
+    let area = Rectangle::new(Point::new(4, 3), Size::new(20, 15));
+    let mut g = reg_pack_ground();
+    let px = draw_ground(area, &mut g);
+    assert_eq!(g.rows, 15, "one ground row per row of the area");
+    for y in 0..24i32 {
+        for x in 0..32i32 {
+            let at = ((y * 32 + x) * 4) as usize;
+            let got = [px[at], px[at + 1], px[at + 2]];
+            if area.contains(Point::new(x, y)) {
+                assert_eq!(got, reg, "({x}, {y}) inside the area is reg");
+            } else {
+                assert_eq!(got, [7, 8, 9], "({x}, {y}) outside the area is untouched");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_zero_width_area_paints_no_ground() {
+    use embedded_graphics::prelude::{Point, Size};
+    use embedded_graphics::primitives::Rectangle;
+    let mut g = reg_pack_ground();
+    let px = draw_ground(Rectangle::new(Point::new(4, 3), Size::new(0, 15)), &mut g);
+    assert_eq!(g.rows, 0, "no ground row asked");
+    assert!(
+        px.chunks(4).all(|p| p == [7, 8, 9, 255]),
+        "the frame is untouched"
+    );
+    // `ground::apply` itself, over a frame, at zero width.
+    let mut px = [7u8, 8, 9, 255].repeat(32 * 24);
+    let mut frame = leviculum_mapfill::frame::RgbaFrame::new(&mut px, 32, 24).expect("frame");
+    let Ok(()) = ground::apply(
+        &mut frame,
+        Rectangle::new(Point::new(4, 3), Size::new(0, 15)),
+        &mut g,
+    );
+    assert_eq!(g.rows, 0);
+    assert!(px.chunks(4).all(|p| p == [7, 8, 9, 255]));
+}
+
+/// A ground that has no pack anywhere, counting the rows it is asked.
+struct Nowhere(usize);
+
+impl ground::Ground for Nowhere {
+    fn row(&mut self, _x: i32, _y: i32, _px: &mut [[u8; 3]]) -> bool {
+        self.0 += 1;
+        false
+    }
+}
+
+#[test]
+fn a_ground_without_a_pack_or_a_target_that_cannot_read_leaves_the_frame() {
+    use embedded_graphics::prelude::{DrawTargetExt, Point, Size};
+    use embedded_graphics::primitives::Rectangle;
+    let area = Rectangle::new(Point::new(2, 2), Size::new(10, 6));
+    let mut px = [7u8, 8, 9, 255].repeat(16 * 12);
+    let mut frame = leviculum_mapfill::frame::RgbaFrame::new(&mut px, 16, 12).expect("frame");
+    // No pack covers any row: every row asked, none written.
+    let mut none = Nowhere(0);
+    let Ok(()) = ground::apply(&mut frame, area, &mut none);
+    assert_eq!(none.0, 6);
+    // A target that cannot read its pixels back is left before the ground
+    // is asked at all.
+    let mut g = reg_pack_ground();
+    let mut cropped = frame.cropped(&area);
+    let Ok(()) = ground::apply(
+        &mut cropped,
+        Rectangle::new(Point::zero(), area.size),
+        &mut g,
+    );
+    assert_eq!(g.rows, 0);
+    assert!(
+        px.chunks(4).all(|p| p == [7, 8, 9, 255]),
+        "the frame is untouched"
+    );
+}
+
+#[test]
+fn a_row_off_the_grid_has_no_ground() {
+    // Rows past the last of the world at z11 (2^19 pixel rows).
+    let mut f = Field(desert);
+    for y in [1u64 << 19, (1 << 19) + 5] {
+        let mut px = vec![[1, 2, 3]; 8];
+        assert!(
+            !paint_row(GroundStyle::Strong, 11, 0, y, &mut f, &mut px),
+            "row {y}"
+        );
+        assert!(px.iter().all(|p| *p == [1, 2, 3]), "row {y}");
+    }
+}
+
+#[test]
+fn a_pack_knows_its_kind_and_refuses_wrong_buffers() {
+    let file = pack(&[((250, 210), block(250, 210, stripes))]);
+    let index = PackIndex::of_kind(PackKind::Ground, &file).expect("index");
+    assert_eq!(index.kind(), PackKind::Ground);
+    assert_eq!(PackKind::Ground.tile_bytes(), TILE_CELLS);
+    assert_eq!(PackKind::Heights.tile_bytes(), elevation::TILE_BYTES);
+    let (_, ranges) = elevation::split_of(PackKind::Ground, &file).expect("split");
+    let piece = &file[ranges[1].clone()];
+    let (b, len) = Block::parse_prefix_of(PackKind::Ground, piece).expect("block");
+    assert_eq!((b.kind(), len), (PackKind::Ground, piece.len()));
+    // A heights reader refuses the ground block.
+    assert!(Block::parse_prefix(piece).is_err());
+    let mut dec = TileDecoder::new();
+    let (mut short, mut scratch) = (vec![0u8; 16], vec![0u8; TILE_CELLS]);
+    assert!(matches!(
+        b.classes(&mut dec, 11, 1000, 840, &mut short, &mut scratch),
+        Err(ElevationError::Buffer)
+    ));
+    let mut big = vec![0u8; elevation::TILE_BYTES + 1];
+    assert!(dec.decode_bytes(&[], &mut big).is_err());
+}

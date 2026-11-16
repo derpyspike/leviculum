@@ -528,6 +528,13 @@ Toolchain: Rust 1.97.1
 
 ### Changed
 
+- loquax track colours (#232, 1938): the orange of a peer's track is
+  `#d06400`, 3.32:1 against the light map's land where `#e07000` stood at
+  2.82:1; every light hue now holds 3:1 there and on the labels' white.
+  The peer colours of order 1693 on pins, names and avatars stay taken
+  back (d792e141f, order 1859): the window colours a pin only while its
+  peer has a track, and the chosen pin stays red.
+
 - One allocator for every program (1805): every binary, the one-shot tools
   and lnflash included, runs on mimalloc v3 through the new crate
   `leviculum-alloc`, with transparent huge pages off at compile time, a
@@ -847,6 +854,10 @@ Toolchain: Rust 1.97.1
   cancellation path passes a fresh `StampCancel::new()`.
 
 ### Fixed
+
+- leviculum-map-tool ground cut (#232, 1938): a TIFF input whose image
+  directory sits at the end of the file and is cut inside its last entry
+  is refused as a short directory; the reader panicked on it.
 
 - A board no longer loses a frame whose preamble begins inside the last
   detector horizon of a pre-transmit listening window (#466): the

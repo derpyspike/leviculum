@@ -93,7 +93,11 @@ fn value(src: &dyn RangeRead, head: &Head, entry: usize) -> Res<(u16, usize, Vec
         .filter(|&l| l < (64 << 20))
         .ok_or_else(|| err("tag length"))?;
     if len <= 4 {
-        return Ok((ty, count, head.bytes[entry + 8..entry + 8 + len].to_vec()));
+        let b = head
+            .bytes
+            .get(entry + 8..entry + 8 + len)
+            .ok_or_else(|| err("short IFD"))?;
+        return Ok((ty, count, b.to_vec()));
     }
     let at = head.u32(entry + 8)? as usize;
     if let Some(b) = head.bytes.get(at..at + len) {
@@ -557,6 +561,103 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// A valid 8-bit strip file and the end of its image directory.
+    fn small() -> (Vec<u8>, usize) {
+        let samples: Vec<u16> = (0..6 * 5).map(|i| i as u16).collect();
+        let file = write_test_tiff(6, 5, &samples, 8, 1, [0.1, 0.1], [-5.0, 31.0]);
+        (file, 8 + 2 + 12 * 14 + 4)
+    }
+
+    #[test]
+    fn a_tag_value_past_the_end_of_the_file_is_refused() {
+        let (file, ifd_end) = small();
+        assert!(Tiff::open(&Mem(file.clone())).is_ok(), "the control opens");
+        // The file ends with its directory: the strip table, the scale and
+        // the tiepoint the tags point at are past the end.
+        let short = Mem(file[..ifd_end].to_vec());
+        let e = Tiff::open(&short).err().expect("refused").to_string();
+        assert!(e.contains("tag past the end"), "{e}");
+        // The scale's pointer (the twelfth tag, its value at
+        // 8 + 2 + 12 * 11 + 8) aimed far past the end of a whole file.
+        let mut far = file.clone();
+        let at = 8 + 2 + 12 * 11 + 8;
+        far[at..at + 4].copy_from_slice(&0xffff_fff0u32.to_le_bytes());
+        let far = Mem(far);
+        let e = Tiff::open(&far).err().expect("refused").to_string();
+        assert!(e.contains("tag past the end"), "{e}");
+    }
+
+    #[test]
+    fn a_truncated_image_directory_is_refused_never_a_panic() {
+        let (file, ifd_end) = small();
+        for cut in 0..ifd_end {
+            let short = Mem(file[..cut].to_vec());
+            let got = std::panic::catch_unwind(|| Tiff::open(&short).is_err());
+            assert_eq!(got.ok(), Some(true), "cut at {cut} of {ifd_end}");
+        }
+        // The directory again at the end of the file, as many writers put
+        // it, its values before it: cut anywhere inside it.
+        let mut tail = file.clone();
+        let moved = tail.len();
+        tail.extend_from_slice(&file[8..ifd_end]);
+        tail[4..8].copy_from_slice(&(moved as u32).to_le_bytes());
+        assert!(
+            Tiff::open(&Mem(tail.clone())).is_ok(),
+            "the moved directory opens"
+        );
+        for cut in moved..tail.len() {
+            let short = Mem(tail[..cut].to_vec());
+            let got = std::panic::catch_unwind(|| Tiff::open(&short).is_err());
+            assert_eq!(
+                got.ok(),
+                Some(true),
+                "moved directory cut at {cut} of {}",
+                tail.len()
+            );
+        }
+        // A directory that says it has more tags than the file holds.
+        let mut many = file[..ifd_end].to_vec();
+        many[8..10].copy_from_slice(&400u16.to_le_bytes());
+        let many = Mem(many);
+        let got = std::panic::catch_unwind(|| Tiff::open(&many).is_err());
+        assert_eq!(got.ok(), Some(true), "400 tags");
+    }
+
+    #[test]
+    fn every_unsupported_directory_is_refused_by_name() {
+        let (file, _) = small();
+        // The value field of tag k of the directory, and its type field.
+        let value = |k: usize| 8 + 2 + 12 * k + 8;
+        let ty = |k: usize| 8 + 2 + 12 * k + 2;
+        let cases: [(usize, &[u8], &str); 11] = [
+            (value(0), &0u32.to_le_bytes(), "image size"),
+            (
+                value(6),
+                &3u16.to_le_bytes(),
+                "more than one sample per pixel",
+            ),
+            (value(9), &2u16.to_le_bytes(), "planar configuration"),
+            (value(2), &32u16.to_le_bytes(), "32-bit samples of format 1"),
+            (value(3), &7u16.to_le_bytes(), "compression 7"),
+            (value(10), &3u16.to_le_bytes(), "predictor 3"),
+            (value(7), &0u32.to_le_bytes(), "chunk size"),
+            (value(7), &1u32.to_le_bytes(), "chunk table"),
+            (ty(5), &1u16.to_le_bytes(), "integer tag type"),
+            (ty(5), &99u16.to_le_bytes(), "tag type"),
+            (4, &0u32.to_le_bytes(), "no image"),
+        ];
+        for (at, bytes, want) in cases {
+            let mut bad = file.clone();
+            bad[at..at + bytes.len()].copy_from_slice(bytes);
+            let bad = Mem(bad);
+            let e = Tiff::open(&bad).err().map(|e| e.to_string());
+            assert!(
+                e.as_deref().is_some_and(|e| e.ends_with(want)),
+                "{want}: {e:?}"
+            );
         }
     }
 

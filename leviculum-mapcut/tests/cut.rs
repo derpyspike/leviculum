@@ -1633,3 +1633,72 @@ fn a_footprint_over_the_device_capacity_is_resimplified_and_kept() {
         "{corners} corners after resimplifying"
     );
 }
+
+#[test]
+fn a_zoom_range_backwards_or_past_the_deepest_zoom_is_refused() {
+    use leviculum_mapcut::cut::Streaming;
+    let src = source(false);
+    for zooms in [std::ops::RangeInclusive::new(15, 10), 10..=17, 17..=17] {
+        let opts = CutOptions {
+            zooms: zooms.clone(),
+            ..options(1)
+        };
+        let mut out = Cursor::new(Vec::new());
+        let got = cut(&src, &opts, &mut out);
+        let err = got.expect_err("refused").to_string();
+        assert_eq!(
+            err,
+            format!("zoom range {}..={}", zooms.start(), zooms.end()),
+            "{zooms:?}"
+        );
+        assert!(out.get_ref().is_empty(), "{zooms:?}: nothing written");
+        assert!(
+            Streaming::begin(&src, &opts, Cursor::new(Vec::new())).is_err(),
+            "{zooms:?}"
+        );
+    }
+    // The deepest zoom a region holds is still taken.
+    let opts = CutOptions {
+        zooms: 10..=leviculum_map::region::MAX_ZOOM,
+        ..options(1)
+    };
+    cut(&src, &opts, &mut Cursor::new(Vec::new())).expect("10..=16 is a range");
+}
+
+#[test]
+fn the_cut_writes_the_bytes_of_the_streaming_cut_driven_round_by_round() {
+    use leviculum_mapcut::cut::{cut_streamed, Streaming};
+    let src = source(false);
+    let opts = CutOptions {
+        round: 1,
+        ..options(1)
+    };
+    let mut whole = Cursor::new(Vec::new());
+    let stats = cut(&src, &opts, &mut whole).expect("cut");
+
+    let mut hand = Cursor::new(Vec::new());
+    let mut by_hand = Streaming::begin(&src, &opts, &mut hand).expect("begin");
+    let mut rounds = 0;
+    while let Some(p) = by_hand.round(&src).expect("round") {
+        rounds += 1;
+        assert!(!p.complete, "round {rounds}");
+    }
+    // A round past the last asks the source for nothing more.
+    assert!(by_hand.round(&src).expect("round").is_none());
+    assert!(rounds >= 2, "{rounds} rounds");
+    let (hand_stats, last) = by_hand.finish().expect("finish");
+    assert!(last.complete);
+    assert_eq!(hand_stats.bytes, stats.bytes);
+    assert_eq!(
+        hand.get_ref(),
+        whole.get_ref(),
+        "the wrapper writes the rounds' bytes"
+    );
+
+    let mut told = Vec::new();
+    let mut streamed = Cursor::new(Vec::new());
+    cut_streamed(&src, &opts, &mut streamed, &mut |p| told.push(p)).expect("streamed");
+    assert_eq!(told.len(), rounds + 1, "every round and the finish");
+    assert!(told.last().is_some_and(|p| p.complete));
+    assert_eq!(streamed.get_ref(), whole.get_ref());
+}
