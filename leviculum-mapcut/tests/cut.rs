@@ -1087,12 +1087,15 @@ fn the_oltrarno_fixture_cuts_its_buildings() {
     );
 }
 
+/// A poi's strings resolved: kind, name, rank, attributes.
+type PoiStrings = (String, Option<String>, Option<u8>, Vec<(String, String)>);
+
 /// The strings of a poi, resolved: kind, name, attributes.
 fn poi_strings(
     r: &Region<&[u8]>,
     s: &leviculum_map::pois::Pois<'_>,
     p: &leviculum_map::pois::Poi,
-) -> (String, Option<String>, u8, Vec<(String, String)>) {
+) -> PoiStrings {
     let txt = |n: u32| r.string(n).expect("string").to_owned();
     let attrs = s.attrs_of(p).map(|(k, v)| (txt(k), txt(v))).collect();
     (txt(p.kind), p.name.map(txt), p.min_zoom, attrs)
@@ -1171,6 +1174,9 @@ fn travel_tile() -> Vec<u8> {
                     ),
                     // In the buffer: its neighbour's.
                     (POINT, at(-20, 200), vec![("kind", text("bench"))]),
+                    // No `min_zoom` in the source (1714): kept as
+                    // unknown, never as 0, which would rank it first.
+                    (POINT, at(1900, 200), vec![("kind", text("picnic_table"))]),
                 ],
             ),
             tagged(
@@ -1240,14 +1246,14 @@ fn the_cut_keeps_the_travel_things_the_source_carries() {
 
     // The pois: every kind kept verbatim, the buffer one left out.
     let pois: Vec<_> = s.pois().map(|p| poi_strings(&r, &s, &p)).collect();
-    assert_eq!(pois.len(), 8);
+    assert_eq!(pois.len(), 9);
     let find = |kind: &str| {
         pois.iter()
             .find(|(k, ..)| k == kind)
             .unwrap_or_else(|| panic!("{kind} missing"))
     };
     let (_, name, min_zoom, attrs) = find("drinking_water");
-    assert_eq!((name.as_deref(), *min_zoom), (None, 14));
+    assert_eq!((name.as_deref(), *min_zoom), (None, Some(14)));
     assert_eq!(attrs, &[("access".to_owned(), "yes".to_owned())]);
     let (_, name, _, attrs) = find("spring");
     assert_eq!(name.as_deref(), Some("Lohrbergquelle"));
@@ -1264,6 +1270,7 @@ fn the_cut_keeps_the_travel_things_the_source_carries() {
     );
     find("border_control");
     assert_eq!(find("bench").1, None);
+    assert_eq!(find("picnic_table").2, None, "no min_zoom is no rank");
     let (_, name, _, attrs) = find("viewpoint");
     assert_eq!(name.as_deref(), Some("Belvedere"));
     assert!(attrs.contains(&("name:alt".to_owned(), "Aussichtspunkt".to_owned())));
@@ -1323,8 +1330,37 @@ fn the_cut_keeps_the_travel_things_the_source_carries() {
 
     // The z15 stats carry the counts the report cites.
     let z15 = stats.zooms[&15];
-    assert_eq!((z15.pois, z15.poi_ways, z15.poi_sections), (8, 4, 1));
+    assert_eq!((z15.pois, z15.poi_ways, z15.poi_sections), (9, 4, 1));
     assert!(z15.poi_bytes > 0);
+}
+
+/// What a region's poi sections carry, by name: the poi kinds, the poi
+/// attribute keys, the way attribute keys, and how many pois have no
+/// rank.
+#[derive(Debug, Default)]
+struct Families {
+    kinds: std::collections::BTreeSet<String>,
+    poi_keys: std::collections::BTreeSet<String>,
+    way_keys: std::collections::BTreeSet<String>,
+    unranked: usize,
+}
+
+fn families(r: &Region<&[u8]>) -> Families {
+    let mut f = Families::default();
+    let txt = |n: u32| r.string(n).expect("string").to_owned();
+    for n in 0..r.poi_sections() {
+        let id = r.poi_entry(n).expect("entry").id;
+        let s = r.pois(id).expect("pois").expect("a section");
+        for p in s.pois() {
+            f.kinds.insert(txt(p.kind));
+            f.unranked += usize::from(p.min_zoom.is_none());
+            f.poi_keys.extend(s.attrs_of(&p).map(|(k, _)| txt(k)));
+        }
+        for w in s.ways() {
+            f.way_keys.extend(s.way_attrs_of(&w).map(|(k, _)| txt(k)));
+        }
+    }
+    f
 }
 
 /// The fixture archives cut their pois: the measurement of 1685. The
@@ -1381,6 +1417,13 @@ fn the_fixture_archives_measure_their_pois() {
         r.verify().expect("verify");
         assert_eq!(r.header().version_of(), 5);
         assert_eq!(blobs(&with), blobs(&without));
+        // 1714: the region stripped of its pois is the cut without them,
+        // byte for byte, the pois' strings gone with them.
+        let stripped = leviculum_map::region::without_pois(&with).expect("stripped");
+        assert!(
+            stripped == without,
+            "{name}: the strip is the cut without pois"
+        );
         let deepest = *zooms.end();
         let z = stats.zooms[&deepest];
         assert!(r.poi_sections() > 0, "{name}");
@@ -1389,6 +1432,47 @@ fn the_fixture_archives_measure_their_pois() {
             let s = stats.zooms[&shallow];
             assert_eq!((s.pois, s.poi_sections), (0, 0), "only the deepest is cut");
         }
+        // 1714: every family of the ordered list the source does carry
+        // in this fixture, asserted on real data. Protomaps carries the
+        // poi kinds verbatim (supply, protected areas, border posts where
+        // there are any), a poi's `kind_detail`, and on ways the route
+        // marks `ref` and `network`, `oneway` and `kind_detail`. It
+        // carries no surface, track grade, hiking difficulty, trail
+        // visibility, ford, access, opening hours or fuel kind, and no
+        // route relation as a whole line: that gap is an open decision
+        // (`docs/src/concepts/loquax-expedition-map.md`, section 4).
+        let carried = families(&r);
+        println!("{name} families: {carried:?}");
+        let set = |keys: &[&str]| -> std::collections::BTreeSet<String> {
+            keys.iter().map(|k| (*k).to_owned()).collect()
+        };
+        let (kinds, poi_keys, way_keys) = match name {
+            "oltrarno" => (
+                &["bus_stop", "hospital", "place_of_worship", "wayside_shrine"][..],
+                set(&["kind_detail"]),
+                set(&["kind_detail", "network", "oneway", "ref", "service"]),
+            ),
+            _ => (
+                &["bench", "hunting_stand", "information", "protected_area"][..],
+                set(&[]),
+                set(&["kind_detail", "network", "oneway", "ref"]),
+            ),
+        };
+        for k in kinds {
+            assert!(carried.kinds.contains(*k), "{name}: no {k}: {carried:?}");
+        }
+        assert_eq!(carried.poi_keys, poi_keys, "{name}");
+        assert_eq!(carried.way_keys, way_keys, "{name}");
+        for gap in [
+            "surface",
+            "tracktype",
+            "sac_scale",
+            "access",
+            "opening_hours",
+        ] {
+            assert!(!carried.way_keys.contains(gap) && !carried.poi_keys.contains(gap));
+        }
+        assert_eq!(carried.unranked, 0, "{name}: Protomaps ranks every poi");
         println!(
             "{name} pois: pois {} ways {} attrs {} sections {} poi_bytes {} \
              of region {} (without {}, labels {} buildings {})",

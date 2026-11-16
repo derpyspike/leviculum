@@ -20,19 +20,32 @@
 //!
 //! ```text
 //! poi section of one tile
-//!   0  u16 pois   2 u16 ways   4 u32 attributes
-//!   pois        20 bytes each:
+//!   head        head length bytes (12 today):
+//!     0  u16 pois   2 u16 ways   4 u32 attributes
+//!     8  u8 head length (12)       9 u8 poi record length (20)
+//!    10  u8 way record length (8) 11 u8 attribute length (8)
+//!   pois        poi record length bytes each, the known 20 first:
 //!     0  u32 kind string      4  u32 name string (u32::MAX: unnamed)
 //!     8  u32 first attribute  12 u16 attribute count
-//!    14  u8 min zoom (the source's: the shallowest view that shows it)
+//!    14  u8 min zoom (the source's: the shallowest view that shows it;
+//!        255: the source gave none, see [`MIN_ZOOM_UNKNOWN`])
 //!    15  u8 flags (readers ignore bits they do not know)
 //!    16  i16 x   18  i16 y
-//!   ways        8 bytes each: a feature of the tile's geometry blob
-//!               carrying attributes (a path's surface, a protected
-//!               area's kind):
+//!   ways        way record length bytes each, the known 8 first: a
+//!               feature of the tile's geometry blob carrying attributes
+//!               (a path's surface, a protected area's kind):
 //!     0  u16 feature  2 u16 attribute count  4 u32 first attribute
-//!   attributes  8 bytes each: u32 key string  u32 value string
+//!   attributes  attribute length bytes each, the known 8 first:
+//!               u32 key string  u32 value string
+//!   tail        whatever a newer writer puts after the attributes: a
+//!               reader skips it
 //! ```
+//!
+//! The lengths in the head are what makes the section forward-compatible
+//! (1714): a newer writer may lengthen the head or any record, or append
+//! arrays after the attributes, and a reader of this version reads the
+//! fields it knows at their places and skips the rest. A length shorter
+//! than the one this reader knows is an error.
 //!
 //! The attribute keys are the source's (OpenStreetMap's where it keeps
 //! them): `kind_detail`, `elevation`, `opening_hours`, `access`,
@@ -45,23 +58,30 @@
 
 use alloc::vec::Vec;
 
-/// Length of a section's head.
-pub const HEAD_LEN: usize = 8;
-/// Length of one point record.
+/// Length of a section's head as this version writes it, the shortest a
+/// reader accepts.
+pub const HEAD_LEN: usize = 12;
+/// Length of one point record as this version writes it.
 pub const POI_LEN: usize = 20;
-/// Length of one way record.
+/// Length of one way record as this version writes it.
 pub const WAY_LEN: usize = 8;
-/// Length of one attribute.
+/// Length of one attribute as this version writes it.
 pub const ATTR_LEN: usize = 8;
 /// The name field of an unnamed point of interest.
 pub const UNNAMED: u32 = u32::MAX;
+/// The min zoom byte of a point the source gave no `min_zoom` (1714):
+/// never 0, which would rank it with the most important points and show
+/// it at every zoom. The display rule shows such a point only from view
+/// zoom 17 on, last in a tile's cap ([`Poi::min_zoom`]).
+pub const MIN_ZOOM_UNKNOWN: u8 = u8::MAX;
 /// The extent anchors are given in, whatever the tile's geometry.
 pub const POI_EXTENT: i16 = 4096;
 
 /// Why bytes are not a poi section, or a record in it is unusable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PoiError {
-    /// The length does not match the counts.
+    /// The length does not match the counts, or a length in the head is
+    /// shorter than this reader's.
     Length,
     /// A string index past the region's table.
     String(u32),
@@ -91,8 +111,9 @@ pub struct Poi {
     /// The local name; `None` for a bench, a crater, an unnamed spring.
     pub name: Option<u32>,
     /// The shallowest view zoom the source shows it at: the thinning
-    /// rank of the display rule.
-    pub min_zoom: u8,
+    /// rank of the display rule. `None` where the source gave none
+    /// ([`MIN_ZOOM_UNKNOWN`]): the rule ranks it below every known one.
+    pub min_zoom: Option<u8>,
     /// Flag bits; a reader ignores bits it does not know.
     pub flags: u8,
     /// The anchor in tile units at [`POI_EXTENT`], inside the tile.
@@ -120,23 +141,41 @@ pub struct Pois<'a> {
     pois: u16,
     ways: u16,
     attrs: u32,
+    /// The lengths the head gives: head, poi record, way record,
+    /// attribute; each at least this reader's.
+    head_len: usize,
+    poi_len: usize,
+    way_len: usize,
+    attr_len: usize,
 }
 
 impl<'a> Pois<'a> {
-    /// Check `bytes` against the counts it starts with and against a
-    /// region of `strings` strings. The way records' feature indices are
-    /// checked against the tile by [`crate::region::check_pois`], once
-    /// per file.
+    /// Check `bytes` against the counts and lengths it starts with and
+    /// against a region of `strings` strings. Bytes after the attributes
+    /// are a newer writer's and skipped. The way records' feature indices
+    /// are checked against the tile by [`crate::region::check_pois`],
+    /// once per file.
     pub fn parse(bytes: &'a [u8], strings: u32) -> Result<Self, PoiError> {
         if bytes.len() < HEAD_LEN {
             return Err(PoiError::Length);
         }
         let (pois, ways, attrs) = (u16_at(bytes, 0), u16_at(bytes, 2), u32_at(bytes, 4));
-        let len = HEAD_LEN
-            + usize::from(pois) * POI_LEN
-            + usize::from(ways) * WAY_LEN
-            + attrs as usize * ATTR_LEN;
-        if bytes.len() != len {
+        let (head_len, poi_len, way_len, attr_len) = (
+            usize::from(bytes[8]),
+            usize::from(bytes[9]),
+            usize::from(bytes[10]),
+            usize::from(bytes[11]),
+        );
+        if head_len < HEAD_LEN || poi_len < POI_LEN || way_len < WAY_LEN || attr_len < ATTR_LEN {
+            return Err(PoiError::Length);
+        }
+        // In u64, which no count can overflow: on a 32-bit target
+        // `attrs as usize * 8` wrapped (1714).
+        let len = head_len as u64
+            + u64::from(pois) * poi_len as u64
+            + u64::from(ways) * way_len as u64
+            + u64::from(attrs) * attr_len as u64;
+        if (bytes.len() as u64) < len {
             return Err(PoiError::Length);
         }
         let s = Self {
@@ -144,6 +183,10 @@ impl<'a> Pois<'a> {
             pois,
             ways,
             attrs,
+            head_len,
+            poi_len,
+            way_len,
+            attr_len,
         };
         let known = |i: u32| match i < strings {
             true => Ok(()),
@@ -175,18 +218,22 @@ impl<'a> Pois<'a> {
         Ok(s)
     }
 
+    fn poi_at(&self, i: usize) -> usize {
+        self.head_len + i * self.poi_len
+    }
+
     fn way_at(&self, i: usize) -> usize {
-        HEAD_LEN + usize::from(self.pois) * POI_LEN + i * WAY_LEN
+        self.poi_at(usize::from(self.pois)) + i * self.way_len
     }
 
     fn attr_at(&self, i: usize) -> usize {
-        self.way_at(usize::from(self.ways)) + i * ATTR_LEN
+        self.way_at(usize::from(self.ways)) + i * self.attr_len
     }
 
     fn raw_attrs(&self) -> impl Iterator<Item = (u32, u32)> + 'a {
-        let (b, first) = (self.bytes, self.attr_at(0));
+        let (b, first, step) = (self.bytes, self.attr_at(0), self.attr_len);
         (0..self.attrs as usize).map(move |i| {
-            let at = first + i * ATTR_LEN;
+            let at = first + i * step;
             (u32_at(b, at), u32_at(b, at + 4))
         })
     }
@@ -203,16 +250,16 @@ impl<'a> Pois<'a> {
 
     /// The points of interest, in the cut's order.
     pub fn pois(&self) -> impl Iterator<Item = Poi> + 'a {
-        let b = self.bytes;
+        let (b, first, step) = (self.bytes, self.poi_at(0), self.poi_len);
         (0..usize::from(self.pois)).map(move |i| {
-            let at = HEAD_LEN + i * POI_LEN;
+            let at = first + i * step;
             let name = u32_at(b, at + 4);
             Poi {
                 kind: u32_at(b, at),
                 name: (name != UNNAMED).then_some(name),
                 first: u32_at(b, at + 8),
                 count: u16_at(b, at + 12),
-                min_zoom: b[at + 14],
+                min_zoom: (b[at + 14] != MIN_ZOOM_UNKNOWN).then_some(b[at + 14]),
                 flags: b[at + 15],
                 x: u16_at(b, at + 16) as i16,
                 y: u16_at(b, at + 18) as i16,
@@ -222,10 +269,9 @@ impl<'a> Pois<'a> {
 
     /// The features of the tile's blob that carry attributes.
     pub fn ways(&self) -> impl Iterator<Item = WayAttrs> + 'a {
-        let b = self.bytes;
-        let first = self.way_at(0);
+        let (b, first, step) = (self.bytes, self.way_at(0), self.way_len);
         (0..usize::from(self.ways)).map(move |i| {
-            let at = first + i * WAY_LEN;
+            let at = first + i * step;
             WayAttrs {
                 feature: u16_at(b, at),
                 count: u16_at(b, at + 2),
@@ -245,10 +291,10 @@ impl<'a> Pois<'a> {
     }
 
     fn attrs_run(&self, first: u32, count: u16) -> impl Iterator<Item = (u32, u32)> + 'a {
-        let b = self.bytes;
+        let (b, step) = (self.bytes, self.attr_len);
         let at0 = self.attr_at(first as usize);
         (0..usize::from(count)).map(move |i| {
-            let at = at0 + i * ATTR_LEN;
+            let at = at0 + i * step;
             (u32_at(b, at), u32_at(b, at + 4))
         })
     }
@@ -259,7 +305,9 @@ impl<'a> Pois<'a> {
 pub struct PoiRecord {
     pub kind: u32,
     pub name: Option<u32>,
-    pub min_zoom: u8,
+    /// `None` where the source gave none: written as
+    /// [`MIN_ZOOM_UNKNOWN`]; a known zoom above 254 is written as 254.
+    pub min_zoom: Option<u8>,
     pub flags: u8,
     pub x: i16,
     pub y: i16,
@@ -296,13 +344,17 @@ pub fn encode_section(pois: &[PoiRecord], ways: &[WayRecord]) -> Result<Vec<u8>,
     b.extend_from_slice(&(pois.len() as u16).to_le_bytes());
     b.extend_from_slice(&(ways.len() as u16).to_le_bytes());
     b.extend_from_slice(&(attrs as u32).to_le_bytes());
+    b.extend_from_slice(&[HEAD_LEN as u8, POI_LEN as u8, WAY_LEN as u8, ATTR_LEN as u8]);
     let mut first = 0u32;
     for p in pois {
         b.extend_from_slice(&p.kind.to_le_bytes());
         b.extend_from_slice(&p.name.unwrap_or(UNNAMED).to_le_bytes());
         b.extend_from_slice(&first.to_le_bytes());
         b.extend_from_slice(&(p.attrs.len() as u16).to_le_bytes());
-        b.push(p.min_zoom);
+        b.push(
+            p.min_zoom
+                .map_or(MIN_ZOOM_UNKNOWN, |z| z.min(MIN_ZOOM_UNKNOWN - 1)),
+        );
         b.push(p.flags);
         b.extend_from_slice(&p.x.to_le_bytes());
         b.extend_from_slice(&p.y.to_le_bytes());

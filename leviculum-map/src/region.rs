@@ -16,9 +16,10 @@
 //!
 //! ```text
 //! header  64 bytes (version 1), 96 (version 2), 112 (version 3 and 4),
-//!         128 (version 5)
+//!         at least 128 (version 5 and newer)
 //!   0  "LMR1"
-//!   4  u16 version (1 to 4)     6  u16 header length (64, 96 or 112)
+//!   4  u16 version (1 to 5)
+//!   6  u16 header length (64, 96, 112, or from version 5 at least 128)
 //!   8  i32 west, south, east, north, degrees x 10^7 (west > east: the
 //!      region crosses the antimeridian)
 //!  24  u8 min zoom  25 u8 max zoom (<= 16)  26 u8 layer profile  27 u8 0
@@ -34,7 +35,8 @@
 //!  96  u64 building index offset  104 u32 building section count
 //! 108  u32 0
 //!   version 5:
-//! 112  u64 poi index offset  120 u32 poi section count  124 u32 0
+//! 112  u64 poi index offset  120 u32 poi section count
+//! 124  u16 minimum reader version (5)  126 u16 0
 //! text    the attribution (one line, shown on the map) and the notice
 //!         (the licence and the source), UTF-8, both required
 //! tiles   one `LMF1` fixture per tile: view 256x256, one tile at offset
@@ -90,12 +92,23 @@
 //! in place, 20 bytes per probe: a whole country's index is megabytes,
 //! which the M9 does not load.
 //!
-//! A reader refuses a version newer than it knows with
+//! A reader up to version 4 refuses a version newer than it knows with
 //! [`RegionError::Version`] before it reads anything past the version
-//! field, never misreads it: version 1 readers refuse version 2 and 3,
-//! version 2 readers (those before 1191) refuse version 3. This reader reads
-//! all three. A cut without buildings writes version 2, which every
-//! version 2 reader still reads. A frontend that draws no names never
+//! field, never misreads it: version 1 readers refuse version 2 and up,
+//! version 2 readers (those before 1191) refuse version 3 and up, version
+//! 4 readers refuse version 5. This reader reads all five. A cut without
+//! buildings writes version 2, which every version 2 reader still reads.
+//!
+//! From version 5 on the format grows without shutting readers out
+//! (1714). The header may be longer than a reader knows, and it says the
+//! oldest reader version that reads the file correctly by skipping what
+//! it does not know (the minimum reader version, at
+//! [`MIN_READER_AT`]): a version 6 that only adds fields, sections or
+//! indices after the poi index keeps it at 5 and every version 5 reader
+//! reads it as version 5; a change an old reader would misread raises it,
+//! and that reader refuses the file with [`RegionError::Version`]. The
+//! poi section's records carry their own lengths for the same reason
+//! ([`crate::pois`]). A frontend that draws no names never
 //! touches the label index or the string table, one that draws no
 //! buildings never touches the building index, so they cost it nothing.
 
@@ -133,8 +146,16 @@ pub const HEADER_LEN: usize = 64;
 pub const HEADER_LEN_2: usize = 96;
 /// Header length in bytes of a version 3 or 4 file.
 pub const HEADER_LEN_3: usize = 112;
-/// Header length in bytes of a version 5 file.
+/// Header length in bytes of a version 5 file, the least a file of
+/// version 5 or newer may have.
 pub const HEADER_LEN_5: usize = 128;
+/// Where a version 5 or newer header keeps its minimum reader version
+/// (1714): the oldest reader that reads the file correctly by reading the
+/// fields it knows and skipping the rest. A newer writer that only adds
+/// (a field, a section, an index after the poi index) keeps it at 5, and
+/// a version 5 reader reads its file; a change a version 5 reader would
+/// misread raises it.
+pub const MIN_READER_AT: usize = 124;
 /// A version 4 slot's offset where the tile has nothing in it.
 pub const EMPTY_SLOT: u64 = u64::MAX;
 /// Where the header keeps the file length, which a version 4 writer
@@ -328,35 +349,73 @@ impl Header {
 
     /// [`Header::version`] for a reader whose newest version is `newest`:
     /// the check every reader runs first, so a test can hold an older
-    /// reader's refusal to the rule.
+    /// reader's refusal to the rule. A reader of version 5 or newer lets a
+    /// newer version through here: its minimum reader version, past these
+    /// 64 bytes, decides ([`Header::reads_as`]).
     pub fn version_up_to(b: &[u8; HEADER_LEN], newest: u16) -> Result<u16, RegionError> {
         if b[..4] != MAGIC {
             return Err(RegionError::Magic);
         }
         let version = u16_at(b, 4);
         if version > newest {
-            return Err(RegionError::Version(version));
+            return match newest >= VERSION && version > VERSION {
+                true => Ok(version),
+                false => Err(RegionError::Version(version)),
+            };
         }
         Self::len_of(version).ok_or(RegionError::Version(version))?;
         Ok(version)
     }
 
-    /// Decode and check the fields that need nothing but the header: the
-    /// first 64 bytes, for version 2 the 32 after them, for version 3
-    /// and 4 the 16 after those, and for version 5 the 16 after those.
-    /// The checks against the file's length are [`Region::open`]'s.
-    pub fn parse(b: &[u8]) -> Result<Self, RegionError> {
+    /// The version this reader reads a file starting with `b` as, and the
+    /// file's header length (1714). Up to version 4 the header has its
+    /// version's length exactly. From version 5 on it is at least
+    /// [`HEADER_LEN_5`] long, and a reader skips what it does not know
+    /// past that; a file newer than this reader is read as version 5 when
+    /// its minimum reader version ([`MIN_READER_AT`]) is 5, and refused
+    /// with [`RegionError::Version`] otherwise. `b` holds the header's
+    /// first bytes, [`HEADER_LEN_5`] of them for version 5 or newer.
+    pub fn reads_as(b: &[u8]) -> Result<(u16, usize), RegionError> {
         let head: &[u8; HEADER_LEN] = b
             .get(..HEADER_LEN)
             .and_then(|h| h.try_into().ok())
             .ok_or(RegionError::Truncated)?;
         let version = Self::version(head)?;
+        let declared = usize::from(u16_at(b, 6));
+        if version < VERSION {
+            let len = Self::len_of(version).ok_or(RegionError::Version(version))?;
+            return match declared == len {
+                true => Ok((version, len)),
+                false => Err(RegionError::Header("header length")),
+            };
+        }
+        let newer = version > VERSION;
+        if b.len() < HEADER_LEN_5 {
+            return Err(RegionError::Truncated);
+        }
+        let min_reader = u16_at(b, MIN_READER_AT);
+        match (newer, declared >= HEADER_LEN_5, min_reader) {
+            (false, false, _) => Err(RegionError::Header("header length")),
+            (false, true, VERSION) => Ok((VERSION, declared)),
+            (false, true, _) => Err(RegionError::Header("reader version")),
+            (true, true, VERSION) => Ok((VERSION, declared)),
+            (true, ..) => Err(RegionError::Version(version)),
+        }
+    }
+
+    /// Decode and check the fields that need nothing but the header: the
+    /// first 64 bytes, for version 2 the 32 after them, for version 3
+    /// and 4 the 16 after those, and for version 5 the 16 after those.
+    /// A newer file this reader reads ([`Header::reads_as`]) decodes as
+    /// version 5: the fields it knows, its reserved fields not checked,
+    /// since a newer writer may use them. The checks against the file's
+    /// length are [`Region::open`]'s.
+    pub fn parse(b: &[u8]) -> Result<Self, RegionError> {
+        let (version, _) = Self::reads_as(b)?;
+        let newer = u16_at(b, 4) > VERSION;
         let len = Self::len_of(version).ok_or(RegionError::Version(version))?;
         if b.len() < len {
             return Err(RegionError::Truncated);
-        }
-        if usize::from(u16_at(b, 6)) != len {
-            return Err(RegionError::Header("header length"));
         }
         let i = |at| u32_at(b, at) as i32;
         let bounds = Bounds {
@@ -380,9 +439,10 @@ impl Header {
         if min_zoom > max_zoom || max_zoom > MAX_ZOOM {
             return Err(RegionError::Header("zoom"));
         }
-        if b[27] != 0
-            || (version >= VERSION_3 && u32_at(b, 108) != 0)
-            || (version >= VERSION && u32_at(b, 124) != 0)
+        if !newer
+            && (b[27] != 0
+                || (version >= VERSION_3 && u32_at(b, 108) != 0)
+                || (version >= VERSION && u16_at(b, MIN_READER_AT + 2) != 0))
         {
             return Err(RegionError::Header("reserved"));
         }
@@ -459,6 +519,7 @@ impl Header {
             let p = self.pois.unwrap_or_default();
             b[112..120].copy_from_slice(&p.index.to_le_bytes());
             b[120..124].copy_from_slice(&p.sections.to_le_bytes());
+            b[MIN_READER_AT..MIN_READER_AT + 2].copy_from_slice(&VERSION.to_le_bytes());
         }
         b
     }
@@ -563,6 +624,11 @@ pub struct Region<S> {
     /// Whether every byte the header promises is there; only a version 4
     /// file may be opened without.
     complete: bool,
+    /// The version the file says, its minimum reader version and its
+    /// header length (1714).
+    written: u16,
+    min_reader: u16,
+    header_len: u64,
 }
 
 impl<S: Storage> Region<S> {
@@ -584,13 +650,26 @@ impl<S: Storage> Region<S> {
         storage.read_at(0, &mut hb[..HEADER_LEN])?;
         let mut head = [0u8; HEADER_LEN];
         head.copy_from_slice(&hb[..HEADER_LEN]);
-        let version = Header::version(&head)?;
-        let header_len = Header::len_of(version).ok_or(RegionError::Version(version))?;
+        let written = Header::version(&head)?;
+        // Version 5 and newer: the minimum reader version and the header
+        // length lie past the first 64 bytes.
+        let known = match written >= VERSION {
+            true => HEADER_LEN_5,
+            false => Header::len_of(written).ok_or(RegionError::Version(written))?,
+        };
+        if storage.size() < known as u64 {
+            return Err(RegionError::Truncated);
+        }
+        storage.read_at(0, &mut hb[..known])?;
+        let (_, header_len) = Header::reads_as(&hb[..known])?;
         if storage.size() < header_len as u64 {
             return Err(RegionError::Truncated);
         }
-        storage.read_at(0, &mut hb[..header_len])?;
-        let header = Header::parse(&hb[..header_len])?;
+        let header = Header::parse(&hb[..known])?;
+        let min_reader = match written >= VERSION {
+            true => u16_at(&hb, MIN_READER_AT),
+            false => written,
+        };
         let size = storage.size();
         let first = header_len as u64;
         let index_len = u64::from(header.tiles) * ENTRY_LEN as u64;
@@ -645,7 +724,13 @@ impl<S: Storage> Region<S> {
         let mut buildings_end = tail;
         if let Some(p) = header.pois {
             let len = u64::from(p.sections) * ENTRY_LEN as u64;
-            if p.index.checked_add(len) != Some(tail) || p.index < data_start {
+            // A newer file may carry more after the poi index (1714).
+            let end = p.index.checked_add(len);
+            let fits = match written > VERSION {
+                true => end.is_some_and(|end| end <= tail),
+                false => end == Some(tail),
+            };
+            if !fits || p.index < data_start {
                 return Err(RegionError::Header("poi index"));
             }
             buildings_end = p.index;
@@ -705,7 +790,29 @@ impl<S: Storage> Region<S> {
             header,
             attribution,
             notice,
+            written,
+            min_reader,
+            header_len: first,
         })
+    }
+
+    /// The format version the file says it is, which may be newer than
+    /// [`VERSION`] when its minimum reader version lets this reader read
+    /// it (1714); [`Header::version_of`] says what it is read as.
+    pub fn version(&self) -> u16 {
+        self.written
+    }
+
+    /// The oldest reader version that reads the file (1714): the version
+    /// itself up to version 4, the header's field from version 5 on.
+    pub fn min_reader(&self) -> u16 {
+        self.min_reader
+    }
+
+    /// The header's length in the file, which from version 5 on may be
+    /// longer than this reader knows.
+    pub fn header_len(&self) -> u64 {
+        self.header_len
     }
 
     /// Whether the whole file is there: always but for a version 4 file
@@ -1286,5 +1393,354 @@ impl<'a> Region<&'a [u8]> {
             .get(start..start + len as usize)
             .ok_or(RegionError::Truncated)?;
         core::str::from_utf8(b).map_err(|_| RegionError::Strings(n))
+    }
+}
+
+/// `bytes`, a complete region, without its points of interest (1714):
+/// a version 5 file written anew as version 4, every tile, name and
+/// building where the version 4 layout puts it, the poi sections, their
+/// index and the strings only the pois named gone: the file a cut
+/// without pois writes, which a version 4 reader reads and a board's
+/// flash does not pay for. A file without pois comes back as it is. The result
+/// is opened and verified before it is returned.
+pub fn without_pois(bytes: &[u8]) -> Result<Vec<u8>, RegionError> {
+    let r = Region::from_bytes(bytes)?;
+    if r.header.pois.is_none() {
+        return Ok(bytes.to_vec());
+    }
+    r.verify()?;
+    let out = write_streamed(&r, &Shape::default())?;
+    Region::from_bytes(out.as_slice())?.verify()?;
+    Ok(out)
+}
+
+/// How [`write_streamed`] writes: its pois (`None`: none, version 4),
+/// and, for the tests of a reader meeting a newer file, the version and
+/// minimum reader version it claims, bytes the header grows by and bytes
+/// after the last index.
+#[derive(Default)]
+struct Shape<'a> {
+    pois: Option<Vec<(TileId, &'a [u8])>>,
+    claim: Option<(u16, u16)>,
+    pad: usize,
+    tail: &'a [u8],
+}
+
+/// Write the complete streamed region `r` anew in the version 4 layout:
+/// header, texts, slots, tiles in slot order (a shared blob once), label,
+/// building and poi sections, the string table, the label, building and
+/// poi indices.
+fn write_streamed(r: &Region<&[u8]>, shape: &Shape<'_>) -> Result<Vec<u8>, RegionError> {
+    let h = r.header;
+    let labels = h.labels.ok_or(RegionError::Header("strings"))?;
+    if !h.streamed || !r.complete {
+        return Err(RegionError::Header("version"));
+    }
+    let src: &[u8] = r.storage;
+    let blob = |off: u64, len: u64| -> Result<&[u8], RegionError> {
+        let start = usize::try_from(off).map_err(|_| RegionError::Truncated)?;
+        let end = usize::try_from(len)
+            .ok()
+            .and_then(|len| start.checked_add(len))
+            .ok_or(RegionError::Truncated)?;
+        src.get(start..end).ok_or(RegionError::Truncated)
+    };
+    let mut header = Header {
+        pois: shape.pois.as_ref().map(|_| PoiTables::default()),
+        ..h
+    };
+    let known = header.header_len();
+    let mut out = vec![0u8; known + shape.pad];
+    let text = |s: &str, out: &mut Vec<u8>| -> Result<(u32, u32), RegionError> {
+        let at = u32::try_from(out.len()).map_err(|_| RegionError::Header("text"))?;
+        out.extend_from_slice(s.as_bytes());
+        Ok((at, s.len() as u32))
+    };
+    header.attribution = text(r.attribution(), &mut out)?;
+    header.notice = text(r.notice(), &mut out)?;
+    header.index = out.len() as u64;
+    out.resize(out.len() + h.tiles as usize * ENTRY_LEN, 0);
+    let mut moved: Vec<((u64, u32), u64)> = Vec::new();
+    let mut slots = Vec::with_capacity(h.tiles as usize);
+    for n in 0..h.tiles {
+        let (id, slot) = r.slot(n)?;
+        slots.push(match slot {
+            Slot::Here(e) => {
+                let at = match moved.iter().find(|(k, _)| *k == (e.offset, e.len)) {
+                    Some((_, at)) => *at,
+                    None => {
+                        let at = out.len() as u64;
+                        out.extend_from_slice(blob(e.offset, u64::from(e.len))?);
+                        moved.push(((e.offset, e.len), at));
+                        at
+                    }
+                };
+                Entry { offset: at, ..e }
+            }
+            Slot::Empty => Entry {
+                id,
+                offset: EMPTY_SLOT,
+                len: 0,
+            },
+            Slot::Pending => return Err(RegionError::Pending(id)),
+        });
+    }
+    for (n, e) in slots.iter().enumerate() {
+        let at = header.index as usize + n * ENTRY_LEN;
+        out[at..at + ENTRY_LEN].copy_from_slice(&e.encode());
+    }
+    let sections = |entries: &mut dyn Iterator<Item = Result<(TileId, &[u8]), RegionError>>,
+                    out: &mut Vec<u8>|
+     -> Result<Vec<Entry>, RegionError> {
+        let mut written = Vec::new();
+        for item in entries {
+            let (id, bytes) = item?;
+            let len = u32::try_from(bytes.len()).map_err(|_| RegionError::Truncated)?;
+            written.push(Entry {
+                id,
+                offset: out.len() as u64,
+                len,
+            });
+            out.extend_from_slice(bytes);
+        }
+        Ok(written)
+    };
+    let mut label_sections = Vec::with_capacity(labels.sections as usize);
+    for n in 0..labels.sections {
+        let e = r.label_entry(n)?;
+        label_sections.push((e.id, blob(e.offset, u64::from(e.len))?.to_vec()));
+    }
+    // Without the pois the strings only they named go too (1714): the
+    // label sections, the table's only other readers, are renumbered
+    // into the smaller table, which keeps its order.
+    let (strings, table_bytes) = match shape.pois.is_none() && h.pois.is_some() {
+        true => {
+            let mut used = alloc::collections::BTreeSet::new();
+            for (id, b) in &label_sections {
+                for at in label_strings(*id, b)? {
+                    used.insert(u32_at(b, at));
+                }
+            }
+            let used: Vec<u32> = used.into_iter().collect();
+            for (id, b) in &mut label_sections {
+                for at in label_strings(*id, b)? {
+                    let old = u32_at(b, at);
+                    let new = used
+                        .binary_search(&old)
+                        .map_err(|_| RegionError::Strings(old))?;
+                    b[at..at + 4].copy_from_slice(&(new as u32).to_le_bytes());
+                }
+            }
+            let names = used
+                .iter()
+                .map(|n| r.string(*n))
+                .collect::<Result<Vec<&str>, RegionError>>()?;
+            crate::labels::encode_strings(names)
+        }
+        false => (
+            labels.strings,
+            blob(labels.table, labels.table_len)?.to_vec(),
+        ),
+    };
+    let mut label_entries = label_sections.iter().map(|(id, b)| Ok((*id, b.as_slice())));
+    let label_entries = sections(&mut label_entries, &mut out)?;
+    let mut building_entries = (0..r.building_sections()).map(|n| {
+        let e = r.building_entry(n)?;
+        Ok((e.id, blob(e.offset, u64::from(e.len))?))
+    });
+    let building_entries = sections(&mut building_entries, &mut out)?;
+    let mut poi_entries = shape.pois.iter().flatten().map(|(id, b)| Ok((*id, *b)));
+    let poi_entries = sections(&mut poi_entries, &mut out)?;
+    let table = out.len() as u64;
+    out.extend_from_slice(&table_bytes);
+    let index = |entries: &[Entry], out: &mut Vec<u8>| -> u64 {
+        let at = out.len() as u64;
+        for e in entries {
+            out.extend_from_slice(&e.encode());
+        }
+        at
+    };
+    let label_index = index(&label_entries, &mut out);
+    let building_index = index(&building_entries, &mut out);
+    let poi_index = index(&poi_entries, &mut out);
+    out.extend_from_slice(shape.tail);
+    header.labels = Some(LabelTables {
+        index: label_index,
+        sections: labels.sections,
+        strings,
+        table,
+        table_len: table_bytes.len() as u64,
+    });
+    header.buildings = Some(BuildingTables {
+        index: building_index,
+        sections: building_entries.len() as u32,
+    });
+    if header.pois.is_some() {
+        header.pois = Some(PoiTables {
+            index: poi_index,
+            sections: poi_entries.len() as u32,
+        });
+    }
+    header.len = out.len() as u64;
+    out[..known].copy_from_slice(&header.encode());
+    if let Some((version, min_reader)) = shape.claim {
+        out[4..6].copy_from_slice(&version.to_le_bytes());
+        out[6..8].copy_from_slice(&((known + shape.pad) as u16).to_le_bytes());
+        out[MIN_READER_AT..MIN_READER_AT + 2].copy_from_slice(&min_reader.to_le_bytes());
+    }
+    Ok(out)
+}
+
+/// Where label section `b` of tile `id` keeps its string indices: the
+/// points', the lines' and the alternates' ([`crate::labels`]).
+fn label_strings(id: TileId, b: &[u8]) -> Result<Vec<usize>, RegionError> {
+    let bad = RegionError::Labels(id, LabelError::Length);
+    if b.len() < crate::labels::SECTION_HEAD {
+        return Err(bad);
+    }
+    let mut at = crate::labels::SECTION_HEAD;
+    let mut fields = Vec::new();
+    for (n, len) in [
+        (u16_at(b, 0), crate::labels::POINT_LEN),
+        (u16_at(b, 2), crate::labels::LINE_LEN),
+        (u16_at(b, 4), crate::labels::ALT_LEN),
+    ] {
+        for _ in 0..n {
+            fields.push(at + 4);
+            at += len;
+        }
+    }
+    match at <= b.len() {
+        true => Ok(fields),
+        false => Err(bad),
+    }
+}
+
+#[cfg(test)]
+mod forward_1714 {
+    use super::*;
+    use crate::pois::{encode_section, PoiRecord};
+
+    const FIRENZE: &[u8] = include_bytes!("../fixtures/firenze.lmr");
+
+    /// A poi section for the deepest tile of `r` that is there.
+    fn one_poi(r: &Region<&[u8]>) -> (TileId, Vec<u8>) {
+        let deepest = (0..r.header().tiles)
+            .filter_map(|n| r.entry(n).ok())
+            .rfind(|e| e.id.z == r.header().max_zoom)
+            .expect("a deepest tile");
+        let section = encode_section(
+            &[PoiRecord {
+                kind: 0,
+                name: Some(1),
+                min_zoom: Some(15),
+                x: 10,
+                y: 20,
+                attrs: vec![(2, 3)],
+                ..PoiRecord::default()
+            }],
+            &[],
+        )
+        .expect("a section");
+        (deepest.id, section)
+    }
+
+    /// The fixture as a version 5 file with one poi section.
+    fn v5(tail: &[u8], claim: Option<(u16, u16)>, pad: usize) -> Vec<u8> {
+        let r = Region::from_bytes(FIRENZE).expect("the fixture");
+        let (id, section) = one_poi(&r);
+        write_streamed(
+            &r,
+            &Shape {
+                pois: Some(vec![(id, section.as_slice())]),
+                claim,
+                pad,
+                tail,
+            },
+        )
+        .expect("written")
+    }
+
+    /// Everything a reader of version 5 reads in a region, as one value
+    /// to compare across files.
+    fn read_all(r: &Region<&[u8]>) -> (Vec<(TileId, usize)>, u32, Vec<u16>) {
+        let tiles = (0..r.header().tiles)
+            .filter_map(|n| r.entry(n).ok())
+            .map(|e| (e.id, r.fixture_of(&e).ok().flatten().map_or(0, |f| f.len())))
+            .collect();
+        let pois = (0..r.poi_sections())
+            .map(|n| r.poi_entry(n).expect("poi entry").id)
+            .map(|id| r.pois(id).expect("pois").map_or(0, |p| p.poi_count()))
+            .collect();
+        (tiles, r.string_count(), pois)
+    }
+
+    /// A version 5 file reads, says version 5 and minimum reader 5, and
+    /// verifies; stripped of its pois it is the version 4 fixture again,
+    /// byte for byte.
+    #[test]
+    fn a_version_5_file_reads_and_strips_back_to_the_version_4_cut() {
+        let b = v5(&[], None, 0);
+        assert_eq!(u16_at(&b, 4), VERSION);
+        let r = Region::from_bytes(b.as_slice()).expect("v5 opens");
+        r.verify().expect("v5 verifies");
+        assert_eq!((r.version(), r.min_reader()), (VERSION, VERSION));
+        assert_eq!(r.header_len(), HEADER_LEN_5 as u64);
+        assert_eq!(read_all(&r).2, [1]);
+        let stripped = without_pois(&b).expect("stripped");
+        assert_eq!(u16_at(&stripped, 4), VERSION_4);
+        assert!(stripped == FIRENZE, "the strip is the version 4 cut");
+        // A file without pois comes back unchanged.
+        assert!(without_pois(FIRENZE).expect("as it is") == FIRENZE);
+    }
+
+    /// A newer writer's file (version 6) that only adds: eight more header
+    /// bytes, its reserved fields used, bytes after the poi index. Its
+    /// minimum reader version 5 lets this reader read it as version 5,
+    /// everything it knows the same as in the version 5 file. The control:
+    /// the same file saying minimum reader 6 is refused by version.
+    #[test]
+    fn a_newer_file_that_only_adds_reads_as_version_5() {
+        let plain = v5(&[], None, 0);
+        let plain = Region::from_bytes(plain.as_slice()).expect("v5");
+        let mut b = v5(&[0x5A; 37], Some((6, VERSION)), 8);
+        b[27] = 1;
+        b[108] = 1;
+        b[126] = 1;
+        b[HEADER_LEN_5..HEADER_LEN_5 + 8].copy_from_slice(&[0xEE; 8]);
+        let r = Region::from_bytes(b.as_slice()).expect("v6 with min reader 5 opens");
+        assert_eq!((r.version(), r.min_reader()), (6, VERSION));
+        assert_eq!(r.header().version_of(), VERSION);
+        assert_eq!(r.header_len(), HEADER_LEN_5 as u64 + 8);
+        r.verify().expect("v6 verifies as v5");
+        assert_eq!(read_all(&r), read_all(&plain));
+        assert_eq!(r.attribution(), plain.attribution());
+
+        let mut refused = b.clone();
+        refused[MIN_READER_AT..MIN_READER_AT + 2].copy_from_slice(&6u16.to_le_bytes());
+        assert_eq!(
+            Region::from_bytes(refused.as_slice()).err(),
+            Some(RegionError::Version(6))
+        );
+        // Version 5 itself keeps its reserved fields and its minimum
+        // reader strict: a version 5 file is what this reader wrote.
+        let mut five = v5(&[], None, 0);
+        five[MIN_READER_AT] = 4;
+        assert_eq!(
+            Region::from_bytes(five.as_slice()).err(),
+            Some(RegionError::Header("reader version"))
+        );
+        let mut five = v5(&[], None, 0);
+        five[126] = 1;
+        assert_eq!(
+            Region::from_bytes(five.as_slice()).err(),
+            Some(RegionError::Header("reserved"))
+        );
+        // A version 5 file has nothing after its poi index.
+        let tail = v5(&[1, 2, 3], None, 0);
+        assert_eq!(
+            Region::from_bytes(tail.as_slice()).err(),
+            Some(RegionError::Header("poi index"))
+        );
     }
 }

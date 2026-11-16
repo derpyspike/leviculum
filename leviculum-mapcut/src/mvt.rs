@@ -77,8 +77,9 @@ pub const PROTECTED_KINDS: &[&str] = &[
 pub struct SourcePoi {
     /// The source's kind: `drinking_water`, `fuel`, `shelter`, `bench`.
     pub kind: String,
-    /// The source's `min_zoom`, rounded down; 0 where it has none.
-    pub min_zoom: u8,
+    /// The source's `min_zoom`, rounded down; `None` where it has none
+    /// (1714: never 0, which would rank it with the most important).
+    pub min_zoom: Option<u8>,
     /// The name, where it has one.
     pub name: Option<Name>,
     /// In tile units, possibly in the tile's buffer.
@@ -506,6 +507,14 @@ fn small(v: Option<f64>) -> u8 {
     v.map_or(0, |v| v.floor().clamp(0.0, 255.0) as u8)
 }
 
+/// A poi's `min_zoom` as its rank: rounded down, below
+/// [`leviculum_map::pois::MIN_ZOOM_UNKNOWN`], and `None` where the source
+/// has none (1714).
+fn rank(v: Option<f64>) -> Option<u8> {
+    let top = f64::from(leviculum_map::pois::MIN_ZOOM_UNKNOWN - 1);
+    v.map(|v| v.floor().clamp(0.0, top) as u8)
+}
+
 /// The one `kind` attribute of a protected or military area.
 fn kind_attr(kind: &str) -> Vec<(&'static str, String)> {
     vec![("kind", kind.to_owned())]
@@ -526,7 +535,7 @@ fn poi(kind: &str, props: &Props<'_>, f: &Feature, locale: Option<&str>) -> Res<
     };
     Ok(Some(SourcePoi {
         kind: kind.to_owned(),
-        min_zoom: small(props.number(&["min_zoom", "pmap:min_zoom"])),
+        min_zoom: rank(props.number(&["min_zoom", "pmap:min_zoom"])),
         name: props.name(locale),
         at,
         attrs: props.attrs(POI_ATTRS),
