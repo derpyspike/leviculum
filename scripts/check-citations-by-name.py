@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A new citation names its item; a touched line citation agrees with it.
+"""A new citation names its item; a touched line citation stays on its item.
 
 Two refusals, both over the living texts (scripts/citations.py, `is_living`):
 
@@ -15,43 +15,42 @@ Two refusals, both over the living texts (scripts/citations.py, `is_living`):
    a citation into another repository that way), and a path into another
    repository, where no item can be checked from here.
 
-2. The census is the judge of every citation move (order 1940): a change
-   may not turn a line citation's verdict (scripts/citation-census.py,
-   `judge`) from `agree` to `drift` or `nolabel`, and a citation it adds
-   or moves must be `agree` unless the pairing below excuses it. The guard computes the census for the touched
-   citations at the base revision (--base, else $LEVICULUM_CITATION_BASE,
-   else the merge base of HEAD and origin/master, but never older than the
-   commit that added this guard nor than RULE_FLOOR) and in the working tree. There is no
+2. The census is the judge of every citation move (order 1940). The
+   guard computes the census for the touched citations at the base
+   revision (--base, else $LEVICULUM_CITATION_BASE, else the merge base of
+   HEAD and origin/master, but never older than the commit that added this
+   guard nor than RULE_FLOOR) and in the working tree. There is no
    "unchanged since a merged parent" exemption and no line map to trust: a
    renumbered citation is right because the line it points at now holds
    the item its text names, not because a map carried it there.
 
    Touched means: the citing line is one the diff adds or changes, or the
-   cited file changed. A touched citation that is not `agree` is paired
-   with the base so that no citation stands in for another (order 1955):
+   cited file changed. Each touched citation pairs with at most one base
+   citation, by occurrence through the citing text's own diff (the
+   reviewer's decision of 2026-11-16 21:05, which replaces the decision of
+   13:55 and its pool of excuses):
 
-   - Its citing line untouched, its cited file changed: it answers to its
-     own base self (the citation at the same place of the base line git's
-     diff maps it to) and passes when that verdict is no better in the
-     order agree, drift, nolabel; a drifting citation rides through a
-     merge, and a file that moved under an agreeing citation refuses until
-     the citation is renumbered onto its item.
-   - Its citing line added or changed: excused only by a base citation
-     the change replaced or moved, one on a line the diff removed or
-     changed, of the same cited file and label (`_key`), with a verdict no
-     better (a base drift never excuses a head nolabel) and written the
-     same, each excusing one. A base citation that still stands untouched
-     keeps its own entry and excuses nothing else: an agreeing citation
-     moved onto another item is refused even beside an untouched drifting
-     sibling of its label, and a new drifting or label-less citation
-     beside an untouched one of its key is refused. "Written the same"
-     makes a renumbered drift a move that must agree (the reviewer's
-     decision of 2026-11-16 13:55). A label-less citation (`nolabel`)
-     makes no claim to judge and may be renumbered in place of a replaced
-     label-less one of its file; a bare name the tree cannot place
-     (`foreign`, `unplaced`) in place of a replaced one of the same name
-     and label. A label the base never cited this file under is new and
-     must agree.
+   - on a line the diff left alone, the citation at the same place on the
+     base line it stands on;
+   - on a line the diff adds or changes, the citation it replaced, by
+     position inside the hunk: the k-th citation of the hunk's new lines
+     with the k-th of the base lines it replaced, line by line when the
+     hunk writes as many lines as it replaces. A name citation holds its
+     place in that count; a line citation where a name citation stood has
+     no partner.
+
+   Each base citation pairs once. The verdict per pair, with item(x) the
+   item the census resolves at x's cited line (at head for the head
+   citation, at the base for the base citation):
+
+   - base `agree`: head must be `agree`;
+   - base `drift` or `nolabel`: head passes only if it is `agree` or
+     item(head) == item(base), the same item of the same file;
+   - no partner: head must be `agree`.
+
+   A bare name the tree cannot place (`foreign`, why `unplaced`) resolves
+   no item; its own text is what it names, so one carried word for word
+   keeps its partner and a renumbered one is refused.
 
    Citations into other repositories and pinned references
    (`reference/...`, a bare `Transport.py` that names no file of this
@@ -219,19 +218,33 @@ def guard_commit(root):
     return intro.stdout.strip() or None
 
 
-def _key(rec):
-    """What pairs a citation of the working tree with one of the base: the
-    cited file (for an unplaceable bare name, the name as written) and the
-    label the text gives it."""
+def cited_path(rec):
+    """The cited file of a census record: for an unplaceable bare name, the
+    name as written."""
     if rec["verdict"] == "foreign":
-        return (rec["cite"].rsplit(":", 1)[0], rec["label"])
-    return (rec["at"].rsplit(":", 1)[0], rec["label"])
+        return rec["cite"].rsplit(":", 1)[0]
+    return rec["at"].rsplit(":", 1)[0]
 
 
-# Better first. A base verdict excuses a touched one only when it is no
-# better: a base drift never excuses a head nolabel. `foreign` (an
-# unplaceable bare name) is excused by `foreign` alone.
-RANK = {"agree": 0, "drift": 1, "nolabel": 2, "foreign": 3}
+def identity(rec):
+    """What a pair compares: the item the census resolves at a citation's
+    cited line, with its file. A bare name the census cannot place in this
+    tree (`foreign`, why `unplaced`) resolves no item; the only thing it
+    names is its own text, so that is its identity, and a renumbered one is
+    another citation."""
+    if rec["verdict"] == "foreign":
+        return ("foreign", rec["cite"])
+    return (cited_path(rec), rec["item"])
+
+
+def passes(head, base):
+    """The verdict of a pair (the reviewer's decision of 2026-11-16 21:05).
+    `base` is the head citation's partner, or None when it has none."""
+    if head["verdict"] == "agree":
+        return True
+    if base is None or base["verdict"] == "agree":
+        return False
+    return identity(head) == identity(base)
 
 
 def base_line(hs, n):
@@ -256,41 +269,91 @@ def check_new_lines(tree, base):
     recs = CEN.census(tree, living & changed)
     recs += CEN.census(tree, living - changed, into=changed)
     base_tree = C.Tree(root, base)
-    sides, lines_cache, head_at = {}, {}, {}
-    for r in recs:
-        head_at.setdefault((r["file"], r["line"]), []).append(r)
+    partners, lines_cache = {}, {}
 
-    def side(rel):
-        """(hunks, lines the diff adds or changes, the base's citations of
-        `rel` by line, the excuse pool) of a citing file; the hunks and the
-        added lines are None for a file the base does not hold (every line
-        is new). The pool holds only the base citations on lines the diff
-        removed or changed, by `_key`: a base citation that still stands
-        untouched keeps its own entry and excuses nothing else."""
-        if rel not in sides:
-            if git(root, "cat-file", "-e", f"{base}:{rel}", check=False).returncode != 0:
-                sides[rel] = (None, None, {}, {})
-            else:
-                hs = hunks(root, base, rel) if rel in changed else []
-                old, new = changed_lines(hs)
-                by_line, pool = {}, {}
-                for b in CEN.census(base_tree, {rel}):
-                    by_line.setdefault(b["line"], []).append(b)
-                    if b["line"] in old:
-                        pool.setdefault(_key(b), []).append(b)
-                sides[rel] = (hs, new, by_line, pool)
-        return sides[rel]
+    def occurrence(recs_on_line, r):
+        """(line, text, k): `r` is the k-th citation written `r["cite"]` on
+        its line. What a pair is looked up by."""
+        same = [h for h in recs_on_line if h["cite"] == r["cite"]]
+        return (r["line"], r["cite"], next(i for i, h in enumerate(same) if h is r))
 
-    def own_base(r):
-        """The base citation an untouched citing line held at the same
-        place: the same key, in the same order on its line."""
-        hs, _, by_line, _ = side(r["file"])
-        if hs is None:
+    def slots(t, rel):
+        """{line: [(kind, text)]} of the citing file `rel` in tree `t`: its
+        line citations ("L") and name citations ("N") in the order they are
+        written. A name citation holds its place, so a line citation that a
+        change turned into a name moves no other citation's position."""
+        text = t.text(rel) or ""
+        ms = [(m.start(), "L", m.group(0)) for m in C.line_citations(text, rel)]
+        ms += [(m.start(), "N", m.group(0)) for m in C.name_citations(text, rel)]
+        out = {}
+        for start, kind, cite in sorted(ms):
+            out.setdefault(text.count("\n", 0, start) + 1, []).append((kind, cite))
+        return out
+
+    def record(by_line, line, slot_list, k):
+        """The census record of the k-th slot of `line`, or None for a name
+        citation or a line citation the census does not hold."""
+        kind, cite = slot_list[k]
+        if kind != "L":
             return None
-        mine = [h for h in head_at[(r["file"], r["line"])] if _key(h) == _key(r)]
-        theirs = [b for b in by_line.get(base_line(hs, r["line"]), []) if _key(b) == _key(r)]
-        k = next(i for i, h in enumerate(mine) if h is r)
-        return theirs[k] if k < len(theirs) else None
+        nth = sum(1 for kd, c in slot_list[:k] if kd == "L" and c == cite)
+        same = [r for r in by_line.get(line, []) if r["cite"] == cite]
+        return same[nth] if nth < len(same) else None
+
+    def pair(rel):
+        """{occurrence: base partner} for the citations of the citing file
+        `rel` at head that have one. Pairing runs through `rel`'s own diff
+        against the base. Inside a hunk, the k-th citation of the hunk's new
+        lines pairs with the k-th citation of the base lines it replaced (a
+        hunk that writes as many lines as it replaces does so line by line);
+        a name citation counts as a citation there, and a line citation
+        that stands where a name citation stood has no partner. On a line no
+        hunk touches, the partner is the citation of the same text at the
+        same place on the base line it stands on. Each base citation pairs
+        once. A file the base does not hold has no partners."""
+        if rel in partners:
+            return partners[rel]
+        out = {}
+        partners[rel] = out
+        if git(root, "cat-file", "-e", f"{base}:{rel}", check=False).returncode != 0:
+            return out
+        head_by_line, by_line = {}, {}
+        for r in CEN.census(tree, {rel}):
+            head_by_line.setdefault(r["line"], []).append(r)
+        for b in CEN.census(base_tree, {rel}):
+            by_line.setdefault(b["line"], []).append(b)
+        head_slots, base_slots = slots(tree, rel), slots(base_tree, rel)
+        hs = hunks(root, base, rel) if rel in changed else []
+        in_hunk = set()
+        for old_start, old_len, new_start, new_len in hs:
+            if old_len == new_len:
+                spans = [([old_start + i], [new_start + i]) for i in range(new_len)]
+            else:
+                spans = [(range(old_start, old_start + old_len),
+                          range(new_start, new_start + new_len))]
+            for old_ns, new_ns in spans:
+                olds = [(n, k) for n in old_ns for k in range(len(base_slots.get(n, [])))]
+                news = [(n, k) for n in new_ns for k in range(len(head_slots.get(n, [])))]
+                for (hn, hk), (bn, bk) in zip(news, olds):
+                    r = record(head_by_line, hn, head_slots[hn], hk)
+                    b = record(by_line, bn, base_slots[bn], bk)
+                    if r is not None and b is not None:
+                        out[occurrence(head_by_line[hn], r)] = b
+            in_hunk.update(range(new_start, new_start + new_len))
+        for n, rs in head_by_line.items():
+            if n in in_hunk:
+                continue
+            theirs = by_line.get(base_line(hs, n), [])
+            for r in rs:
+                key = occurrence(rs, r)
+                cands = [b for b in theirs if b["cite"] == r["cite"]]
+                if key[2] < len(cands):
+                    out[key] = cands[key[2]]
+        return out
+
+    def partner(r):
+        """`r`'s base partner, or None."""
+        return pair(r["file"]).get(occurrence(recs_by_line[(r["file"], r["line"])], r))
 
     def line_text(rel, n):
         if rel not in lines_cache:
@@ -298,54 +361,57 @@ def check_new_lines(tree, base):
         ls = lines_cache[rel]
         return ls[n - 1] if 0 < n <= len(ls) else ""
 
+    def touched_lines(rel):
+        """The lines of `rel` its diff adds or changes; None when the base
+        does not hold the file (every line is new)."""
+        if git(root, "cat-file", "-e", f"{base}:{rel}", check=False).returncode != 0:
+            return None
+        if rel not in changed:
+            return set()
+        return changed_lines(hunks(root, base, rel))[1]
+
+    recs_by_line = {}
+    for r in recs:
+        recs_by_line.setdefault((r["file"], r["line"]), []).append(r)
+    touched_cache = {}
     out = []
     for r in recs:
         if r["verdict"] == "agree":
             continue
         rel, n = r["file"], r["line"]
-        added = side(rel)[1]
-        new_line = rel in changed and (added is None or n in added)
-        if r["verdict"] == "foreign":
-            if r["why"] != "unplaced" or not new_line:
-                continue
-            path = r["cite"].rsplit(":", 1)[0]
-        else:
-            path = r["at"].rsplit(":", 1)[0]
-            if not new_line and path not in changed:
-                continue
+        if rel not in touched_cache:
+            touched_cache[rel] = touched_lines(rel)
+        added = touched_cache[rel]
+        new_line = added is None or n in added
+        if r["verdict"] == "foreign" and r["why"] != "unplaced":
+            # Another repository or a pinned reference: not checked.
+            continue
+        path = cited_path(r)
+        if not new_line and path not in changed:
+            # Neither the citing line nor the cited file moved: the pair
+            # is the same citation over the same lines.
+            continue
         if FIXTURE_MARK in line_text(rel, n):
             continue
-        rank = RANK[r["verdict"]]
-        if not new_line:
-            # The citing line stands; its cited file changed under it. It
-            # answers to its own base self and to nothing else.
-            mine = own_base(r)
-            if mine is not None and RANK[mine["verdict"]] >= rank:
-                continue
-            was = mine["verdict"] if mine is not None else "no citation here"
-            out.append(f"{rel}:{n}: `{r['cite']}`\n    fell from {was} to {r['verdict']}: "
-                       f"{path} changed under it. Renumber it onto the lines of "
-                       f"`{r['label']}`, or cite it by name: "
-                       f"{suggestion(tree, path, r['label'])}.")
-            continue
-        # A citation on a line the diff adds or changes: excused only by a
-        # base citation the change replaced or moved, no better, and
-        # written the same: a renumbered drift is a move and must agree. A
-        # citation with no label (`nolabel`) or an unplaceable bare name
-        # (`foreign`) makes no claim the census can check, so it may be
-        # renumbered in place of a replaced one of its kind.
-        cands = side(rel)[3].get(_key(r), [])
-        k = next((i for i, b in enumerate(cands)
-                  if RANK[b["verdict"]] >= rank
-                  and (b["cite"] == r["cite"] or r["verdict"] in ("nolabel", "foreign"))),
-                 None)
-        if k is not None:
-            cands.pop(k)
+        b = partner(r)
+        if passes(r, b):
             continue
         holder = f"; the line belongs to `{r['item']}`" if r.get("item", "-") != "-" else ""
-        out.append(f"{rel}:{n}: `{r['cite']}`\n    a new line citation (verdict "
-                   f"{r['verdict']}{holder}): a citation this change adds or moves must "
-                   "agree with its label. Cite the item by name: "
+        if b is None:
+            why = "it pairs with no base citation, so it must agree with its label"
+        elif b["verdict"] == "agree":
+            why = (f"it stands in for `{b['cite']}`, which agreed, so it must agree "
+                   "with its label")
+        else:
+            why = (f"it stands in for `{b['cite']}` ({b['verdict']}, at "
+                   f"`{b['item']}`), and a citation that does not agree must stay on "
+                   "the item its base resolved")
+        if new_line:
+            what = "a new line citation"
+        else:
+            what = f"a citation whose file {path} changed under it"
+        out.append(f"{rel}:{n}: `{r['cite']}`\n    {what} (verdict {r['verdict']}{holder}): "
+                   f"{why}. Cite the item by name: "
                    f"{suggestion(tree, path, r['label'], r['item'])}.")
     return out
 
