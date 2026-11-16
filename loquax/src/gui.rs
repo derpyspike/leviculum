@@ -1066,14 +1066,6 @@ struct App {
     seen: Seen,
     /// The tracks last derived, and at what (the core's key, 1694 E).
     track_cache: loquax::ui::tracks::TrackCache,
-    /// The map's picture as the canvas last drew it, and what it drew it
-    /// of (1694 C): iced builds the view after every message, and the
-    /// picture's geometry is made again only when the frame on screen,
-    /// where it lies, its filter, the ground or the size moved.
-    picture: canvas::Cache<Renderer>,
-    picture_key: std::cell::RefCell<Option<PictureKey>>,
-    /// How often the picture's geometry was made (for the tests).
-    picture_draws: std::cell::Cell<u64>,
     asks: Option<Asks>,
     /// The core's scheduler over the map's frames (1527): the screen at its
     /// zoom loads first.
@@ -1269,9 +1261,6 @@ impl App {
             },
             asks,
             track_cache: loquax::ui::tracks::TrackCache::default(),
-            picture: canvas::Cache::new(),
-            picture_key: std::cell::RefCell::new(None),
-            picture_draws: std::cell::Cell::new(0),
             touched: false,
             frames: Arc::new(Mutex::new(frames)),
             view: ExactView::new(centre, u32::from(setup.zooms.0) * MILLI, 1, 1),
@@ -3908,18 +3897,6 @@ impl canvas::Program<Message> for QrCanvas {
     }
 }
 
-/// What the map's picture is drawn of (1694 C): the frame on screen, where
-/// it lies (`x`, `y`, `k` as [`App::onto`] says, as bits), whether it is
-/// scaled smoothly, the ground's colour and the canvas's size.
-#[derive(Clone, Debug, PartialEq)]
-struct PictureKey {
-    handle: Option<Handle>,
-    at: [u64; 3],
-    smooth: bool,
-    ground: [u8; 3],
-    size: [u32; 2],
-}
-
 impl canvas::Program<Message> for PictureCanvas<'_> {
     type State = ();
 
@@ -3931,35 +3908,7 @@ impl canvas::Program<Message> for PictureCanvas<'_> {
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        let app = self.app;
-        let onto = app.onto();
-        let smooth = onto.is_some_and(|(_, _, _, k)| (k - 1.0).abs() >= 1e-9 && !app.moving());
-        let ground = leviculum_mapfill::frame::rgb888(app.map_style().theme.palette().background);
-        let key = PictureKey {
-            handle: onto.map(|(shown, ..)| shown.handle.clone()),
-            at: onto.map_or([0; 3], |(_, x, y, k)| {
-                [x.to_bits(), y.to_bits(), k.to_bits()]
-            }),
-            smooth,
-            ground,
-            size: [bounds.width.to_bits(), bounds.height.to_bits()],
-        };
-        let mut held = app.picture_key.borrow_mut();
-        if held.as_ref() != Some(&key) {
-            app.picture.clear();
-            *held = Some(key);
-        }
-        vec![app.picture.draw(renderer, bounds.size(), |frame| {
-            app.picture_draws.set(app.picture_draws.get() + 1);
-            self.paint(frame, bounds);
-        })]
-    }
-}
-
-impl PictureCanvas<'_> {
-    /// The picture: the frame on screen where it lies, and the ground
-    /// round it.
-    fn paint(&self, frame: &mut Frame, bounds: Rectangle) {
+        let mut frame = Frame::new(renderer, bounds.size());
         let whole = Rectangle::with_size(bounds.size());
         let mut covered = None;
         if let Some((shown, x, y, k)) = self.app.onto() {
@@ -3998,6 +3947,7 @@ impl PictureCanvas<'_> {
         for strip in uncovered(whole, covered) {
             frame.fill_rectangle(strip.position(), strip.size(), Color::from_rgb8(r, g, b));
         }
+        vec![frame.into_geometry()]
     }
 }
 
@@ -4322,72 +4272,6 @@ mod tests {
                 None => return (last, false),
             }
         }
-    }
-
-    /// Order 1694 C, the measurement: one minute of the window on
-    /// Florence with Carl sending a fix every 10 s, a view built and drawn
-    /// each second as iced does after a message. Counted: the worker's
-    /// frames, the views built, and the picture's geometry made. Carl in
-    /// Berlin draws no frame (before 1694 every fix made a new order, 6 a
-    /// minute, as Carl in Florence still does); the picture's geometry is
-    /// made once per frame that landed, not once per view built (before,
-    /// one per view: 60 a minute).
-    #[test]
-    fn a_peer_sending_every_ten_seconds_costs_frames_only_inside_the_view() {
-        let (w, h) = (480u32, 320u32);
-        let minute = |lat: f64, lon: f64| {
-            let alice = map::tests::pin(1, "alice", 43.7752, 11.2640);
-            let mut app = window_over_florence(vec![alice.clone()], 14 * MILLI);
-            run(&mut app);
-            let render = |app: &App| {
-                leviculum_ui_iced::headless::render(
-                    app.view(),
-                    &Theme::Light,
-                    Color::BLACK,
-                    Color::WHITE,
-                    w,
-                    h,
-                )
-                .expect("a renderer");
-            };
-            render(&app);
-            let (draws_at, mut frames, mut views) = (app.picture_draws.get(), 0, 0);
-            for s in 1..=60 {
-                if s % 10 == 0 {
-                    let mut seen = app.seen.clone();
-                    let carl = map::tests::pin(3, "Carl", lat + f64::from(s) * 1e-4, lon);
-                    seen.pins = vec![alice.clone(), carl];
-                    app.apply(Message::Seen(Box::new(seen)));
-                }
-                let mut drawn = 0;
-                while let Some(Job::Draw(order)) = app.next_job() {
-                    let shown = draw(&app.frames, *order);
-                    app.apply(Message::Painted(shown));
-                    drawn += 1;
-                }
-                app.busy = false;
-                frames += drawn;
-                render(&app);
-                views += 1;
-            }
-            (frames, views, app.picture_draws.get() - draws_at)
-        };
-        let (frames, views, pictures) = minute(52.52, 13.40);
-        eprintln!(
-            "WINDOW_MINUTE outside: worker frames {frames}/min, views {views}/min, picture geometry {pictures}/min"
-        );
-        assert_eq!(frames, 0, "a fix in Berlin draws no frame");
-        assert_eq!(pictures, 0, "and the picture is not made again");
-        let (frames, views, pictures) = minute(43.7745, 11.2620);
-        eprintln!(
-            "WINDOW_MINUTE inside: worker frames {frames}/min, views {views}/min, picture geometry {pictures}/min"
-        );
-        assert_eq!(frames, 6, "each fix in Florence draws its frame");
-        assert!(
-            pictures <= frames,
-            "{pictures} pictures for {frames} frames"
-        );
-        assert_eq!(views, 60);
     }
 
     fn rgba(shown: &Shown) -> Vec<u8> {
