@@ -19,7 +19,8 @@ mod support;
 
 use support::{line_cite, page, Scratch, LIB, PAGE};
 
-/// `alpha` agrees at line 2 and drifts, untouched, at line 20 (`beta`).
+/// `alpha` agrees at line 2 and drifts, untouched, at line 20 (the end of
+/// `impl Other`; `beta` is at line 22).
 fn agree_and_drift() -> String {
     page(&[
         format!("The first is `alpha` (`{}`).", line_cite(LIB, 2)),
