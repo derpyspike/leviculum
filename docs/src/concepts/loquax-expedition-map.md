@@ -872,7 +872,7 @@ Additions (decided):
      pin moves for the relay or for the member — the member's own
      signed message is the only word about the member's position
      outside a vouched group copy. The rule is one function in LXMF,
-     `Lev::reading_writer` (`copy_writer`, `loquax/src/ui.rs:7069`, the
+     `Lev::reading_writer` (`copy_writer`, `loquax/src/ui.rs:7086`, the
      audits of 1757, 1787 and 1808), which the node helper's telemetry
      report and the liveness judgement go through too (rule 5: one
      definition of "this message names a copy's writer", so filing and
@@ -953,7 +953,7 @@ Additions (decided):
      in the conversation, marked as unverified, as LXMF shows it. The
      gate is one place, the single entry where a received message's
      position and group claims become state (`apply_message_claims`,
-     `loquax/src/ui.rs:6775`; the restore has the same gate at its own
+     `loquax/src/ui.rs:6792`; the restore has the same gate at its own
      entry, `learn_groups`); nothing behind the gate knows about
      verification. The held message is kept as received with its
      verdict pending: when the verdict says valid, its claims are
@@ -982,7 +982,7 @@ Additions (decided):
      named writer, for the source and for the group address — a group
      is not a place and gets no pin of its own. Nothing of it shows in
      the pin, the store, the bubble's position line or the Info
-     (`Writers`, `loquax/src/ui.rs:7091`); each refused reading is said
+     (`Writers`, `loquax/src/ui.rs:7108`); each refused reading is said
      in one structured `POSITION_REFUSED reason=…` event in `tui.log`,
      nothing on screen — exactly one, where the judging happens: at
      arrival for a verified message, at the valid verdict for a held
