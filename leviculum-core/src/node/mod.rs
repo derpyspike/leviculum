@@ -4037,7 +4037,7 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
 
     /// The destinations this node has announced before: registered, not
     /// explicit-hash, with a cached announce — the same filter the
-    /// interface-up re-announce applies ([`Self::announce_local_destinations`]).
+    /// interface-up re-announce applies (`announce_local_destinations`).
     ///
     /// This is the set whose paths the owner's self-repair watches on a
     /// shared-instance client (reviewer decision 2026-11-16, the beat in

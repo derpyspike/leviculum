@@ -842,7 +842,8 @@ impl ReticulumNodeBuilder {
     /// How often a shared-instance client checks that the daemon still
     /// routes each destination it announced to the client itself, in
     /// milliseconds (reviewer decision 2026-11-16; the beat of
-    /// [`crate::path_self_repair`], default 30 s). For tests that must see
+    /// `leviculum-std/src/path_self_repair.rs`, default 30 s). For tests
+    /// that must see
     /// a repair inside seconds; a daemon or plain node has no such beat.
     pub fn path_self_repair_beat_ms(mut self, beat_ms: u64) -> Self {
         self.path_self_repair_beat_ms_explicit = Some(beat_ms);

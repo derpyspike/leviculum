@@ -441,8 +441,8 @@ none of it. Worst case: a captured path stays off-box for at most one
 beat per hijack plus the announce's travel, and a replayer buys at most
 one extra announce per rate window. What the check cannot see: on an
 abstract-socket daemon every local client renders as the same
-`LocalInterface[rns/<name>]` through `next_hop_if_name`
-(`LocalInterface.py:372-374`), so a sibling client holding the captured
+`LocalInterface[rns/<name>]` through `next_hop_if_name` (its
+`__str__`, `LocalInterface.py:372-374`), so a sibling client holding the captured
 path at hops 0 is told apart only where client names differ (TCP shared
 instances name clients by peer port, `LocalInterface.py:433`); such a
 capture needs a dead request the owner itself let die, and ends with
