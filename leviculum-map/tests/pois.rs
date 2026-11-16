@@ -212,3 +212,37 @@ fn a_newer_writers_longer_records_and_tail_read_back_their_known_part() {
     b[9] = 19;
     assert_eq!(Pois::parse(&b, 10).err(), Some(PoiError::Length));
 }
+
+/// 1919 (the audit of 1714): each length in the head, one below this
+/// reader's, is a length error; the unchanged section reads.
+#[test]
+fn each_head_length_below_the_readers_is_a_length_error() {
+    let b = section();
+    assert_eq!(&b[8..12], &[12, 20, 8, 8]);
+    assert!(Pois::parse(&b, 10).is_ok(), "the unchanged section reads");
+    for at in 8..12 {
+        let mut short = b.clone();
+        short[at] -= 1;
+        assert_eq!(
+            Pois::parse(&short, 10).err(),
+            Some(PoiError::Length),
+            "byte {at} at {}",
+            short[at]
+        );
+    }
+}
+
+/// 1919: the attribute walk steps by the head's attribute length. With
+/// 12-byte attributes, a string index past the table in the third one
+/// is found there; the section as written reads.
+#[test]
+fn a_bad_string_in_the_third_of_longer_attributes_is_found() {
+    let b = future_section(4, &[]);
+    assert_eq!(b[11], 12);
+    assert!(Pois::parse(&b, 10).is_ok());
+    let third = b.len() - 12;
+    assert_eq!(&b[third..third + 4], &5u32.to_le_bytes());
+    let mut bad = b.clone();
+    bad[third..third + 4].copy_from_slice(&50u32.to_le_bytes());
+    assert_eq!(Pois::parse(&bad, 10).err(), Some(PoiError::String(50)));
+}

@@ -21,8 +21,9 @@
 //! writes, and before writing reads the image's app descriptor, whose
 //! version names the newest region version the image reads (`+lmr5`).
 //! A region newer than that is refused, since the board would leave it
-//! off the map; an image from before 1714 says nothing, and lnflash warns
-//! when it writes a version 5 region to one. `--no-pois` writes every
+//! off the map; an image from before 1714 says nothing, and lnflash
+//! refuses a version 5 region for it as for no image at all (1919): flash
+//! a current image first, or write with `--no-pois`. `--no-pois` writes every
 //! region without its points of interest, as version 4: the M9 draws no
 //! pois yet, and they cost its flash.
 
@@ -180,39 +181,48 @@ pub fn image_reads(head: &[u8]) -> ImageReads {
 }
 
 /// Whether `regions` may go to a board whose image says `image`: an
-/// error naming the region the image would leave off the map, else what
-/// to warn of, if anything.
-pub fn judge(image: &ImageReads, regions: &[Prepared]) -> Result<Option<String>, String> {
+/// error naming the region the image would leave off the map, and the
+/// ways out.
+///
+/// An image that does not say which region version it reads, or no
+/// image lnflash knows, takes only regions every reader reads (version
+/// 4). An untagged image may be one from 1685 to 1714 that reads version
+/// 5, or one from before 1685 that reads only version 4 and would show
+/// nothing of the region; lnflash cannot tell them apart, so it refuses
+/// rather than write a region the board may silently leave off (1919,
+/// the audit of 1714). Writing the image first is the safe order anyway.
+pub fn judge(image: &ImageReads, regions: &[Prepared]) -> Result<(), String> {
     let Some(newest) = regions.iter().max_by_key(|r| r.min_reader) else {
-        return Ok(None);
+        return Ok(());
     };
-    let pois_hint = "or write the regions with --no-pois (region version 4)";
+    let ways_out = "flash a current image first, or write the regions with --no-pois \
+                    (region version 4)";
     match image {
         ImageReads::UpTo { image, version } if newest.min_reader > *version => Err(format!(
-            "{} is region version {}, which a reader of version {} or newer reads; the M9's              image {image} reads up to version {version} and would leave it off the map: flash              a newer image first",
+            "{} is region version {}, which a reader of version {} or newer reads; the M9's \
+             image {image} reads up to version {version} and would leave it off the map: \
+             {ways_out}",
             newest.name, newest.version, newest.min_reader
         )),
-        ImageReads::UpTo { .. } => Ok(None),
-        _ if newest.min_reader <= lmr::VERSION_4 => Ok(None),
-        ImageReads::Unsaid { image } => Ok(Some(format!(
-            "the M9's image {image} does not say which region version it reads; an image              older than the version 5 reader leaves {} (region version {}) off the map: flash              a current image, {pois_hint}",
+        ImageReads::UpTo { .. } => Ok(()),
+        _ if newest.min_reader <= lmr::VERSION_4 => Ok(()),
+        ImageReads::Unsaid { image } => Err(format!(
+            "the M9's image {image} does not say which region version it reads, and an \
+             image older than the version 5 reader would leave {} (region version {}) off \
+             the map: {ways_out}",
             newest.name, newest.version
-        ))),
-        ImageReads::Unknown => Ok(Some(format!(
-            "the M9's application partition holds no image lnflash knows, so nothing says it              reads {} (region version {}): flash a current image, {pois_hint}",
+        )),
+        ImageReads::Unknown => Err(format!(
+            "the M9's application partition holds no image lnflash knows, so nothing says \
+             it reads {} (region version {}): {ways_out}",
             newest.name, newest.version
-        ))),
+        )),
     }
 }
 
 /// What `--region` says once `regions` are written as an area of
-/// `area_len` bytes, with the warning [`judge`] gave.
-pub fn said_written(
-    port: &Path,
-    regions: &[Prepared],
-    area_len: usize,
-    warning: Option<&str>,
-) -> String {
+/// `area_len` bytes.
+pub fn said_written(port: &Path, regions: &[Prepared], area_len: usize) -> String {
     let each: Vec<String> = regions
         .iter()
         .map(|r| {
@@ -228,19 +238,11 @@ pub fn said_written(
             )
         })
         .collect();
-    let mut out = format!(
+    format!(
         "{}: wrote {} into the M9's map area ({area_len} bytes); the board boots with them",
         port.display(),
         each.join(", ")
-    );
-    if let Some(w) = warning {
-        out.push_str(
-            "
-warning: ",
-        );
-        out.push_str(w);
-    }
-    out
+    )
 }
 
 /// The regions the area's first sector names, in the words of a list.
@@ -366,16 +368,11 @@ pub fn write(port: &Path, files: &[PathBuf], no_pois: bool) -> Result<String, St
     let head = dir.path().join("image-head.bin");
     run(&read_at_args(port, APP_OFFSET, APP_HEAD_LEN, &head))?;
     let head = std::fs::read(&head).map_err(|e| format!("{}: {e}", head.display()))?;
-    let warning = judge(&image_reads(&head), &regions)?;
+    judge(&image_reads(&head), &regions)?;
     let path = dir.path().join("regions.bin");
     std::fs::write(&path, &image).map_err(|e| format!("{}: {e}", path.display()))?;
     run(&write_args(port, &path))?;
-    Ok(said_written(
-        port,
-        &regions,
-        image.len(),
-        warning.as_deref(),
-    ))
+    Ok(said_written(port, &regions, image.len()))
 }
 
 /// `--regions`: read the directory from the M9 on `port`. What to say.
@@ -527,8 +524,8 @@ mod tests {
     }
 
     /// 1714: a version 5 region goes to an image that reads it; to an
-    /// image that says it reads less it is refused by name; to an image
-    /// that says nothing, or to no image, it goes with a warning. With
+    /// image that says it reads less it is refused by name, and so it is
+    /// to an image that says nothing or to no image (1919). With
     /// --no-pois it is version 4, the cut without pois, and goes to any
     /// image without a word; the area says each region's version.
     #[test]
@@ -540,23 +537,17 @@ mod tests {
         assert_eq!(regions[0].stripped_from, None);
 
         let reads = |v: &str| image_reads(&head(v));
-        assert_eq!(judge(&reads("0.1.8+lmr5"), &regions), Ok(None));
+        assert_eq!(judge(&reads("0.1.8+lmr5"), &regions), Ok(()));
         let refused = judge(&reads("0.1.8+lmr4"), &regions).expect_err("refused");
         assert!(
             refused.contains("oltrarno is region version 5")
                 && refused.contains("reads up to version 4"),
             "{refused}"
         );
-        let warned = judge(&reads("0.1.7"), &regions)
-            .expect("written")
-            .expect("a warning");
-        assert!(
-            warned.contains("image 0.1.7 does not say") && warned.contains("--no-pois"),
-            "{warned}"
-        );
-        let unknown = judge(&ImageReads::Unknown, &regions)
-            .expect("written")
-            .expect("a warning");
+        assert_no_double_space(&refused);
+        let unsaid = judge(&reads("0.1.7"), &regions).expect_err("refused");
+        assert!(unsaid.contains("image 0.1.7 does not say"), "{unsaid}");
+        let unknown = judge(&ImageReads::Unknown, &regions).expect_err("refused");
         assert!(unknown.contains("no image lnflash knows"), "{unknown}");
 
         let stripped = prepare(std::slice::from_ref(&v5), true).expect("stripped");
@@ -566,7 +557,7 @@ mod tests {
         assert_eq!(s.stripped_from, Some(original));
         assert!(s.bytes.len() < original);
         for image in [reads("0.1.7"), reads("0.1.8+lmr4"), ImageReads::Unknown] {
-            assert_eq!(judge(&image, &stripped), Ok(None), "{image:?}");
+            assert_eq!(judge(&image, &stripped), Ok(()), "{image:?}");
         }
         let area = area_from(&stripped).expect("an area");
         let entries = listed(&area[..area::SECTOR]).expect("a directory");
@@ -577,7 +568,6 @@ mod tests {
             Path::new("/dev/ttyUSB0"),
             &[regions[0].clone(), s.clone()],
             area.len(),
-            Some("look"),
         );
         assert!(
             said.contains(&format!("oltrarno (region version 5, {original} bytes)")),
@@ -590,13 +580,52 @@ mod tests {
             )),
             "{said}"
         );
-        assert!(said.ends_with("\nwarning: look"), "{said}");
+        assert_no_double_space(&said);
         // A version 4 file passes --no-pois as it is.
         let firenze = fixture("leviculum-map/fixtures/firenze.lmr");
         let kept = prepare(std::slice::from_ref(&firenze), true).expect("kept");
         assert_eq!(kept[0].stripped_from, None);
         assert!(kept[0].bytes == std::fs::read(&firenze).expect("read"));
-        assert_eq!(judge(&reads("0.1.7"), &kept), Ok(None));
+        assert_eq!(judge(&reads("0.1.7"), &kept), Ok(()));
+    }
+
+    /// A message lnflash prints has no run of spaces mid-sentence: a
+    /// string literal broken over lines without a `\` continuation
+    /// carries the next line's indentation into the text (1919).
+    fn assert_no_double_space(message: &str) {
+        assert!(!message.contains("  "), "two spaces in: {message}");
+    }
+
+    /// 1919 (the audit of 1714): an image that does not say which region
+    /// version it reads is an image from before the version 5 reader for
+    /// all lnflash can tell, and one from before 1685 leaves a version 5
+    /// region off the map with no word on the board. So a version 5
+    /// region is refused there, and where no image is known at all, by
+    /// name and with the two ways out. The control: the same image takes
+    /// a version 4 region, and a tagged image that reads version 5 takes
+    /// the version 5 one.
+    #[test]
+    fn an_untagged_image_or_none_refuses_a_version_5_region() {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let v5 = v5_region(dir.path(), "oltrarno");
+        let regions = prepare(std::slice::from_ref(&v5), false).expect("prepared");
+        assert_eq!(regions[0].min_reader, 5);
+        for image in [image_reads(&head("0.1.7")), ImageReads::Unknown] {
+            let refused = judge(&image, &regions).expect_err("refused");
+            assert!(
+                refused.contains("oltrarno (region version 5)")
+                    && refused.contains("--no-pois")
+                    && refused.contains("flash a current image"),
+                "{image:?}: {refused}"
+            );
+            assert_no_double_space(&refused);
+        }
+        assert!(judge(&image_reads(&head("0.1.7+lmr5")), &regions).is_ok());
+        let firenze = fixture("leviculum-map/fixtures/firenze.lmr");
+        let v4 = prepare(std::slice::from_ref(&firenze), false).expect("prepared");
+        assert_eq!(v4[0].min_reader, 4);
+        assert!(judge(&image_reads(&head("0.1.7")), &v4).is_ok());
+        assert!(judge(&ImageReads::Unknown, &v4).is_ok());
     }
 
     /// The commands write and read where the partition table puts the

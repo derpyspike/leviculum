@@ -2224,6 +2224,12 @@ mod tests {
     /// Cut the fixture's box of `w` under `profile` into `dir` under the
     /// name the autoload gives it: a region installed before.
     fn installed(serve: &Serve, dir: &Path, w: &MapWant, profile: u8) -> PathBuf {
+        installed_cut(serve, dir, w, profile, false)
+    }
+
+    /// [`installed`], with the points of interest when `pois`: a version
+    /// 5 file.
+    fn installed_cut(serve: &Serve, dir: &Path, w: &MapWant, profile: u8, pois: bool) -> PathBuf {
         let archive =
             Archive::from_source(HttpRange::new(&serve.url("o.pmtiles"))).expect("archive");
         let opts = leviculum_mapcut::cut::CutOptions {
@@ -2235,7 +2241,7 @@ mod tests {
             threads: 1,
             locale: None,
             buildings: false,
-            pois: false,
+            pois,
             round: leviculum_mapcut::cut::ROUND,
         };
         let path = dir.join(auto_name(&w.bounds, w.zooms));
@@ -2373,6 +2379,81 @@ mod tests {
             "exactly one region covers the box, of profile 2"
         );
         assert!(path.exists());
+    }
+
+    /// 1919 (the audit of 1714): a region an older Loquax cut in the
+    /// version 5 layout of before 1714, whose header bytes 124..128 were
+    /// reserved zeros, says minimum reader version 0, and this reader
+    /// refuses it as `Header("reader version")`. Such an autoloaded file
+    /// is removed when the directory is read, so a view over its place
+    /// cuts the place again; a hand placed one stays and is said in user
+    /// words. The control: the current cut of the same box opens.
+    #[test]
+    fn a_region_in_the_layout_before_1714_is_cut_again() {
+        use crate::ui::viewload::wants;
+        use leviculum_map::mercator::project;
+        use leviculum_map::region::{RegionError, MIN_READER_AT};
+        use leviculum_map::viewport::Viewport;
+
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        let dir = tempfile::tempdir().expect("tmp");
+        let w = want(112_615_000);
+        let path = installed_cut(&serve, dir.path(), &w, leviculum_map::profile::CUT_2, true);
+        let mut old = std::fs::read(&path).expect("read");
+        assert!(
+            Region::from_bytes(&old[..]).is_ok(),
+            "the current cut opens"
+        );
+        assert_eq!(u16::from_le_bytes([old[4], old[5]]), 5);
+        old[MIN_READER_AT..MIN_READER_AT + 4].fill(0);
+        assert_eq!(
+            Region::from_bytes(&old[..]).err(),
+            Some(RegionError::Header("reader version"))
+        );
+        std::fs::write(&path, &old).expect("write");
+        let hand = dir.path().join("florence.lmr");
+        std::fs::write(&hand, &old).expect("write");
+
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let (regions, problems) = maps.load();
+        assert!(regions.is_empty());
+        assert!(!path.exists(), "the autoloaded file is removed");
+        assert!(hand.exists(), "a hand placed file stays");
+        assert_eq!(
+            problems,
+            [String::from(
+                "map florence.lmr was made by an older Loquax and cannot be read: load the map of this place again"
+            )]
+        );
+
+        let mut loader = Loader::new(maps.clone(), Source::Url(serve.url("o.pmtiles")), 1 << 30);
+        let b = w.bounds;
+        let centre = project(leviculum_map::mercator::LatLon {
+            lat_e7: (b.south / 2) + (b.north / 2),
+            lon_e7: (b.west / 2) + (b.east / 2),
+        });
+        let view = Viewport::new(centre, 16, 480, 320);
+        let mut now = 0;
+        for _ in 0..8 {
+            let asked = wants(&view, &maps.headers(), false, None);
+            if asked.here.is_empty() {
+                break;
+            }
+            loader.schedule(asked.here, Vec::new(), now);
+            while loader.busy() {
+                settle(&mut loader, now);
+                now += 1;
+            }
+        }
+        assert!(wants(&view, &maps.headers(), false, None).here.is_empty());
+        let (regions, problems) = maps.load();
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            regions
+                .iter()
+                .any(|r| is_auto(&r.name) && r.region.min_reader() == 5),
+            "the place is cut again in the current layout"
+        );
     }
 
     #[test]

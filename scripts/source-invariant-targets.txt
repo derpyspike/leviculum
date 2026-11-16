@@ -176,6 +176,7 @@ skip  leviculum-map labels                    # the pin label rule in cells and 
 skip  leviculum-map buildings                 # the building section format and its reader; subject is the code
 skip  leviculum-map lmr2                      # reads the committed region for its names, but the subject is the label format and the reader
 skip  leviculum-map pois                      # the poi section format and its reader; subject is the code
+skip  leviculum-map region_header_refusals    # reads the committed region, but the subject is the header checks of the reader (1919)
 skip  leviculum-map projection                # in-process projection and viewport arithmetic; subject is the code
 skip  leviculum-map blend                   # the blended world projection in-process: ramps, areas, inverses; subject is the code
 skip  leviculum-map ground                  # the ground pack format, its reader and painter; reads the committed fixtures, but the subject is the code

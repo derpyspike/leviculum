@@ -358,7 +358,9 @@ impl Header {
         }
         let version = u16_at(b, 4);
         if version > newest {
-            return match newest >= VERSION && version > VERSION {
+            // A reader of version 5 or newer reads past these bytes; one
+            // of version 4 or older cannot, and refuses by the number.
+            return match newest >= VERSION {
                 true => Ok(version),
                 false => Err(RegionError::Version(version)),
             };

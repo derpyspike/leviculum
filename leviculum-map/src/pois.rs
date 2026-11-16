@@ -71,8 +71,10 @@ pub const ATTR_LEN: usize = 8;
 pub const UNNAMED: u32 = u32::MAX;
 /// The min zoom byte of a point the source gave no `min_zoom` (1714):
 /// never 0, which would rank it with the most important points and show
-/// it at every zoom. The display rule shows such a point only from view
-/// zoom 17 on, last in a tile's cap ([`Poi::min_zoom`]).
+/// it at every zoom. The display rule, proposed and not built yet
+/// (`docs/src/concepts/loquax-expedition-map.md`, section 4), would show
+/// such a point only from view zoom 17 on, last in a tile's cap
+/// ([`Poi::min_zoom`]).
 pub const MIN_ZOOM_UNKNOWN: u8 = u8::MAX;
 /// The extent anchors are given in, whatever the tile's geometry.
 pub const POI_EXTENT: i16 = 4096;
@@ -111,8 +113,9 @@ pub struct Poi {
     /// The local name; `None` for a bench, a crater, an unnamed spring.
     pub name: Option<u32>,
     /// The shallowest view zoom the source shows it at: the thinning
-    /// rank of the display rule. `None` where the source gave none
-    /// ([`MIN_ZOOM_UNKNOWN`]): the rule ranks it below every known one.
+    /// rank of the proposed display rule. `None` where the source gave none
+    /// ([`MIN_ZOOM_UNKNOWN`]): the proposed display rule would rank it
+    /// below every known one.
     pub min_zoom: Option<u8>,
     /// Flag bits; a reader ignores bits it does not know.
     pub flags: u8,

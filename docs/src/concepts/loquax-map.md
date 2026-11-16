@@ -704,9 +704,10 @@ to 5 and every later version whose minimum reader version is 5, a
 version 4 reader refuses version 5. lnflash says the version of every
 region it writes to an M9 and reads the image's app descriptor first,
 whose version names the region version the image reads (`0.1.7+lmr5`):
-it refuses a region the image would leave off the map, warns when an
-image from before the tag gets a version 5 region, and `--no-pois`
-writes the regions as version 4. No region file is
+it refuses a region the image would leave off the map, and refuses a
+version 5 region for an image from before the tag or for no image it
+knows, since it cannot tell whether that image reads version 5 (1919);
+`--no-pois` writes the regions as version 4, which every image reads. No region file is
 published anywhere today: the autoload cuts its regions on the device
 from the Protomaps archive, and the committed fixtures stay version 1 to
 3, which this reader keeps reading.
