@@ -508,7 +508,7 @@ async fn drive(
 /// window is sent only what it would show differently. The model's clock
 /// moves every second, and the window shows no second of it: a list's
 /// time and the date lines are by the day, a message's time by the
-/// minute, the tracks are kept by the minute ([`TrackKey`]), a stale
+/// minute, the tracks are kept by their ages ([`loquax::ui::tracks::TrackKey`]), a stale
 /// fix by the hour. So the clock counts by the minute here; what else
 /// moves each second (a pin's age in words, a recording's length) moves
 /// the scene or the pins and is sent.
@@ -858,6 +858,28 @@ pub struct Order {
     pub phase: u32,
 }
 
+/// The pins and tracks a frame of `view` draws (1694 B): those inside
+/// [`loquax::ui::map::clip_area`] on a flat view, so a fix far outside the
+/// view changes no [`Order`] and draws no frame. All of them on the globe,
+/// where a turn brings any into view, and under the radar, which points at
+/// pins outside the view. The `selected` pin stays: its card shows it.
+fn clip_order(
+    view: &ExactView,
+    pins: Vec<MapPin>,
+    tracks: Vec<loquax::ui::tracks::Track>,
+    radar: bool,
+    selected: Option<[u8; 16]>,
+) -> (Vec<MapPin>, Vec<loquax::ui::tracks::Track>) {
+    let area = match radar || loquax::mapgesture::turns(view).is_some() {
+        true => None,
+        false => loquax::ui::map::clip_area(view.centre, view.unit(), view.size()),
+    };
+    match area {
+        Some(area) => loquax::ui::map::clip(pins, tracks, area, selected),
+        None => (pins, tracks),
+    }
+}
+
 /// A frame drawn for the window.
 #[derive(Debug)]
 pub struct Shown {
@@ -1040,20 +1062,10 @@ impl Glide {
 }
 
 /// The window's state.
-/// What the window's tracks were derived at ([`App::tracks`]).
-#[derive(Clone, Debug, PartialEq)]
-struct TrackKey {
-    zoom: u8,
-    scale: u32,
-    window: loquax::ui::tracks::TrackWindow,
-    minute: i64,
-    fixes: Vec<([u8; 16], usize, usize)>,
-}
-
 struct App {
     seen: Seen,
-    /// The tracks last derived, and at what.
-    track_cache: std::cell::RefCell<Option<(TrackKey, Vec<loquax::ui::tracks::Track>)>>,
+    /// The tracks last derived, and at what (the core's key, 1694 E).
+    track_cache: loquax::ui::tracks::TrackCache,
     asks: Option<Asks>,
     /// The core's scheduler over the map's frames (1527): the screen at its
     /// zoom loads first.
@@ -1248,7 +1260,7 @@ impl App {
                 cards: Vec::new(),
             },
             asks,
-            track_cache: std::cell::RefCell::new(None),
+            track_cache: loquax::ui::tracks::TrackCache::default(),
             touched: false,
             frames: Arc::new(Mutex::new(frames)),
             view: ExactView::new(centre, u32::from(setup.zooms.0) * MILLI, 1, 1),
@@ -2713,16 +2725,18 @@ impl App {
     fn order(&self) -> Option<Order> {
         let (w, h) = self.pixels()?;
         let (pins, radar) = self.radar_pins();
+        // While the wheel's zoom glides, the view it ends on: the glide
+        // scales the frame on screen towards it.
+        let view = self.glide.map_or(self.view, |g| g.to);
+        let (pins, tracks) = clip_order(&view, pins, self.tracks(), radar.is_some(), self.selected);
         Some(Order {
-            // While the wheel's zoom glides, the view it ends on: the
-            // glide scales the frame on screen towards it.
-            view: self.glide.map_or(self.view, |g| g.to),
+            view,
             margin: (w / MARGIN_PART, h / MARGIN_PART),
             moving: self.moving(),
             style: self.map_style(),
             scale: self.scale,
             pins,
-            tracks: self.tracks(),
+            tracks,
             radar,
             selected: self.selected,
             zooms: self.zooms(),
@@ -2777,43 +2791,25 @@ impl App {
     }
 
     /// The tracks at the view's tile zoom, as the frame draws them: kept
-    /// while the zoom step, the window, the minute and the fixes stay, so
-    /// a drag does not derive a year of fixes every frame.
+    /// while the zoom step, the window, the fixes and their ages stay
+    /// ([`loquax::ui::tracks::TrackKey`]), so a drag does not derive a
+    /// year of fixes every frame, nor a minute of the clock that moved no
+    /// age.
     fn tracks(&self) -> Vec<loquax::ui::tracks::Track> {
         let Some(now) = self.seen.now else {
             return Vec::new();
         };
-        let key = TrackKey {
-            zoom: self.view.tile_zoom(),
-            scale: self.scale.to_bits(),
-            window: self.seen.track_window,
-            minute: now.unix_secs.div_euclid(60),
-            fixes: self
-                .seen
-                .tracks
-                .iter()
-                .map(|(peer, _, f)| (*peer, Arc::as_ptr(f) as usize, f.len()))
-                .collect(),
-        };
-        let mut cache = self.track_cache.borrow_mut();
-        if let Some((held, tracks)) = cache.as_ref() {
-            if *held == key {
-                return tracks.clone();
-            }
-        }
         // A screen pixel at the tile zoom, so the decimation and the
         // places' cells hold while the wheel turns within the step.
-        let unit = libm::exp2(24.0 - f64::from(key.zoom));
-        let tracks = loquax::ui::tracks::tracks(
+        let unit = libm::exp2(24.0 - f64::from(self.view.tile_zoom()));
+        self.track_cache.tracks(
             &self.seen.tracks,
             self.seen.track_window,
             &now,
             unit,
             self.scale,
             self.lang,
-        );
-        *cache = Some((key, tracks.clone()));
-        tracks
+        )
     }
 
     /// Whether the window has frames to show by itself (1431): the
@@ -8369,6 +8365,33 @@ mod tests {
             [255, 255, 255],
             "past the picture"
         );
+    }
+
+    /// Order 1694 B: a fix far outside the view (Carl's, in Berlin, while
+    /// the window shows Florence) changes no [`Order`], so the worker
+    /// draws no frame for it; the control, a fix inside the view, does.
+    /// Before, every pin and track went into the order whole.
+    #[test]
+    fn a_fix_outside_the_view_changes_no_order() {
+        let (w, h) = (900, 560);
+        let (mut app, _rx) = florence_two("Anna", None, w, h);
+        let before = app.order().expect("an order");
+        assert!(!before.pins.is_empty(), "Florence's pins are in the order");
+        let mut seen = app.seen.clone();
+        seen.pins.push(map::tests::pin(3, "Carl", 52.52, 13.40));
+        app.apply(Message::Seen(Box::new(seen)));
+        assert_eq!(app.seen.pins.len(), before.pins.len() + 1);
+        assert_eq!(
+            app.order().expect("an order"),
+            before,
+            "Berlin draws nothing"
+        );
+        // The control: Carl comes to Florence.
+        let mut seen = app.seen.clone();
+        seen.pins.retain(|p| p.label != "Carl");
+        seen.pins.push(map::tests::pin(3, "Carl", 43.7745, 11.2580));
+        app.apply(Message::Seen(Box::new(seen)));
+        assert_ne!(app.order().expect("an order"), before, "Florence draws him");
     }
 
     /// 1699 3a: `map_theme = auto` follows the window, as the terminal

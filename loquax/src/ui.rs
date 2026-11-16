@@ -1379,6 +1379,10 @@ pub struct UiModel<B> {
     /// The map's time window for the tracks' lines: a map control, the
     /// current episode until the reader picks another.
     pub track_window: tracks::TrackWindow,
+    /// The tracks [`UiModel::map_tracks`] derived last, and at what
+    /// (1694 E): the terminal's frames and the phone's asks derive them
+    /// again only when a fix, the zoom, the window or an age moved.
+    track_cache: tracks::TrackCache,
     /// The time zone view (1684): the zones' borders and each one's clock
     /// over the map, `z` in the terminal, the map menu's entry elsewhere.
     pub time_zones: bool,
@@ -1683,6 +1687,7 @@ impl<B: InputBuffer + Default> UiModel<B> {
             fixes_received: Vec::new(),
             tracks: BTreeMap::new(),
             track_window: tracks::TrackWindow::default(),
+            track_cache: tracks::TrackCache::default(),
             time_zones: false,
             own_stored_at: None,
             map: None,
@@ -2306,6 +2311,84 @@ impl<B> UiModel<B> {
         // said once it took a second, and the next sync's minute.
         hash.word(u64::from(fetch_shown(self)));
         hash.word(next_sync(self).map_or(u64::MAX, |at| at.unix_secs as u64));
+        // The map's ages (1694 A): a pin's "1 min ago" when its fix is a
+        // minute old, not at the next minute of the wall clock, and a
+        // track's part when it crosses an age step.
+        hash.word(self.map_age_marks());
+        hash.done()
+    }
+
+    /// What the clock moves on the map (1694 A): each pin's age step
+    /// ([`scene::ago_step`]), whether it is ahead or stale, and the
+    /// tracks' [`tracks::age_marks`]. Equal marks at two moments draw the
+    /// same map, given the same positions and tracks. `O(pins + peers ·
+    /// log fixes)`, and no fix is copied: cheap enough for every tick.
+    pub fn map_age_marks(&self) -> u64 {
+        let Some(now) = self.now else {
+            return 0;
+        };
+        let t = now.unix_secs;
+        let mut hash = Fnv::new();
+        let mut age = |at: i64, ahead: bool| {
+            hash.word(u64::from(ahead));
+            hash.word(scene::ago_step(t - at).word());
+            hash.word(u64::from(
+                t.saturating_sub(at) > telemetry::STALE_AFTER_SECS,
+            ));
+        };
+        for (peer, fix) in &self.positions {
+            if self.names.trust(peer) != Trust::Blocked || self.address == Some(*peer) {
+                age(fix.fix_time(), fix.ahead());
+            }
+        }
+        if let Some(own) = self.bar.own_fix {
+            age(
+                own.last_update,
+                own.last_update > t.saturating_add(telemetry::FUTURE_TOLERANCE_SECS),
+            );
+        }
+        hash.word(tracks::age_marks(
+            &self.track_input(),
+            self.track_window,
+            &now,
+        ));
+        hash.done()
+    }
+
+    /// What the map draws, as one word (1694 D): the pins as [`map_pins`]
+    /// gives them (place, name, age, stale, battery), the tracks' fixes by
+    /// identity and their window, and the clock's [`map_age_marks`]. A
+    /// target that draws the map only when this moved draws nothing for a
+    /// chat line, a link or a sync, and draws a pin that moved, a new name
+    /// and an age that changed.
+    ///
+    /// [`map_pins`]: UiModel::map_pins
+    /// [`map_age_marks`]: UiModel::map_age_marks
+    pub fn map_marks(&self) -> u64 {
+        let mut hash = Fnv::new();
+        for pin in self.map_pins() {
+            hash.bytes(&pin.peer);
+            hash.word(u64::from(pin.at.x) << 32 | u64::from(pin.at.y));
+            hash.bytes(pin.label.as_bytes());
+            hash.word(0xff);
+            hash.bytes(pin.age.as_deref().unwrap_or("").as_bytes());
+            hash.word(
+                u64::from(pin.stale)
+                    | u64::from(pin.nearby) << 1
+                    | u64::from(pin.own) << 2
+                    | u64::from(pin.battery.unwrap_or(255)) << 8,
+            );
+            hash.word(pin.fix_at.map_or(u64::MAX, |at| at as u64));
+        }
+        for (peer, own, fixes) in self.track_input() {
+            hash.bytes(&peer);
+            hash.word(u64::from(own));
+            hash.word(alloc::sync::Arc::as_ptr(&fixes) as usize as u64);
+            hash.word(fixes.len() as u64);
+        }
+        hash.word(self.track_window as u64);
+        hash.word(self.lang as u64);
+        hash.word(self.map_age_marks());
         hash.done()
     }
 
@@ -7479,7 +7562,7 @@ impl<B> UiModel<B> {
         let Some(now) = self.now else {
             return Vec::new();
         };
-        tracks::tracks(
+        self.track_cache.tracks(
             &self.track_input(),
             self.track_window,
             &now,
@@ -23051,6 +23134,81 @@ pub(crate) mod tests {
         );
         assert_eq!(model.positions[&PEER].location.latitude_e6, 2_000_000);
         assert_eq!(view(&model).messages_title_right, "pos 1 min");
+    }
+
+    /// Order 1694 A: the clock alone ages a pin when its fix crosses a
+    /// minute of age, not at the next minute of the wall clock, and moves
+    /// nothing in between. Every target draws a new view only when the
+    /// revision moved ([`Presented`]); before, the clock moved it for the
+    /// map only through the rows' wall minute, so a fix taken at :30 said
+    /// "now" until a minute and 29 seconds had gone.
+    #[test]
+    fn the_clock_alone_ages_a_pin_when_its_fix_turns_a_minute_old() {
+        let mut model = UiModel::<Field>::new(&[PEER]);
+        let secs = |s: i64| {
+            let mut t = at(26, 14, 1);
+            t.unix_secs += s;
+            UiEvent::Clock(t)
+        };
+        update(&mut model, secs(0));
+        arrive(
+            &mut model,
+            PEER,
+            1,
+            "",
+            report_of(&fix_at(1_000_000, 1_000_000, two_pm() + 30)),
+        );
+        let age = |m: &UiModel<Field>| m.map_pins()[0].age.clone();
+        assert_eq!(age(&model).as_deref(), Some("now"));
+        let quiet = model.revision;
+        // The control: 29 seconds on, still "now", nothing to draw.
+        update(&mut model, secs(5));
+        update(&mut model, secs(29));
+        assert_eq!(
+            model.revision, quiet,
+            "seconds that age nothing draw nothing"
+        );
+        // The fix is a minute old at 14:01:30: the label moves then.
+        update(&mut model, secs(30));
+        assert_ne!(model.revision, quiet, "the pin's minute moves the revision");
+        assert_eq!(age(&model).as_deref(), Some("1 min ago"));
+        let aged = model.revision;
+        update(&mut model, secs(45));
+        assert_eq!(model.revision, aged, "and the next seconds draw nothing");
+    }
+
+    /// Order 1694 D: [`UiModel::map_marks`] moves for what the map draws
+    /// and for nothing else. A chat line from a peer with a pin moves no
+    /// mark; a new fix and a pin's minute of age do.
+    #[test]
+    fn the_map_marks_move_for_a_fix_and_an_age_and_not_for_a_chat_line() {
+        let mut model = UiModel::<Field>::new(&[PEER]);
+        clock(&mut model, 26, 14, 0);
+        arrive(
+            &mut model,
+            PEER,
+            1,
+            "",
+            report_of(&fix_at(1_000_000, 1_000_000, two_pm())),
+        );
+        let marks = model.map_marks();
+        receive(&mut model, PEER, 2, "a chat line");
+        assert_eq!(model.map_marks(), marks, "a chat line is no map change");
+        let mut five = at(26, 14, 0);
+        five.unix_secs += 5;
+        update(&mut model, UiEvent::Clock(five));
+        assert_eq!(model.map_marks(), marks, "five seconds age nothing");
+        clock(&mut model, 26, 14, 1);
+        let aged = model.map_marks();
+        assert_ne!(aged, marks, "a minute ages the pin");
+        arrive(
+            &mut model,
+            PEER,
+            3,
+            "",
+            report_of(&fix_at(2_000_000, 1_000_000, two_pm() + 60)),
+        );
+        assert_ne!(model.map_marks(), aged, "a new fix moves the pin");
     }
 
     /// Door 1 under order 1792/1816 (D2 of order 1824): a stream row is
