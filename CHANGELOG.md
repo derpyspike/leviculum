@@ -528,6 +528,13 @@ Toolchain: Rust 1.97.1
 
 ### Changed
 
+- loquax track colours (#232, 1938): the orange of a peer's track is
+  `#d06400`, 3.32:1 against the light map's land where `#e07000` stood at
+  2.82:1; every light hue now holds 3:1 there and on the labels' white.
+  The peer colours of order 1693 on pins, names and avatars stay taken
+  back (d792e141f, order 1859): the window colours a pin only while its
+  peer has a track, and the chosen pin stays red.
+
 - One allocator for every program (1805): every binary, the one-shot tools
   and lnflash included, runs on mimalloc v3 through the new crate
   `leviculum-alloc`, with transparent huge pages off at compile time, a

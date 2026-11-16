@@ -473,7 +473,7 @@ pub fn hue(peer: &[u8; 16], own: bool) -> Option<u8> {
 /// apart at a quarter of their opacity.
 pub const HUE_LIGHT: [[u8; 3]; 8] = [
     [0x1f, 0x5f, 0xd0],
-    [0xe0, 0x70, 0x00],
+    [0xd0, 0x64, 0x00],
     [0x12, 0x8f, 0x4a],
     [0xd0, 0x22, 0x2e],
     [0x7a, 0x3f, 0xc8],
@@ -990,6 +990,40 @@ mod tests {
 
     fn all() -> (i64, i64) {
         (i64::MIN, i64::MAX)
+    }
+
+    /// The WCAG contrast of two sRGB colours, 1 to 21.
+    fn contrast(a: [u8; 3], b: [u8; 3]) -> f64 {
+        fn lum(c: [u8; 3]) -> f64 {
+            let lin = |v: u8| {
+                let v = f64::from(v) / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    libm::pow((v + 0.055) / 1.055, 2.4)
+                }
+            };
+            0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2])
+        }
+        let (x, y) = (lum(a), lum(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    /// Audit of 2026-11-16: every light hue, which colours a peer's track
+    /// and its name on the light map, holds 3:1 against the map's land
+    /// (`#f2efe9`) and against the white label ground. The orange stood at
+    /// 2.82:1 on the land.
+    #[test]
+    fn audit_every_light_hue_holds_three_to_one_on_the_land() {
+        for (i, hue) in HUE_LIGHT.iter().enumerate() {
+            for ground in [[0xf2, 0xef, 0xe9], [0xff, 0xff, 0xff]] {
+                let ratio = contrast(*hue, ground);
+                assert!(
+                    ratio >= 3.0,
+                    "hue {i} {hue:02x?} on {ground:02x?}: {ratio:.2}:1"
+                );
+            }
+        }
     }
 
     #[test]
