@@ -1542,6 +1542,28 @@ pub async fn central<T: HciTransport>(
 mod tests {
     use super::*;
 
+    /// Put the process-shared link state back to zero claims: the slot
+    /// table (`TX_DRAIN`), the session's peer and connection ends, the
+    /// per-link queues and the peer-event channel. The tests that count
+    /// absolute links over these globals call this first, because a test
+    /// that passes may still leave links up — the scripted-controller
+    /// bench ends with two live links by design, and whichever of these
+    /// tests took the ring lock next inherited them (order 1942's
+    /// workspace run caught the flood seeing links=3 where its own two
+    /// claims promise links=1; 5 of 25 stress runs).
+    fn reset_shared_links() {
+        let chans = leviculum_ble_link::channels();
+        for slot in 0..crate::ble::MAX_LINKS {
+            if let Some(handle) = crate::ble::TX_DRAIN.handle_at(slot) {
+                session::peer_link_down(slot);
+                session::conn_link_down(slot);
+                crate::ble::TX_DRAIN.release(handle);
+            }
+            while crate::ble::link_out(slot).try_receive().is_ok() {}
+        }
+        while chans.peer_event_rx.try_receive().is_ok() {}
+    }
+
     /// Positive control for the `expect` 1715 removed: the three
     /// advertisement records fill exactly the legacy budget, so the
     /// logged-degradation path (0 bytes) stays unreachable while the
@@ -1565,6 +1587,7 @@ mod tests {
         use leviculum_ble_link::BleLink;
         use leviculum_ble_tx::TxAim;
         let _ring = crate::log::test_ring::lock();
+        reset_shared_links();
         let max = crate::ble::MAX_LINKS;
         let empty_all = || {
             for i in 0..max {
@@ -1644,6 +1667,7 @@ mod tests {
         use leviculum_ble_link::BleLink;
         use leviculum_ble_tx::{AddrType, TxAim};
         let _ring = crate::log::test_ring::lock();
+        reset_shared_links();
         let max = crate::ble::MAX_LINKS;
         let empty_all = || {
             for i in 0..max {
