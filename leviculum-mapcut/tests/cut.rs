@@ -1634,6 +1634,8 @@ fn a_footprint_over_the_device_capacity_is_resimplified_and_kept() {
     );
 }
 
+/// Pins behaviour that existed before the merge f619d118a13c; it is
+/// green without that range's changes and is not proof of a change.
 #[test]
 fn a_zoom_range_backwards_or_past_the_deepest_zoom_is_refused() {
     use leviculum_mapcut::cut::Streaming;
@@ -1665,6 +1667,8 @@ fn a_zoom_range_backwards_or_past_the_deepest_zoom_is_refused() {
     cut(&src, &opts, &mut Cursor::new(Vec::new())).expect("10..=16 is a range");
 }
 
+/// Pins behaviour that existed before the merge f619d118a13c; it is
+/// green without that range's changes and is not proof of a change.
 #[test]
 fn the_cut_writes_the_bytes_of_the_streaming_cut_driven_round_by_round() {
     use leviculum_mapcut::cut::{cut_streamed, Streaming};
