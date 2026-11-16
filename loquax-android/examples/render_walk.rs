@@ -952,7 +952,16 @@ impl Walk {
         step: &dyn Fn(usize, &MapShown, MapRequest) -> Option<MapRequest>,
     ) {
         let home = self.home(&format!("gesture-{name}-{}", size.name));
-        self.gesture_in(home, name, size, centre, zoom_milli, steps, while_drawn, step);
+        self.gesture_in(
+            home,
+            name,
+            size,
+            centre,
+            zoom_milli,
+            steps,
+            while_drawn,
+            step,
+        );
     }
 
     /// [`gesture`](Self::gesture) in a home prepared by the caller.
