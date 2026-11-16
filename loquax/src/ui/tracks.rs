@@ -1026,6 +1026,23 @@ mod tests {
         }
     }
 
+    /// Pins the figure in `docs/src/concepts/loquax-tracks.md` rule 6:
+    /// every dark hue stands 6.35:1 or more against the dark map's
+    /// `#161616` and `#181818`. It holds values that existed before order
+    /// 1956 and is not proof of a change.
+    #[test]
+    fn every_dark_hue_holds_the_documented_contrast_on_the_dark_map() {
+        for (i, hue) in HUE_DARK.iter().enumerate() {
+            for ground in [[0x16, 0x16, 0x16], [0x18, 0x18, 0x18]] {
+                let ratio = contrast(*hue, ground);
+                assert!(
+                    ratio >= 6.35,
+                    "dark hue {i} {hue:02x?} on {ground:02x?}: {ratio:.2}:1"
+                );
+            }
+        }
+    }
+
     #[test]
     fn metres_on_the_plane_match_the_offsets() {
         let d = metres(&at(0, 0.0, 0.0), &at(0, 300.0, 400.0));
