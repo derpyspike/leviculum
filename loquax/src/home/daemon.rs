@@ -750,15 +750,15 @@ pub async fn run(options: DaemonOptions) -> Result<(), String> {
                 };
                 // Busy while anything came or is in flight; quiet after a
                 // second of nothing (1585).
-                let busy = !events.is_empty()
-                    || fetch.is_some()
-                    || !pn_asks.is_empty()
-                    || census_ask.is_owed();
+                let busy = pump_busy(&events, fetch.is_some(), !pn_asks.is_empty(), &census_ask);
                 quiet_pumps = if busy { 0 } else { quiet_pumps.saturating_add(1) };
                 next_pump = tokio::time::Instant::now()
                     + if quiet_pumps >= QUIET_PUMPS { PUMP_QUIET } else { PUMP };
                 let mut unstarted = None;
                 for event in events {
+                    let Some(event) = home_census(&census_ask, &mut census, event) else {
+                        continue;
+                    };
                     match event {
                         OutboxEvent::Ready { .. } => {
                             engine_ready = true;
@@ -821,7 +821,6 @@ pub async fn run(options: DaemonOptions) -> Result<(), String> {
                                 collect_groups(&collector, &mut groups, destination);
                             }
                         }
-                        OutboxEvent::Census(answer) => census_ask.keep(&mut census, answer),
                         // A node proved an upload (1409): asked about at the
                         // end of the next sync rounds.
                         OutboxEvent::Uploaded { message_id, transient_id, node: proved_by } => {
@@ -1704,6 +1703,31 @@ impl CensusAsk {
             return Some(owed.dump);
         }
         None
+    }
+}
+
+/// Whether a turn of the home's pump was busy (1585): events came, a
+/// collection or a status question is in flight, or a census is owed,
+/// whose answers come through this pump and must not wait out the quiet
+/// interval (1732).
+fn pump_busy(events: &[OutboxEvent], fetching: bool, asking: bool, census: &CensusAsk) -> bool {
+    !events.is_empty() || fetching || asking || census.is_owed()
+}
+
+/// The home engine's census answer (1732): kept in `slot` only when it
+/// answers the census `ask` owes, as [`pump_group`] does for a group's.
+/// Every other event is handed back to the loop.
+fn home_census(
+    ask: &CensusAsk,
+    slot: &mut Option<crate::outbox::EngineCensus>,
+    event: OutboxEvent,
+) -> Option<OutboxEvent> {
+    match event {
+        OutboxEvent::Census(answer) => {
+            ask.keep(slot, answer);
+            None
+        }
+        other => Some(other),
     }
 }
 
@@ -4626,5 +4650,202 @@ mod tests {
             .push_back(OutboxEvent::Census(answer(owed, 11)));
         pump_group(&mut store, &mut sender, &mut engine, None, &ask);
         assert_eq!(engine.census, Some(answer(owed, 11)));
+    }
+
+    /// 1746: the home engine's census answer goes through `home_census`,
+    /// the function `run` hands every home event to first. An answer of a
+    /// census that printed without it, arriving after the next one was
+    /// asked, leaves the home's slot empty.
+    #[test]
+    fn the_homes_late_census_answer_leaves_its_slot_empty() {
+        let now = tokio::time::Instant::now();
+        let mut ask = CensusAsk::default();
+        let first = ask.periodic(now).expect("nothing owed, so it asks");
+        assert_eq!(
+            ask.ready(false, now + super::super::census::ANSWER_WAIT),
+            Some(false),
+            "printed without answers"
+        );
+        let second = ask
+            .signal(now + Duration::from_secs(5))
+            .expect("asks again");
+        assert_ne!(first, second);
+        let mut home = None;
+        let handed_back = home_census(&ask, &mut home, OutboxEvent::Census(answer(first, 40)));
+        assert_eq!(
+            handed_back, None,
+            "a census answer is the census's, not the loop's"
+        );
+        assert_eq!(home, None, "the first census's late answer is not kept");
+    }
+
+    /// The twin: the answer carrying the number of the census owed fills
+    /// the home's slot, and any other event goes back to the loop
+    /// untouched.
+    #[test]
+    fn the_homes_answer_to_the_census_owed_fills_its_slot() {
+        let now = tokio::time::Instant::now();
+        let mut ask = CensusAsk::default();
+        let first = ask.periodic(now).expect("asks");
+        assert_eq!(
+            ask.ready(false, now + super::super::census::ANSWER_WAIT),
+            Some(false)
+        );
+        let second = ask
+            .signal(now + Duration::from_secs(5))
+            .expect("asks again");
+        assert_ne!(first, second);
+        let mut home = None;
+        let handed_back = home_census(&ask, &mut home, OutboxEvent::Census(answer(second, 40)));
+        assert_eq!(handed_back, None);
+        assert_eq!(home, Some(answer(second, 40)));
+        let other = OutboxEvent::Refused {
+            detail: "full".into(),
+        };
+        assert_eq!(home_census(&ask, &mut home, other.clone()), Some(other));
+        assert_eq!(home, Some(answer(second, 40)), "the slot is left as it was");
+    }
+
+    /// 1746: an owed census keeps the home's pump at its busy pace until
+    /// it prints, as events, a collection or a status question do; with
+    /// none of them the pump is quiet.
+    #[test]
+    fn an_owed_census_keeps_the_pump_busy_until_it_prints() {
+        let now = tokio::time::Instant::now();
+        let mut ask = CensusAsk::default();
+        assert!(!ask.is_owed(), "nothing asked yet");
+        assert!(
+            !pump_busy(&[], false, false, &ask),
+            "nothing at all is quiet"
+        );
+        let event = OutboxEvent::Refused {
+            detail: "full".into(),
+        };
+        assert!(pump_busy(&[event], false, false, &ask));
+        assert!(pump_busy(&[], true, false, &ask));
+        assert!(pump_busy(&[], false, true, &ask));
+        ask.periodic(now).expect("asks");
+        assert!(ask.is_owed());
+        assert!(
+            pump_busy(&[], false, false, &ask),
+            "the owed census is busy"
+        );
+        assert_eq!(ask.ready(true, now), Some(false), "printed");
+        assert!(!ask.is_owed());
+        assert!(!pump_busy(&[], false, false, &ask), "printed, quiet again");
+    }
+
+    /// A hosted group on a fake engine with `events`, for the pump tests.
+    fn fake_group(
+        hosted: Hosted,
+        events: Vec<OutboxEvent>,
+    ) -> GroupEngine<crate::outbox::fake::FakeOutbox> {
+        GroupEngine {
+            hosted,
+            engine: crate::outbox::fake::FakeOutbox::new(events),
+            outgoing: Outgoing::new(Policy::default()),
+            selected_pn: None,
+            ended: false,
+            census: None,
+            fanout: Fanout::default(),
+            collecting: None,
+        }
+    }
+
+    fn quiet_sender() -> Sender {
+        Sender {
+            cap_bytes: u64::MAX,
+            preferred_pn: None,
+            collecting: false,
+            told: std::collections::HashSet::new(),
+            newest: 0,
+            nodes: std::collections::HashMap::new(),
+            proven: Vec::new(),
+            lines: Default::default(),
+        }
+    }
+
+    /// A store with `names.len()` hosted groups of Lew's.
+    fn hosted_groups(home: &std::path::Path, names: &[&str]) -> (Store, Vec<Hosted>) {
+        let identity = leviculum_std::generate_identity();
+        let lew = crate::home::lxmf_address(&identity.public_key_bytes()).expect("address");
+        let mut store = Store::open_in(home, lew).expect("store");
+        let hosted = names
+            .iter()
+            .map(|name| {
+                group::create(home, &mut store, name, (lew, "Lew"), &[], 100).expect("create")
+            })
+            .collect();
+        (store, hosted)
+    }
+
+    /// 1746: the word that a group's collection ended frees the group for
+    /// the next round, whether it brought mail or failed.
+    #[tokio::test]
+    async fn a_groups_collection_ends_on_its_engines_word() {
+        let home = tempfile::tempdir().expect("home");
+        let (mut store, hosted) = hosted_groups(home.path(), &["Familie", "Verein"]);
+        let mut sender = quiet_sender();
+        let words = [
+            OutboxEvent::SyncDone {
+                received: 2,
+                duplicates: 0,
+            },
+            OutboxEvent::SyncFailed {
+                detail: "no path".into(),
+                path: None,
+            },
+        ];
+        for (hosted, word) in hosted.into_iter().zip(words) {
+            let mut engine = fake_group(hosted, vec![word.clone()]);
+            let running = tokio::spawn(std::future::pending::<Option<usize>>());
+            engine.collecting = Some(running);
+            pump_group(
+                &mut store,
+                &mut sender,
+                &mut engine,
+                None,
+                &CensusAsk::default(),
+            );
+            assert!(engine.collecting.is_none(), "{word:?} frees the group");
+        }
+    }
+
+    /// 1746: a round collects for every group that neither ended nor is
+    /// still collecting, and counts what it started.
+    #[tokio::test]
+    async fn a_round_collects_for_the_live_idle_groups_only() {
+        let home = tempfile::tempdir().expect("home");
+        let (_store, hosted) = hosted_groups(home.path(), &["Ended", "Busy", "Idle"]);
+        let mut groups: Vec<_> = hosted
+            .into_iter()
+            .map(|h| fake_group(h, Vec::new()))
+            .collect();
+        groups[0].ended = true;
+        groups[1].collecting = Some(tokio::spawn(std::future::pending::<Option<usize>>()));
+        let collector = Collector {
+            home: home.path().to_path_buf(),
+            instance: "lev-test-no-such-instance".into(),
+            budget: Duration::from_millis(10),
+            preferred: None,
+            source: "test",
+            mailbox: Box::new(|| Box::pin(async { crate::mailbox_state::MailboxRun::default() })),
+        };
+        assert_eq!(collect_groups(&collector, &mut groups, [7; 16]), 1);
+        assert!(
+            groups[0].collecting.is_none(),
+            "an ended group collects nothing"
+        );
+        assert!(groups[2].collecting.is_some(), "the idle group collects");
+        assert_eq!(
+            collect_groups(&collector, &mut groups, [7; 16]),
+            0,
+            "all live groups still collecting"
+        );
+        for group in &mut groups {
+            if let Some(task) = group.collecting.take() {
+                task.abort();
+            }
+        }
     }
 }
