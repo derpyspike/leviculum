@@ -1595,6 +1595,7 @@ mod tests {
             }
         };
         empty_all();
+        release_all();
         let mut link = crate::ble::TroubleLink;
 
         link.send(TxAim::Flood, vec![0xA5u8; 8]);
@@ -1633,6 +1634,21 @@ mod tests {
         crate::ble::TX_DRAIN.release(0x0101);
         crate::ble::TX_DRAIN.release(0x0202);
         empty_all();
+    }
+
+    /// Free every claimed drain slot: the scripted-controller test ends
+    /// with its last links still claimed (a live connection holds its
+    /// slot for life, and the bench tears no one down), so a test that
+    /// asserts on the whole claim table must start it empty, or a
+    /// leftover link takes its flood and turns the count wrong. Seen as
+    /// `slot 1 got a flood with no link claimed` and `links=3` in a full
+    /// workspace run, order 1940; one injected claim reproduces both.
+    fn release_all() {
+        for i in 0..crate::ble::MAX_LINKS {
+            if let Some(handle) = crate::ble::TX_DRAIN.handle_at(i) {
+                crate::ble::TX_DRAIN.release(handle);
+            }
+        }
     }
 
     /// Everything the ring holds now, as text (empties it).
@@ -1675,6 +1691,7 @@ mod tests {
             }
         };
         empty_all();
+        release_all();
         crate::log::open_runtime_drain();
         let _gate = GateRestore;
         let _ = ring_text();

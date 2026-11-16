@@ -3,15 +3,21 @@
 guards and expects the tool to say so.
 
 scripts/check-citations-by-name.py (the guard) on a scratch repository:
-  a renamed fn, an ambiguous name, a path into another repository, a base
-  name, and a new line citation are refused; a renumbered or moved existing
-  line citation, a new one into another repository and a marked fixture
-  line pass.
+  a renamed fn, an ambiguous name, a path into another repository and a base
+  name are refused; a touched line citation must hold the census verdict
+  `agree` or an untouched citation's old, no-worse verdict (order 1940): a
+  stale or label-less new number, an agreeing citation moved onto another
+  item, and a file moved under an agreeing citation are refused; a citation
+  fixed onto its item, one that agrees, one renumbered no worse, a moved
+  paragraph, a merge's untouched drift, a new citation into another
+  repository and a marked fixture line pass.
 scripts/citation-census.py (the drift census) on the same repository:
   agree, drift, nolabel, each foreign reason, a shortened path the page spells
-  out, and the table-row rule; and on this repository's own history, the 64
-  citations commit 8482638d6 renumbered (scripts/citations-control-1908.tsv),
-  skipped with a loud line only where that commit is not in the clone.
+  out, the table-row rule, and the `//` comment-block rule; and on this
+  repository's own history, the 64 citations commit 8482638d6 renumbered
+  (scripts/citations-control-1908.tsv). A clone without that commit FAILS the
+  control, unless LEVICULUM_CITATION_CONTROL_WAIVE is set, which turns the
+  failure into a printed WAIVED line.
 
 The fixture texts are put together at run time (`L`, `N`), so this file
 holds no citation-shaped string the guard would read as one.
@@ -114,13 +120,31 @@ BASE_PAGE = page(
     f"Beta is `{N(LIB, 'beta')}`.",
 )
 
+# A second lib.rs, so a bare `lib.rs` has two candidates; `alpha` here is
+# at line 6, where LIB holds `Thing`.
+LIB2 = "crate/src/extra/lib.rs"
+LIB2_RS = "//! Extra.\n//\n//\n//\n\npub fn alpha() -> u32 {\n    2\n}\n"
+
+# A page whose citation drifts at the base on purpose: `beta` is at line
+# 22 of LIB, not at line 2.
+DRIFTY = "docs/src/drifty.md"
+DRIFTY_PAGE = page(f"Drifting: `beta` (`{L(LIB, 2)}`).")
+
+# A page with a bare name no spelled path places: the census cannot judge
+# it, so the guard only holds it to not getting worse.
+BARE = "docs/src/bare.md"
+BARE_PAGE = page(f"Bare: `beta` (`{L('lib.rs', 2)}`).")
+
 
 def scratch():
     repo = tempfile.mkdtemp(prefix="citations-selftest-")
     git(repo, "init", "-q")
     write(repo, "crate/Cargo.toml", "[package]\nname = \"c\"\n")
     write(repo, LIB, LIB_RS)
+    write(repo, LIB2, LIB2_RS)
     write(repo, "docs/src/page.md", BASE_PAGE)
+    write(repo, DRIFTY, DRIFTY_PAGE)
+    write(repo, BARE, BARE_PAGE)
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", "base")
     return repo
@@ -183,18 +207,32 @@ def guard_controls(repo):
 
     write(repo, "docs/src/page.md", BASE_PAGE + f"\nNew: `{L(LIB, 22)}`.\n")
     rc, out = run(GUARD, repo, "--base", "HEAD")
-    control("guard: a new line citation is refused", rc == 1 and "a new line citation" in out
-            and N(LIB, "beta") in out, out)
+    control("guard: a new line citation without a label is refused",
+            rc == 1 and "a new line citation" in out and N(LIB, "beta") in out, out)
+    write(repo, "docs/src/page.md", BASE_PAGE + f"\nNew: `beta` (`{L(LIB, 22)}`).\n")
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a new line citation on the item its text names passes", rc == 0, out)
     write(repo, "docs/src/page.md", BASE_PAGE + f"\nNew: `{L('lib.rs', 22)}`.\n")
     rc, out = run(GUARD, repo, "--base", "HEAD")
     control("guard: a new bare-name line citation is refused",
             rc == 1 and "a new line citation" in out, out)
     reset(repo)
 
+    write(repo, "docs/src/page.md", BASE_PAGE.replace(L(LIB, 2), L(LIB, 6)))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: an agreeing citation moved onto another item is refused",
+            rc == 1 and "a new line citation" in out, out)
     write(repo, "docs/src/page.md", BASE_PAGE.replace(L(LIB, 2), L(LIB, 3)))
     rc, out = run(GUARD, repo, "--base", "HEAD")
-    control("guard: a number changed while the cited file is unchanged is refused",
-            rc == 1 and "a new line citation" in out, out)
+    control("guard: a changed number that stays on its item passes", rc == 0, out)
+    write(repo, DRIFTY, DRIFTY_PAGE.replace(L(LIB, 2), L(LIB, 22)))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a drifting citation fixed onto its item passes", rc == 0, out)
+    write(repo, DRIFTY, DRIFTY_PAGE.replace(L(LIB, 2), L(LIB, 6)))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a drifting citation renumbered while still drifting passes",
+            rc == 0, out)
+    reset(repo)
     write(repo, "docs/src/page.md", page(f"The last is `beta` (`{L(LIB, 20)}`).",
                                          f"Beta is `{N(LIB, 'beta')}`."))
     rc, out = run(GUARD, repo, "--base", "HEAD")
@@ -205,6 +243,31 @@ def guard_controls(repo):
     rc, out = run(GUARD, repo, "--base", "HEAD")
     control("guard: lines inserted above the item and the number follows: passes", rc == 0, out)
     reset(repo)
+
+    write(repo, LIB, "// one\n// two\n// three\n" + LIB_RS)
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a file moved under an agreeing citation is refused until renumbered",
+            rc == 1 and "fell from agree" in out, out)
+    reset(repo)
+    write(repo, LIB, LIB_RS + "\npub fn gamma() {}\n")
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a file change that leaves every verdict alone passes", rc == 0, out)
+    reset(repo)
+
+    # `alpha` is at line 6 of the OTHER lib.rs: a guess through the base
+    # name would call this agree. The page spells only LIB in full, so the
+    # citation resolves there, where line 6 is `Thing`.
+    write(repo, "docs/src/page.md", BASE_PAGE.replace(L(LIB, 2), L("lib.rs", 6)))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a shortened path is judged through the file it resolves to, "
+            "not a base-name match", rc == 1 and "a new line citation" in out, out)
+    reset(repo)
+    write(repo, BARE, BARE_PAGE.replace(L("lib.rs", 2), L("lib.rs", 3)))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a bare name the tree cannot place moves unjudged",
+            rc == 0, out)
+    reset(repo)
+
     moved = page(f"Beta is `{N(LIB, 'beta')}`.", "Text between.",
                  f"The first is `alpha` (`{L(LIB, 2)}`).")
     write(repo, "docs/src/page.md", moved)
@@ -261,6 +324,15 @@ def census_controls(repo):
     write(repo, "crate/src/pins.rs",
           "fn first() {}\n\n// What the test below pins.\n#[test]\nfn t_pin() {}\n")
     write(repo, "docs/src/pins.md", page(f"Pinned at `t_pin` (`{L('crate/src/pins.rs', 3)}`)."))
+    stray = "crate/src/stray.rs"
+    write(repo, stray,
+          "fn first() {}\n\n// other_thing: migrated to Storage trait\nfn second() {}\n\n"
+          "struct S {\n    a: u32,\n\n    // b_field: moved away\n    c: u32,\n}\n\n"
+          "// third returns nothing.\nfn third() {}\n")
+    write(repo, "docs/src/stray.md", page(
+        f"Stray: `second` (`{L(stray, 3)}`).",
+        f"Field: `S::c` (`{L(stray, 9)}`).",
+        f"Named: `third` (`{L(stray, 13)}`)."))
     write(repo, "docs/src/spelled.md", page(
         f"The file is `{LIB}`.", f"Spelled: `alpha` (`{L('src/lib.rs', 3)}`)."))
     write(repo, "docs/src/foreign.md", page(
@@ -292,6 +364,13 @@ def census_controls(repo):
     control("census: a // block directly above a test belongs to that test",
             v("docs/src/pins.md", 0).get("verdict") == "agree"
             and v("docs/src/pins.md", 0).get("item") == "t_pin", out)
+    st = "docs/src/stray.md"
+    control("census: a comment naming another identifier does not join the item below",
+            v(st, 0).get("verdict") in ("drift", "nolabel"), out)
+    control("census: a comment naming another identifier does not join the field below",
+            v(st, 1).get("verdict") in ("drift", "nolabel"), out)
+    control("census: a comment that names its item belongs to it",
+            v(st, 2).get("verdict") == "agree", out)
     s = "docs/src/spelled.md"
     control("census: a shortened path the page spells out is placed",
             v(s, 0).get("verdict") == "agree" and v(s, 0).get("how") == "spelled", out)
@@ -362,6 +441,70 @@ def shallow_controls(repo):
         subprocess.run(["rm", "-rf", shallow], check=False)
 
 
+# What the merged-branch control commits into its scratch repository, so
+# the guard under test is the TREE'S OWN copy: the merged-parent question
+# only exists where the guard's own commit is in the history.
+TOOL_FILES = ("citations.py", "check-citations-by-name.py", "citation-census.py",
+              "check-python-test-prerequisites.py", "citation-foreign.txt")
+
+
+def merge_controls():
+    """Merges: an untouched drifting citation rides through a merge, and a
+    pre-guard branch's stale number does not (order 1940)."""
+    repo = tempfile.mkdtemp(prefix="citations-selftest-mergea-")
+    try:
+        git(repo, "init", "-q")
+        write(repo, "crate/Cargo.toml", "[package]\nname = \"c\"\n")
+        write(repo, LIB, LIB_RS)
+        write(repo, DRIFTY, DRIFTY_PAGE)
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "base")
+        base = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"],
+                              capture_output=True, text=True).stdout.strip()
+        git(repo, "checkout", "-q", "-b", "side")
+        write(repo, LIB, LIB_RS + "\npub fn gamma() {}\n")
+        git(repo, "commit", "-qam", "side grows the lib below every item")
+        git(repo, "checkout", "-q", "-")
+        write(repo, "docs/src/other.md", page("Nothing cited."))
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "the first parent moves")
+        git(repo, "merge", "-q", "--no-edit", "side")
+        rc, out = run(GUARD, repo, "--base", base)
+        control("guard: a merge with an untouched drifting citation passes", rc == 0, out)
+    finally:
+        subprocess.run(["rm", "-rf", repo], check=False)
+
+    repo = tempfile.mkdtemp(prefix="citations-selftest-mergeb-")
+    try:
+        git(repo, "init", "-q")
+        write(repo, "crate/Cargo.toml", "[package]\nname = \"c\"\n")
+        write(repo, LIB, LIB_RS)
+        write(repo, "docs/src/page.md", BASE_PAGE)
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "base, before the rule exists")
+        git(repo, "checkout", "-q", "-b", "pre")
+        write(repo, "docs/src/page.md",
+              BASE_PAGE + f"\nAlso the first: `alpha` (`{L(LIB, 2)}`).\n")
+        git(repo, "commit", "-qam", "a citation written before the rule")
+        git(repo, "checkout", "-q", "-")
+        for name in TOOL_FILES:
+            with open(os.path.join(HERE, name), encoding="utf-8") as fh:
+                write(repo, "scripts/" + name, fh.read())
+        write(repo, LIB, "// one\n// two\n// three\n" + LIB_RS)
+        write(repo, "docs/src/page.md", BASE_PAGE.replace(L(LIB, 2), L(LIB, 5)))
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "the guard arrives and the lib grows")
+        git(repo, "merge", "-q", "--no-edit", "pre")
+        r = subprocess.run(
+            [sys.executable, "-I", os.path.join(repo, "scripts", "check-citations-by-name.py"),
+             "--root", repo], capture_output=True, text=True)
+        out = r.stdout + r.stderr
+        control("guard: a merged pre-guard branch's stale number is refused",
+                r.returncode == 1 and "a new line citation" in out, out)
+    finally:
+        subprocess.run(["rm", "-rf", repo], check=False)
+
+
 def foreign_controls():
     """scripts/check-citation-foreign.py refuses a guard that holds a set of
     its own beside the shared file."""
@@ -416,6 +559,7 @@ def main(argv=None):
             shallow_controls(repo)
         finally:
             subprocess.run(["rm", "-rf", repo], check=False)
+        merge_controls()
         foreign_controls()
     history_control(args.root)
     if FAILED:

@@ -228,7 +228,7 @@ address one peripheral-role link. lnsd, on BlueZ, cannot.
 
 `NodeCore` holds no interface-keyed collection of its own; every
 per-interface field lives in `Transport`, and there are 24 of them
-(`interface_announce_caps`, `leviculum-core/src/transport.rs:3293`
+(`interface_announce_caps`, `leviculum-core/src/transport.rs:3296`
 through `own_tunnel_ids`,
 `leviculum-core/src/transport.rs:3660` — the `IfaceMap` and `IfaceSet`
 fields in that block). They were `BTreeMap<usize, _>` and

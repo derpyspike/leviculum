@@ -43,9 +43,11 @@ scanner over the text, tested in scripts/citations-selftest.py.
 - Any file: `ANCHOR: name` ... `ANCHOR_END: name` in a comment, mdBook's
   own anchor syntax, cited as `anchor:name`.
 
-An item's range starts at its doc comments and attributes (in Rust also a
-`//` comment block directly above it), so a citation that
-pointed at the doc comment of a function names that function.
+An item's range starts at its doc comments and attributes, so a citation
+that pointed at the doc comment of a function names that function. A plain
+`//` block directly above a Rust item joins it only when the block names
+the item or the item is a `#[test]`: a comment naming another identifier
+stays outside the item below it (order 1940).
 
 A citation `A::B` matches an item when `A::B` is a suffix, segment by
 segment, of one of the item's qualified names. It must match exactly one.
@@ -142,6 +144,32 @@ def _line_of(starts, off):
         else:
             hi = mid - 1
     return lo + 1
+
+
+def _plain_comment(line):
+    """A `//` line that is neither a doc comment nor an inner one."""
+    s = line.strip()
+    return s.startswith("//") and not s.startswith("///") and not s.startswith("//!")
+
+
+def _trim_stray_comment(lines, start, head, name):
+    """Where the block above an item opens with plain `//` lines, keep them
+    only when the block names the item or the item is a `#[test]`: the
+    comment a test carries above `#[test]` says what that test pins, but a
+    comment naming another identifier (`// announce_rate_table: migrated`
+    above `interface_announce_caps`) is not the item's and must not pull
+    the item's range over its line (order 1940)."""
+    k = start
+    while k < head and _plain_comment(lines[k - 1]):
+        k += 1
+    if k == start:
+        return start
+    if any(re.search(r"#\[[^\]]*\btest\b", lines[i - 1]) for i in range(k, head)):
+        return start
+    block = " ".join(lines[i - 1] for i in range(start, k))
+    if re.search(rf"\b{re.escape(name)}\b", block):
+        return start
+    return k
 
 
 def _extend_up(lines, head, prefixes):
@@ -289,13 +317,14 @@ def _rust_items(text):
     def add(name, kind, head_off, end_off, chain):
         head = line(head_off)
         end = line(end_off)
-        # A `//` block directly above an item is read with it, as its doc
-        # comment is: the comment a test carries above `#[test]` says what
-        # that test pins (order 1935, the 1908 control read by hand).
+        # A `//` block directly above an item is read with it only when it
+        # names the item or the item is a `#[test]` (order 1935 kept the
+        # test case; order 1940 cut the rest, `_trim_stray_comment`).
         start = _extend_up(lines, head, ("//", "#[", "/**", "*", "*/"))
         # `//!` belongs to the enclosing module, never to the item below it.
         while start < head and lines[start - 1].strip().startswith("//!"):
             start += 1
+        start = _trim_stray_comment(lines, start, head, name)
         names = [p + [name] for p in qualify(chain)]
         it = Item(names, kind, start, end, head)
         if chain and chain[-1][2] in ("impl", "trait"):
@@ -395,6 +424,7 @@ def _members(masked, text, op, cl, parent, lines, line):
         head = line(a + m.start(1))
         end = line(b)
         start = _extend_up(lines, head, ("//", "#[", "/**", "*", "*/"))
+        start = _trim_stray_comment(lines, start, head, name)
         names = [n + [name] for n in parent.names]
         parent.children.append(Item(names, "variant" if parent.kind == "enum" else "field",
                                     max(start, parent.head + 1), end, head, min_segs=2))
