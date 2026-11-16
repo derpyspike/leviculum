@@ -1233,7 +1233,9 @@ where
     let parts = owned_areas(tiles.iter().map(|t| t.tile), area, pending, solid);
     // Each part draws only the tiles that meet it (audit of 1836, finding
     // 3): a region still arriving has a pass a square, and every pass
-    // walking every tile made the frame cost squares times tiles.
+    // walking every tile made the frame cost squares times tiles. A part
+    // with no tile still runs its pass: the pass clears it to the ground
+    // (a complete region with no tile in the view, 1910's tui frame).
     let mut meeting: Vec<DrawTile<'_>> = Vec::new();
     for part in parts {
         let these: &[DrawTile<'_>] = match pending {
@@ -1244,9 +1246,6 @@ where
                 &meeting
             }
         };
-        if these.is_empty() {
-            continue;
-        }
         let shade = sampler
             .as_mut()
             .map(|s| s as &mut dyn leviculum_map::relief::Shade);
