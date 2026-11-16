@@ -627,6 +627,41 @@ mod tests {
     }
 
     #[test]
+    fn every_unsupported_directory_is_refused_by_name() {
+        let (file, _) = small();
+        // The value field of tag k of the directory, and its type field.
+        let value = |k: usize| 8 + 2 + 12 * k + 8;
+        let ty = |k: usize| 8 + 2 + 12 * k + 2;
+        let cases: [(usize, &[u8], &str); 11] = [
+            (value(0), &0u32.to_le_bytes(), "image size"),
+            (
+                value(6),
+                &3u16.to_le_bytes(),
+                "more than one sample per pixel",
+            ),
+            (value(9), &2u16.to_le_bytes(), "planar configuration"),
+            (value(2), &32u16.to_le_bytes(), "32-bit samples of format 1"),
+            (value(3), &7u16.to_le_bytes(), "compression 7"),
+            (value(10), &3u16.to_le_bytes(), "predictor 3"),
+            (value(7), &0u32.to_le_bytes(), "chunk size"),
+            (value(7), &1u32.to_le_bytes(), "chunk table"),
+            (ty(5), &1u16.to_le_bytes(), "integer tag type"),
+            (ty(5), &99u16.to_le_bytes(), "tag type"),
+            (4, &0u32.to_le_bytes(), "no image"),
+        ];
+        for (at, bytes, want) in cases {
+            let mut bad = file.clone();
+            bad[at..at + bytes.len()].copy_from_slice(bytes);
+            let bad = Mem(bad);
+            let e = Tiff::open(&bad).err().map(|e| e.to_string());
+            assert!(
+                e.as_deref().is_some_and(|e| e.ends_with(want)),
+                "{want}: {e:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_big_endian_or_foreign_file_is_refused() {
         assert!(Tiff::open(&Mem(b"MM\0*\0\0\0\x08".to_vec())).is_err());
         assert!(Tiff::open(&Mem(b"not a tiff".to_vec())).is_err());
