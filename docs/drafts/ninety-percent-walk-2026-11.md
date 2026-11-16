@@ -230,8 +230,8 @@ Driven, frames in `target/1259/tui/`.
   installation of the messenger alone shows.
 - **First start with a daemon** (`first.frames`, frame `first_start`): the
   title "Loquax 0c749148" (our address), "No conversations: start with
-  --to <address>." (`loquax/src/ui.rs:4046`), the header "messages" and "no
-  propagation node" (`loquax/src/ui.rs:4160`), "nothing earlier on this
+  --to <address>." (`loquax/src/ui.rs:4047`), the header "messages" and "no
+  propagation node" (`loquax/src/ui.rs:4161`), "nothing earlier on this
   device", the footer "Enter open │ i write │ Tab pane │ : commands │ ?
   help │ q quit". No name is asked, no address or QR shown.
 - **Adding a contact** (`second.frames`): the palette knows no "new
@@ -287,7 +287,7 @@ alone), **S** slows (completes with effort, a guess or a Reticulum word),
 | 3 | B | strings.xml:51, `activity_new.xml:42`, `NewConversationActivity.java` | The pencil asks for "The LXMF address to write to: 32 hex digits" and has no scanner. | Pencil screen: "Scan a code" first, then "Paste a code"; the hex field under Advanced or gone. |
 | 4 | B | strings.xml:6, :8, :176; `loquax/src/main.rs:150-167` | The computer mailbox is the command line: install, `mailbox enable` with root, `admit --server host:port` typed by hand; no wizard, no page, contrary to the onboarding draft section 6. | Build `loquax mailbox setup` (the draft's five steps) and the leviculum.network/mailbox page; the phone screen names the page, not a command. |
 | 5 | B | `loquax/Cargo.toml:42`, `loquax/src/engine/shell.rs:332` | The `loquax` package does not depend on `lnsd`; the messenger alone fails with four lines about a "Reticulum shared instance", IPC sockets and rnsd. | Make the package pull in and enable `lnsd`; the error in one sentence with the one command. |
-| 6 | B | `loquax/src/ui.rs:4046`, the TUI palette (`target/1259/tui/second.frames`) | The terminal has no way to start a conversation or add a contact from inside: "No conversations: start with --to <address>.", and the palette has no such command. | Wire `Intent::NewConversation` and `Intent::AddContact` into the palette; the empty text names the command. |
+| 6 | B | `loquax/src/ui.rs:4047`, the TUI palette (`target/1259/tui/second.frames`) | The terminal has no way to start a conversation or add a contact from inside: "No conversations: start with --to <address>.", and the palette has no such command. | Wire `Intent::NewConversation` and `Intent::AddContact` into the palette; the empty text names the command. |
 | 7 | B | `loquax-android/src/mailbox.rs:103`, `ProfileActivity.java:282` | With the mailbox on the phone there is no second device: nothing shows a code for another device, and "Use another mailbox" wants a code only a computer prints. | "Link a device" on the profile: an `lqxh1` QR from the phone's mailbox, scanned by the new device. |
 | 8 | B | `loquax-android/src/session.rs:2470`, `:213`, `:233` | Join errors speak daemon: "Check the address, that its lnsd runs a TCP server there", "Type your mailbox's address, host:port of its lnsd TCP server.", "Paste the code `loquax home admit` printed". | One plain sentence each ("The mailbox did not answer. Is the computer on?"), retry button; details in a log. |
 | 9 | S | `WelcomeActivity.java:491-496`, `loquax/src/names.rs:241` | The own name is optional and empty by default, so friends see `<0c749148…>`. | Ask the name as the one field of the address screen, prefilled from the phone owner's profile. |
@@ -302,8 +302,8 @@ alone), **S** slows (completes with effort, a guess or a Reticulum word),
 | 18 | S | `ConversationsActivity.java:60` | Help opens the developer documentation (`https://leviculum.network/docs/`). | A user help page (first steps, adding contacts, the mailbox), in the app's languages. |
 | 19 | S | strings.xml:21-24, `LoquaxService.java:262` | The always-on notification says "Connected to 192.168.1.20:4242" or "Not connected: <raw error>". | "Connected to your mailbox" / "Not connected, trying again"; the address in Settings. |
 | 20 | S | `loquax-android/src/lib.rs:232-243` | The join form's status line: "Loquax <version> / This phone holds no mailbox and reads none.", or the mailbox's hex and "last entry pulled". | Drop the status line from the join form; the version stays in the profile's Advanced. |
-| 21 | S | `loquax/src/ui.rs:4160`, `loquax/src/names.rs:260` | Terminal: every chat header says "no propagation node" and "unknown"; peers are `<61ddb79a…>`, `them ·61dd`. | Show the relay state only when a send needs it; no trust word for the default state. |
-| 22 | S | the TUI send path (toast text, `loquax/src/ui.rs:5839` pins it) | Terminal: a failed send toasts "not sent: direct: no route after 30.0s; propagated: no propagation node". | "Not sent yet; Loquax tries again", the legs in the detail view. |
+| 21 | S | `loquax/src/ui.rs:4161`, `loquax/src/names.rs:260` | Terminal: every chat header says "no propagation node" and "unknown"; peers are `<61ddb79a…>`, `them ·61dd`. | Show the relay state only when a send needs it; no trust word for the default state. |
+| 22 | S | the TUI send path (toast text, `loquax/src/ui.rs:5840` pins it) | Terminal: a failed send toasts "not sent: direct: no route after 30.0s; propagated: no propagation node". | "Not sent yet; Loquax tries again", the legs in the detail view. |
 | 23 | S | `loquax/src/main.rs` `run_address` | Terminal: our address only as hex from `loquax address`; no contact code, no QR. | A palette command "my code" with the `lxma://` code and its terminal QR (`qr::lines` exists). |
 | 24 | S | strings.xml:191-196 | Restore wants a backup made before and a passphrase; no transfer from the old phone; restoring onto a second phone while the first runs is not guarded (unchecked what happens). | Transfer by QR from the old phone (onboarding draft section 4); warn when the address is live elsewhere. |
 | 25 | C | strings.xml:6, :176; `loquax-android/src/session.rs:213` | The app names the old spelling `loquax home admit`; the command is `loquax mailbox admit`. | Name the page (#4); until then `loquax mailbox admit`. |

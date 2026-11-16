@@ -68,55 +68,55 @@ Rows marked (1341) or (1371) were MISSING before that pass and are closed by it.
 
 | # | Feature | Android | Window | Terminal |
 |---|---------|---------|--------|----------|
-| 1 | Chats: list, open, send text | `Core.send` (`ChatActivity.java:2206`) | `Intent::Send` (`loquax/src/gui.rs:1787`) | `PaletteCommand::Send` (`loquax/src/ui.rs:4565`) |
-| 2 | Drafts | `Core.draft` (`ChatActivity.java:2941`) | `tell_draft` (`loquax/src/gui.rs:1490`) | `set_draft` (`loquax/src/ui.rs:1807`) |
-| 3 | React | `Core.react` (`ChatActivity.java:2331`) | `Intent::React` (`loquax/src/gui.rs:1912`) | `PaletteCommand::React` (`loquax/src/ui.rs:6130`) (palette `react`) |
-| 4 | Reply | `Core.reply` (`ChatActivity.java:2206`) | `Intent::Reply` (`loquax/src/gui.rs:1926`) | `PaletteCommand::Reply` (`loquax/src/ui.rs:6057`) (palette `reply`) (1371) |
-| 5 | Forward | `Core.forward` (`ChatActivity.java:2464`) | `Message::ForwardPick` (`loquax/src/gui/chat.rs:2489`), `Intent::Forward` (`loquax/src/gui.rs:1870`) (1371) | `PaletteCommand::Forward` (`loquax/src/ui.rs:6059`) (palette `forward`) (1371) |
-| 6 | Send again | `Core.sendAgain` (`ChatActivity.java:3074`) | `Intent::SendAgain` (`loquax/src/gui.rs:1972`) | `PaletteCommand::SendAgain` (`loquax/src/ui.rs:6058`) (palette `send again`) (1371) |
-| 7 | Delete a message | `Core.delete` (`ChatActivity.java:2554`) | `Intent::Delete` (`loquax/src/gui.rs:1983`) | `PaletteCommand::DeleteMessage` (`loquax/src/ui.rs:6047`) |
-| 8 | Copy a message | `setPrimaryClip` (`ChatActivity.java:2491`) | `Intent::Copy` (`loquax/src/gui.rs:1962`) | `Action::Copy` (`loquax/src/ui.rs:4773`) (OSC 52) |
-| 9 | Search | `searching` (`ConversationsActivity.java:755`) | `Intent::Search` (`loquax/src/gui.rs:1777`) | `PaletteCommand::Search` (`loquax/src/ui.rs:6043`) |
-| 10 | Read receipts on/off | `Core.receipts` (`SettingsActivity.java:871`) | `Intent::ReadReceipts` (`loquax/src/gui.rs:1743`) | `PaletteCommand::ReadReceipts` (`loquax/src/ui.rs:6021`) |
-| 11 | Send a picture (Gallery) | `Core.photo` (`ChatActivity.java:1662`) | `Intent::SendPhoto` (`loquax/src/gui.rs:1650`), `pick` (`loquax/src/desktop.rs:158`) (1341) | `PaletteCommand::SendPicture` (`loquax/src/ui.rs:6086`) (palette `send picture`, a typed path), `UiEffect::Attach` (`loquax/src/shell.rs:438`) (1371) |
-| 12 | Photo size, three tiers | `Core.photoSize` (`SettingsActivity.java:541`) | `photo_rows` (`loquax/src/gui/chat.rs:1377`) (settings) (1371) | `PaletteCommand::PhotoSize` (`loquax/src/ui.rs:6072`) (palette `photo size`) (1371) |
-| 13 | View a photo | `PhotoActivity` (`ChatActivity.java:2015`) | `Intent::ViewPhoto` (`loquax/src/gui.rs:1973`) (own viewer) | `view_photo` (`loquax/src/ui.rs:4814`), `UiEffect::ShowPhoto` (`loquax/src/shell.rs:468`) (system viewer) |
+| 1 | Chats: list, open, send text | `Core.send` (`ChatActivity.java:2206`) | `Intent::Send` (`loquax/src/gui.rs:1802`) | `PaletteCommand::Send` (`loquax/src/ui.rs:4566`) |
+| 2 | Drafts | `Core.draft` (`ChatActivity.java:2941`) | `tell_draft` (`loquax/src/gui.rs:1505`) | `set_draft` (`loquax/src/ui.rs:1808`) |
+| 3 | React | `Core.react` (`ChatActivity.java:2331`) | `Intent::React` (`loquax/src/gui.rs:1927`) | `PaletteCommand::React` (`loquax/src/ui.rs:6131`) (palette `react`) |
+| 4 | Reply | `Core.reply` (`ChatActivity.java:2206`) | `Intent::Reply` (`loquax/src/gui.rs:1941`) | `PaletteCommand::Reply` (`loquax/src/ui.rs:6058`) (palette `reply`) (1371) |
+| 5 | Forward | `Core.forward` (`ChatActivity.java:2464`) | `Message::ForwardPick` (`loquax/src/gui/chat.rs:2489`), `Intent::Forward` (`loquax/src/gui.rs:1885`) (1371) | `PaletteCommand::Forward` (`loquax/src/ui.rs:6060`) (palette `forward`) (1371) |
+| 6 | Send again | `Core.sendAgain` (`ChatActivity.java:3074`) | `Intent::SendAgain` (`loquax/src/gui.rs:1987`) | `PaletteCommand::SendAgain` (`loquax/src/ui.rs:6059`) (palette `send again`) (1371) |
+| 7 | Delete a message | `Core.delete` (`ChatActivity.java:2554`) | `Intent::Delete` (`loquax/src/gui.rs:1998`) | `PaletteCommand::DeleteMessage` (`loquax/src/ui.rs:6048`) |
+| 8 | Copy a message | `setPrimaryClip` (`ChatActivity.java:2491`) | `Intent::Copy` (`loquax/src/gui.rs:1977`) | `Action::Copy` (`loquax/src/ui.rs:4774`) (OSC 52) |
+| 9 | Search | `searching` (`ConversationsActivity.java:755`) | `Intent::Search` (`loquax/src/gui.rs:1792`) | `PaletteCommand::Search` (`loquax/src/ui.rs:6044`) |
+| 10 | Read receipts on/off | `Core.receipts` (`SettingsActivity.java:871`) | `Intent::ReadReceipts` (`loquax/src/gui.rs:1758`) | `PaletteCommand::ReadReceipts` (`loquax/src/ui.rs:6022`) |
+| 11 | Send a picture (Gallery) | `Core.photo` (`ChatActivity.java:1662`) | `Intent::SendPhoto` (`loquax/src/gui.rs:1665`), `pick` (`loquax/src/desktop.rs:158`) (1341) | `PaletteCommand::SendPicture` (`loquax/src/ui.rs:6087`) (palette `send picture`, a typed path), `UiEffect::Attach` (`loquax/src/shell.rs:438`) (1371) |
+| 12 | Photo size, three tiers | `Core.photoSize` (`SettingsActivity.java:541`) | `photo_rows` (`loquax/src/gui/chat.rs:1377`) (settings) (1371) | `PaletteCommand::PhotoSize` (`loquax/src/ui.rs:6073`) (palette `photo size`) (1371) |
+| 13 | View a photo | `PhotoActivity` (`ChatActivity.java:2015`) | `Intent::ViewPhoto` (`loquax/src/gui.rs:1988`) (own viewer) | `view_photo` (`loquax/src/ui.rs:4815`), `UiEffect::ShowPhoto` (`loquax/src/shell.rs:468`) (system viewer) |
 | 14 | Camera | `Core.stage` (`ChatActivity.java:1215`) | n/a | n/a |
-| 15 | Send a file | `Core.file` (`ChatActivity.java:1715`) | `Intent::SendFile` (`loquax/src/gui.rs:1653`), `Finished::Send` (`loquax/src/shell.rs:895`) (1341) | `PaletteCommand::SendFile` (`loquax/src/ui.rs:6090`) (palette `send file`, a typed path), `UiEffect::Attach` (`loquax/src/shell.rs:438`) (1371) |
-| 16 | Open and save a received file | `Core.saveFile` (`ChatActivity.java:1915`) | `Intent::OpenFile` (`loquax/src/gui.rs:1974`), `UiEffect::OpenFile` (`loquax/src/shell.rs:486`) | `open_file` (`loquax/src/ui.rs:4823`), `UiEffect::OpenFile` (`loquax/src/shell.rs:486`) |
-| 17 | Record a voice message | `input` (`RecordingBar.java:368`) | `Message::RecPress` (`loquax/src/gui/chat.rs:2657`), `UiEffect::Recording` (`loquax/src/shell.rs:573`), `mic.rs` | `record_key` (`loquax/src/ui.rs:5380`), `UiEffect::Recording` (`loquax/src/shell.rs:573`), `mic.rs` |
-| 18 | Play a voice message | `Core.voicePcm` (`ChatActivity.java:1864`) | `Intent::PlayVoice` (`loquax/src/gui.rs:1977`), `UiEffect::PlayVoice` (`loquax/src/shell.rs:505`) | `play_voice` (`loquax/src/ui.rs:4832`), `UiEffect::PlayVoice` (`loquax/src/shell.rs:505`) |
-| 19 | Groups: new, join, members, add, remove, leave, delete, start again | `Core.group` (`GroupDialogs.java:51`) | `Intent::Group` (`loquax/src/gui.rs:1736`) (all verbs) | `PaletteCommand::NewGroup` (`loquax/src/ui.rs:6157`) to `PaletteCommand::StartAgain` (`loquax/src/ui.rs:6239`) |
-| 20 | Map with positions | `Core.friends` (`MapPane.java:456`) | `Intent::ShowMap` (`loquax/src/gui.rs:1816`) | `PaletteCommand::Map` (`loquax/src/ui.rs:6107`), `tui/map.rs` |
-| 21 | Buildings on the map | `draws_buildings` (`loquax/src/picture.rs:1223`) (shared) | `draws_buildings` (`loquax/src/picture.rs:1223`) | `draws_buildings` (`loquax/src/picture.rs:1223`) (sixel, kitty) |
-| 22 | Load the map area | `prefetch` (`MapView.java:1291`) (autoload) | `Intent::LoadMapArea` (`loquax/src/gui.rs:2001`) | `PaletteCommand::LoadMapArea` (`loquax/src/ui.rs:6103`) |
-| 23 | Delete all downloaded maps | `Core.deleteRegions` (`SettingsActivity.java:791`) | `Intent::DeleteAllRegions` (`loquax/src/gui.rs:1768`) | `PaletteCommand::DeleteAllMaps` (`loquax/src/ui.rs:6082`) (palette `delete all maps`), `UiEffect::DeleteAllMaps` (`loquax/src/shell.rs:456`) (1371) |
-| 24 | Mesh positions (nodes nearby) | `nearby` (`MapPane.java:498`) | `Message::AddNearby` (`loquax/src/gui.rs:2408`) | `nearby` (`loquax/src/tui/map.rs:1796`) |
-| 25 | Share the position, once or timed | `Core.shareFix` (`ChatActivity.java:1106`), `ShareService` (`ShareService.java:37`) | `Intent::EnterPosition` (`loquax/src/gui.rs:1602`), `Intent::FixAtMapCentre` (`loquax/src/gui.rs:1610`), position by hand `parse` (`loquax/src/ui/by_hand.rs:27`) (1371) | `PaletteCommand::Position` (`loquax/src/ui.rs:6073`) (palette `position`), `PaletteCommand::SharePosition` (`loquax/src/ui.rs:6077`) (`share position`, `stop sharing`) (1371) |
-| 26 | Pin | `Core.pin` (`ConversationsActivity.java:730`) | row menu `row_actions` (`loquax/src/gui/chat.rs:2354`), `Intent::Pin` (`loquax/src/gui.rs:1897`) (1371) | `PaletteCommand::Pin` (`loquax/src/ui.rs:6055`) |
-| 27 | Mute | `Core.mute` (`ContactActivity.java:540`) | row menu (1371) | `PaletteCommand::Mute` (`loquax/src/ui.rs:6063`) (palette `mute`) (1371) |
-| 28 | Archive | `Core.archive` (`ConversationsActivity.java:740`) | row menu (1371) | `PaletteCommand::Archive` (`loquax/src/ui.rs:6098`) |
-| 29 | Block | `Core.block` (`ContactActivity.java:447`) | row menu (1371) | `PaletteCommand::Block` (`loquax/src/ui.rs:6134`) |
-| 30 | Verify | `Core.verify` (`ContactActivity.java:348`) | row menu (1371) | `PaletteCommand::Verify` (`loquax/src/ui.rs:6064`) (palette `verify`) (1371) |
-| 31 | Mark unread | `Core.unread` (`ConversationsActivity.java:723`) | row menu (1371) | `PaletteCommand::MarkUnread` (`loquax/src/ui.rs:6068`) (palette `mark unread`) (1371) |
-| 32 | Rename | `Core.rename` (`ContactActivity.java:610`) | row menu, its field (1371) | `PaletteCommand::Rename` (`loquax/src/ui.rs:6126`) |
-| 33 | Forget a conversation | `Core.forget` (`ContactActivity.java:489`) | row menu, asked once (1371) | `PaletteCommand::DeleteConversation` (`loquax/src/ui.rs:6051`) (palette `delete conversation`, asked once) |
-| 34 | Add a contact by code, typed or pasted | `Core.addContact` (`AddContact.java:96`) | `Message::NewGo` (`loquax/src/gui.rs:1459`) | `PaletteCommand::AddContact` (`loquax/src/ui.rs:6151`) |
-| 35 | A contact code from a QR | `Java_network_leviculum_loquax_Native_scan` (`loquax-android/src/lib.rs:391`) (the scanner screen's decoder) | `Message::PickCode` (`loquax/src/gui.rs:2425`), `Message::PickCode` (`loquax/src/gui/chat.rs:1479`), `image_codes` (`loquax/src/scan.rs:39`) (1341) | `PaletteCommand::CodeFromPicture` (`loquax/src/ui.rs:6094`) (palette `code in a picture`, a typed path), `UiEffect::ScanCode` (`loquax/src/shell.rs:441`) (1371) |
-| 36 | My code | `EXTRA_TEXT` (`ProfileActivity.java:285`) | `Intent::ShareCode` (`loquax/src/gui.rs:1670`), `profile_layer` (`loquax/src/gui.rs:3232`) (settings row, QR) (1371) | `PaletteCommand::MyCode` (`loquax/src/ui.rs:6256`) |
+| 15 | Send a file | `Core.file` (`ChatActivity.java:1715`) | `Intent::SendFile` (`loquax/src/gui.rs:1668`), `Finished::Send` (`loquax/src/shell.rs:895`) (1341) | `PaletteCommand::SendFile` (`loquax/src/ui.rs:6091`) (palette `send file`, a typed path), `UiEffect::Attach` (`loquax/src/shell.rs:438`) (1371) |
+| 16 | Open and save a received file | `Core.saveFile` (`ChatActivity.java:1915`) | `Intent::OpenFile` (`loquax/src/gui.rs:1989`), `UiEffect::OpenFile` (`loquax/src/shell.rs:486`) | `open_file` (`loquax/src/ui.rs:4824`), `UiEffect::OpenFile` (`loquax/src/shell.rs:486`) |
+| 17 | Record a voice message | `input` (`RecordingBar.java:368`) | `Message::RecPress` (`loquax/src/gui/chat.rs:2657`), `UiEffect::Recording` (`loquax/src/shell.rs:573`), `mic.rs` | `record_key` (`loquax/src/ui.rs:5381`), `UiEffect::Recording` (`loquax/src/shell.rs:573`), `mic.rs` |
+| 18 | Play a voice message | `Core.voicePcm` (`ChatActivity.java:1864`) | `Intent::PlayVoice` (`loquax/src/gui.rs:1992`), `UiEffect::PlayVoice` (`loquax/src/shell.rs:505`) | `play_voice` (`loquax/src/ui.rs:4833`), `UiEffect::PlayVoice` (`loquax/src/shell.rs:505`) |
+| 19 | Groups: new, join, members, add, remove, leave, delete, start again | `Core.group` (`GroupDialogs.java:51`) | `Intent::Group` (`loquax/src/gui.rs:1751`) (all verbs) | `PaletteCommand::NewGroup` (`loquax/src/ui.rs:6158`) to `PaletteCommand::StartAgain` (`loquax/src/ui.rs:6240`) |
+| 20 | Map with positions | `Core.friends` (`MapPane.java:456`) | `Intent::ShowMap` (`loquax/src/gui.rs:1831`) | `PaletteCommand::Map` (`loquax/src/ui.rs:6108`), `tui/map.rs` |
+| 21 | Buildings on the map | `draws_buildings` (`loquax/src/picture.rs:1237`) (shared) | `draws_buildings` (`loquax/src/picture.rs:1237`) | `draws_buildings` (`loquax/src/picture.rs:1237`) (sixel, kitty) |
+| 22 | Load the map area | `prefetch` (`MapView.java:1291`) (autoload) | `Intent::LoadMapArea` (`loquax/src/gui.rs:2016`) | `PaletteCommand::LoadMapArea` (`loquax/src/ui.rs:6104`) |
+| 23 | Delete all downloaded maps | `Core.deleteRegions` (`SettingsActivity.java:791`) | `Intent::DeleteAllRegions` (`loquax/src/gui.rs:1783`) | `PaletteCommand::DeleteAllMaps` (`loquax/src/ui.rs:6083`) (palette `delete all maps`), `UiEffect::DeleteAllMaps` (`loquax/src/shell.rs:456`) (1371) |
+| 24 | Mesh positions (nodes nearby) | `nearby` (`MapPane.java:498`) | `Message::AddNearby` (`loquax/src/gui.rs:2423`) | `nearby` (`loquax/src/tui/map.rs:1796`) |
+| 25 | Share the position, once or timed | `Core.shareFix` (`ChatActivity.java:1106`), `ShareService` (`ShareService.java:37`) | `Intent::EnterPosition` (`loquax/src/gui.rs:1617`), `Intent::FixAtMapCentre` (`loquax/src/gui.rs:1625`), position by hand `parse` (`loquax/src/ui/by_hand.rs:27`) (1371) | `PaletteCommand::Position` (`loquax/src/ui.rs:6074`) (palette `position`), `PaletteCommand::SharePosition` (`loquax/src/ui.rs:6078`) (`share position`, `stop sharing`) (1371) |
+| 26 | Pin | `Core.pin` (`ConversationsActivity.java:730`) | row menu `row_actions` (`loquax/src/gui/chat.rs:2354`), `Intent::Pin` (`loquax/src/gui.rs:1912`) (1371) | `PaletteCommand::Pin` (`loquax/src/ui.rs:6056`) |
+| 27 | Mute | `Core.mute` (`ContactActivity.java:540`) | row menu (1371) | `PaletteCommand::Mute` (`loquax/src/ui.rs:6064`) (palette `mute`) (1371) |
+| 28 | Archive | `Core.archive` (`ConversationsActivity.java:740`) | row menu (1371) | `PaletteCommand::Archive` (`loquax/src/ui.rs:6099`) |
+| 29 | Block | `Core.block` (`ContactActivity.java:447`) | row menu (1371) | `PaletteCommand::Block` (`loquax/src/ui.rs:6135`) |
+| 30 | Verify | `Core.verify` (`ContactActivity.java:348`) | row menu (1371) | `PaletteCommand::Verify` (`loquax/src/ui.rs:6065`) (palette `verify`) (1371) |
+| 31 | Mark unread | `Core.unread` (`ConversationsActivity.java:723`) | row menu (1371) | `PaletteCommand::MarkUnread` (`loquax/src/ui.rs:6069`) (palette `mark unread`) (1371) |
+| 32 | Rename | `Core.rename` (`ContactActivity.java:610`) | row menu, its field (1371) | `PaletteCommand::Rename` (`loquax/src/ui.rs:6127`) |
+| 33 | Forget a conversation | `Core.forget` (`ContactActivity.java:489`) | row menu, asked once (1371) | `PaletteCommand::DeleteConversation` (`loquax/src/ui.rs:6052`) (palette `delete conversation`, asked once) |
+| 34 | Add a contact by code, typed or pasted | `Core.addContact` (`AddContact.java:96`) | `Message::NewGo` (`loquax/src/gui.rs:1474`) | `PaletteCommand::AddContact` (`loquax/src/ui.rs:6152`) |
+| 35 | A contact code from a QR | `Java_network_leviculum_loquax_Native_scan` (`loquax-android/src/lib.rs:391`) (the scanner screen's decoder) | `Message::PickCode` (`loquax/src/gui.rs:2440`), `Message::PickCode` (`loquax/src/gui/chat.rs:1479`), `image_codes` (`loquax/src/scan.rs:39`) (1341) | `PaletteCommand::CodeFromPicture` (`loquax/src/ui.rs:6095`) (palette `code in a picture`, a typed path), `UiEffect::ScanCode` (`loquax/src/shell.rs:441`) (1371) |
+| 36 | My code | `EXTRA_TEXT` (`ProfileActivity.java:285`) | `Intent::ShareCode` (`loquax/src/gui.rs:1685`), `profile_layer` (`loquax/src/gui.rs:3310`) (settings row, QR) (1371) | `PaletteCommand::MyCode` (`loquax/src/ui.rs:6257`) |
 | 37 | Home setup | `Core.startHere` (`WelcomeActivity.java:589`) | CLI (`Setup` (`loquax/src/main.rs:211`)) | CLI (`Setup` (`loquax/src/main.rs:211`)) |
 | 38 | Link a device | `Core.linkDevice` (`ProfileActivity.java:385`) | CLI (`Join` (`loquax/src/main.rs:241`), `Admit` (`loquax/src/main.rs:225`)) | CLI (`Join` (`loquax/src/main.rs:241`), `Admit` (`loquax/src/main.rs:225`)) |
 | 39 | Move the phone | `Core.movePhone` (`ProfileActivity.java:433`) | MISSING | MISSING |
 | 40 | Backup | `Core.backup` (`BackupActivity.java:130`) | MISSING | MISSING |
-| 41 | Help | `R.string.help` (`ConversationsActivity.java:662`) | `Intent::Help` (`loquax/src/gui.rs:1658`), `help_layer` (`loquax/src/gui.rs:3354`) (the shared overlay) (1371) | `PaletteCommand::Help` (`loquax/src/ui.rs:5989`) (palette `help`) |
-| 42 | Settings, nine sections in one order (1450) | `entries` (`SettingsActivity.java:191`) | `settings_pane` (`loquax/src/gui/chat.rs:444`) (gear) | `settings_view` (`loquax/src/ui.rs:8514`) (`S`, palette `settings`) |
-| 43 | Browse tab | `Core.browse` (`BrowsePane.java:499`) (behind `browse_tab`) | `browse_view` (`loquax/src/gui.rs:3379`), behind `browse_tab` (1369) | `draw_screen` (`loquax/src/tui.rs:1755`), behind `browse_tab` (1369) |
-| 44 | Notifications of new messages | `notify` (`LoquaxService.java:342`) | `desktop::post` (`loquax/src/gui.rs:474`), `post` (`loquax/src/desktop.rs:118`) (1341) | `notify` (`loquax/src/tui.rs:784`), bell and `post` (`loquax/src/desktop.rs:118`) (1341) |
-| 45 | Icon and application id | `LoquaxApp` (`loquax-android/android/AndroidManifest.xml:70`) | `application_id` (`loquax/src/gui.rs:616`) (1341) | n/a |
-| 46 | Rooms tab (RRC), a room as a chat (1450) | `Core.rooms` (`RoomsPane.java:261`), behind `rooms_hub` (1384) | `rooms_pane` (`loquax/src/gui/chat.rs:751`), behind `rooms_hub` (1379) | `draw_rooms` (`loquax/src/tui.rs:1785`), behind `rooms_hub` (1379) |
-| 47 | Explore: pages and public rooms under one button, the bar's third (1578) | `Core.explore` (`ExplorePane.java:681`), `loquax-android/src/explore.rs` | `explore_pane` (`loquax/src/gui/chat.rs:913`) | `draw_explore` (`loquax/src/tui.rs:1936`) (`E`, palette `explore`) |
-| 48 | Relief under the light map on/off, `map_relief` (1863, 1868) | `mapRelief` (`SettingsActivity.java:1070`) (the Advanced page's switch, stored as the config's `map_relief`) | `map_relief` (`loquax/src/gui.rs:249`) (config file `map_relief`) | `set_relief` (`loquax/src/tui/map.rs:1350`), `painter.set_relief` (`loquax/src/tui.rs:2401`) (config file `map_relief`; sixel, kitty and octant draw it) |
-| 49 | Ground map under the light map, pastel, strong or off, `map_ground` (1743) | gap (the facade draws pastel; no switch yet) | `map_ground` (`loquax/src/gui.rs:250`) (config file `map_ground`) | `set_ground` (`loquax/src/tui/map.rs:1356`), `painter.set_ground` (`loquax/src/tui.rs:2402`) (config file `map_ground`; sixel, kitty and octant draw it) |
+| 41 | Help | `R.string.help` (`ConversationsActivity.java:662`) | `Intent::Help` (`loquax/src/gui.rs:1673`), `help_layer` (`loquax/src/gui.rs:3432`) (the shared overlay) (1371) | `PaletteCommand::Help` (`loquax/src/ui.rs:5990`) (palette `help`) |
+| 42 | Settings, nine sections in one order (1450) | `entries` (`SettingsActivity.java:191`) | `settings_pane` (`loquax/src/gui/chat.rs:444`) (gear) | `settings_view` (`loquax/src/ui.rs:8515`) (`S`, palette `settings`) |
+| 43 | Browse tab | `Core.browse` (`BrowsePane.java:499`) (behind `browse_tab`) | `browse_view` (`loquax/src/gui.rs:3457`), behind `browse_tab` (1369) | `draw_screen` (`loquax/src/tui.rs:1759`), behind `browse_tab` (1369) |
+| 44 | Notifications of new messages | `notify` (`LoquaxService.java:342`) | `desktop::post` (`loquax/src/gui.rs:475`), `post` (`loquax/src/desktop.rs:118`) (1341) | `notify` (`loquax/src/tui.rs:784`), bell and `post` (`loquax/src/desktop.rs:118`) (1341) |
+| 45 | Icon and application id | `LoquaxApp` (`loquax-android/android/AndroidManifest.xml:70`) | `application_id` (`loquax/src/gui.rs:617`) (1341) | n/a |
+| 46 | Rooms tab (RRC), a room as a chat (1450) | `Core.rooms` (`RoomsPane.java:261`), behind `rooms_hub` (1384) | `rooms_pane` (`loquax/src/gui/chat.rs:751`), behind `rooms_hub` (1379) | `draw_rooms` (`loquax/src/tui.rs:1789`), behind `rooms_hub` (1379) |
+| 47 | Explore: pages and public rooms under one button, the bar's third (1578) | `Core.explore` (`ExplorePane.java:681`), `loquax-android/src/explore.rs` | `explore_pane` (`loquax/src/gui/chat.rs:913`) | `draw_explore` (`loquax/src/tui.rs:1940`) (`E`, palette `explore`) |
+| 48 | Relief under the light map on/off, `map_relief` (1863, 1868) | `mapRelief` (`SettingsActivity.java:1070`) (the Advanced page's switch, stored as the config's `map_relief`) | `map_relief` (`loquax/src/gui.rs:250`) (config file `map_relief`) | `set_relief` (`loquax/src/tui/map.rs:1350`), `painter.set_relief` (`loquax/src/tui.rs:2405`) (config file `map_relief`; sixel, kitty and octant draw it) |
+| 49 | Ground map under the light map, pastel, strong or off, `map_ground` (1743) | gap (the facade draws pastel; no switch yet) | `map_ground` (`loquax/src/gui.rs:251`) (config file `map_ground`) | `set_ground` (`loquax/src/tui/map.rs:1356`), `painter.set_ground` (`loquax/src/tui.rs:2406`) (config file `map_ground`; sixel, kitty and octant draw it) |
 
 ## Counts
 
@@ -184,7 +184,7 @@ a channel layer on top of propagation nodes is not to be built again.
 ## What 1341 brought, and how
 
 - **Pictures and files in the window.** The window sets the core's
-  `Abilities::picker` (`loquax/src/gui.rs:372`), so the scene gives it the plus and
+  `Abilities::picker` (`loquax/src/gui.rs:373`), so the scene gives it the plus and
   the attachment sheet with Gallery and File, which the window draws over
   the bar (`scene.sheet` (`loquax/src/gui/chat.rs:2557`)). A row asks the XDG desktop portal's
   `FileChooser.OpenFile` over the session bus (`pick` (`loquax/src/desktop.rs:158`)), the
@@ -243,7 +243,7 @@ alike over the node each already has; the desktop shell drains the
 browser's effects (`effect` (`loquax/src/browsing.rs:142`)) as the phone's session
 does. The window draws the tab with lnomad's window view
 (`view` (`lnomad/src/gui.rs:681`)), pictures included, and the terminal with
-lnomad's terminal view (`draw_screen` (`loquax/src/tui.rs:1755`)); neither has a renderer
+lnomad's terminal view (`draw_screen` (`loquax/src/tui.rs:1759`)); neither has a renderer
 of its own. The switch is the phone's, `browse_tab`, on by default on
 all three since 1618 (off until then). Details in
 `lnomad-everywhere.md`, "The tab on the desktop".
