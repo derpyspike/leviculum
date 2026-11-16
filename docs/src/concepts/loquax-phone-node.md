@@ -34,7 +34,7 @@ only for the home role (`loquax/src/engine/shell.rs:952`).
 runs the messenger engine in one case: the mailbox on the phone
 (`loquax-android/src/mailbox.rs`) is `loquax --daemon`'s home node inside
 the app, with a node of its own that dials the entry servers
-(`DaemonUpstream::Mesh`, `loquax/src/home/daemon.rs:222`). So the full
+(`DaemonUpstream::Mesh`, `loquax/src/home/daemon.rs:197`). So the full
 node is the engine the phone's mailbox already uses, without
 `loquax.home`, on a node whose interface list holds more than TCP.
 
@@ -86,7 +86,7 @@ What already fits the seam:
   case: a host that never sees `/dev/ttyACM*`, Android named. The phone
   supplies `open`. The KISS detection and configuration, the airtime
   bucket and the reconnect loop stay the host RNode interface's own, and
-  `spawn_rnode_channel_interface` (`leviculum-std/src/driver/mod.rs:2842`)
+  `spawn_rnode_channel_interface` (`leviculum-std/src/driver/mod.rs:2870`)
   hot-plugs the radio when the cable goes in.
 - **BLE needs a second carrier binding, not a second interface.** The
   host BLE interface is split into a pure half, `links` (admission,

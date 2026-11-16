@@ -139,7 +139,7 @@ mail):
   receipts and positions. Pictures and files wait for a fast medium, and
   the client says so ("3 Bilder warten aufs Auto"). The core knows the
   path's next-hop bitrate, `next_hop_interface_bitrate`
-  (`leviculum-core/src/node/mod.rs:4386`).
+  (`leviculum-core/src/node/mod.rs:4411`).
 - **The Mailbox's announces over LoRa follow the slow cadence**: 5 minutes
   while moving, an hour while still ([announce cadence](announce-cadence.md)).
 
@@ -151,11 +151,7 @@ cannot read yet.
 
 **O5, the LoRa cadence for the Mailbox's announces, not built.** The
 Mailbox announces at start and every 360 minutes on every interface,
-`ANNOUNCE_EVERY` (`loquax/src/home/daemon.rs:74`), whatever moves. On a
-shared instance it announces every 30 minutes instead,
-`ANNOUNCE_EVERY_ON_SHARED`, half of lnsd's `LOCAL_EMISSION_HOLD_MS`: lnsd
-keeps the home's path on the box only while its emission is younger than
-that hold (`docs/src/protocol-notes/announce-dedup-and-path-replacement.md`).
+`loquax/src/home/daemon.rs#ANNOUNCE_EVERY`, whatever moves.
 
 ## M6. Every Loquax is a home; an external Mailbox is a second one
 

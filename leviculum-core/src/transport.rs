@@ -111,21 +111,6 @@ const PATH_ENTRIES_DUMP_INTERVAL_MS: u64 = 5 * 60 * 1000;
 /// The reasoning for the value is on `handle_announce`.
 const ANNOUNCE_SLOW_MS: u64 = 100;
 
-/// How long a local client's hops-0 path is kept from the unresponsive mark
-/// after this daemon first installed its emission from the client
-/// (`Transport::mark_path_unresponsive`). Only an emission whose first
-/// receipt here was the client's hops-0 copy earns the hold, and it ends
-/// early when that client disconnects. A local hops-0 copy of an emission
-/// this daemon already held earns nothing. The residuals the hold does not
-/// bound (a replayer racing the network with a fresh emission, an lnsd
-/// restart, a full record table, re-replay flapping after the hold, a reused
-/// interface index) are listed on `mark_path_unresponsive`. The genuine
-/// owner renews the hold with every real announce. An hour is twice the
-/// cadence a Loquax home announces at while it runs on a shared instance
-/// (`loquax::home::daemon::ANNOUNCE_EVERY_ON_SHARED`, 30 min), so one lost
-/// announce does not end its hold.
-pub const LOCAL_EMISSION_HOLD_MS: u64 = 60 * 60 * 1000;
-
 /// Draw ordinal of the announce-cap release delay
 /// (`Transport::cap_release_draw_ms`). The rebroadcast schedule uses
 /// `retries + 1` for its ordinals, a handful of small numbers; this one sits
@@ -3506,16 +3491,10 @@ pub struct Transport<C: Clock, S: Storage> {
     /// per-interface declaration (order 1380) without costing a link.
     loss_pricing: Option<Box<LossPricing>>,
 
-    /// Interface indices that are local IPC clients (shared instance), each
-    /// with the time it connected (`set_local_client`).
+    /// Set of interface indices that are local IPC clients (shared instance).
     /// Used for: announce forwarding, transport override, path request routing.
-    /// The connect time bounds a local emission's hold: only an install made
-    /// since the installing client's current connection counts, so a hold
-    /// never survives that client's disconnect, even when the index is reused
-    /// (`young_local_emission_age`). A map rather than a set beside a second
-    /// map: one `Vec` either way, so the board's node box does not grow.
     /// Removal path: removed in handle_interface_down via set_local_client(id, false).
-    local_client_interfaces: IfaceMap<u64>,
+    local_client_interfaces: IfaceSet,
 
     /// The interface (if any) over which this node reaches a shared instance it
     /// is a CLIENT of. Mirrors Python's `interface_to_shared_instance` predicate
@@ -3742,7 +3721,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             interface_link_profiles: IfaceMap::new(),
             shared_instance_first_hop_answers: BTreeMap::new(),
             loss_pricing: None,
-            local_client_interfaces: IfaceMap::new(),
+            local_client_interfaces: IfaceSet::new(),
             shared_instance_interface: None,
             interface_incoming_announce_times: IfaceMap::new(),
             interface_outgoing_announce_times: IfaceMap::new(),
@@ -3891,91 +3870,14 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// Only succeeds if the destination exists in the path table.
     /// Called when an unvalidated link expires for a 1-hop destination/initiator,
     /// and (order 1672) for a local client's link over a relayed path.
-    ///
-    /// A connected local client's hops-0 path is kept from the mark while
-    /// the emission it holds is young: for at most
-    /// [`LOCAL_EMISSION_HOLD_MS`] after this daemon first installed that
-    /// emission from a local-client interface
-    /// (`Storage::local_emission_installed`), and only for an emission
-    /// whose first receipt here was that client's hops-0 copy (the path
-    /// held did not carry its random blob yet). The hold ends when the
-    /// installing client disconnects. The client sits on this
-    /// host's IPC socket and cannot have moved; an expired link request
-    /// toward it says the client did not answer, not that the route is
-    /// wrong. Marking it let the next relayed copy of the client's own
-    /// emission (`unresponsive_same_emission`) move the path off the box,
-    /// and every link request for the client was forwarded into the mesh
-    /// (miauhaus, 2026-11-15: a 7-hop copy via a backbone for two hours).
-    ///
-    /// The bound is the emission, not the client's behaviour (reviewer
-    /// decision 2026-11-16, after orders 1881 to 1914 tried to tell an
-    /// owner from a replayer by link proofs and ingress, and every rule was
-    /// bypassed by a client choosing which requests to answer): what a
-    /// client answers or lets die changes nothing. A local replay of an
-    /// emission this daemon heard first from the network earns no hold and
-    /// is marked at the first dead request, as Python marks it
-    /// (Transport.py:746-753, then :1819-1824). So are a disconnected
-    /// client's path, a relayed or HEADER_2 path, and a path whose emission
-    /// has no record or a record older than the client's connection. The
-    /// genuine owner renews the hold with every announce.
-    ///
-    /// What the hold does not bound: a process that brings a fresh emission
-    /// here before the network does is its first receipt and earns its
-    /// hold, once per emission; after an lnsd restart the unpersisted
-    /// record lets a capture whose path is gone earn one more hold; a full
-    /// record table records nothing new for a week (a new client earns no
-    /// hold); after the hold a re-replayed capture takes a repaired path
-    /// back at hops 0 by the same-emission fewer-hops clause and holds
-    /// nothing, so the path can flap; and the end of a hold on a reused
-    /// interface index rests on the driver reporting the teardown
-    /// (`set_local_client`). And a genuine client whose emission the
-    /// network echoes back here before its own hops-0 copy arrives earns no
-    /// hold either, since that is what a replay looks like. Wire unchanged,
-    /// the state is ours alone (deviation rule, P1).
     pub fn mark_path_unresponsive(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> bool {
-        let Some(path) = self.storage.get_path(dest_hash) else {
-            return false;
-        };
-        if let Some(age_ms) = self.young_local_emission_age(dest_hash, path) {
-            crate::tracing::debug!(
-                event = "PATH_KEPT_LOCAL",
-                dst = %HexShort(dest_hash),
-                iface = %self.iface_name(path.interface_index),
-                reason = "young_local_emission",
-                age_ms = age_ms,
-            );
-            return false;
+        if self.storage.has_path(dest_hash) {
+            self.storage
+                .set_path_state(*dest_hash, PathState::Unresponsive);
+            true
+        } else {
+            false
         }
-        self.storage
-            .set_path_state(*dest_hash, PathState::Unresponsive);
-        true
-    }
-
-    /// The age of the emission a connected local client's hops-0 path
-    /// holds, if it is younger than [`LOCAL_EMISSION_HOLD_MS`] since this
-    /// daemon first installed it from a local client; `None` for every
-    /// other path (the rule [`Self::mark_path_unresponsive`] states).
-    fn young_local_emission_age(
-        &self,
-        dest_hash: &[u8; TRUNCATED_HASHBYTES],
-        path: &PathEntry,
-    ) -> Option<u64> {
-        if path.hops != 0 || path.next_hop.is_some() || !self.is_local_client(path.interface_index)
-        {
-            return None;
-        }
-        let (emission, installed_ms) = self.storage.local_emission_installed(dest_hash)?;
-        if emission != max_emission_from_blobs(&path.random_blobs) {
-            return None;
-        }
-        // An install from before the client's current connection holds
-        // nothing: the hold ends with the installing client's disconnect.
-        let connected_since = self.local_client_interfaces.get(&path.interface_index)?;
-        if installed_ms < *connected_since {
-            return None;
-        }
-        let age_ms = self.clock.now_ms().saturating_sub(installed_ms);
-        (age_ms < LOCAL_EMISSION_HOLD_MS).then_some(age_ms)
     }
 
     /// Mark a path as responsive
@@ -6674,7 +6576,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// recall source is the cached announce for the destination
     /// (`get_announce_cache`, keyed by destination hash, holding the raw announce
     /// whose payload starts with the 64-byte public key), the same source the
-    /// link-request path uses at transport.rs:4740. A destination with no cached
+    /// link-request path uses at transport.rs:4642. A destination with no cached
     /// announce cannot be associated with an identity, so it is left untouched,
     /// exactly as Python keeps a path whose `Identity.recall` returns `None`.
     ///
@@ -7475,7 +7377,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             path_response = is_path_response,
         );
 
-        // Gate on the already-incremented hops (transport.rs:1840 ran in the
+        // Gate on the already-incremented hops (transport.rs:1825 ran in the
         // inbound path before handle_announce, and local-client/shared-instance
         // accounting has already been applied there). Announces whose hop count
         // exceeds max_hops are neither stored in the path table nor scheduled
@@ -7792,15 +7694,10 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     self.mark_path_unknown_state(&dest_hash);
                     Some(same_emission_reason)
                 } else if announce_emitted == path_timebase && from_local {
-                    // Order 1488: a local client's own announce in the
-                    // second of the emission we hold. Its blob is usually
-                    // unseen, but not always: the replay gate above drops a
-                    // seen blob only while the path is responsive and the
-                    // copy cannot win, so a re-hand of the held emission on
-                    // an unresponsive path also lands here (it earns no
-                    // hold, see `note_local_emission_installed` below).
-                    // An emission has one-second resolution
-                    // (`Destination.py:282`), so a
+                    // Order 1488: a local client's own announce, its blob
+                    // unseen (the replay gate above dropped a seen one), in
+                    // the second of the emission we hold. An emission has
+                    // one-second resolution (`Destination.py:282`), so a
                     // client that announces twice in one second, or a second
                     // client of the same identity while the first one's
                     // hops-0 path still stands (its IPC disconnect not yet
@@ -7985,27 +7882,6 @@ impl<C: Clock, S: Storage> Transport<C, S> {
         }
 
         if should_update {
-            // A local client's own hops-0 copy starts the hold of its
-            // emission (`mark_path_unresponsive`), but only when this copy
-            // is the first receipt of the emission here. If the path we
-            // hold already carries its random blob, the emission was heard
-            // before (from the network, or from a client earlier), so a
-            // local hops-0 copy of it is a replay and earns nothing: a dead
-            // one-hop request marks that path at once, as in Python
-            // (Transport.py:746-753). The store keeps the first install of
-            // an emission, so a re-hand or a reconnect restarts nothing.
-            let heard_before = self
-                .storage
-                .get_path(&dest_hash)
-                .is_some_and(|p| p.random_blobs.contains(&random_hash));
-            if from_local && packet.hops == 0 && packet.transport_id.is_none() && !heard_before {
-                self.storage.note_local_emission_installed(
-                    dest_hash,
-                    emission_from_random_hash(&random_hash),
-                    now,
-                );
-            }
-
             // Preserve existing random_blobs and add the new one, capped to
             // prevent unbounded growth. Sized to what it ends up holding:
             // clone-push-drain left a saturated window with twice the
@@ -8494,7 +8370,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     // from a DIFFERENT client interface is still accepted:
                     // the proof direction check treats the local-client set
                     // as one domain (see `handle_proof`).
-                    let client_iface = match self.local_client_interfaces.keys().next_back() {
+                    let client_iface = match self.local_client_interfaces.iter().next_back() {
                         Some(&iface) => iface,
                         None => return Ok(()), // has_local_clients() guarded above
                     };
@@ -8680,7 +8556,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 // Every connected client gets the request — only the owner
                 // can answer it, and which client owns the destination is
                 // unknowable until it speaks (#374).
-                let clients: Vec<usize> = self.local_client_interfaces.keys().copied().collect();
+                let clients: Vec<usize> = self.local_client_interfaces.iter().copied().collect();
                 let mut result = Ok(());
                 for client_iface in clients {
                     result = self.forward_on_interface_from(
@@ -9471,7 +9347,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 let size = packet.packed_size();
                 let mut buf = alloc::vec![0u8; size];
                 if let Ok(len) = packet.pack(&mut buf) {
-                    for &client_iface in self.local_client_interfaces.keys() {
+                    for &client_iface in &self.local_client_interfaces {
                         if client_iface != interface_index {
                             crate::tracing::debug!(
                                 target: PKT_EVENT_TARGET,
@@ -11308,9 +11184,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// routing. Set by the driver when a local client connects via Unix socket.
     pub fn set_local_client(&mut self, id: usize, is_local: bool) {
         if is_local {
-            if !self.local_client_interfaces.contains_key(&id) {
-                self.local_client_interfaces.insert(id, self.clock.now_ms());
-            }
+            self.local_client_interfaces.insert(id);
         } else {
             self.local_client_interfaces.remove(&id);
             // Remove per-client dest tracking on disconnect.
@@ -11370,7 +11244,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 let mut buf = alloc::vec![0u8; size];
                 if let Ok(len) = local_announce.pack(&mut buf) {
                     let ph = self.pkt_ph_lazy(&buf[..len]);
-                    for &client_iface in self.local_client_interfaces.keys() {
+                    for &client_iface in &self.local_client_interfaces {
                         if client_iface != interface_index {
                             if let Some(ph) = &ph {
                                 crate::tracing::debug!(
@@ -11450,7 +11324,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
 
     /// Check if an interface is a local IPC client.
     fn is_local_client(&self, id: usize) -> bool {
-        self.local_client_interfaces.contains_key(&id)
+        self.local_client_interfaces.contains(&id)
     }
 
     /// Check if any local IPC clients are connected.
@@ -12470,7 +12344,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 InterfaceStatEntry {
                     id,
                     name: name.clone(),
-                    is_local_client: self.local_client_interfaces.contains_key(&id),
+                    is_local_client: self.local_client_interfaces.contains(&id),
                     mode: self.interface_mode(id),
                     kind: self.interface_kind(id),
                     configured_bitrate,
@@ -12957,7 +12831,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 // Emit the STORED path-table count, matching Python
                 // Transport.py:2956 (`packet.hops = path_table[dst][IDX_PT_HOPS]`).
                 // The cached raw's hop byte is the PRE-increment wire value
-                // (`stored - 1`): the receipt increment (`transport.rs:2988`) only
+                // (`stored - 1`): the receipt increment (`transport.rs:2973`) only
                 // touches the in-memory packet, never the raw buffer stashed by
                 // `set_announce_cache`. Using it here would put `stored - 1` on the
                 // wire and every peer that learns via this response would be one hop
@@ -13275,7 +13149,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                         // every interface, local clients included.
                         let local_ifaces: Vec<usize> = self
                             .local_client_interfaces
-                            .keys()
+                            .iter()
                             .copied()
                             .filter(|&id| id != interface_index && !egress_limited.contains(&id))
                             .collect();
@@ -19350,7 +19224,7 @@ mod tests {
             // stored timebase, must be rejected. Acceptance is observed via
             // the PathFound event, which fires only when the table updates.
             // (The rejected blob is still RECORDED for replay detection —
-            // `random_blobs` (transport.rs:8373), a deliberate anti-replay
+            // `random_blobs` (transport.rs:8249), a deliberate anti-replay
             // extension — so the blob count is not a rejection indicator.)
             transport
                 .clock
@@ -25644,7 +25518,7 @@ mod tests {
         // (PATHFINDER_MAX_HOPS=128) must NOT be stored in the path table nor
         // scheduled for rebroadcast, mirroring Python RNS Transport.py:1750
         // (`local_and_hops_condition = packet.hops < PATHFINDER_M+1`, M=128).
-        // The inbound path increments hops once (transport.rs:1840) before
+        // The inbound path increments hops once (transport.rs:1825) before
         // handle_announce, so `packet.hops` inside the handler is already the
         // post-increment value — same accounting as the RNS gate.
         #[test]
@@ -28942,271 +28816,6 @@ mod tests {
             assert!(
                 transport.path_is_unresponsive(&dest_hash),
                 "Path should be marked unresponsive when initiator was directly connected"
-            );
-        }
-
-        /// Order 1881 (miauhaus, 2026-11-15): the path to a destination a
-        /// local client announced (hops 0, the client's IPC interface) is
-        /// not marked unresponsive when a link request forwarded to it
-        /// expires unproven, and the relayed copy of the same emission that
-        /// arrives afterwards does not take the path off the box.
-        #[test]
-        fn local_client_path_survives_link_request_expiry() {
-            let mut transport = make_transport_enabled();
-            let local = transport.register_interface(Box::new(MockInterface::new("local", 1)));
-            let backbone = transport.register_interface(Box::new(MockInterface::new("bb", 2)));
-            transport.set_local_client(local, true);
-
-            let dest = make_test_dest();
-            let dest_hash = dest.hash().into_bytes();
-            let rh = make_random_hash([0x01, 0x02, 0x03, 0x04, 0x05], 7000);
-            let own = make_announce_raw_with_random_hash(&dest, 0, &rh);
-            transport.process_incoming(local, &own).unwrap();
-            transport.drain_actions();
-            let path = transport.storage().get_path(&dest_hash).unwrap();
-            assert_eq!((path.interface_index, path.hops), (local, 0));
-
-            // A phone one hop away asks for a link; the request is forwarded
-            // to the client and dies unproven.
-            let now = transport.clock.now_ms();
-            let link_id = [0xAA; TRUNCATED_HASHBYTES];
-            transport.storage_mut().set_link_entry(
-                link_id,
-                LinkEntry {
-                    timestamp_ms: now,
-                    next_hop_interface_index: local,
-                    remaining_hops: 0,
-                    received_interface_index: backbone,
-                    hops: 1,
-                    validated: false,
-                    proof_timeout_ms: now + 1000,
-                    destination_hash: dest_hash,
-                    peer_signing_key: None,
-                    received_peer: None,
-                    next_hop_peer: None,
-                },
-            );
-            transport.clock.advance(1001);
-            transport.poll();
-            transport.drain_actions();
-            assert!(!transport.storage().has_link_entry(&link_id));
-            assert!(
-                !transport.path_is_unresponsive(&dest_hash),
-                "a connected local client's path must not be marked unresponsive"
-            );
-
-            // The same emission comes back from the mesh, seven hops long.
-            transport.storage_mut().clear_packet_hashes();
-            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
-            let relayed = make_announce_raw_with_random_hash(&dest, 6, &rh);
-            transport.process_incoming(backbone, &relayed).unwrap();
-            transport.drain_actions();
-            let path = transport.storage().get_path(&dest_hash).unwrap();
-            assert_eq!(
-                (path.interface_index, path.hops),
-                (local, 0),
-                "the relayed copy must not move the local client's path off the box"
-            );
-        }
-
-        /// Order 1881, the 08:38 case: the backbone echo of a local client's
-        /// announce lands before the client's own copy. The own copy still
-        /// wins the path (fewer hops), but since the audit of 1922 it earns
-        /// no hold: this daemon heard the emission first from the network,
-        /// which is what a replay looks like too. A dead request marks the
-        /// path and the relayed copy takes it, as in Python. The protocol
-        /// note names the case as a residual of the hold.
-        #[test]
-        fn local_client_copy_after_an_earlier_backbone_echo_wins_but_earns_no_hold() {
-            let mut transport = make_transport_enabled();
-            let local = transport.register_interface(Box::new(MockInterface::new("local", 1)));
-            let backbone = transport.register_interface(Box::new(MockInterface::new("bb", 2)));
-            transport.set_local_client(local, true);
-
-            let dest = make_test_dest();
-            let dest_hash = dest.hash().into_bytes();
-            let rh = make_random_hash([0x11, 0x12, 0x13, 0x14, 0x15], 8000);
-
-            let echo = make_announce_raw_with_random_hash(&dest, 1, &rh);
-            transport.process_incoming(backbone, &echo).unwrap();
-            transport.drain_actions();
-            assert_eq!(transport.hops_to(&dest_hash), Some(2));
-
-            transport.clock.advance(12_000);
-            let own = make_announce_raw_with_random_hash(&dest, 0, &rh);
-            transport.process_incoming(local, &own).unwrap();
-            transport.drain_actions();
-            let path = transport.storage().get_path(&dest_hash).unwrap();
-            assert_eq!(
-                (path.interface_index, path.hops),
-                (local, 0),
-                "the client's own copy must win over the backbone echo"
-            );
-
-            let now = transport.clock.now_ms();
-            transport.storage_mut().set_link_entry(
-                [0xAB; TRUNCATED_HASHBYTES],
-                LinkEntry {
-                    timestamp_ms: now,
-                    next_hop_interface_index: local,
-                    remaining_hops: 0,
-                    received_interface_index: backbone,
-                    hops: 1,
-                    validated: false,
-                    proof_timeout_ms: now + 1000,
-                    destination_hash: dest_hash,
-                    peer_signing_key: None,
-                    received_peer: None,
-                    next_hop_peer: None,
-                },
-            );
-            transport.clock.advance(1001);
-            transport.poll();
-            transport.drain_actions();
-            assert_eq!(
-                transport.storage().local_emission_installed(&dest_hash),
-                None,
-                "an emission heard first from the backbone records no hold"
-            );
-            assert!(
-                transport.path_is_unresponsive(&dest_hash),
-                "the dead request marks the path"
-            );
-            transport.storage_mut().clear_packet_hashes();
-            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
-            let relayed = make_announce_raw_with_random_hash(&dest, 6, &rh);
-            transport.process_incoming(backbone, &relayed).unwrap();
-            transport.drain_actions();
-            let path = transport.storage().get_path(&dest_hash).unwrap();
-            assert_eq!(
-                (path.interface_index, path.hops),
-                (backbone, 7),
-                "the relayed copy takes the marked path (Transport.py:1819-1824)"
-            );
-        }
-
-        /// The hold is an hour: the std tests in `local_emission_hold.rs`
-        /// write it out, and the Loquax home's shared-instance cadence is
-        /// half of it.
-        #[test]
-        fn local_emission_hold_is_an_hour() {
-            assert_eq!(LOCAL_EMISSION_HOLD_MS, 3_600_000);
-        }
-
-        /// Reviewer decision 2026-11-16: the 1881 field case once the
-        /// emission is older than `LOCAL_EMISSION_HOLD_MS`. The dead request
-        /// marks the path and the relayed copy of the same emission takes
-        /// it, as Python repairs it.
-        #[test]
-        fn local_client_path_is_repaired_once_its_emission_is_old() {
-            let mut transport = make_transport_enabled();
-            let local = transport.register_interface(Box::new(MockInterface::new("local", 1)));
-            let backbone = transport.register_interface(Box::new(MockInterface::new("bb", 2)));
-            transport.set_local_client(local, true);
-
-            let dest = make_test_dest();
-            let dest_hash = dest.hash().into_bytes();
-            let rh = make_random_hash([0x21, 0x22, 0x23, 0x24, 0x25], 7000);
-            let own = make_announce_raw_with_random_hash(&dest, 0, &rh);
-            transport.process_incoming(local, &own).unwrap();
-            transport.drain_actions();
-            assert_eq!(
-                transport.storage().local_emission_installed(&dest_hash),
-                Some((7000, transport.clock.now_ms()))
-            );
-
-            transport.clock.advance(LOCAL_EMISSION_HOLD_MS - 1);
-            assert!(
-                !transport.mark_path_unresponsive(&dest_hash),
-                "one millisecond inside the hold"
-            );
-            transport.clock.advance(1);
-            assert!(
-                transport.mark_path_unresponsive(&dest_hash),
-                "at the hold the path is markable"
-            );
-
-            transport.storage_mut().clear_packet_hashes();
-            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
-            let relayed = make_announce_raw_with_random_hash(&dest, 6, &rh);
-            transport.process_incoming(backbone, &relayed).unwrap();
-            transport.drain_actions();
-            let path = transport.storage().get_path(&dest_hash).unwrap();
-            assert_eq!((path.interface_index, path.hops), (backbone, 7));
-        }
-
-        /// Only a hops-0 copy from a local client starts a hold: a relayed
-        /// copy a client hands in is markable at once and records nothing.
-        #[test]
-        fn a_relayed_copy_from_a_local_client_holds_nothing() {
-            let mut transport = make_transport_enabled();
-            let local = transport.register_interface(Box::new(MockInterface::new("local", 1)));
-            transport.set_local_client(local, true);
-
-            let dest = make_test_dest();
-            let dest_hash = dest.hash().into_bytes();
-            let rh = make_random_hash([0x31, 0x32, 0x33, 0x34, 0x35], 7000);
-            let relayed = make_announce_raw_with_random_hash(&dest, 2, &rh);
-            transport.process_incoming(local, &relayed).unwrap();
-            transport.drain_actions();
-            assert!(transport.storage().has_path(&dest_hash));
-            assert_eq!(
-                transport.storage().local_emission_installed(&dest_hash),
-                None
-            );
-            assert!(transport.mark_path_unresponsive(&dest_hash));
-        }
-
-        /// A disconnected client's path is markable at once, however young
-        /// its emission.
-        #[test]
-        fn a_disconnected_clients_young_path_is_markable() {
-            let mut transport = make_transport_enabled();
-            let local = transport.register_interface(Box::new(MockInterface::new("local", 1)));
-            transport.set_local_client(local, true);
-            let dest = make_test_dest();
-            let dest_hash = dest.hash().into_bytes();
-            let rh = make_random_hash([0x41, 0x42, 0x43, 0x44, 0x45], 7000);
-            let own = make_announce_raw_with_random_hash(&dest, 0, &rh);
-            transport.process_incoming(local, &own).unwrap();
-            transport.drain_actions();
-            transport.set_local_client(local, false);
-            let path = transport.storage().get_path(&dest_hash).unwrap();
-            assert_eq!((path.interface_index, path.hops), (local, 0));
-            assert!(transport.mark_path_unresponsive(&dest_hash));
-        }
-
-        /// The hold covers the hops-0 path the emission installed, not a
-        /// longer copy of the same young emission that a second local client
-        /// later hands in over an unresponsive path.
-        #[test]
-        fn a_longer_copy_of_a_young_emission_from_a_sibling_holds_nothing() {
-            let mut transport = make_transport_enabled();
-            let local = transport.register_interface(Box::new(MockInterface::new("local", 1)));
-            let sibling = transport.register_interface(Box::new(MockInterface::new("sib", 2)));
-            transport.set_local_client(local, true);
-            transport.set_local_client(sibling, true);
-            let dest = make_test_dest();
-            let dest_hash = dest.hash().into_bytes();
-            let rh = make_random_hash([0x51, 0x52, 0x53, 0x54, 0x55], 7000);
-            let own = make_announce_raw_with_random_hash(&dest, 0, &rh);
-            transport.process_incoming(local, &own).unwrap();
-            transport.drain_actions();
-            transport
-                .storage_mut()
-                .set_path_state(dest_hash, PathState::Unresponsive);
-
-            transport.storage_mut().clear_packet_hashes();
-            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
-            let longer = make_announce_raw_with_random_hash(&dest, 2, &rh);
-            transport.process_incoming(sibling, &longer).unwrap();
-            transport.drain_actions();
-            let path = transport.storage().get_path(&dest_hash).unwrap();
-            assert_eq!(path.interface_index, sibling);
-            assert_ne!(path.hops, 0);
-            assert!(
-                transport.mark_path_unresponsive(&dest_hash),
-                "only the hops-0 path is held"
             );
         }
 

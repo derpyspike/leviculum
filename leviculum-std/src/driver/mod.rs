@@ -1598,6 +1598,10 @@ pub struct ReticulumNode {
     /// Channel for dispatching TickOutput from outside the event loop
     /// (used by connect, send_on_link, close_link, announce)
     action_dispatch_tx: ActionTx,
+    /// The owner's path self-repair beat on a shared-instance client
+    /// ([`run_path_self_repair`]), in milliseconds. The reviewer decision's
+    /// default is 30 s; tests shorten it.
+    path_self_repair_beat_ms: u64,
     /// Fault injection: corrupt ~1 byte per N bytes on TCP write
     corrupt_every: Option<u64>,
     /// Outbound-socket hook applied to each TCP client's connect socket.
@@ -1817,6 +1821,7 @@ impl ReticulumNode {
             shutdown_tx: None,
             runner_handle: None,
             action_dispatch_tx,
+            path_self_repair_beat_ms: crate::path_self_repair::PATH_SELF_REPAIR_BEAT_MS,
             corrupt_every,
             outbound_socket_hook: None,
             host_resolver: None,
@@ -2415,6 +2420,23 @@ impl ReticulumNode {
 
         self.runner_handle = Some(runner_handle);
 
+        // The owner repairs its own path (reviewer decision 2026-11-16):
+        // a shared-instance client watches where the daemon routes the
+        // destinations it announced, and announces afresh when the path is
+        // not its own attachment. Only on clients: a daemon or plain node
+        // holds its own path table and has no daemon to ask.
+        if let (Some(client), Some(shutdown)) =
+            (self.shared_instance_client(), self.shutdown_tx.as_ref())
+        {
+            tokio::spawn(run_path_self_repair(
+                client,
+                Arc::clone(&self.inner),
+                self.action_dispatch_tx.clone(),
+                self.path_self_repair_beat_ms,
+                shutdown.subscribe(),
+            ));
+        }
+
         // Release the runtime context now that all tasks are spawned, then keep
         // the runtime alive in the node so its worker thread keeps driving them.
         drop(enter_guard);
@@ -2738,6 +2760,12 @@ impl ReticulumNode {
     /// Called by the builder from `[reticulum] rpc_key`.
     pub(crate) fn set_rpc_key(&mut self, key: Option<Vec<u8>>) {
         self.rpc_key = key;
+    }
+
+    /// Called by the builder; see
+    /// [`ReticulumNodeBuilder::path_self_repair_beat_ms`](crate::driver::ReticulumNodeBuilder::path_self_repair_beat_ms).
+    pub(crate) fn set_path_self_repair_beat_ms(&mut self, beat_ms: u64) {
+        self.path_self_repair_beat_ms = beat_ms;
     }
 
     /// Serve or dial the shared instance over `transport`.
@@ -7127,6 +7155,112 @@ pub(crate) async fn shared_instance_first_hop_timeout_ms(
                 leviculum_core::constants::UNKNOWN_BITRATE_ASSUMPTION_BPS
             );
             None
+        }
+    }
+}
+
+/// The owner's path self-repair beat (reviewer decision 2026-11-16, the
+/// client half of ending the transport exemptions of orders 1881 to 1931).
+///
+/// Every `beat_ms` a shared-instance client asks its daemon — ours or a
+/// Python `rnsd`, over the two RPC calls `rnpath` uses — where the path to
+/// each destination it has announced points
+/// (`crate::path_self_repair::sight_from_answers`). A path that is not the
+/// client's own local attachment is repaired by announcing afresh with the
+/// app data of the last announce: a newer emission wins by the ordinary
+/// rule on every stack, and only the holder of the destination's key can
+/// make one. At most one repair announce per destination per rate window,
+/// backing off while the path keeps flipping
+/// (`crate::path_self_repair::SelfRepair`); each repair logs
+/// `PATH_SELF_REPAIR dest=… was=…`.
+///
+/// A beat whose RPC fails (the daemon restarting, a wrong key) repairs
+/// nothing and says so at debug: announcing blind on every RPC hiccup
+/// would turn a daemon restart into an announce burst.
+pub(crate) async fn run_path_self_repair(
+    client: crate::rpc::SharedInstanceClient,
+    inner: Arc<Mutex<StdNodeCore>>,
+    action_tx: ActionTx,
+    beat_ms: u64,
+    mut shutdown_rx: watch::Receiver<bool>,
+) {
+    use crate::path_self_repair::{sight_from_answers, SelfRepair, Verdict};
+    let started = std::time::Instant::now();
+    let mut states: std::collections::HashMap<leviculum_core::DestinationHash, SelfRepair> =
+        std::collections::HashMap::new();
+    loop {
+        tokio::select! {
+            changed = shutdown_rx.changed() => {
+                if changed.is_err() || *shutdown_rx.borrow() {
+                    return;
+                }
+                continue;
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(beat_ms)) => {}
+        }
+        let dests = { inner.lock_recover().announced_destination_hashes() };
+        states.retain(|h, _| dests.contains(h));
+        for dest in dests {
+            let authkey = {
+                let core = inner.lock_recover();
+                crate::rpc::resolve_rpc_authkey(client.rpc_key.as_deref(), core.identity())
+            };
+            let authkey = match authkey {
+                Ok(k) => k,
+                Err(e) => {
+                    tracing::debug!(
+                        "PATH_SELF_REPAIR_SKIP dest={} reason=\"no RPC authkey: {e}\"",
+                        dest
+                    );
+                    continue;
+                }
+            };
+            let ask = |get: &'static str| {
+                crate::rpc::rpc_query_hash_param_at(
+                    &client.transport,
+                    &client.instance_name,
+                    &authkey,
+                    get,
+                    "destination_hash",
+                    dest.as_bytes(),
+                )
+            };
+            let (next_hop, if_name) = match (ask("next_hop").await, ask("next_hop_if_name").await) {
+                (Ok(nh), Ok(ifn)) => (nh, ifn),
+                (nh, ifn) => {
+                    let e = nh
+                        .err()
+                        .or(ifn.err())
+                        .map(|e| e.to_string())
+                        .unwrap_or_default();
+                    tracing::debug!(
+                        "PATH_SELF_REPAIR_SKIP dest={} reason=\"RPC failed: {e}\"",
+                        dest
+                    );
+                    continue;
+                }
+            };
+            let dest_hex = crate::storage::hex_encode(dest.as_bytes());
+            let sight = sight_from_answers(&dest_hex, &next_hop, &if_name);
+            let now_ms = started.elapsed().as_millis() as u64;
+            let verdict = states
+                .entry(dest)
+                .or_insert_with(SelfRepair::new)
+                .assess(now_ms, &sight);
+            if let Verdict::Repair { was } = verdict {
+                tracing::info!(event = "PATH_SELF_REPAIR", dest = %dest, was = %was);
+                let app_data = { inner.lock_recover().recall_app_data(&dest) };
+                let announced = dispatch_committed(&action_tx, || {
+                    let out = inner
+                        .lock_recover()
+                        .announce_destination(&dest, app_data.as_deref())?;
+                    Ok(((), out))
+                })
+                .await;
+                if let Err(e) = announced {
+                    tracing::warn!("PATH_SELF_REPAIR dest={} announce failed: {e}", dest);
+                }
+            }
         }
     }
 }

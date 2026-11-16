@@ -116,7 +116,7 @@
 //! appended to that handle's buffer:
 //!
 //! ```text
-//! EVENT_SCHEMA_VIOLATION event=PKT_RX missing=[hops,len] caller=transport.rs:1077 t=<rel-ms>
+//! EVENT_SCHEMA_VIOLATION event=PKT_RX missing=[hops,len] caller=transport.rs:1073 t=<rel-ms>
 //! ```
 //!
 //! ## Field-value validation (per-event, per-handle)
@@ -128,7 +128,7 @@
 //! into every active buffer:
 //!
 //! ```text
-//! EVENT_FIELD_VIOLATION event=PKT_RX field=note value_problem=whitespace caller=transport.rs:1077 t=<rel-ms>
+//! EVENT_FIELD_VIOLATION event=PKT_RX field=note value_problem=whitespace caller=transport.rs:1073 t=<rel-ms>
 //! ```
 //!
 //! `value_problem` ∈ {`whitespace`, `equals`, `non_printable`}.
@@ -1267,14 +1267,13 @@ pub const EVENT_CATALOG: &[EventSchema] = &[
         name: "PATH_UNRESPONSIVE",
         required_keys: &["dst", "next_hop", "iface", "path_hops"],
     },
-    // Order 1881, bounded by the emission (reviewer decision 2026-11-16):
-    // an unresponsive mark was refused because the path is a connected
-    // local client's hops-0 path whose emission is younger than
-    // `LOCAL_EMISSION_HOLD_MS` since its first install (`iface`, reason
-    // `young_local_emission`, `age_ms` since that install).
+    // Reviewer decision 2026-11-16: a shared-instance client found the
+    // daemon's path to its own announced destination (`dest`) off its own
+    // attachment (`was` says what the daemon answered) and announced
+    // afresh (`leviculum-std/src/driver/mod.rs#run_path_self_repair`).
     EventSchema {
-        name: "PATH_KEPT_LOCAL",
-        required_keys: &["dst", "iface", "reason", "age_ms"],
+        name: "PATH_SELF_REPAIR",
+        required_keys: &["dest", "was"],
     },
     // Remaining `leviculum-core` transport events.
     EventSchema {
@@ -2019,7 +2018,7 @@ enum SinkMode {
 /// hundred lines apart in `handle_announce`, and nothing between them
 /// can take seconds.  What can is the emission itself: the driver's
 /// event loop calls `tracing::debug!` while it holds the core mutex
-/// (`apply_inbound`, `leviculum-std/src/driver/mod.rs:5123`), the layer
+/// (`apply_inbound`, `leviculum-std/src/driver/mod.rs:5151`), the layer
 /// wrote the line with a blocking `write(2)` on that very thread, and a
 /// `write(2)` to a USB disk under writeback throttling blocks for
 /// seconds.  Every other task then queued behind the core mutex, so the

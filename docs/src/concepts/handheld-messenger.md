@@ -1229,7 +1229,7 @@ places them in the picture's cells (`map::place`), the M9 asks for the
 ASCII markers: the atlas has `●` but not the chosen pin's `◉`. Each pin
 is set in the atlas on the bar's colours, the chosen one reversed, an
 old one's and a nearby node's muted. Where the picture is, the M9 tells
-the model (`map_picture`, `loquax/src/ui.rs:1396`): the fit, the pan's
+the model (`map_picture`, `loquax/src/ui.rs:1400`): the fit, the pan's
 step and the pins' cells go by its 53 x 21 cells, not by the terminal's
 conversation pane.
 
@@ -1337,7 +1337,7 @@ All targets:
   our pin on the map where it is newer than our last share; otherwise
   unchanged.
 - **Android:** the phone's own fix (`Intent::OwnFix`,
-  `loquax-android/src/session.rs:1800`) is our pin the same way;
+  `loquax-android/src/session.rs:1802`) is our pin the same way;
   otherwise unchanged.
 - **The home:** unchanged; it carries no region yet (above).
 
@@ -1642,7 +1642,7 @@ phone pulls from; the bench line is lnsd on schneckenschreck, the
 rendezvous, the home behind it. lnsd's serial interface to the M9 needs
 `interface_mode = gateway`: in the default full mode a path request
 from the board for the home is not discovered onwards
-(`leviculum-core/src/transport.rs:13084`, only access point, gateway
+(`leviculum-core/src/transport.rs:12958`, only access point, gateway
 and roaming re-originate), and the join ends in `NoPath`. The M9 sets
 its own end to Gateway already (`leviculum-esp/src/handheld.rs:245`).
 
@@ -2518,7 +2518,7 @@ the same order.
 Two blocks of the rebuild grew with the ring whatever the chats were,
 and both went: the batch's note scope held one peer per folded entry
 (8192 x 16 B), now each conversation once (`Batch::fold`,
-`loquax/src/ui.rs:3782`); and every received message left a toast that a
+`loquax/src/ui.rs:3865`); and every received message left a toast that a
 board, which never ticks, never aged out, now at most `TOAST_KEEP`
 (`loquax/src/ui.rs:200`). The model after a rebuild holds about 470 KB
 less on the host. `a_rebuild_of_short_chats_asks_for_no_block_that_grows_with_the_ring`
@@ -2578,7 +2578,7 @@ keys were never deaf. One Back frame was lost on the line before core 0
 took it (`keys_rx=` stayed at 41; why the frame went is the UART FIFO
 during an erase, 1613). The walker's next Enter then came inside the
 open chat, where the shared key table's Enter opens the message under
-the cursor (1076), its detail view (`loquax/src/ui.rs:5960`). The M9
+the cursor (1076), its detail view (`loquax/src/ui.rs:6043`). The M9
 draws no detail view and its `[PAGE]` line called it `chat`, so the next
 Back closed what nobody saw, and every Enter and Back after it did the
 same: each one a `KEY` line the UI core wrote itself, no page change. The

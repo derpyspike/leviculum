@@ -94,6 +94,7 @@ mod nomad_page_tests;
 mod packet_radio_stats_tests;
 mod path_gap_tests;
 mod path_recovery_tests;
+mod path_self_repair_interop_tests;
 mod peer_up_solicit_interop_tests;
 mod pipe_interop_tests;
 mod plain_broadcast_tests;
