@@ -4514,8 +4514,7 @@ mod tests {
                 loquax::ui::map::LoadReason::Screen,
                 "{last:?}"
             );
-            // The view level: the view's zoom alone (1934).
-            assert_eq!(first.zooms, (15, 15));
+            assert_eq!(first.zooms, (14, 15));
             let screen = app.view.at_zoom(app.view.tile_zoom()).bounds();
             assert!(first.bounds.holds(&screen), "{:?} {screen:?}", first.bounds);
             assert!(last.here[1..]

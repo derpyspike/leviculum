@@ -5,10 +5,9 @@
 //!
 //! - The screen itself at its zoom loads first (1527, Lew's rule: the
 //!   exact area looked at, at the zoom looked at, before anything else):
-//!   the box under the uncovered part of the screen, rounded out to the
-//!   tiles of the view's zoom, at that zoom alone ([`screen_want`]): the
-//!   view level (1934), asked at every zoom, below [`MIN_ZOOM`] too, as
-//!   soon as any of the screen lacks it. It is small, so it lands before the
+//!   the box under the uncovered part of the screen, a half tile past it
+//!   and rounded out to the tiles of the view's zoom, at that zoom and the
+//!   one above it ([`screen_want`]). It is small, so it lands before the
 //!   cell around it starts; then the cell follows. It is asked while the
 //!   view moves too: a box the view left runs on (a load cannot stop),
 //!   two loads at most run, and a box the view left that waits is
@@ -22,7 +21,7 @@
 //!   [`GAP_SHARE`] asks for the cells under the uncovered part at once,
 //!   during the pan too: one decision every [`DECIDE_MS`] while it moves,
 //!   counted from the last decision, so motion never restarts the wait;
-//!   the first frame of a motion and every frame at rest decide.
+//!   every frame at rest decides.
 //! - The cells next to the screen, those in the pan's direction first, and
 //!   while the view moves only those, come after the cells on screen.
 //! - A region cut under an old layer profile holds nothing (1707); a
@@ -354,13 +353,11 @@ fn want(cell: &Cell, zoom: u8) -> MapWant {
     }
 }
 
-/// The screen's own load (1527), the view level (1934): the box under
-/// the uncovered samples of `view`, each sample's patch whole, rounded
-/// out to the tile grid of the view's zoom, so a pan inside a tile asks
-/// for the same box again; at the view's zoom alone, the deepest never
-/// lowered. No deeper zoom, no shallower one, no neighbour: Lew,
-/// 2026-11-16, "from far away you must not load deep zoom levels while
-/// the picture you look at is not done yet". `None` when nothing is
+/// The screen's own load (1527): the box under the uncovered samples of
+/// `view`, each sample's patch whole, grown by half a tile of the view's
+/// zoom and rounded out to that zoom's tile grid, so a pan inside a tile
+/// asks for the same box again; at the view's zoom and the one above it,
+/// for a zoom out, the deepest never lowered. `None` when nothing is
 /// uncovered, or the box would cross the date line (the cells load it).
 pub fn screen_want(view: &Viewport, regions: &[Header]) -> Option<MapWant> {
     let zoom = need_zoom(view);
@@ -381,9 +378,13 @@ pub fn screen_want(view: &Viewport, regions: &[Header]) -> Option<MapWant> {
         }
     }
     let (x0, y0, x1, y1) = span?;
-    // A sample stands for its patch, and the patch's edge is the screen's
-    // edge or the next sample's patch: nothing past the screen (1934).
-    let (gx, gy) = (i64::from(w / (2 * n)), i64::from(h / (2 * n)));
+    // A sample stands for its patch; half a tile of the zoom loaded, in
+    // view pixels, past that.
+    let tile_px = 256i64 << (view.zoom() - zoom);
+    let (gx, gy) = (
+        i64::from(w / (2 * n)) + tile_px / 2,
+        i64::from(h / (2 * n)) + tile_px / 2,
+    );
     let px = |v: i64| v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
     let nw = Cell::of(view.to_world(px(x0 - gx), px(y0 - gy)), zoom);
     let se = Cell::of(view.to_world(px(x1 + gx), px(y1 + gy)), zoom);
@@ -400,7 +401,7 @@ pub fn screen_want(view: &Viewport, regions: &[Header]) -> Option<MapWant> {
             east: lon_of_x(at(east)),
             north: lat_of_y(at(north)),
         },
-        zooms: (zoom, zoom),
+        zooms: (zoom.saturating_sub(1), zoom),
         floor: zoom,
         reason: LoadReason::Screen,
         centre: view.centre,
@@ -431,14 +432,7 @@ pub fn wants(
     let zoom = need_zoom(view);
     let share = uncovered(view, regions);
     if view.zoom() < MIN_ZOOM {
-        // Far out the view level alone (1934): the screen at its own
-        // zoom, so the picture is whole at that zoom; no cell, whose
-        // zooms reach street level, and nothing next to the screen.
         return ViewWants {
-            here: match share > 0.0 {
-                true => screen_want(view, regions).into_iter().collect(),
-                false => Vec::new(),
-            },
             share,
             ..ViewWants::default()
         };
@@ -471,12 +465,9 @@ pub fn wants(
         });
         ahead_cells = next.into_iter().map(|(c, _)| c).collect();
     }
-    // The view level whenever any of the screen lacks it (1934), however
-    // small the gap: the cells wait for a gap above [`GAP_SHARE`], the
-    // screen's own tiles never do.
-    let screen = match share > 0.0 {
-        true => screen_want(view, regions),
-        false => None,
+    let screen = match here_cells.is_empty() {
+        true => None,
+        false => screen_want(view, regions),
     };
     ViewWants {
         here: screen
@@ -494,11 +485,6 @@ pub fn wants(
 #[derive(Clone, Debug, Default)]
 pub struct ViewLoads {
     decided_ms: Option<u64>,
-    /// The last decision was made while the view moved: only then does
-    /// the next moving frame wait out [`DECIDE_MS`].
-    decided_moving: bool,
-    /// The last decision asked nothing for the screen: it was held.
-    decided_held: bool,
     decided: Option<(World, u8, (u32, u32))>,
     /// The regions of the last decision, and how many of them were
     /// complete: a region that finished arriving decides again (1527).
@@ -529,27 +515,17 @@ impl ViewLoads {
         if self.decided == Some(key) && self.regions == count {
             return None;
         }
-        // The first frame of a motion decides at once (1934), and so does
-        // a moving frame at a new zoom or one that lacks data where the
-        // last decision found the screen held: the loader learns of a new
-        // view level before anything off the screen can start.
-        let paced = moving
-            && self.decided_moving
+        if moving
             && self
                 .decided_ms
-                .is_some_and(|at| now_ms.saturating_sub(at) < DECIDE_MS);
-        let new_level = self.decided.is_some_and(|d| d.1 != view.zoom())
-            || self.decided_held && uncovered(view, regions) > 0.0;
-        if paced && !new_level {
+                .is_some_and(|at| now_ms.saturating_sub(at) < DECIDE_MS)
+        {
             return None;
         }
         self.decided_ms = Some(now_ms);
-        self.decided_moving = moving;
         self.decided = Some(key);
         self.regions = count;
-        let decided = wants(view, regions, moving, heading);
-        self.decided_held = decided.here.is_empty();
-        Some(decided)
+        Some(wants(view, regions, moving, heading))
     }
 
     /// Forget the last decision: the next frame decides (the regions were
@@ -657,10 +633,10 @@ mod tests {
             "the cell under the centre first: {first:?}"
         );
         // The screen itself first (1527): its box around the screen, at
-        // the view's load zoom alone (1934); then the cells.
+        // the view's load zoom and the one above; then the cells.
         let screen = &w.here[0];
         assert_eq!(screen.reason, LoadReason::Screen);
-        assert_eq!((screen.zooms, screen.floor), ((15, 15), 15));
+        assert_eq!((screen.zooms, screen.floor), ((14, 15), 15));
         let vb = view.bounds();
         assert!(
             screen.bounds.holds(&vb),
@@ -782,11 +758,7 @@ mod tests {
         );
         let w = wants(&view, &[r], false, None);
         assert!(w.share > 0.0 && w.share <= GAP_SHARE, "{}", w.share);
-        // The cells wait; the view level does not (1934): the screen's
-        // own box alone, at the view's zoom.
-        let here: Vec<(LoadReason, (u8, u8))> =
-            w.here.iter().map(|m| (m.reason, m.zooms)).collect();
-        assert_eq!(here, [(LoadReason::Screen, (15, 15))]);
+        assert!(w.here.is_empty());
         assert!(!w.ahead.is_empty(), "the cell east is next");
     }
 
@@ -841,26 +813,12 @@ mod tests {
         assert_eq!(Cell::of(north.ahead[0].centre, 13), n);
     }
 
-    /// Below the least zoom only the view level is asked (1934): the
-    /// screen at its own zoom, no cell reaching street level, nothing next
-    /// to the screen; and nothing once a region holds it.
     #[test]
-    fn below_the_least_zoom_only_the_view_level_is_asked() {
-        let view = Viewport::new(project(LatLon::from_degrees(43.0, 11.0)), 6, 480, 320);
+    fn below_the_least_zoom_nothing_is_asked() {
+        let view = Viewport::new(project(LatLon::from_degrees(43.0, 11.0)), 9, 480, 320);
         let w = wants(&view, &[], false, None);
         assert_eq!(w.share, 1.0);
-        assert!(w.ahead.is_empty());
-        let here: Vec<(LoadReason, (u8, u8), u8)> = w
-            .here
-            .iter()
-            .map(|m| (m.reason, m.zooms, m.floor))
-            .collect();
-        assert_eq!(here, [(LoadReason::Screen, (6, 6), 6)]);
-        assert!(w.here[0].bounds.holds(&view.bounds()), "the whole screen");
-        let level = region(w.here[0].bounds, (6, 6));
-        let held = wants(&view, &[level], false, None);
-        assert_eq!(held.share, 0.0);
-        assert!(held.here.is_empty() && held.ahead.is_empty(), "{held:?}");
+        assert!(w.here.is_empty() && w.ahead.is_empty());
     }
 
     /// One decision every 250 ms while moving, counted from the last one,
@@ -924,46 +882,6 @@ mod tests {
         keys.sort();
         keys.dedup();
         assert_eq!(keys.len(), cells.len());
-    }
-
-    /// The first frame of a motion after a rest decides at once (1934):
-    /// the pacing spaces decisions while the view moves, never the first.
-    /// The load walk's in-out-in caught a cell the view left starting
-    /// 37 ms into a wheel's glide, while the new zoom's screen waited for
-    /// a decision 250 ms after the rest's.
-    #[test]
-    fn a_motion_after_a_rest_decides_at_once() {
-        let mut loads = ViewLoads::new();
-        let mut view = Viewport::new(project(LatLon::from_degrees(43.0, 11.0)), 13, 480, 320);
-        assert!(loads.decide(&view, &[], 0, false, None).is_some(), "rest");
-        view.zoom_about(14, 240, 160);
-        assert!(
-            loads.decide(&view, &[], 50, true, None).is_some(),
-            "the motion's first frame"
-        );
-        view.pan(10, 0);
-        assert!(
-            loads.decide(&view, &[], 100, true, None).is_none(),
-            "paced while it moves"
-        );
-        // A glide that crosses into the next zoom decides at once.
-        view.zoom_about(15, 240, 160);
-        assert!(
-            loads.decide(&view, &[], 120, true, None).is_some(),
-            "a new zoom"
-        );
-        // A pan that leaves a held screen decides at once.
-        let (r, at) = florence();
-        let mut held = Viewport::new(Cell::of(at, 13).centre(), 16, 480, 320);
-        let mut loads = ViewLoads::new();
-        assert!(loads.decide(&held, &[r], 0, true, None).is_some());
-        held.pan(10, 0);
-        assert!(loads.decide(&held, &[r], 20, true, None).is_none(), "held");
-        held.pan(1024, 0);
-        assert!(
-            loads.decide(&held, &[r], 40, true, None).is_some(),
-            "the held screen lacks data now"
-        );
     }
 
     #[test]

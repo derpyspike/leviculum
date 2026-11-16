@@ -3060,27 +3060,15 @@ async fn opening_the_map_at_a_place_loads_its_region_and_the_next_frame_draws_it
     let count = |word: &str| lines.iter().filter(|l| l.starts_with(word)).count();
     // Since 1527 the terminal runs the scheduler too: besides the place's
     // region and the zoomed-out area it loads the screen's neighbours
-    // (`MAPLOAD view ... here= ahead=`). Every load that starts lands or
-    // fails, and there are at least the two this script asks for. The
-    // only failure is the zoomed-out screen's own z9 box (1934: the view
-    // level is asked at every zoom), which the fixture, cut from z10 on,
-    // holds no tiles for; the area asked for by hand paused for it, so it
-    // may still run when the script's last frame is read.
+    // (`MAPLOAD view ... here= ahead=`). Every load that starts lands, none
+    // fails, and there are at least the two this script asks for.
     let (started, done, failed) = (
         count("MAPLOAD start"),
         count("MAPLOAD done"),
         count("MAPLOAD failed"),
     );
-    let paused = count("MAPLOAD paused");
     assert!(
-        !en || started >= 2 && done + failed <= started && started <= done + failed + paused.min(1),
-        "{lines:#?}"
-    );
-    assert!(
-        lines
-            .iter()
-            .filter(|l| l.starts_with("MAPLOAD failed"))
-            .all(|l| l.contains("zooms=9-9") && l.contains("holds no tiles there")),
+        !en || started >= 2 && started == done && failed == 0,
         "{lines:#?}"
     );
     assert!(
