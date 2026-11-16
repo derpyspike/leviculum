@@ -44,7 +44,7 @@ use embedded_graphics::primitives::Rectangle;
 use leviculum_map::blend::Blend;
 use leviculum_map::choice::{drawn, view_zooms};
 use leviculum_map::draw::{
-    attach_buildings, draw_in_relief, draw_in_warped, draw_tiles, draws_buildings, Ink,
+    attach_buildings, draw_in_relief, draw_in_warped, draw_tiles, draws_buildings, DrawTile, Ink,
 };
 use leviculum_map::labels::ViewLabel;
 use leviculum_map::mercator::World;
@@ -1230,7 +1230,23 @@ where
     // finished area went white under a deeper region's empty box). Nor
     // does it lay a coarser stand-in over a complete region drawn under
     // it with sharper data there (audit of 1836, finding 2).
-    for part in owned_areas(tiles.iter().map(|t| t.tile), area, pending, solid) {
+    let parts = owned_areas(tiles.iter().map(|t| t.tile), area, pending, solid);
+    // Each part draws only the tiles that meet it (audit of 1836, finding
+    // 3): a region still arriving has a pass a square, and every pass
+    // walking every tile made the frame cost squares times tiles.
+    let mut meeting: Vec<DrawTile<'_>> = Vec::new();
+    for part in parts {
+        let these: &[DrawTile<'_>] = match pending {
+            0 => &tiles,
+            _ => {
+                meeting.clear();
+                meeting.extend(tiles.iter().filter(|t| meets(t.tile, part)).copied());
+                &meeting
+            }
+        };
+        if these.is_empty() {
+            continue;
+        }
         let shade = sampler
             .as_mut()
             .map(|s| s as &mut dyn leviculum_map::relief::Shade);
@@ -1238,7 +1254,7 @@ where
             .as_mut()
             .map(|s| s as &mut dyn leviculum_map::ground::Ground);
         let Ok(_) = draw_in_relief(
-            &tiles,
+            these,
             part,
             Profile::Full,
             ink,
@@ -1270,17 +1286,9 @@ fn owned_areas(
     if pending == 0 {
         return vec![area];
     }
-    let sub = leviculum_mapfill::SUBPIXEL;
     let mut parts: Vec<Rectangle> = Vec::new();
     for t in tiles {
-        let size = 1i32 << (12 + u32::from(t.overzoom));
-        let (x0, y0) = (t.origin.x.div_euclid(sub), t.origin.y.div_euclid(sub));
-        let (x1, y1) = (
-            (t.origin.x + size + sub - 1).div_euclid(sub),
-            (t.origin.y + size + sub - 1).div_euclid(sub),
-        );
-        let square = Rectangle::with_corners(Point::new(x0, y0), Point::new(x1 - 1, y1 - 1))
-            .intersection(&area);
+        let square = square_of(t).intersection(&area);
         let mut left = vec![square];
         for &(under, zoom) in solid {
             if zoom >= t.id.z {
@@ -1300,6 +1308,36 @@ fn owned_areas(
         }
     }
     kept
+}
+
+/// The pixels of `t`'s square, its sub-pixel edges rounded outward.
+fn square_of(t: ViewTile) -> Rectangle {
+    let sub = leviculum_mapfill::SUBPIXEL;
+    let size = 1i32 << (12 + u32::from(t.overzoom));
+    let (x0, y0) = (t.origin.x.div_euclid(sub), t.origin.y.div_euclid(sub));
+    let (x1, y1) = (
+        (t.origin.x + size + sub - 1).div_euclid(sub),
+        (t.origin.y + size + sub - 1).div_euclid(sub),
+    );
+    Rectangle::with_corners(Point::new(x0, y0), Point::new(x1 - 1, y1 - 1))
+}
+
+/// Pixels a tile's features may reach past its square: the tile's buffer
+/// and a wide line's half width.
+const TILE_REACH: i32 = 16;
+
+/// Whether `t` may draw into `part`: its square, grown by
+/// [`TILE_REACH`], meets it.
+fn meets(t: ViewTile, part: Rectangle) -> bool {
+    let sq = square_of(t);
+    let grown = Rectangle::new(
+        sq.top_left - Point::new(TILE_REACH, TILE_REACH),
+        embedded_graphics::prelude::Size::new(
+            sq.size.width + 2 * TILE_REACH as u32,
+            sq.size.height + 2 * TILE_REACH as u32,
+        ),
+    );
+    !grown.intersection(&part).is_zero_sized()
 }
 
 /// What of `r` lies outside `cut`: up to four rectangles, none
@@ -1547,6 +1585,94 @@ mod tests {
             vec![Rectangle::new(Point::new(0, 0), Size::new(257, 257))]
         );
         assert!(owned_areas(core::iter::empty(), area, 3, &[]).is_empty());
+    }
+
+    /// Audit of 1836, finding 3: a region still arriving draws each of
+    /// its squares with only the tiles that meet it, and the picture is
+    /// the one every tile drawn into every square makes. Oltrarno at z15,
+    /// the region's box filling the frame, its z14 round written: the
+    /// painter's frame against the squares drawn with all tiles.
+    #[test]
+    fn audit_a_region_still_arriving_draws_the_same_with_only_the_tiles_a_square_meets() {
+        use leviculum_map::mercator::{project, LatLon};
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("auto-arriving.lmr");
+        oltrarno_region(&path, 14..=15, 1);
+        let mut painter = Painter::new(Maps::new(Some(dir.path().to_path_buf())));
+        let at = project(LatLon::from_degrees(43.7475, 11.272));
+        let view = Viewport::new(at, 15, 320, 240);
+        let drawn = painter.draw(&view, Ink::Colour, Style::SCREEN, 100);
+        assert!(drawn.pending > 0, "the region owes its z15 tiles");
+        let region = Region::open(File::open(&path).expect("open")).expect("read");
+        let area = region.area(&view);
+        assert_eq!(area.size, embedded_graphics::prelude::Size::new(320, 240));
+        let mut read = Vec::new();
+        let pending = region.read_view(&view, &mut read).expect("view");
+        let tiles = draw_tiles(&read).expect("tiles");
+        let parts = owned_areas(tiles.iter().map(|t| t.tile), area, pending, &[]);
+        assert!(parts.len() > 1, "{parts:?}");
+        let mut fb = vec![0u16; 320 * 240];
+        let mut frame = Frame::new(&mut fb, 320, 240).expect("frame");
+        let mut fill = FillScratch::new();
+        fill.heads.resize(240, 0);
+        for part in parts {
+            let mut scratch = Scratch {
+                edges: &mut fill.edges,
+                heads: &mut fill.heads,
+                active: &mut fill.active,
+            };
+            let mut work = Work {
+                points: &mut fill.points,
+                ring_ends: &mut fill.ring_ends,
+            };
+            let Ok(_) = draw_in_relief(
+                &tiles,
+                part,
+                Profile::Full,
+                Ink::Colour,
+                Style::SCREEN,
+                100,
+                None,
+                None,
+                None,
+                &mut frame,
+                &mut scratch,
+                &mut work,
+                &mut NoClock,
+            );
+        }
+        let differ = fb
+            .iter()
+            .zip(drawn.fb.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+        assert_eq!(
+            differ, 0,
+            "{differ} pixels differ from every tile in every square"
+        );
+        let first = fb[0];
+        assert!(fb.iter().any(|&c| c != first), "the region draws something");
+    }
+
+    /// The tiles a square draws with (audit of 1836, finding 3): those
+    /// whose own square, grown by [`TILE_REACH`], meets it.
+    #[test]
+    fn a_tile_meets_a_square_within_its_reach_only() {
+        use embedded_graphics::prelude::Size;
+        use leviculum_map::region::TileId;
+        let sub = leviculum_mapfill::SUBPIXEL;
+        let tile = |x: i32| ViewTile {
+            id: TileId { z: 15, x: 0, y: 0 },
+            overzoom: 0,
+            origin: Point::new(x * sub, 0),
+        };
+        let part = Rectangle::new(Point::new(0, 0), Size::new(256, 256));
+        assert!(meets(tile(0), part));
+        assert!(meets(tile(256), part), "the neighbour's buffer reaches in");
+        assert!(meets(tile(256 + TILE_REACH - 1), part));
+        assert!(!meets(tile(256 + TILE_REACH), part));
+        assert!(!meets(tile(-256 - TILE_REACH), part));
+        assert!(!meets(tile(5000), part));
     }
 
     /// Audit of 1836, finding 2: a complete region drawn under takes its

@@ -952,6 +952,22 @@ impl Walk {
         step: &dyn Fn(usize, &MapShown, MapRequest) -> Option<MapRequest>,
     ) {
         let home = self.home(&format!("gesture-{name}-{}", size.name));
+        self.gesture_in(home, name, size, centre, zoom_milli, steps, while_drawn, step);
+    }
+
+    /// [`gesture`](Self::gesture) in a home prepared by the caller.
+    #[allow(clippy::too_many_arguments)]
+    fn gesture_in(
+        &mut self,
+        home: PathBuf,
+        name: &str,
+        size: Size,
+        centre: Centre,
+        zoom_milli: u32,
+        steps: usize,
+        while_drawn: f64,
+        step: &dyn Fn(usize, &MapShown, MapRequest) -> Option<MapRequest>,
+    ) {
         let mut java = Java::new(&home, size);
         let at = project(LatLon::from_degrees(centre.lat, centre.lon));
         let start = MapRequest {
@@ -1536,6 +1552,82 @@ impl Walk {
             },
         );
         self.rotation(size, germany);
+        self.partial(size);
+    }
+
+    /// Regions still arriving over a complete one (audit of 1836, finding
+    /// 3, order 1910), over Oltrarno, whose fixture archive holds z14 and
+    /// z15: a region still arriving has its z14 round written and owes
+    /// its z15 tiles, as a paused or arriving load leaves its file. The
+    /// files are named so that the arriving one draws on top where the
+    /// ranks tie. Three homes, each panned 8 px a frame east for 24
+    /// frames at z15: a complete z14-15 region under an arriving z14-15
+    /// one (the same max zoom), a complete z14 region under an arriving
+    /// z14-15 one (a differing max zoom, the arriving one on top by its
+    /// rank), and the control, the complete z14-15 region alone.
+    fn partial(&mut self, size: Size) {
+        let oltrarno = Centre {
+            name: "oltrarno",
+            lat: 43.7475,
+            lon: 11.272,
+        };
+        let pan: &dyn Fn(usize, &MapShown, MapRequest) -> Option<MapRequest> =
+            &|_, _, ask| Some(MapRequest { pan_x: 8, ..ask });
+        for (name, complete, arriving) in [
+            ("partial-same-z15-pan", 14..=15, true),
+            ("partial-deeper-z15-pan", 14..=14, true),
+            ("complete-z15-pan", 14..=15, false),
+        ] {
+            let home = self.home(&format!("gesture-{name}-{}", size.name));
+            let maps = home.join("maps");
+            oltrarno_region(&maps.join("oltrarno-a-complete.lmr"), complete, usize::MAX);
+            if arriving {
+                oltrarno_region(&maps.join("oltrarno-b-arriving.lmr"), 14..=15, 1);
+            }
+            self.gesture_in(home, name, size, oltrarno, 15 * MILLI, 24, 0.0, pan);
+        }
+    }
+}
+
+/// Cut the oltrarno fixture's box at `zooms` into `path`, `rounds` of its
+/// rounds written: all for a complete region, fewer for one still
+/// arriving or paused (1836).
+fn oltrarno_region(path: &Path, zooms: core::ops::RangeInclusive<u8>, rounds: usize) {
+    use leviculum_mapcut::load::{plan, Loading, Want};
+    use leviculum_mapcut::pmtiles::Archive;
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../leviculum-mapcut/fixtures/oltrarno.pmtiles");
+    let archive = Archive::open(&source).unwrap_or_else(|e| die(&format!("oltrarno: {e}")));
+    let want = Want {
+        bounds: leviculum_map::region::Bounds {
+            west: 112_615_000,
+            south: 437_405_000,
+            east: 112_825_000,
+            north: 437_545_000,
+        },
+        zooms,
+        floor: 0,
+        cap: 64 << 20,
+        profile: leviculum_map::profile::CUT_2,
+        locale: None,
+        buildings: false,
+        pois: false,
+    };
+    let planned = plan(&archive, &want).unwrap_or_else(|e| die(&format!("plan: {e}")));
+    let out = std::fs::File::create(path).unwrap_or_else(|e| die(&format!("{e}")));
+    let mut loading = Loading::begin(&archive, &want, planned, "render-walk", 1, out)
+        .unwrap_or_else(|e| die(&format!("begin: {e}")));
+    for _ in 0..rounds {
+        match loading.step() {
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(e) => die(&format!("round: {e}")),
+        }
+    }
+    if !loading.rounds_left() {
+        if let Err(e) = loading.finish() {
+            die(&format!("finish: {e}"));
+        }
     }
 }
 
@@ -1580,6 +1672,11 @@ fn die(why: &str) -> ! {
     std::process::exit(2);
 }
 
+/// Whether `--partial` was given: the partial-region gestures only.
+fn args_partial() -> bool {
+    std::env::args().any(|a| a == "--partial")
+}
+
 fn main() {
     let mut out = None;
     let mut variant = None;
@@ -1594,6 +1691,7 @@ fn main() {
             "--variant" => variant = args.next(),
             "--quick" => quick = true,
             "--strip" => strip = true,
+            "--partial" => {}
             "--selftest" => selftest = true,
             "--inject" => {
                 let word = args.next().unwrap_or_default();
@@ -1637,6 +1735,12 @@ fn main() {
         // ladder over Berlin's data, and every gesture.
         walk.ladder(phone, berlin, true);
         walk.gestures(phone);
+    } else if args_partial() {
+        // The partial-region gestures alone (order 1910): their frame
+        // times before and after a change, at the phone's and the
+        // window's frame.
+        walk.partial(phone);
+        walk.partial(window);
     } else if quick {
         for size in [phone, window] {
             for centre in [germany, north, berlin] {
