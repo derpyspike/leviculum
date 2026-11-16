@@ -2438,3 +2438,430 @@ fn the_load_walk_selftest_fires_every_rule() {
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
+
+/// One scene of 1812's comparison: where, how deep, which map, which
+/// screen.
+struct LooksScene {
+    name: &'static str,
+    /// The source: the walk's synthetic city, the Erg Chebbi desert, or a
+    /// real archive's bytes at its place.
+    ground: LooksGround,
+    zoom: u8,
+    dark: bool,
+    /// Logical width and height, and screen pixels a logical one.
+    size: (f32, f32, f32),
+    /// A region installed before the walk starts, its file's bytes: the
+    /// data a coarser or a neighbouring load leaves on screen, which the
+    /// treatment must not hide. Empty for none.
+    standin: &'static [u8],
+}
+
+#[derive(Clone, Copy)]
+enum LooksGround {
+    Synthetic,
+    Desert,
+    Real(&'static [u8], (f64, f64)),
+}
+
+/// The Protomaps sample's Oltrarno, south of the Arno in Florence: a city.
+const OLTRARNO: &[u8] = include_bytes!("../../../leviculum-mapcut/fixtures/oltrarno.pmtiles");
+/// The Grunewald forest in the west of Berlin: open land with paths.
+const GRUNEWALD: &[u8] = include_bytes!("../../../leviculum-mapcut/fixtures/grunewald.pmtiles");
+/// Central Florence, z11 to z15, north of the Oltrarno.
+const FIRENZE: &[u8] = include_bytes!("../../../leviculum-map/fixtures/firenze.lmr");
+
+impl Walk {
+    /// A walk over a real archive's `bytes` at `at`, the source at
+    /// `rate` bytes a second (1812's comparison pictures).
+    pub fn real(name: &str, bytes: &[u8], at: (f64, f64), rate: u64, zoom: u8) -> Self {
+        let serve = Serve::start(vec![("w.pmtiles".into(), bytes.to_vec())]).expect("serve");
+        let ground = Ground {
+            at: project(LatLon::from_degrees(at.0, at.1)),
+            zoom,
+            cache_bytes: 1 << 30,
+            prefill: 0,
+        };
+        Self::over(serve, name, rate, 40, ground, Inject::None)
+    }
+}
+
+/// The screen's pixels of a frame's `pixels` drawn as `frame`, cut to
+/// `screen` (as [`crop_screen`] does).
+fn crop_pixels(pixels: &[u8], frame: &ExactView, screen: &ExactView) -> Vec<u8> {
+    let (fw, fh) = frame.size();
+    let (x0, y0, _) = loquax::mapframe::onto(frame, screen);
+    let (w, h) = screen.size();
+    let mut crop = Vec::with_capacity((w * h * 4) as usize);
+    for sy in 0..h {
+        for sx in 0..w {
+            let fx = (f64::from(sx) - x0).round() as i64;
+            let fy = (f64::from(sy) - y0).round() as i64;
+            if (0..i64::from(fw)).contains(&fx) && (0..i64::from(fh)).contains(&fy) {
+                let i = ((fy as u32 * fw + fx as u32) * 4) as usize;
+                crop.extend_from_slice(&pixels[i..i + 4]);
+            } else {
+                crop.extend_from_slice(&[0xff, 0x00, 0xff, 0xff]);
+            }
+        }
+    }
+    crop
+}
+
+fn write_png(path: &std::path::Path, rgba: &[u8], (w, h): (u32, u32)) {
+    let mut png = Vec::new();
+    let mut e = png::Encoder::new(&mut png, w, h);
+    e.set_color(png::ColorType::Rgba);
+    e.set_depth(png::BitDepth::Eight);
+    let mut writer = e.write_header().expect("header");
+    writer.write_image_data(rgba).expect("data");
+    writer.finish().expect("finish");
+    std::fs::write(path, png).expect("the picture");
+}
+
+fn median(mut v: Vec<f64>) -> f64 {
+    v.sort_by(f64::total_cmp);
+    v.get(v.len() / 2).copied().unwrap_or(0.0)
+}
+
+/// 1812's comparison, a measuring tool: real loading scenes (the walk's
+/// city and the Erg Chebbi desert, light and dark, the desktop's and a
+/// phone's screen, zooms from the globe to the ground), each caught while
+/// a load for the screen runs with bytes arriving, drawn without the
+/// treatment and with each [`loquax::ui::maploading::Look`], with the
+/// frame's time with and without it. `LOQUAX_LOAD_LOOKS=DIR` writes the
+/// pictures, `looks.tsv` and `index.html` there; without it the test
+/// does nothing.
+#[test]
+fn the_loading_looks_side_by_side() {
+    use leviculum_mapfill::style::MapTheme;
+    use loquax::ui::maploading::{paint, Brush, Look};
+    let Some(out) = std::env::var_os("LOQUAX_LOAD_LOOKS").map(PathBuf::from) else {
+        return;
+    };
+    std::fs::create_dir_all(&out).expect("the out directory");
+    let desk = (1120.0, 700.0, 1.0);
+    let florence = LooksGround::Real(OLTRARNO, (43.7475, 11.2720));
+    let grunewald = LooksGround::Real(GRUNEWALD, (52.4715, 13.2280));
+    let florence_between = LooksGround::Real(OLTRARNO, (43.7620, 11.2660));
+    let phone = (412.0, 915.0, 2.625);
+    let scenes = [
+        LooksScene {
+            name: "globe-z3",
+            ground: LooksGround::Synthetic,
+            zoom: 3,
+            dark: false,
+            size: desk,
+            standin: &[],
+        },
+        LooksScene {
+            name: "city-z11",
+            ground: LooksGround::Synthetic,
+            zoom: 11,
+            dark: false,
+            size: desk,
+            standin: &[],
+        },
+        LooksScene {
+            name: "city-z13",
+            ground: LooksGround::Synthetic,
+            zoom: 13,
+            dark: false,
+            size: desk,
+            standin: &[],
+        },
+        LooksScene {
+            name: "city-z13-dark",
+            ground: LooksGround::Synthetic,
+            zoom: 13,
+            dark: true,
+            size: desk,
+            standin: &[],
+        },
+        LooksScene {
+            name: "city-z15",
+            ground: LooksGround::Synthetic,
+            zoom: 15,
+            dark: false,
+            size: desk,
+            standin: &[],
+        },
+        LooksScene {
+            name: "city-z14-phone",
+            ground: LooksGround::Synthetic,
+            zoom: 14,
+            dark: false,
+            size: phone,
+            standin: &[],
+        },
+        LooksScene {
+            name: "city-z14-phone-dark",
+            ground: LooksGround::Synthetic,
+            zoom: 14,
+            dark: true,
+            size: phone,
+            standin: &[],
+        },
+        LooksScene {
+            name: "desert-z12",
+            ground: LooksGround::Desert,
+            zoom: 12,
+            dark: false,
+            size: desk,
+            standin: &[],
+        },
+        LooksScene {
+            name: "desert-z12-dark",
+            ground: LooksGround::Desert,
+            zoom: 12,
+            dark: true,
+            size: desk,
+            standin: &[],
+        },
+        LooksScene {
+            name: "desert-z13-phone",
+            ground: LooksGround::Desert,
+            zoom: 13,
+            dark: false,
+            size: phone,
+            standin: &[],
+        },
+        LooksScene {
+            name: "florence-z15",
+            ground: florence,
+            zoom: 15,
+            dark: false,
+            size: desk,
+            standin: &[],
+        },
+        LooksScene {
+            name: "florence-z15-dark",
+            ground: florence,
+            zoom: 15,
+            dark: true,
+            size: desk,
+            standin: &[],
+        },
+        LooksScene {
+            name: "florence-z15-phone",
+            ground: florence,
+            zoom: 15,
+            dark: false,
+            size: phone,
+            standin: &[],
+        },
+        LooksScene {
+            name: "grunewald-z15",
+            ground: grunewald,
+            zoom: 15,
+            dark: false,
+            size: desk,
+            standin: &[],
+        },
+        LooksScene {
+            name: "grunewald-z15-dark",
+            ground: grunewald,
+            zoom: 15,
+            dark: true,
+            size: desk,
+            standin: &[],
+        },
+        LooksScene {
+            name: "grunewald-z14-phone-dark",
+            ground: grunewald,
+            zoom: 14,
+            dark: true,
+            size: phone,
+            standin: &[],
+        },
+        // Florence's centre installed (firenze.lmr), the Oltrarno south
+        // of it loading: half the screen has its data.
+        LooksScene {
+            name: "florence-mixed-z13-dark",
+            ground: florence_between,
+            zoom: 13,
+            dark: true,
+            size: desk,
+            standin: FIRENZE,
+        },
+        LooksScene {
+            name: "florence-mixed-z13-phone",
+            ground: florence_between,
+            zoom: 13,
+            dark: false,
+            size: phone,
+            standin: FIRENZE,
+        },
+        LooksScene {
+            name: "florence-mixed-z13-phone-dark",
+            ground: florence_between,
+            zoom: 13,
+            dark: true,
+            size: phone,
+            standin: FIRENZE,
+        },
+        LooksScene {
+            name: "florence-mixed-z13",
+            ground: florence_between,
+            zoom: 13,
+            dark: false,
+            size: desk,
+            standin: FIRENZE,
+        },
+    ];
+    let looks = [
+        ("stripes", Look::Stripes),
+        ("veil", Look::Veil),
+        ("edge", Look::Edge),
+    ];
+    let mut rows = String::from(
+        "scene\tsize\tzoom\tmilli\tdraw_ms_without_p50\tdraw_ms_with_p50\tlook\tpaint_ms_p50\tpainted_px\tpicture\n",
+    );
+    let mut html = String::from(
+        "<!doctype html><meta charset=utf-8><title>1812 loading looks</title>\
+         <style>body{font:13px sans-serif}img{max-width:420px;border:1px solid #888}\
+         td{vertical-align:top;padding:4px}</style><h1>1812: the loading looks</h1><table>",
+    );
+    for scene in &scenes {
+        let mut walk = match scene.ground {
+            LooksGround::Desert => {
+                Walk::desert(&ERG_CHEBBI, SLOW_RATE, 40, scene.zoom, Inject::None)
+            }
+            LooksGround::Synthetic => {
+                Walk::new(scene.name, SLOW_RATE, 40, scene.zoom, Inject::None)
+            }
+            // The fixtures are small: a slow link so the load is caught
+            // with part of the region drawn and the rest to come.
+            LooksGround::Real(bytes, at) => Walk::real(scene.name, bytes, at, 6_000, scene.zoom),
+        };
+        if !scene.standin.is_empty() {
+            let dir = walk.maps.dir().expect("maps").to_path_buf();
+            std::fs::write(dir.join("standin.lmr"), scene.standin).expect("the stand-in");
+            walk.maps.changed();
+            let mut seen = walk.app.seen.clone();
+            seen.maps = walk.maps.epoch();
+            walk.app.apply(Message::Seen(Box::new(seen)));
+        }
+        let (lw, lh, k) = scene.size;
+        walk.app.apply(Message::Scale(k));
+        walk.app.apply(Message::MapSize(iced::Size::new(lw, lh)));
+        let mut seen = walk.app.seen.clone();
+        if scene.dark {
+            seen.map_flag = Some(leviculum_ui::theme::ThemeFlag::Dark);
+            seen.style = seen.style.in_theme(MapTheme::Dark);
+        }
+        walk.app.apply(Message::Seen(Box::new(seen)));
+        walk.app.hold();
+        // Until a load for the screen runs with bytes arriving, between a
+        // tenth and nine tenths of the way; the globe asks for none.
+        let mut milli = 0u16;
+        for _ in 0..2_500 {
+            walk.step();
+            let running = walk.app.seen.loads.areas.iter().find_map(|a| match a.kind {
+                Kind::Loading { milli } if (100..900).contains(&milli) => Some(milli),
+                _ => None,
+            });
+            if let Some(m) = running {
+                milli = m;
+                break;
+            }
+            if scene.zoom < MIN_ZOOM && walk.frames.len() > 60 {
+                break;
+            }
+        }
+        let Some(order) = walk.app.order() else {
+            continue;
+        };
+        let bare = Order {
+            loads: Loads::default(),
+            phase: 0,
+            ..order.clone()
+        };
+        let mut without = Vec::new();
+        let mut with = Vec::new();
+        let mut last = None;
+        for _ in 0..9 {
+            let shown = draw(&walk.app.frames, bare.clone());
+            without.push(shown.ms);
+            last = Some(shown);
+            with.push(draw(&walk.app.frames, order.clone()).ms);
+        }
+        let Some(shown) = last else {
+            continue;
+        };
+        let base: Vec<u8> = match &shown.handle {
+            super::Handle::Rgba { pixels, .. } => pixels.to_vec(),
+            other => panic!("not raw pixels: {other:?}"),
+        };
+        let screen = walk.app.view;
+        let size = screen.size();
+        let dark = order.style.theme == MapTheme::Dark;
+        let held = loquax::ui::viewload::holding(&walk.maps.headers(), order.view.tile_zoom());
+        let name = format!("looks-{}-none.png", scene.name);
+        write_png(
+            &out.join(&name),
+            &crop_pixels(&base, &shown.view, &screen),
+            size,
+        );
+        html.push_str(&format!(
+            "<tr><td>{}<br>{}x{} z{}<br>{} ‰ loaded<br>draw {:.2} ms without, {:.2} ms with</td>\
+             <td><a href='{name}'><img src='{name}'></a><br>none</td>",
+            scene.name,
+            size.0,
+            size.1,
+            scene.zoom,
+            milli,
+            median(without.clone()),
+            median(with.clone())
+        ));
+        for (word, look) in looks {
+            let mut times = Vec::new();
+            let mut rgba = base.clone();
+            let mut painted = Default::default();
+            for _ in 0..9 {
+                rgba.copy_from_slice(&base);
+                let at = Instant::now();
+                painted = paint(
+                    &mut rgba,
+                    &shown.view,
+                    &order.loads,
+                    &held,
+                    &Brush {
+                        phase: order.phase,
+                        dark,
+                        scale: order.scale,
+                        margin: order.margin,
+                        look,
+                    },
+                );
+                times.push(at.elapsed().as_secs_f64() * 1e3);
+            }
+            let painted: loquax::ui::maploading::Painted = painted;
+            let name = format!("looks-{}-{word}.png", scene.name);
+            write_png(
+                &out.join(&name),
+                &crop_pixels(&rgba, &shown.view, &screen),
+                size,
+            );
+            rows.push_str(&format!(
+                "{}\t{}x{}\t{}\t{}\t{:.3}\t{:.3}\t{word}\t{:.3}\t{}\t{name}\n",
+                scene.name,
+                size.0,
+                size.1,
+                scene.zoom,
+                milli,
+                median(without.clone()),
+                median(with.clone()),
+                median(times.clone()),
+                painted.pixels
+            ));
+            html.push_str(&format!(
+                "<td><a href='{name}'><img src='{name}'></a><br>{word}, paint {:.3} ms</td>",
+                median(times)
+            ));
+        }
+        html.push_str("</tr>");
+    }
+    html.push_str("</table>");
+    std::fs::write(out.join("looks.tsv"), rows).expect("the rows");
+    std::fs::write(out.join("index.html"), html).expect("the sheet");
+}

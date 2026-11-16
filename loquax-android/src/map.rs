@@ -57,6 +57,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use leviculum_map::mercator::{project, LatLon, World};
+use leviculum_map::region::Bounds;
 use leviculum_map::viewport::{ExactView, MILLI};
 use leviculum_mapfill::style::{MapTheme, Style};
 use leviculum_ui::theme::{Theme, ThemeFlag};
@@ -72,6 +73,7 @@ use loquax::ui::maploading::{self, Loads, Look};
 use loquax::ui::radar;
 use loquax::ui::strings::Lang;
 use loquax::ui::tracks::TrackWindow;
+use loquax::ui::viewload::holding;
 use loquax::ui::viewload::ViewLoads;
 use loquax::when::WallTime;
 
@@ -778,11 +780,20 @@ impl Renderer {
         // in place; the stripes move with the frames Java asks while a
         // load runs for the screen (`loading_here`, four a second).
         let loads = self.watch.loads(&self.loader, now);
+        let held = match loads.areas.is_empty() {
+            true => Vec::new(),
+            false => holding(&setup.regions, view.tile_zoom()),
+        };
         let treat = Treat {
-            phase: loads.phase(now),
+            held,
+            brush: maploading::Brush {
+                phase: loads.phase(now),
+                dark: table == MapTheme::Dark,
+                scale,
+                margin: (mx, my),
+                look: Look::default(),
+            },
             loads,
-            dark: table == MapTheme::Dark,
-            scale,
         };
         let shot = match draw(&mut self.frames, &ask, &treat) {
             Ok(shot) => shot,
@@ -971,24 +982,15 @@ impl Renderer {
 /// What of the view is still to come as one frame draws it (1812).
 pub struct Treat {
     pub loads: Loads,
-    /// The stripes' step ([`Loads::phase`]).
-    pub phase: u32,
-    pub dark: bool,
-    pub scale: f32,
+    /// The boxes of the regions that hold the view's zoom: left bare.
+    pub held: Vec<Bounds>,
+    pub brush: maploading::Brush,
 }
 
 impl Treat {
     /// The treatment over `rgba`, which `view` drew.
     pub fn paint(&self, rgba: &mut [u8], view: &ExactView) {
-        maploading::paint(
-            rgba,
-            view,
-            &self.loads,
-            self.phase,
-            self.dark,
-            self.scale,
-            Look::default(),
-        );
+        maploading::paint(rgba, view, &self.loads, &self.held, &self.brush);
     }
 }
 

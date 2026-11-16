@@ -224,6 +224,23 @@ pub fn uncovered(view: &Viewport, regions: &[Header]) -> f64 {
     gaps as f64 / f64::from(SAMPLES * SAMPLES)
 }
 
+/// The boxes of the regions that hold a view at `view_zoom` with their
+/// data (1812): the loads' treatment leaves them alone, whatever box
+/// loads over them.
+pub fn holding(regions: &[Header], view_zoom: u8) -> Vec<Bounds> {
+    let zoom = view_zoom.min(DEEPEST_LOAD);
+    regions
+        .iter()
+        .filter(|h| {
+            h.profile >= leviculum_map::profile::CUT_2
+                && !arriving(h)
+                && h.min_zoom <= zoom
+                && h.max_zoom >= zoom
+        })
+        .map(|h| h.bounds)
+        .collect()
+}
+
 /// The points of `view`'s screen [`uncovered`] counts as lacking their
 /// zoom's data: where the map must show it is still to come (1812's
 /// `loading_is_visible`).
@@ -515,6 +532,10 @@ mod tests {
         assert!(share > 0.0 && share < 1.0, "{share}");
         assert_eq!(g.len() as f64, share * f64::from(SAMPLES * SAMPLES));
         assert!(g.iter().all(|&p| !held(&[r], p, need_zoom(&view))));
+        // The region that holds the rest is the one box the treatment
+        // leaves alone; at a zoom it does not reach, none.
+        assert_eq!(holding(&[r], 16), [r.bounds]);
+        assert!(holding(&[r], 9).is_empty());
     }
 
     /// 1707: a region cut under the old profile 1 no longer holds the

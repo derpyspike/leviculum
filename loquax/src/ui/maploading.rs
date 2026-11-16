@@ -316,10 +316,27 @@ pub fn rect_of(view: &ExactView, b: &Bounds) -> (f64, f64, f64, f64) {
     (x0, y0, x0 + width, y1)
 }
 
+/// How one frame draws the treatment.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Brush {
+    /// The stripes' step ([`Loads::phase`]).
+    pub phase: u32,
+    /// The map is the dark one.
+    pub dark: bool,
+    /// Screen pixels a logical one.
+    pub scale: f32,
+    /// The frame's pixels past the screen on the left and right, and on
+    /// the top and bottom: the bar runs along what the screen shows.
+    pub margin: (u32, u32),
+    pub look: Look,
+}
+
 /// The treatment of `loads` over a frame `view` drew into `rgba` (RGBA
 /// rows, the view's size): every area's visible part once, the one that
-/// says most where two overlap ([`Kind`]'s order), at the stripes' step
-/// `phase` ([`Loads::phase`]), `scale` screen pixels a logical one. A
+/// says most where two overlap ([`Kind`]'s order), as `brush` says,
+/// never over a box of `held`, the regions that hold the view's zoom
+/// already ([`super::viewload::holding`]): a box loads for the whole
+/// screen, but where its data is there the map shows it bare. A
 /// view on the globe (a curved frame, [`crate::mapgesture::blends`]) is
 /// not drawn over: no box is asked for at its zooms by itself, and its
 /// data, the world outline, is there.
@@ -327,11 +344,16 @@ pub fn paint(
     rgba: &mut [u8],
     view: &ExactView,
     loads: &Loads,
-    phase: u32,
-    dark: bool,
-    scale: f32,
-    look: Look,
+    held: &[Bounds],
+    brush: &Brush,
 ) -> Painted {
+    let Brush {
+        phase,
+        dark,
+        scale,
+        margin,
+        look,
+    } = *brush;
     let mut painted = Painted::default();
     if loads.areas.is_empty() || crate::mapgesture::blends(view) {
         return painted;
@@ -341,15 +363,36 @@ pub fn paint(
         return painted;
     }
     let (wi, hi) = (w as i32, h as i32);
+    // What is there already, rounded inwards: a pixel half outside a
+    // region still lacks.
+    let there: Vec<Piece> = held
+        .iter()
+        .map(|b| {
+            let (x0, y0, x1, y1) = rect_of(view, b);
+            Piece {
+                x0: libm::ceil(x0).clamp(-1e9, 1e9) as i32,
+                y0: libm::ceil(y0).clamp(-1e9, 1e9) as i32,
+                x1: libm::floor(x1).clamp(-1e9, 1e9) as i32,
+                y1: libm::floor(y1).clamp(-1e9, 1e9) as i32,
+                kind: Kind::Waiting,
+            }
+        })
+        .filter(|p| !p.empty())
+        .collect();
     let mut order: Vec<&Area> = loads.areas.iter().collect();
     order.sort_by_key(|a| a.kind.precedence());
     let px = |v: f32| -> i32 { libm::roundf(v * scale.max(0.5)).max(1.0) as i32 };
     let geometry = Geometry {
-        period: px(16.0),
-        stripe: px(3.0),
+        period: px(18.0),
+        stripe: px(4.0),
         edge: px(2.0),
-        bar: px(5.0),
+        bar: px(6.0),
         dash: px(8.0),
+        // A dark ground swallows a thin tint: stronger stripes there.
+        stripe_alpha: match dark {
+            true => 150,
+            false => 104,
+        },
     };
     for area in order {
         let (fx0, fy0, fx1, fy1) = rect_of(view, &area.bounds);
@@ -371,7 +414,7 @@ pub fn paint(
             continue;
         }
         let mut free = alloc::vec![clipped];
-        for taken in &painted.pieces {
+        for taken in painted.pieces.iter().chain(&there) {
             free = free.iter().flat_map(|p| subtract(*p, taken)).collect();
         }
         if free.is_empty() {
@@ -382,9 +425,19 @@ pub fn paint(
         for p in &free {
             changed += fill(rgba, w, p, &full, colour, phase, look, &geometry);
         }
-        // The bar along the bottom of what shows of the area.
-        if let Kind::Loading { milli } | Kind::Stalled { milli, .. } = area.kind {
-            changed += bar(rgba, w, &free, &clipped, milli, colour, dark, &geometry);
+        // The bar along the bottom of what the screen shows of the area.
+        let (mx, my) = (margin.0.min(w / 2) as i32, margin.1.min(h / 2) as i32);
+        let shown = Piece {
+            x0: clipped.x0.max(mx),
+            y0: clipped.y0.max(my),
+            x1: clipped.x1.min(wi - mx),
+            y1: clipped.y1.min(hi - my),
+            ..clipped
+        };
+        if let (Kind::Loading { milli } | Kind::Stalled { milli, .. }, false) =
+            (area.kind, shown.empty())
+        {
+            changed += bar(rgba, w, &free, &shown, milli, colour, dark, &geometry);
         }
         painted.pixels += changed;
         painted.pieces.extend(free);
@@ -399,6 +452,7 @@ struct Geometry {
     edge: i32,
     bar: i32,
     dash: i32,
+    stripe_alpha: u16,
 }
 
 /// One piece's stripes or wash, and the area's edges that lie in it.
@@ -430,7 +484,7 @@ fn fill(
                 let mut x = p.x0 - (p.x0 - start).rem_euclid(g.period);
                 while x < p.x1 {
                     for sx in x.max(p.x0)..(x + g.stripe).min(p.x1) {
-                        blend(rgba, base + sx as usize * 4, colour, 72);
+                        blend(rgba, base + sx as usize * 4, colour, g.stripe_alpha);
                         changed += 1;
                     }
                     x += g.period;
@@ -512,7 +566,7 @@ fn bar(
                 let i = y as usize * row + x as usize * 4;
                 match x < split {
                     true => blend(rgba, i, colour, 240),
-                    false => blend(rgba, i, track, 64),
+                    false => blend(rgba, i, track, 88),
                 }
                 changed += 1;
             }
@@ -544,6 +598,16 @@ mod tests {
         }
     }
 
+    fn brush(phase: u32, dark: bool, scale: f32, look: Look) -> Brush {
+        Brush {
+            phase,
+            dark,
+            scale,
+            margin: (0, 0),
+            look,
+        }
+    }
+
     fn area(bounds: Bounds, kind: Kind) -> Area {
         Area {
             bounds,
@@ -566,10 +630,8 @@ mod tests {
             &mut rgba,
             &v,
             &Loads::default(),
-            7,
-            false,
-            1.0,
-            Look::Stripes,
+            &[],
+            &brush(7, false, 1.0, Look::Stripes),
         );
         assert_eq!(painted, Painted::default());
         assert!(rgba.iter().all(|&b| b == 0x80));
@@ -584,7 +646,13 @@ mod tests {
             offline: false,
         };
         let mut rgba = grey(&v);
-        let painted = paint(&mut rgba, &v, &loads, 0, false, 1.0, Look::Stripes);
+        let painted = paint(
+            &mut rgba,
+            &v,
+            &loads,
+            &[],
+            &brush(0, false, 1.0, Look::Stripes),
+        );
         assert_eq!(painted.pieces.len(), 1);
         let p = painted.pieces[0];
         assert!((p.x0 - 50).abs() <= 1 && (p.x1 - 250).abs() <= 1, "{p:?}");
@@ -621,13 +689,19 @@ mod tests {
                 offline: false,
             };
             let mut rgba = grey(&v);
-            paint(&mut rgba, &v, &loads, 0, false, 1.0, Look::Stripes);
+            paint(
+                &mut rgba,
+                &v,
+                &loads,
+                &[],
+                &brush(0, false, 1.0, Look::Stripes),
+            );
             // The bar's middle row: count the area's blue.
             let y = 297usize;
             (0..400usize)
                 .filter(|&x| {
                     let i = (y * 400 + x) * 4;
-                    rgba[i + 2] > rgba[i] + 40
+                    rgba[i + 2] > rgba[i] + 40 && rgba[i + 2] > 0xc0
                 })
                 .count()
         };
@@ -635,6 +709,60 @@ mod tests {
         assert!(none < 5, "{none}");
         assert!((190..=210).contains(&half), "{half}");
         assert!(all > 395, "{all}");
+    }
+
+    /// Where a region holds the view already, the map shows it bare: a
+    /// box that loads over the whole screen marks only the rest.
+    #[test]
+    fn what_is_there_stays_bare() {
+        let v = view();
+        let all = bounds_of(&v, 0.0, 0.0, 400.0, 300.0);
+        let west = bounds_of(&v, 0.0, 0.0, 200.0, 300.0);
+        let loads = Loads {
+            areas: alloc::vec![area(all, Kind::Loading { milli: 0 })],
+            offline: false,
+        };
+        let mut rgba = grey(&v);
+        let painted = paint(
+            &mut rgba,
+            &v,
+            &loads,
+            &[west],
+            &brush(0, false, 1.0, Look::Stripes),
+        );
+        for y in 0..300usize {
+            for x in 0..199usize {
+                assert_eq!(rgba[(y * 400 + x) * 4], 0x80, "touched at {x},{y}");
+            }
+        }
+        assert!(painted.pieces.iter().all(|p| p.x0 >= 199), "{painted:?}");
+        assert!(painted.pixels > 0);
+    }
+
+    /// The bar runs along the bottom of what the screen shows, never in
+    /// the frame's margin past it, which the screen crops away.
+    #[test]
+    fn the_bar_runs_along_the_screen_not_the_margin() {
+        let v = view();
+        let b = bounds_of(&v, 0.0, 0.0, 400.0, 300.0);
+        let loads = Loads {
+            areas: alloc::vec![area(b, Kind::Loading { milli: 1000 })],
+            offline: false,
+        };
+        let mut rgba = grey(&v);
+        let brush = Brush {
+            margin: (50, 40),
+            ..brush(0, false, 1.0, Look::Stripes)
+        };
+        paint(&mut rgba, &v, &loads, &[], &brush);
+        let blue = |x: usize, y: usize| {
+            let i = (y * 400 + x) * 4;
+            rgba[i + 2] > rgba[i] + 40 && rgba[i + 2] > 0xc0
+        };
+        // The screen's bottom row band (y 254..260), its middle filled.
+        assert!(blue(200, 257), "the bar on the screen");
+        // The frame's own bottom, in the margin: no bar there.
+        assert!(!blue(200, 297), "no bar in the margin");
     }
 
     #[test]
@@ -647,7 +775,13 @@ mod tests {
                 offline: false,
             };
             let mut rgba = grey(&v);
-            paint(&mut rgba, &v, &loads, phase, false, 1.0, Look::Stripes);
+            paint(
+                &mut rgba,
+                &v,
+                &loads,
+                &[],
+                &brush(phase, false, 1.0, Look::Stripes),
+            );
             rgba
         };
         let loading = Kind::Loading { milli: 100 };
@@ -671,7 +805,13 @@ mod tests {
                 offline: false,
             };
             let mut rgba = grey(&v);
-            paint(&mut rgba, &v, &loads, 0, false, 1.0, Look::Stripes);
+            paint(
+                &mut rgba,
+                &v,
+                &loads,
+                &[],
+                &brush(0, false, 1.0, Look::Stripes),
+            );
             rgba
         };
         let a = frame(Kind::Loading { milli: 0 });
@@ -693,7 +833,13 @@ mod tests {
             offline: false,
         };
         let mut rgba = grey(&v);
-        let painted = paint(&mut rgba, &v, &loads, 0, false, 1.0, Look::Stripes);
+        let painted = paint(
+            &mut rgba,
+            &v,
+            &loads,
+            &[],
+            &brush(0, false, 1.0, Look::Stripes),
+        );
         // The loading area first, whole; the waiting one around it.
         assert_eq!(painted.pieces[0].kind, Kind::Loading { milli: 0 });
         for (i, a) in painted.pieces.iter().enumerate() {
@@ -719,9 +865,15 @@ mod tests {
             offline: false,
         };
         let mut rgba = grey(&v);
-        assert!(paint(&mut rgba, &v, &loads, 0, false, 1.0, Look::Stripes)
-            .pieces
-            .is_empty());
+        assert!(paint(
+            &mut rgba,
+            &v,
+            &loads,
+            &[],
+            &brush(0, false, 1.0, Look::Stripes)
+        )
+        .pieces
+        .is_empty());
     }
 
     #[test]
@@ -734,7 +886,7 @@ mod tests {
                 offline: false,
             };
             let mut rgba = grey(&v);
-            let painted = paint(&mut rgba, &v, &loads, 0, true, 2.0, look);
+            let painted = paint(&mut rgba, &v, &loads, &[], &brush(0, true, 2.0, look));
             assert!(painted.pixels > 0, "{look:?}");
         }
     }

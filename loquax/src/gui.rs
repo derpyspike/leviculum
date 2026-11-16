@@ -86,9 +86,10 @@ use loquax::ui::browse::BrowseEvent;
 use loquax::ui::compose::Sheet;
 use loquax::ui::intent::{Intent, Messages, Target};
 use loquax::ui::map::{fit, want_pins, want_view, zoom_floor, MapPin, MapSetup, MapWant};
-use loquax::ui::maploading::{paint, Loads, Look, Painted};
+use loquax::ui::maploading::{paint, Brush, Loads, Look, Painted};
 use loquax::ui::scene::{LayoutClass, NodeId, Scene, TabId};
 use loquax::ui::strings::{Lang, StrId};
+use loquax::ui::viewload::holding;
 use loquax::ui::viewload::{ViewLoads, ViewWants};
 use loquax::ui::{Pane, UiEvent, MAP_LOADED_ALREADY, MAP_LOADING_HERE_WORDS};
 use loquax::when::WallTime;
@@ -920,14 +921,23 @@ pub fn draw(frames: &Mutex<Frames>, order: Order) -> Arc<Shown> {
     let mut rgba = shot.rgba;
     // What of the view is still to come, in place (1812).
     let treat = Instant::now();
+    // Where a region holds the view's zoom the map shows it bare.
+    let held = match order.loads.areas.is_empty() {
+        true => Vec::new(),
+        false => holding(&frames.painter().headers(), order.view.tile_zoom()),
+    };
     let painted = paint(
         &mut rgba,
         &shot.view,
         &order.loads,
-        order.phase,
-        order.style.theme == MapTheme::Dark,
-        order.scale,
-        Look::default(),
+        &held,
+        &Brush {
+            phase: order.phase,
+            dark: order.style.theme == MapTheme::Dark,
+            scale: order.scale,
+            margin: order.margin,
+            look: Look::default(),
+        },
     );
     let treat_ms = treat.elapsed().as_secs_f64() * 1e3;
     Arc::new(Shown {
