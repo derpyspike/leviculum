@@ -893,29 +893,6 @@ pub trait Storage {
     /// Remove entries older than `expiry_ms`. Returns count removed.
     fn expire_local_client_known_dests(&mut self, now_ms: u64, expiry_ms: u64) -> usize;
 
-    // Local client path ownership (order 1898)
-    /// Record that the local client on `iface_id` owns the path to
-    /// `dest_hash`: it installed the path before any copy of that emission
-    /// was heard, or a checked link proof for the destination came back
-    /// over its interface. Only an owned path is kept from an unresponsive
-    /// mark (`Transport::mark_path_unresponsive`).
-    ///
-    /// The default keeps nothing, which is right for a store that never
-    /// serves local clients (the boards): no path is owned, every path is
-    /// markable. A store behind a shared instance must override all four.
-    fn set_local_path_owner(&mut self, _dest_hash: [u8; TRUNCATED_HASHBYTES], _iface_id: usize) {}
-
-    /// The local client interface that owns the path to `dest_hash`, if any.
-    fn local_path_owner(&self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<usize> {
-        None
-    }
-
-    /// Forget the owner of the path to `dest_hash`.
-    fn clear_local_path_owner(&mut self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) {}
-
-    /// Forget every path the local client on `iface_id` owns (it disconnected).
-    fn clear_local_path_owners_of(&mut self, _iface_id: usize) {}
-
     // Discovery Path Requests
     /// Record a pending discovery path request.
     ///
