@@ -786,7 +786,7 @@ Built 2026-09-27. The proximity test had lived inline in the checker,
 closed over the current file's lines; it is now `ident_resolves`
 (`leviculum-std/tests/doc_citations.rs:702`), a function over the lines
 it is handed, and `place_citation` asks it a second time against the
-base copy of the file (`leviculum-std/tests/doc_citations.rs:3685`). A
+base copy of the file (`leviculum-std/tests/doc_citations.rs:3669`). A
 map repair is emitted only where both halves hold: the map proves the
 move, *and* the base resolved the citation's own identifier at the
 citation's own number. The refusal above is the other branch.
@@ -884,13 +884,29 @@ and refuses two things. A name citation that does not resolve to exactly
 one item: a renamed or deleted item, a name two items share, a path into
 another repository, and a base name or shortened path, which it never
 resolves, because order 1848 matched a citation into another repository
-by its base name. And a **new** `path:line` citation into this tree,
-counted per text and per cited path against the merge base with
-`origin/master` (never older than the commit that added the guard): a
-citation that only moved, or that the fixer renumbered, keeps its count
-and passes. Citations into `reference/` and other repositories keep the
-line form. A fixture line that must hold a citation-shaped string as
-data carries `citation-guard: line-fixture`.
+by its base name. And a touched `path:line` citation whose verdict the
+census below does not call `agree` (order 1940: the census is the judge
+of every citation move). Touched means the citing line is one the diff
+against the base adds or changes — the merge base with `origin/master`,
+never older than the commit that added the guard — or the cited file
+changed. There is no "unchanged since a merged parent" exemption and no
+line map to trust: a renumbered citation is right because the line it
+points at holds the item its text names, not because a map carried it
+there. The one excuse is a citation of the same cited file and label the
+base held with a verdict no better, each excusing one: a drifting
+citation may ride through a merge, a paragraph move or the fixer's
+renumbering ("guard: a merge with an untouched drifting citation
+passes"), but an agreeing citation moved onto another item is refused
+("guard: an agreeing citation moved onto another item is refused"), a
+file that moved under an agreeing citation refuses until the citation is
+renumbered onto its item ("guard: a file moved under an agreeing
+citation is refused until renumbered"), and a citation a merged
+pre-guard branch wrote against lines that then grew is refused ("guard:
+a merged pre-guard branch's stale number is refused"). A bare name the
+tree cannot place is held only to one of the same name and label having
+stood in the base. Citations into `reference/` and other repositories
+keep the line form. A fixture line that must hold a citation-shaped
+string as data carries `citation-guard: line-fixture`.
 
 The existing line citations are left alone on purpose. Order 1848
 converted 195 files in one pass and trusted numbers that had already

@@ -44,8 +44,8 @@ returns `self`.
 |-----------|---------|
 | `fn new() -> Self` — `builder.rs:117` | Builder with defaults |
 | `fn identity(self, identity: Identity) -> Self` — `builder.rs:249` | Pin an explicit identity (else one is generated/persisted) |
-| `fn add_tcp_client(self, addr: SocketAddr) -> Self` — `builder.rs:311` | Connect outward to a Reticulum node |
-| `fn add_tcp_server(self, addr: SocketAddr) -> Self` — `builder.rs:364` | Listen for inbound connections |
+| `fn add_tcp_client(self, addr: SocketAddr) -> Self` — `builder.rs:315` | Connect outward to a Reticulum node |
+| `fn add_tcp_server(self, addr: SocketAddr) -> Self` — `builder.rs:368` | Listen for inbound connections |
 | `fn add_udp_interface(self, listen: SocketAddr, forward: SocketAddr) -> Self` — `builder.rs:449` | One datagram per packet |
 | `fn add_rnode_interface(self, port: String, frequency: u64, bandwidth: u32, spreading_factor: u8, coding_rate: u8, tx_power: i8) -> Self` — `builder.rs:493` | LoRa interface; required radio settings |
 | `fn add_serial_interface(self, port: String, speed: u32, databits: u8, parity: String, stopbits: u8) -> Self` — `builder.rs:553` | KISS over raw serial |
@@ -53,7 +53,7 @@ returns `self`.
 | `fn enable_transport(self, enabled: bool) -> Self` — `builder.rs:742` | Act as a relay/forwarder |
 | `fn config(self, config: Config) -> Self` — `builder.rs:285` | Use a pre-loaded `Config` |
 | `fn config_file(self, path: PathBuf) -> Self` — `builder.rs:295` | Load an INI config file |
-| `fn storage_path(self, path: PathBuf) -> Self` — `builder.rs:303` | Identity / known-destinations / ratchet store dir |
+| `fn storage_path(self, path: PathBuf) -> Self` — `builder.rs:307` | Identity / known-destinations / ratchet store dir |
 | `fn connect_to_shared_instance(self, name: impl Into<String>) -> Self` — `builder.rs:807` | Attach to a running `lnsd`/`rnsd` instead of bringing up own interfaces |
 | `fn without_events(self) -> Self` — `builder.rs:241` | Daemon mode: no application event channel |
 | `async fn build(self) -> Result<ReticulumNode, Error>` — `builder.rs:1305` | Build the node (not yet running) |

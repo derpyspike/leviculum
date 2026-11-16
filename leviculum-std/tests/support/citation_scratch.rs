@@ -116,6 +116,47 @@ impl Scratch {
         fs::write(full, bytes).expect("write");
     }
 
+    /// Run git in the scratch repository.
+    pub fn git(&self, args: &[&str]) {
+        git(self.path(), args);
+    }
+
+    /// Copy the tree's citation tools into the scratch repository's own
+    /// `scripts/`, uncommitted: the caller commits them, and that commit
+    /// is "the commit that added this guard" inside the scratch history.
+    pub fn copy_tools(&self) {
+        for name in [
+            "citations.py",
+            "check-citations-by-name.py",
+            "citation-census.py",
+            "check-python-test-prerequisites.py",
+            "citation-foreign.txt",
+        ] {
+            let text = fs::read(repo_root().join("scripts").join(name)).expect("read tool");
+            self.write(&format!("scripts/{name}"), &text);
+        }
+    }
+
+    /// The scratch repository's OWN guard copy, with the base it derives
+    /// itself (the commit that added the guard there): (exit code, output).
+    pub fn guard_own(&self) -> (i32, String) {
+        let out = Command::new("python3")
+            .arg("-I")
+            .arg(self.path().join("scripts/check-citations-by-name.py"))
+            .arg("--root")
+            .arg(self.path())
+            .output()
+            .expect("spawn python3");
+        (
+            out.status.code().unwrap_or(-1),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        )
+    }
+
     /// The guard against the base commit: (exit code, stdout and stderr).
     pub fn guard(&self) -> (i32, String) {
         let out = Command::new("python3")

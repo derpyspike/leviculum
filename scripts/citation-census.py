@@ -242,8 +242,11 @@ def _label_forms(segs, path):
     return forms
 
 
-def census(tree, only=None):
-    """One record per line citation in the living texts of `tree`."""
+def census(tree, only=None, into=None):
+    """One record per line citation in the living texts of `tree`. With
+    `only`, read just these citing files; with `into`, keep just the
+    citations that resolve into one of these files of the tree (what the
+    guard asks when a cited file changed under an untouched text)."""
     out = []
     files = sorted(f for f in tree.files if C.is_living(f))
     if only:
@@ -255,6 +258,8 @@ def census(tree, only=None):
         for m in C.line_citations(text, rel):
             kind, path, how = C.locate(tree, m.group(1), rel, text)
             if kind == "notfile":
+                continue
+            if into is not None and (kind != "tree" or path not in into):
                 continue
             doc_line = text.count("\n", 0, m.start()) + 1
             label = label_for(text, m, rel)
