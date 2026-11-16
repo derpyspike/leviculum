@@ -893,6 +893,35 @@ pub trait Storage {
     /// Remove entries older than `expiry_ms`. Returns count removed.
     fn expire_local_client_known_dests(&mut self, now_ms: u64, expiry_ms: u64) -> usize;
 
+    // Local emission installs (reviewer decision 2026-11-16)
+    /// Record that a local client's hops-0 copy of `dest_hash`'s emission
+    /// `emission_secs` installed its path at `now_ms`. The first install of
+    /// an emission is kept: the same emission again (a re-hand, a re-replay,
+    /// a reconnect) restarts nothing, and an older emission never replaces
+    /// a newer record. Only a newer emission starts a new record. The record
+    /// bounds how long `Transport::mark_path_unresponsive` keeps the path
+    /// (`LOCAL_EMISSION_HOLD_MS`).
+    ///
+    /// The default keeps nothing, which is right for a store that never
+    /// serves local clients (the boards): no path is held, every path is
+    /// markable. A store behind a shared instance must override both.
+    fn note_local_emission_installed(
+        &mut self,
+        _dest_hash: [u8; TRUNCATED_HASHBYTES],
+        _emission_secs: u64,
+        _now_ms: u64,
+    ) {
+    }
+
+    /// The emission and first-install time of the record
+    /// [`Self::note_local_emission_installed`] keeps for `dest_hash`.
+    fn local_emission_installed(
+        &self,
+        _dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<(u64, u64)> {
+        None
+    }
+
     // Discovery Path Requests
     /// Record a pending discovery path request.
     ///

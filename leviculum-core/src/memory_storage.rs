@@ -49,6 +49,13 @@ const COMPACT_PACKET_HASH_CAP: usize = 10_000;
 /// Compact identity capacity for constrained devices.
 const COMPACT_IDENTITY_CAP: usize = 1_000;
 
+/// How old a local-emission record (`MemoryStorage::local_emission_installs`)
+/// must be before a full table may drop it for a new one: one week, the
+/// default path lifetime (`TransportConfig::path_expiry_secs`, Python's
+/// `PATHFINDER_E`). A replayer that waits this long for its capture to
+/// earn a second hold has held nothing for a week.
+pub const LOCAL_EMISSION_RECORD_KEEP_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+
 /// Per-table ceilings (Codeberg #421).
 ///
 /// Nine numbers cover twenty collections: tables keyed by the same population
@@ -79,12 +86,13 @@ const COMPACT_IDENTITY_CAP: usize = 1_000;
 /// | `known_dest_use` | 168 | 50 000 → 8.4 MB | 4 096 → 0.7 MB |
 /// | `local_client_dest_map` | 168 | 4 096 → 0.7 MB | 1 024 → 0.2 MB |
 /// | `local_client_known_dests` | 144 | 4 096 → 0.6 MB | 1 024 → 0.1 MB |
+/// | `local_emission_installs` | 168 | 4 096 → 0.7 MB | 1 024 → 0.2 MB |
 /// | `dest_ratchet_keys` | 384 | 4 096 → 1.6 MB | 1 024 → 0.4 MB |
 /// | `receipts` | 384 | 1 024 → 0.4 MB | 1 024 → 0.4 MB |
 /// | `known_identities` | 1 656 | 50 000 → 82.8 MB | 1 000 → 1.7 MB |
 /// | packet dedup (both generations) | 96 | 1 000 000 → 96 MB | 10 000 → 1.0 MB |
 ///
-/// Desktop totals about 339 MB, of which 179 MB is the two caps that already
+/// Desktop totals about 340 MB, of which 179 MB is the two caps that already
 /// existed (dedup and identities). Compact totals about 22 MB, which is what
 /// makes it fit a Raspberry Pi Zero 2W: 512 MB shared with the GPU, no swap.
 /// A path table whose blob windows are all full (64 blobs, the Python
@@ -448,6 +456,20 @@ pub struct MemoryStorage {
     /// time the client is seen.
     local_client_known_dests: BoundedMap<[u8; TRUNCATED_HASHBYTES], u64>,
 
+    // Local emission installs (reviewer decision 2026-11-16)
+    /// Destination to `(emission_secs, first_install_ms)` of the newest
+    /// emission a local client installed at hops 0
+    /// (`Storage::note_local_emission_installed`).
+    ///
+    /// **Eviction: never early.** An entry dropped while its emission can
+    /// still be replayed would hand a replayer a fresh hold, so a full table
+    /// drops its oldest entry only once that entry is
+    /// [`LOCAL_EMISSION_RECORD_KEEP_MS`] old, and otherwise records nothing:
+    /// an unrecorded install holds nothing, which is Python's behaviour. A
+    /// genuine client's newer emission replaces its own entry and needs no
+    /// room.
+    local_emission_installs: BoundedMap<[u8; TRUNCATED_HASHBYTES], (u64, u64)>,
+
     // Discovery path requests
     /// Pending discovery path requests: dest_hash → (requesting_interface, timeout_ms)
     /// Removal: expire_discovery_path_requests() or remove_discovery_path_request()
@@ -530,6 +552,7 @@ impl MemoryStorage {
             known_ratchets: BoundedMap::new(caps.destination_cap),
             local_client_dest_map: BoundedMap::new(caps.local_dest_cap),
             local_client_known_dests: BoundedMap::new(caps.local_dest_cap),
+            local_emission_installs: BoundedMap::new(caps.local_dest_cap),
             discovery_path_requests: BoundedMap::new(caps.path_cap),
             dest_ratchet_keys: BoundedMap::new(caps.local_dest_cap),
             known_dest_use: BoundedMap::new(caps.destination_cap),
@@ -624,6 +647,7 @@ impl MemoryStorage {
         self.known_ratchets.clear();
         self.local_client_dest_map.clear();
         self.local_client_known_dests.clear();
+        self.local_emission_installs.clear();
         self.discovery_path_requests.clear();
         self.dest_ratchet_keys.clear();
         self.known_dest_use.clear();
@@ -970,6 +994,19 @@ impl MemoryStorage {
         let _ = writeln!(
             s,
             "local_client_known_dests: {} entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
+            n, raw, est
+        );
+
+        // local_emission_installs: BTreeMap<[u8; 16], (u64, u64)>, 3x
+        let n = self.local_emission_installs.len();
+        let raw = (n
+            * (HASH_ORDER_BYTES + TRUNCATED_HASHBYTES + core::mem::size_of::<(u64, u64)>()))
+            as u64;
+        let est = raw * 3;
+        total += est;
+        let _ = writeln!(
+            s,
+            "local_emission_installs: {} entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
             n, raw, est
         );
 
@@ -1680,6 +1717,11 @@ impl Storage for MemoryStorage {
                 self.local_client_known_dests.capacity(),
             ),
             CollectionCount::bounded(
+                "local_emission_installs",
+                self.local_emission_installs.len(),
+                self.local_emission_installs.capacity(),
+            ),
+            CollectionCount::bounded(
                 "discovery_path_requests",
                 self.discovery_path_requests.len(),
                 self.discovery_path_requests.capacity(),
@@ -1768,6 +1810,51 @@ impl Storage for MemoryStorage {
         self.local_client_known_dests
             .retain(|_, last_seen| now_ms.saturating_sub(*last_seen) < expiry_ms);
         before - self.local_client_known_dests.len()
+    }
+
+    fn note_local_emission_installed(
+        &mut self,
+        dest_hash: [u8; TRUNCATED_HASHBYTES],
+        emission_secs: u64,
+        now_ms: u64,
+    ) {
+        match self.local_emission_installs.get(&dest_hash) {
+            // The first install of this emission stands; an older one
+            // never replaces a newer record.
+            Some(&(recorded, _)) if recorded >= emission_secs => return,
+            Some(_) => {
+                self.local_emission_installs
+                    .insert(dest_hash, (emission_secs, now_ms));
+                return;
+            }
+            None => {}
+        }
+        if self.local_emission_installs.len() >= self.local_emission_installs.capacity() {
+            let oldest = self
+                .local_emission_installs
+                .iter()
+                .min_by_key(|(_, &(_, installed))| installed)
+                .map(|(k, &(_, installed))| (*k, installed));
+            match oldest {
+                Some((key, installed))
+                    if now_ms.saturating_sub(installed) >= LOCAL_EMISSION_RECORD_KEEP_MS =>
+                {
+                    self.local_emission_installs.remove(&key);
+                }
+                // Full of records young enough to be replayed: record
+                // nothing, so this install holds nothing.
+                _ => return,
+            }
+        }
+        self.local_emission_installs
+            .insert(dest_hash, (emission_secs, now_ms));
+    }
+
+    fn local_emission_installed(
+        &self,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<(u64, u64)> {
+        self.local_emission_installs.get(dest_hash).copied()
     }
 
     // Discovery Path Requests
@@ -3016,6 +3103,7 @@ mod diagnostic_model_tests {
         s.set_path_request_time(hash(6), 0);
         s.remember_known_ratchet(hash(7), [0u8; RATCHET_SIZE], 0);
         s.set_local_client_known_dest(hash(8), 0);
+        s.note_local_emission_installed(hash(8), 0, 0);
         s.set_discovery_path_request(hash(9), 0, 0);
 
         let (dump, _) = s.diagnostic_dump_non_packet_cache();
@@ -3063,6 +3151,10 @@ mod diagnostic_model_tests {
         assert_eq!(
             raw_bytes_of(&dump, "local_client_known_dests"),
             (HASH_ORDER_BYTES + TRUNCATED_HASHBYTES + size_of::<u64>()) as u64,
+        );
+        assert_eq!(
+            raw_bytes_of(&dump, "local_emission_installs"),
+            (HASH_ORDER_BYTES + TRUNCATED_HASHBYTES + size_of::<(u64, u64)>()) as u64,
         );
         assert_eq!(
             raw_bytes_of(&dump, "discovery_path_requests"),
@@ -3174,6 +3266,58 @@ mod cap_tests {
         let mut h = [0u8; TRUNCATED_HASHBYTES];
         h[..4].copy_from_slice(&n.to_be_bytes());
         h
+    }
+
+    /// The first install of an emission stands: the same emission again
+    /// and an older one leave the record, a newer one replaces it.
+    #[test]
+    fn a_local_emission_record_keeps_its_first_install() {
+        let mut s = MemoryStorage::with_caps(tiny_caps());
+        let d = hash16(1);
+        assert_eq!(s.local_emission_installed(&d), None);
+        s.note_local_emission_installed(d, 9000, 100);
+        s.note_local_emission_installed(d, 9000, 5_000);
+        assert_eq!(s.local_emission_installed(&d), Some((9000, 100)));
+        s.note_local_emission_installed(d, 8999, 6_000);
+        assert_eq!(s.local_emission_installed(&d), Some((9000, 100)));
+        s.note_local_emission_installed(d, 9001, 7_000);
+        assert_eq!(s.local_emission_installed(&d), Some((9001, 7_000)));
+    }
+
+    /// A full table records nothing new while its oldest record is younger
+    /// than `LOCAL_EMISSION_RECORD_KEEP_MS`, so no record a replayer could
+    /// still use is dropped; once the oldest is that old it makes room.
+    #[test]
+    fn a_full_local_emission_table_drops_only_a_week_old_record() {
+        let mut s = MemoryStorage::with_caps(tiny_caps());
+        for i in 0..TINY as u32 {
+            s.note_local_emission_installed(hash16(i), 9000, u64::from(i));
+        }
+        let late = hash16(TINY as u32);
+        s.note_local_emission_installed(late, 9000, LOCAL_EMISSION_RECORD_KEEP_MS - 1);
+        assert_eq!(s.local_emission_installed(&late), None, "no room yet");
+        assert_eq!(s.local_emission_installed(&hash16(0)), Some((9000, 0)));
+        // A newer emission of a recorded destination needs no room.
+        s.note_local_emission_installed(hash16(5), 9001, 50);
+        assert_eq!(s.local_emission_installed(&hash16(5)), Some((9001, 50)));
+
+        s.note_local_emission_installed(late, 9000, LOCAL_EMISSION_RECORD_KEEP_MS);
+        assert_eq!(
+            s.local_emission_installed(&late),
+            Some((9000, LOCAL_EMISSION_RECORD_KEEP_MS))
+        );
+        assert_eq!(
+            s.local_emission_installed(&hash16(0)),
+            None,
+            "the oldest went"
+        );
+        assert_eq!(s.local_emission_installed(&hash16(1)), Some((9000, 1)));
+        let row = s
+            .collection_counts()
+            .into_iter()
+            .find(|c| c.name == "local_emission_installs")
+            .unwrap();
+        assert_eq!((row.entries, row.capacity), (TINY, Some(TINY)));
     }
 
     fn reverse(ts: u64) -> ReverseEntry {

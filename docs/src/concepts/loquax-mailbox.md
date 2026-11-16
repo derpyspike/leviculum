@@ -229,7 +229,7 @@ The replay is lnsd answering from its cache: a path request from a local
 client for a destination the path table holds is answered with the cached
 announce, sent to the requesting interface alone, and the handler returns
 without forwarding the request (`handle_path_request`,
-`leviculum-core/src/transport.rs:12557`, the local-client arm at
+`leviculum-core/src/transport.rs:12614`, the local-client arm at
 `:12157-12202`, the send at `:12195`; pinned by
 `test_path_request_from_local_client_returns_cached_announce`, `:30745`,
 which asserts no send to the network interface and no
@@ -504,7 +504,7 @@ census column.
 - **The embedded nodes' transport tables.** A mailbox beside lnsd is a
   local client of its shared instance, and so is every hosted group's
   engine: one node more per group. A local client keeps at most
-  `TableCaps::local_client` (`leviculum-core/src/memory_storage.rs:194`,
+  `TableCaps::local_client` (`leviculum-core/src/memory_storage.rs:202`,
   applied in `client_table_caps`, `leviculum-std/src/driver/builder.rs:1345`):
   2 048 identities and destinations, 1 024 paths, 10 000 packet hashes,
   about 10 MB at the ceiling where the desktop profile allows 339 MB. The
@@ -539,7 +539,7 @@ census column.
   1 024 peers).
 - **The idle loop.** The engine's events are read every 20 ms while
   anything moves and every 250 ms after a second of nothing
-  (`PUMP_QUIET`, `loquax/src/home/daemon.rs:157`); a device's request is
+  (`PUMP_QUIET`, `loquax/src/home/daemon.rs:182`); a device's request is
   never read by that pump and is answered at once. Measured idle on the
   coder host: 0.6 % and 1.0 % of a core before, 0.35 % twice after
   (`tests/mailbox_census.rs`, `an_idle_mailbox_uses_almost_no_cpu`).

@@ -116,7 +116,7 @@
 //! appended to that handle's buffer:
 //!
 //! ```text
-//! EVENT_SCHEMA_VIOLATION event=PKT_RX missing=[hops,len] caller=transport.rs:1074 t=<rel-ms>
+//! EVENT_SCHEMA_VIOLATION event=PKT_RX missing=[hops,len] caller=transport.rs:1073 t=<rel-ms>
 //! ```
 //!
 //! ## Field-value validation (per-event, per-handle)
@@ -128,7 +128,7 @@
 //! into every active buffer:
 //!
 //! ```text
-//! EVENT_FIELD_VIOLATION event=PKT_RX field=note value_problem=whitespace caller=transport.rs:1074 t=<rel-ms>
+//! EVENT_FIELD_VIOLATION event=PKT_RX field=note value_problem=whitespace caller=transport.rs:1073 t=<rel-ms>
 //! ```
 //!
 //! `value_problem` ∈ {`whitespace`, `equals`, `non_printable`}.
@@ -1248,14 +1248,14 @@ pub const EVENT_CATALOG: &[EventSchema] = &[
         name: "PATH_UNRESPONSIVE",
         required_keys: &["dst", "next_hop", "iface", "path_hops"],
     },
-    // Order 1881, bounded by order 1898: an unresponsive mark was refused
-    // because the path is a connected local client's own (`iface`, reason
-    // `local_client_owns`: hops 0, no next hop, installed by the client
-    // first or proven over it); the client cannot have moved, so the path
-    // stays on the box.
+    // Order 1881, bounded by the emission (reviewer decision 2026-11-16):
+    // an unresponsive mark was refused because the path is a connected
+    // local client's hops-0 path whose emission is younger than
+    // `LOCAL_EMISSION_HOLD_MS` since its first install (`iface`, reason
+    // `young_local_emission`, `age_ms` since that install).
     EventSchema {
         name: "PATH_KEPT_LOCAL",
-        required_keys: &["dst", "iface", "reason"],
+        required_keys: &["dst", "iface", "reason", "age_ms"],
     },
     // Remaining `leviculum-core` transport events.
     EventSchema {

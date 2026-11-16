@@ -1467,6 +1467,23 @@ impl leviculum_core::traits::Storage for Storage {
     fn remove_local_client_dests(&mut self, iface_id: usize) {
         self.inner.remove_local_client_dests(iface_id)
     }
+
+    fn note_local_emission_installed(
+        &mut self,
+        dest_hash: [u8; TRUNCATED_HASHBYTES],
+        emission_secs: u64,
+        now_ms: u64,
+    ) {
+        self.inner
+            .note_local_emission_installed(dest_hash, emission_secs, now_ms)
+    }
+
+    fn local_emission_installed(
+        &self,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<(u64, u64)> {
+        self.inner.local_emission_installed(dest_hash)
+    }
     // Local Client Known Destinations
     fn set_local_client_known_dest(
         &mut self,
@@ -1662,6 +1679,16 @@ mod tests {
         use leviculum_core::traits::Storage as CoreStorage;
 
         let (mut storage, _dir) = temp_storage();
+
+        // The local-emission record (reviewer decision 2026-11-16) reaches
+        // the inner store: the trait default would keep nothing.
+        let own = [0x07u8; TRUNCATED_HASHBYTES];
+        CoreStorage::note_local_emission_installed(&mut storage, own, 9000, 10);
+        CoreStorage::note_local_emission_installed(&mut storage, own, 9000, 20);
+        assert_eq!(
+            CoreStorage::local_emission_installed(&storage, &own),
+            Some((9000, 10))
+        );
 
         // Verify packet hash dedup works (was no-op before this commit)
         let hash = [0x42u8; 32];

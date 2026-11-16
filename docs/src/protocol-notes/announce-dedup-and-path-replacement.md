@@ -409,19 +409,37 @@ expired one was set outranks the expiry and nothing is marked: on
 miauhaus the first of two requests expired 1.6 s after the second one's
 proof came back over the same next hop.
 
-**A local client's path is never marked.** A path whose interface is a
-connected local client's (the hops-0 entry the client's own announce
-installs) is exempt from every unresponsive mark (order 1881,
-`PATH_KEPT_LOCAL`). The reference marks it when the initiator was one
-hop away (`Transport.py:746-753`), and then the next relayed copy of
-the client's own emission takes the path at any length
-(`Transport.py:1819-1824`): on miauhaus on 2026-11-15 the Loquax home on
-the same host was reached over a 7-hop backbone route for two hours and
-every phone's link request left the box. A client on the IPC socket
-cannot have moved; an expired request says it did not answer, not that
-the route is wrong. The path leaves the client when the client
-disconnects or a newer emission places it elsewhere. The wire is
-unchanged.
+**A local client's young emission is not marked.** A connected local
+client's hops-0 path is exempt from the unresponsive mark, and so from
+replacement by a relayed copy of the same emission, only while that
+emission is young: for at most `LOCAL_EMISSION_HOLD_MS` (one hour) after
+this daemon first installed it from a local-client interface
+(`Transport::mark_path_unresponsive`, `PATH_KEPT_LOCAL
+reason=young_local_emission`). After that, or once the client has
+disconnected, the reference's rule applies unchanged: an expired request
+from a one-hop initiator marks the path (`Transport.py:746-753`) and the
+next relayed copy of the emission takes it at any length
+(`Transport.py:1819-1824`). A newer emission always wins, as before. The
+reference has no exemption; on miauhaus on 2026-11-15 its rule had the
+Loquax home on the same host reached over a 7-hop backbone route for two
+hours, and every phone's link request left the box. The bound is the
+emission and not the client's behaviour: a process that replays a
+captured announce cannot make a newer emission without the destination's
+private key, so whatever requests it answers or lets die, a path it
+captured is kept at most the hold and then repaired, while the genuine
+owner renews the hold with every announce (a Loquax home on a shared
+instance announces every 30 minutes, `ANNOUNCE_EVERY_ON_SHARED`). The
+first install of an emission is what counts: handing the same emission in
+again, re-replaying it after the network took the path back, or
+reconnecting restarts nothing. Deviation rule: the wire is unchanged, the
+state is ours alone, P1 gains the field case, and a local attacker's worst
+case is the hold. What it is not: the hold does not show the client hosts
+the destination. The record of first installs is not persisted and a full
+table (`TableCaps::local_dest_cap`) records nothing new until its oldest
+entry is a week old, so after an lnsd restart the same capture earns one
+more hold, and on a full table a new client's emission earns none. Tests:
+`leviculum-std/tests/local_emission_hold.rs`, with every attack of orders
+1898 to 1914 held to the hour.
 
 The mvr is `leviculum-core/src/node/mvr_path_answer_through_us.rs`: the
 three-node loop (a neighbour that routes the destination through us
