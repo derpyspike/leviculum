@@ -437,13 +437,33 @@ emission wins by the ordinary rule on every stack
 limit: at most one repair announce a minute, doubling toward 15 min
 while the path keeps flipping, logged `PATH_SELF_REPAIR`). This is
 client behaviour above the interface, in leviculum-std; boards carry
-none of it. Worst case: a captured path stays off-box for at most one
-beat per hijack plus the announce's travel, and a replayer buys at most
-one extra announce per rate window. What the check cannot see: on an
-abstract-socket daemon every local client renders as the same
-`LocalInterface[rns/<name>]` through `next_hop_if_name` (its
-`__str__`, `LocalInterface.py:372-374`), so a sibling client holding the captured
-path at hops 0 is told apart only where client names differ (TCP shared
-instances name clients by peer port, `LocalInterface.py:433`); such a
-capture needs a dead request the owner itself let die, and ends with
-the owner's next regular announce.
+none of it.
+
+Worst case, stated as bounds rather than as the usual case:
+
+- **Relayed or vanished path, first capture:** off-box for at most one
+  beat plus the repair announce's travel.
+- **Flapping path:** each recapture inside the flip window doubles the
+  wait between repairs, so under a path that keeps flipping back a
+  recapture can stay off-box for up to `PATH_SELF_REPAIR_MAX_INTERVAL_MS`
+  (15 min, `leviculum-std/src/path_self_repair.rs#PATH_SELF_REPAIR_MAX_INTERVAL_MS`)
+  before the next repair. A replayer buys at most one extra announce per
+  rate window.
+- **Sibling client at hops 0 on an abstract-socket daemon:** every local
+  client renders as the same `LocalInterface[rns/<name>]` through
+  `next_hop_if_name` (its `__str__`, `LocalInterface.py:372-374`), so the
+  beat sees a sibling's capture as its own healthy attachment. Such a
+  capture needs a dead request the owner itself let die, and it ends only
+  at the owner's next regular announce, which for the Loquax home is 6 h
+  (`loquax/src/home/daemon.rs#ANNOUNCE_EVERY`), unless a relayed copy
+  takes the path first and the beat repairs that.
+- **Sibling client at hops 0 on a TCP shared instance**, where each client
+  is named by its peer port (`LocalInterface.py:439`, `incoming_connection`
+  naming an `AF_INET` client by `getpeername()[1]`, at reference pin
+  d5e62d4e15c5): the beat compares the attachment name with a learned
+  baseline, and that baseline is learned from the first direct sight
+  after start and again from the first direct sight after each repair
+  announce. A capture installed before the first beat after start, or
+  between a repair announce and the next direct sight, becomes the
+  learned baseline, goes unnoticed, and ends only at the owner's next
+  regular announce, as in the abstract-socket case.

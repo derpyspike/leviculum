@@ -19,19 +19,30 @@
 //! above the interface, in the shared-instance client of leviculum-std.
 //! The transport stays Python's, and boards are unaffected.
 //!
-//! What the check can and cannot see through the drop-in RPC: a relayed
-//! path (the miauhaus field case of 2026-11-15, a 7-hop capture via a
-//! backbone for two hours) and a vanished path are visible on every
-//! daemon. A sibling local client holding the path at hops 0 is visible
-//! only when the daemon names client attachments apart: on a TCP shared
-//! instance each client is named by its peer port
-//! (`LocalInterface.py:433`), while on an abstract-socket daemon every
-//! client renders as the same `LocalInterface[rns/<name>]`
-//! (`leviculum-std/src/interfaces/inventory.rs#local_client_name`,
-//! `LocalInterface.py:372-374`), so there the sibling case is caught only
-//! once the path leaves the local attachment. Such a capture needs an
-//! unresponsive mark first — a request toward the owner that the owner
-//! itself let die — and ends with the owner's next announce.
+//! What the check can and cannot see through the drop-in RPC, as bounds:
+//!
+//! - A relayed path (the miauhaus field case of 2026-11-15, a 7-hop
+//!   capture via a backbone for two hours) and a vanished path are visible
+//!   on every daemon. A first capture is repaired at the next beat; under a
+//!   flapping path the wait doubles per recapture, so a recapture can stay
+//!   off-box for up to [`PATH_SELF_REPAIR_MAX_INTERVAL_MS`] (15 min).
+//! - A sibling local client holding the path at hops 0 on an abstract-socket
+//!   daemon is invisible: every client renders as the same
+//!   `LocalInterface[rns/<name>]`
+//!   (`leviculum-std/src/interfaces/inventory.rs#local_client_name`,
+//!   `LocalInterface.py:372-374`). Such a capture needs an unresponsive mark
+//!   first (a request toward the owner that the owner itself let die) and
+//!   ends only at the owner's next regular announce, 6 h for the Loquax home
+//!   (`loquax/src/home/daemon.rs#ANNOUNCE_EVERY`), unless a relayed copy
+//!   takes the path first and the beat repairs that.
+//! - On a TCP shared instance each client is named by its peer port
+//!   (`LocalInterface.py:439`, `incoming_connection`, at reference pin
+//!   d5e62d4e15c5), and the beat compares against a baseline name learned
+//!   from the first direct sight after start and after each repair
+//!   announce. A sibling capture installed before the first beat after
+//!   start, or between a repair announce and the next direct sight, becomes
+//!   that baseline and ends only at the owner's next regular announce, as
+//!   above.
 
 /// How often the client asks its daemon about its own path. Thirty
 /// seconds (the reviewer decision's starting point): the field case is
