@@ -115,12 +115,21 @@ const ANNOUNCE_SLOW_MS: u64 = 100;
 /// owned path survives before it is marked unresponsive like any other
 /// (order 1905). The owner keeps the path through
 /// `LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT - 1` dead requests, which covers a
-/// client that missed a request or two while busy; a checked link proof
-/// over the client or a new install by it starts the count again. A
-/// client that installed a path it cannot answer for (a replayed announce
-/// after an lnsd restart) loses it at the limit. Only expiries that reach
-/// the mark count: one inside `PATH_REQUEST_MIN_INTERVAL_MS` of the last
-/// path request for the destination is throttled before it.
+/// client that missed a request or two while busy. A new first-heard
+/// install by the client, or a checked link proof over it of a link
+/// started outside the local clients, starts the count again; the proof of
+/// a probe the owner or a sibling client started itself does not (order
+/// 1909). A client that installed a path it cannot answer for (a replayed
+/// announce after an lnsd restart) loses it at the limit. Only expiries
+/// that reach the mark count: one inside `PATH_REQUEST_MIN_INTERVAL_MS` of
+/// the last path request for the destination is throttled before it. The
+/// expiry of a request set before the last checked proof counts as well,
+/// because sub-case 4 of the link-table expiry calls
+/// `mark_path_unresponsive` before it asks `link_proven_since` (which only
+/// decides the next-hop refusal). The bound is per replay: an lnsd
+/// restart, a path expiry or an eviction forgets the emission, so the same
+/// capture starts a new count (docs/src/protocol-notes/
+/// announce-dedup-and-path-replacement.md).
 pub const LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT: u8 = 3;
 
 /// Draw ordinal of the announce-cap release delay
@@ -3909,13 +3918,18 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// eviction, and by a client with a faster route of its own. A proof
     /// shows that the destination answered, and any relay can forward one.
     /// So the hold is bounded: after `LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT`
-    /// consecutive calls here with no checked proof over the client in
+    /// consecutive calls here with no counting proof over the client in
     /// between (in practice: unproven one-hop link-request expiries), the
-    /// ownership ends and the path is marked like any other. A checked proof
-    /// or a new install by the client starts the count again
-    /// (`Storage::note_unproven_local_path_expiry`). A client that relays
-    /// for a destination it does not host therefore keeps the path while
-    /// the destination keeps answering through it, which is a working path
+    /// ownership ends and the path is marked like any other. A new
+    /// first-heard install by the client starts the count again
+    /// (`Storage::note_unproven_local_path_expiry`), and so does a checked
+    /// proof over it of a link started outside the local clients. The proof
+    /// of a probe the owner or a sibling client started itself leaves the
+    /// count as it is (order 1909): a client answering only its own probes
+    /// while network initiators' requests die loses the path at the bound.
+    /// A client that relays for a destination it does not host therefore
+    /// keeps the path while the destination keeps answering network
+    /// requests through it, which is a working path
     /// (accepted under the deviation rule: wire unchanged, Python peers'
     /// links still reach the destination, P1 keeps a proven route).
     ///
@@ -6657,7 +6671,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
     /// recall source is the cached announce for the destination
     /// (`get_announce_cache`, keyed by destination hash, holding the raw announce
     /// whose payload starts with the 64-byte public key), the same source the
-    /// link-request path uses at transport.rs:8523. A destination with no cached
+    /// link-request path uses at transport.rs:8537. A destination with no cached
     /// announce cannot be associated with an identity, so it is left untouched,
     /// exactly as Python keeps a path whose `Identity.recall` returns `None`.
     ///
@@ -7458,7 +7472,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
             path_response = is_path_response,
         );
 
-        // Gate on the already-incremented hops (transport.rs:1837 ran in the
+        // Gate on the already-incremented hops (transport.rs:1846 ran in the
         // inbound path before handle_announce, and local-client/shared-instance
         // accounting has already been applied there). Announces whose hop count
         // exceeds max_hops are neither stored in the path table nor scheduled
@@ -9232,9 +9246,16 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                     // destination's key above, says the client answers for
                     // the destination; a path it holds there is its own. An
                     // unchecked proof (no key cached) proves nothing.
+                    // Order 1909: only for a link started outside the local
+                    // clients. A proof of a probe the owner or a sibling
+                    // client started itself says nothing about the requests
+                    // the network sends, so it neither confirms ownership nor
+                    // restarts the unproven-expiry count; otherwise a client
+                    // answering only its own probes held the path forever.
                     if packet.context == PacketContext::Lrproof
                         && link_entry.peer_signing_key.is_some()
                         && self.is_local_client(interface_index)
+                        && !self.is_local_client(link_entry.received_interface_index)
                         && self
                             .storage
                             .get_path(&link_entry.destination_hash)
@@ -12946,7 +12967,7 @@ impl<C: Clock, S: Storage> Transport<C, S> {
                 // Emit the STORED path-table count, matching Python
                 // Transport.py:2956 (`packet.hops = path_table[dst][IDX_PT_HOPS]`).
                 // The cached raw's hop byte is the PRE-increment wire value
-                // (`stored - 1`): the receipt increment (`transport.rs:2985`) only
+                // (`stored - 1`): the receipt increment (`transport.rs:2994`) only
                 // touches the in-memory packet, never the raw buffer stashed by
                 // `set_announce_cache`. Using it here would put `stored - 1` on the
                 // wire and every peer that learns via this response would be one hop
@@ -19343,7 +19364,7 @@ mod tests {
             // stored timebase, must be rejected. Acceptance is observed via
             // the PathFound event, which fires only when the table updates.
             // (The rejected blob is still RECORDED for replay detection —
-            // `random_blobs` (transport.rs:8345), a deliberate anti-replay
+            // `random_blobs` (transport.rs:8359), a deliberate anti-replay
             // extension — so the blob count is not a rejection indicator.)
             transport
                 .clock
@@ -25637,7 +25658,7 @@ mod tests {
         // (PATHFINDER_MAX_HOPS=128) must NOT be stored in the path table nor
         // scheduled for rebroadcast, mirroring Python RNS Transport.py:1750
         // (`local_and_hops_condition = packet.hops < PATHFINDER_M+1`, M=128).
-        // The inbound path increments hops once (transport.rs:1837) before
+        // The inbound path increments hops once (transport.rs:1846) before
         // handle_announce, so `packet.hops` inside the handler is already the
         // post-increment value — same accounting as the RNS gate.
         #[test]
@@ -29443,6 +29464,77 @@ mod tests {
                 Some(local)
             );
             assert!(!transport.path_is_unresponsive(&dest_hash));
+        }
+
+        /// Order 1909: a checked proof over the owner restarts the count only
+        /// for a link a network initiator started. Two dead requests, then a
+        /// network-initiated proof: the count is back at zero, so
+        /// `LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT - 1` further dead requests keep
+        /// the path and the next one marks it. With a sibling client's probe
+        /// proven in the same place instead, the count runs on and the third
+        /// dead request marks the path.
+        #[test]
+        fn only_a_network_initiated_proof_restarts_the_owners_count() {
+            for (prober_is_network, seed) in [(true, 0x40u8), (false, 0x60u8)] {
+                let mut transport = make_transport_enabled();
+                let local = transport.register_interface(Box::new(MockInterface::new("local", 1)));
+                let backbone = transport.register_interface(Box::new(MockInterface::new("bb", 2)));
+                let sibling = transport.register_interface(Box::new(MockInterface::new("sib", 3)));
+                transport.set_local_client(local, true);
+                transport.set_local_client(sibling, true);
+
+                let dest = make_test_dest();
+                let dest_hash = dest.hash().into_bytes();
+                let rh = make_random_hash([seed, 0xC2, 0xC3, 0xC4, 0xC5], 9960);
+                let own = make_announce_raw_with_random_hash(&dest, 0, &rh);
+                transport.process_incoming(local, &own).unwrap();
+                transport.drain_actions();
+
+                let limit = usize::from(LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT);
+                let mut id = seed;
+                for _ in 0..limit - 1 {
+                    expire_counted_one_hop_link_request(
+                        &mut transport,
+                        [id; TRUNCATED_HASHBYTES],
+                        local,
+                        backbone,
+                        dest_hash,
+                    );
+                    id += 1;
+                }
+                assert!(!transport.path_is_unresponsive(&dest_hash));
+
+                let initiator = if prober_is_network { backbone } else { sibling };
+                prove_link_over(
+                    &mut transport,
+                    [id; TRUNCATED_HASHBYTES],
+                    local,
+                    initiator,
+                    &dest,
+                );
+                id += 1;
+
+                // After a network proof LIMIT dead requests are needed again;
+                // after a sibling's proof the very next one reaches the bound.
+                let to_bound = if prober_is_network { limit } else { 1 };
+                for i in 0..to_bound {
+                    expire_counted_one_hop_link_request(
+                        &mut transport,
+                        [id; TRUNCATED_HASHBYTES],
+                        local,
+                        backbone,
+                        dest_hash,
+                    );
+                    id += 1;
+                    assert_eq!(
+                        transport.path_is_unresponsive(&dest_hash),
+                        i + 1 == to_bound,
+                        "network proof: {prober_is_network}, expiry {} after the proof",
+                        i + 1
+                    );
+                }
+                assert_eq!(transport.storage().local_path_owner(&dest_hash), None);
+            }
         }
 
         /// Order 1905, declared as PINNING behaviour accepted under the
