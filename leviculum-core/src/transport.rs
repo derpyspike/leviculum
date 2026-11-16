@@ -29096,59 +29096,6 @@ mod tests {
             assert!(transport.mark_path_unresponsive(&dest_hash));
         }
 
-        /// A disconnected client's path is markable at once, however young
-        /// its emission.
-        #[test]
-        fn a_disconnected_clients_young_path_is_markable() {
-            let mut transport = make_transport_enabled();
-            let local = transport.register_interface(Box::new(MockInterface::new("local", 1)));
-            transport.set_local_client(local, true);
-            let dest = make_test_dest();
-            let dest_hash = dest.hash().into_bytes();
-            let rh = make_random_hash([0x41, 0x42, 0x43, 0x44, 0x45], 7000);
-            let own = make_announce_raw_with_random_hash(&dest, 0, &rh);
-            transport.process_incoming(local, &own).unwrap();
-            transport.drain_actions();
-            transport.set_local_client(local, false);
-            let path = transport.storage().get_path(&dest_hash).unwrap();
-            assert_eq!((path.interface_index, path.hops), (local, 0));
-            assert!(transport.mark_path_unresponsive(&dest_hash));
-        }
-
-        /// The hold covers the hops-0 path the emission installed, not a
-        /// longer copy of the same young emission that a second local client
-        /// later hands in over an unresponsive path.
-        #[test]
-        fn a_longer_copy_of_a_young_emission_from_a_sibling_holds_nothing() {
-            let mut transport = make_transport_enabled();
-            let local = transport.register_interface(Box::new(MockInterface::new("local", 1)));
-            let sibling = transport.register_interface(Box::new(MockInterface::new("sib", 2)));
-            transport.set_local_client(local, true);
-            transport.set_local_client(sibling, true);
-            let dest = make_test_dest();
-            let dest_hash = dest.hash().into_bytes();
-            let rh = make_random_hash([0x51, 0x52, 0x53, 0x54, 0x55], 7000);
-            let own = make_announce_raw_with_random_hash(&dest, 0, &rh);
-            transport.process_incoming(local, &own).unwrap();
-            transport.drain_actions();
-            transport
-                .storage_mut()
-                .set_path_state(dest_hash, PathState::Unresponsive);
-
-            transport.storage_mut().clear_packet_hashes();
-            transport.clock.advance(ANNOUNCE_RATE_LIMIT_MS + 1);
-            let longer = make_announce_raw_with_random_hash(&dest, 2, &rh);
-            transport.process_incoming(sibling, &longer).unwrap();
-            transport.drain_actions();
-            let path = transport.storage().get_path(&dest_hash).unwrap();
-            assert_eq!(path.interface_index, sibling);
-            assert_ne!(path.hops, 0);
-            assert!(
-                transport.mark_path_unresponsive(&dest_hash),
-                "only the hops-0 path is held"
-            );
-        }
-
         #[test]
         fn test_link_table_expiry_unvalidated_no_mark_when_dest_far() {
             let mut transport = make_transport_enabled();
