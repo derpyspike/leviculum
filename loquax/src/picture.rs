@@ -697,7 +697,7 @@ impl Painter {
     /// Region passes the last [`draw`](Self::draw) (or its whole-view
     /// siblings) ran: the regions that reached into the view, less the
     /// unreadable and those wholly hidden under a complete region drawn
-    /// over them ([`hidden_under`], order 1943).
+    /// over them (`hidden_under`, order 1943).
     pub fn regions_drawn(&self) -> usize {
         self.drawn_last
     }
