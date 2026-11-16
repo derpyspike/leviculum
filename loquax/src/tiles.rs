@@ -492,7 +492,10 @@ impl TileCache {
             if !frame.moving {
                 self.keep_near(frame.zoom);
             }
-            return drawn;
+            // A region that could not be read leaves the frame owed, so
+            // it is drawn again when the next progress or epoch moves
+            // (order 1942 item 5).
+            return drawn.map(|(credit, owed, unreadable)| (credit, owed + unreadable));
         }
         let grid = Grid::of(&frame.view, frame.zoom);
         let keys = grid.keys(frame.style, percent);
@@ -1072,7 +1075,10 @@ fn draw_tile(painter: &mut Painter, key: &TileKey, smooth: bool) -> Rendered {
     );
     // Straight into RGBA (1422): no Rgb565 buffer, no pass to widen it.
     let drawn = painter.draw_rgba(&view, Ink::Colour, key.style, key.percent, smooth);
-    (*key, drawn.rgba, drawn.attribution, drawn.pending > 0)
+    // A region that could not be read keeps the tile provisional too
+    // (order 1942 item 5): drawn again rather than cached incomplete.
+    let provisional = drawn.pending > 0 || drawn.unreadable > 0;
+    (*key, drawn.rgba, drawn.attribution, provisional)
 }
 
 /// The pan's velocity, a moving average in screen pixels a second that

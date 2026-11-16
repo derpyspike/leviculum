@@ -3470,7 +3470,8 @@ mod tests {
                 let mut fb = vec![0u16; (w * h) as usize];
                 let t0 = Instant::now();
                 canvas.painter.regions()[0]
-                    .region
+                    .open()
+                    .expect("open")
                     .read_view(&view, &mut read)
                     .expect("read");
                 let t1 = Instant::now();

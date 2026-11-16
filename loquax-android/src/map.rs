@@ -410,7 +410,7 @@ impl Renderer {
         let regions: Vec<RegionRow> = loquax::picture::newest_first(&installed)
             .into_iter()
             .map(|region| {
-                let header = region.region.header();
+                let header = &region.header;
                 let b = header.bounds;
                 // The bounds are degrees times ten million; the page's
                 // middle is times a million, as every place that crosses.

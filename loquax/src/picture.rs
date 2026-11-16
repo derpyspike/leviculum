@@ -29,12 +29,12 @@
 //! with a tile not there yet says so ([`Drawn::pending`]), so a tile
 //! cache holds it only until the next progress.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::string::{String, ToString};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 use std::vec::Vec;
 
@@ -130,6 +130,83 @@ struct MapsInner {
     dir: Option<PathBuf>,
     epoch: AtomicU64,
     progress: AtomicU64,
+    /// The one open handle per region file, shared by every painter and
+    /// worker through [`Maps::open_region`] (order 1942).
+    cache: Mutex<RegionCache>,
+}
+
+/// How many region files stay open at most, process-wide (order 1942
+/// item 2): past the bound, the region no view has asked for longest is
+/// closed — its header stays known — and reopened on demand. Painters
+/// mid-draw keep their clones alive until the draw ends, so the process
+/// may briefly hold a few more. The bound test holds the same number as
+/// a literal, so it still compiles — and runs red — at b4ce4568a.
+const OPEN_REGIONS: usize = 256;
+
+/// The shared region handles and what is known about every region file.
+#[derive(Debug, Default)]
+struct RegionCache {
+    entries: HashMap<String, Cached>,
+    /// Monotonic use counter: eviction closes the smallest.
+    tick: u64,
+    /// `(file, cause)` pairs already said as `MAP_READ_FAILED`
+    /// ([`Maps::read_failed`]).
+    said: BTreeSet<(String, String)>,
+}
+
+/// One region file as the cache knows it: the open handle while it is
+/// held, and the header either way, so a thousand listed regions do not
+/// need a thousand descriptors.
+struct Cached {
+    /// The one open handle, `None` once evicted past [`OPEN_REGIONS`].
+    region: Option<Arc<Region<File>>>,
+    header: Header,
+    attribution: String,
+    /// The file's length and modification time when it was parsed: a
+    /// file that moved on either is parsed again.
+    len: u64,
+    modified: Option<SystemTime>,
+    /// The epoch and progress this entry was last validated against: no
+    /// stat while neither moved. A `viewed` touch changes only the
+    /// modification time and bumps neither, so it costs no reopen.
+    stamp: (u64, u64),
+    used: u64,
+}
+
+impl core::fmt::Debug for Cached {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Cached")
+            .field("open", &self.region.is_some())
+            .field("len", &self.len)
+            .field("used", &self.used)
+            .finish()
+    }
+}
+
+/// A region file that would not open: the file system's refusal or the
+/// region format's.
+enum OpenFailure {
+    Io(std::io::Error),
+    Region(RegionError),
+}
+
+impl core::fmt::Display for OpenFailure {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Io(error) => write!(f, "{error}"),
+            Self::Region(error) => write!(f, "{error:?}"),
+        }
+    }
+}
+
+/// The cache's lock, held through a poisoning panic as well: the cache
+/// holds no half-written state a panicking thread could leave behind —
+/// every entry is inserted whole.
+fn cache_of(inner: &MapsInner) -> std::sync::MutexGuard<'_, RegionCache> {
+    match inner.cache.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
 }
 
 impl Maps {
@@ -140,6 +217,7 @@ impl Maps {
                 dir,
                 epoch: AtomicU64::new(0),
                 progress: AtomicU64::new(0),
+                cache: Mutex::new(RegionCache::default()),
             }),
         }
     }
@@ -172,8 +250,157 @@ impl Maps {
     }
 
     /// Every region there now, and a line for each that did not open.
+    ///
+    /// Headers come from the shared cache where the file is unchanged, so
+    /// listing a thousand regions parses only what moved; a file gone
+    /// from the directory leaves the cache here. See [`load`] for what a
+    /// line says and what happens to a region in the pre-1714 layout.
     pub fn load(&self) -> (Vec<Installed>, Vec<String>) {
-        self.dir().map(load).unwrap_or_default()
+        let Some(dir) = self.dir() else {
+            return (Vec::new(), Vec::new());
+        };
+        let paths = region_files(dir);
+        let stamp = (self.epoch(), self.progress());
+        let (mut regions, mut problems) = (Vec::new(), Vec::new());
+        let mut listed: BTreeSet<String> = BTreeSet::new();
+        for path in paths {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            listed.insert(name.clone());
+            let meta = std::fs::metadata(&path).ok();
+            let modified = meta.as_ref().and_then(|m| m.modified().ok());
+            let len = meta.map(|m| m.len());
+            // Known and unchanged: the cached header, no open, no parse.
+            {
+                let mut cache = cache_of(&self.inner);
+                if let Some(c) = cache.entries.get_mut(&name) {
+                    let same = len == Some(c.len) && modified == c.modified && modified.is_some();
+                    if c.stamp == stamp || same {
+                        c.stamp = stamp;
+                        regions.push(Installed {
+                            name,
+                            header: c.header,
+                            attribution: c.attribution.clone(),
+                            modified,
+                            maps: self.clone(),
+                        });
+                        continue;
+                    }
+                }
+            }
+            match self.open_region_typed(&name) {
+                Ok(region) => regions.push(Installed {
+                    name,
+                    header: *region.header(),
+                    attribution: region.attribution().to_string(),
+                    modified,
+                    maps: self.clone(),
+                }),
+                Err(OpenFailure::Region(RegionError::Header(OLD_LAYOUT))) => match is_auto(&name) {
+                    true => {
+                        let removed = std::fs::remove_file(&path);
+                        tracing::info!(
+                            "MAPLOAD old_layout file={name} removed={}",
+                            removed.is_ok()
+                        );
+                    }
+                    false => problems.push(format!(
+                        "map {name} was made by an older Loquax and cannot be read: \
+                         load the map of this place again"
+                    )),
+                },
+                Err(OpenFailure::Region(error)) => {
+                    problems.push(format!("map {}: {error:?}", path.display()));
+                }
+                Err(OpenFailure::Io(error)) => {
+                    problems.push(format!("map {}: {error}", path.display()));
+                }
+            }
+        }
+        // Files gone from the directory take their cache entries along.
+        let mut cache = cache_of(&self.inner);
+        cache.entries.retain(|name, _| listed.contains(name));
+        (regions, problems)
+    }
+
+    /// The one open handle of region file `name`, shared by every painter
+    /// and worker (order 1942 item 1): descriptors grow with the number
+    /// of regions, not with regions times painters. Reads go through
+    /// `pread` ([`Storage`](leviculum_map::region::Storage) for `File`),
+    /// which keeps no position, so the
+    /// sharing needs no lock around a read. The handle is opened — and
+    /// its header parsed — only when the cache does not hold it or the
+    /// file changed since; past `OPEN_REGIONS` open handles the one no
+    /// caller asked for longest is closed first.
+    pub fn open_region(&self, name: &str) -> Result<Arc<Region<File>>, String> {
+        self.open_region_typed(name).map_err(|e| e.to_string())
+    }
+
+    fn open_region_typed(&self, name: &str) -> Result<Arc<Region<File>>, OpenFailure> {
+        let Some(dir) = self.dir() else {
+            return Err(OpenFailure::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no maps directory",
+            )));
+        };
+        let path = dir.join(name);
+        let stamp = (self.epoch(), self.progress());
+        let mut cache = cache_of(&self.inner);
+        cache.tick += 1;
+        let tick = cache.tick;
+        if let Some(c) = cache.entries.get_mut(name) {
+            if let (Some(region), true) = (&c.region, c.stamp == stamp) {
+                c.used = tick;
+                return Ok(Arc::clone(region));
+            }
+            // The directory moved since, or the handle was evicted: one
+            // stat says whether the parse is still good.
+            let meta = std::fs::metadata(&path).map_err(OpenFailure::Io)?;
+            let modified = meta.modified().ok();
+            if meta.len() == c.len && modified == c.modified && modified.is_some() {
+                c.stamp = stamp;
+                c.used = tick;
+                if let Some(region) = &c.region {
+                    return Ok(Arc::clone(region));
+                }
+            }
+        }
+        let meta = std::fs::metadata(&path).map_err(OpenFailure::Io)?;
+        let file = File::open(&path).map_err(OpenFailure::Io)?;
+        let region = Arc::new(Region::open(file).map_err(OpenFailure::Region)?);
+        cache.entries.insert(
+            name.to_string(),
+            Cached {
+                header: *region.header(),
+                attribution: region.attribution().to_string(),
+                len: meta.len(),
+                modified: meta.modified().ok(),
+                stamp,
+                used: tick,
+                region: Some(Arc::clone(&region)),
+            },
+        );
+        close_over_bound(&mut cache);
+        Ok(region)
+    }
+
+    /// Say `MAP_READ_FAILED file=… err=…` once per file and cause (order
+    /// 1942 item 5): the same failure every frame is one line, a new
+    /// cause on the same file is another. The pairs said so far are
+    /// [`Maps::read_failures`].
+    pub fn read_failed(&self, name: &str, cause: &str) {
+        let mut cache = cache_of(&self.inner);
+        if cache.said.insert((name.to_string(), cause.to_string())) {
+            tracing::warn!("MAP_READ_FAILED file={name} err={cause}");
+        }
+    }
+
+    /// Every `(file, cause)` said as `MAP_READ_FAILED`, sorted: what a
+    /// report or a watchdog lists without reading the log back.
+    pub fn read_failures(&self) -> Vec<(String, String)> {
+        cache_of(&self.inner).said.iter().cloned().collect()
     }
 
     /// How many region files there are now and their bytes together, by
@@ -216,18 +443,61 @@ impl Maps {
         let (regions, _) = self.load();
         newest_first(&regions)
             .into_iter()
-            .map(|r| *r.region.header())
+            .map(|r| r.header)
             .collect()
     }
 }
 
-/// One region file, open.
+/// Close open handles past [`OPEN_REGIONS`], the longest unasked-for
+/// first. The headers stay; a painter that wants a closed region again
+/// reopens it through [`Maps::open_region`].
+fn close_over_bound(cache: &mut RegionCache) {
+    let mut open: Vec<(u64, String)> = cache
+        .entries
+        .iter()
+        .filter(|(_, c)| c.region.is_some())
+        .map(|(name, c)| (c.used, name.clone()))
+        .collect();
+    if open.len() <= OPEN_REGIONS {
+        return;
+    }
+    open.sort_unstable();
+    for (_, name) in &open[..open.len() - OPEN_REGIONS] {
+        if let Some(c) = cache.entries.get_mut(name) {
+            c.region = None;
+        }
+    }
+}
+
+/// One region file of the maps directory: its header and credit, known
+/// without holding the file open. The file itself is opened through the
+/// directory's shared cache ([`Installed::open`]), one handle per file
+/// however many painters draw it (order 1942).
 pub struct Installed {
     pub name: String,
-    pub region: Region<File>,
+    /// The header as the file was last parsed, which says where the
+    /// region reaches and how deep ([`drawn`]).
+    pub header: Header,
+    /// The credit the region carries, under every view that draws it.
+    pub attribution: String,
     /// The file's modification time, which a view of an autoloaded region
     /// renews ([`Painter`]); `None` where the file system keeps none.
     pub modified: Option<SystemTime>,
+    maps: Maps,
+}
+
+impl Installed {
+    /// The shared handle on this region, opened on demand
+    /// ([`Maps::open_region`]).
+    pub fn open(&self) -> Result<Arc<Region<File>>, String> {
+        self.maps.open_region(&self.name)
+    }
+
+    /// The pixels of `view` this region's box covers, as
+    /// [`Region::area`] has it, from the header alone.
+    pub fn area(&self, view: &Viewport) -> Rectangle {
+        view.area_of(&self.header.bounds)
+    }
 }
 
 /// `regions`, the newest file first, ties by name: a map opened without
@@ -288,35 +558,7 @@ fn region_files(dir: &Path) -> Vec<PathBuf> {
 /// placed one stays, and its line says in user words that it must be
 /// loaded again.
 pub fn load(dir: &Path) -> (Vec<Installed>, Vec<String>) {
-    let paths = region_files(dir);
-    let (mut regions, mut problems) = (Vec::new(), Vec::new());
-    for path in paths {
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-        match File::open(&path).map(Region::open) {
-            Ok(Ok(region)) => regions.push(Installed {
-                name,
-                region,
-                modified,
-            }),
-            Ok(Err(RegionError::Header(OLD_LAYOUT))) => match is_auto(&name) {
-                true => {
-                    let removed = std::fs::remove_file(&path);
-                    tracing::info!("MAPLOAD old_layout file={name} removed={}", removed.is_ok());
-                }
-                false => problems.push(format!(
-                    "map {name} was made by an older Loquax and cannot be read: \
-                     load the map of this place again"
-                )),
-            },
-            Ok(Err(error)) => problems.push(format!("map {}: {error:?}", path.display())),
-            Err(error) => problems.push(format!("map {}: {error}", path.display())),
-        }
-    }
-    (regions, problems)
+    Maps::new(Some(dir.to_path_buf())).load()
 }
 
 /// One view drawn into opaque RGBA ([`Painter::draw_rgba`]): its bytes,
@@ -325,6 +567,10 @@ pub struct DrawnRgba {
     pub rgba: Vec<u8>,
     pub attribution: String,
     pub pending: usize,
+    /// Regions of the view that could not be read (order 1942 item 5):
+    /// the picture is not whole, and each file's cause was said once as
+    /// `MAP_READ_FAILED` ([`Maps::read_failed`]).
+    pub unreadable: usize,
 }
 
 /// One view drawn: its pixels, Rgb565 in the frame's byte order, and the
@@ -336,6 +582,10 @@ pub struct Drawn {
     /// stood in for or left out (1291): draw it again on its next
     /// [`Maps::progress`].
     pub pending: usize,
+    /// Regions of the view that could not be read (order 1942 item 5):
+    /// the picture is not whole, and each file's cause was said once as
+    /// `MAP_READ_FAILED` ([`Maps::read_failed`]).
+    pub unreadable: usize,
 }
 
 /// The installed regions and the buffers a view is read into, kept from
@@ -526,9 +776,7 @@ impl Painter {
     pub fn world_only(&mut self, view: &Viewport) -> bool {
         self.refresh();
         drawn(
-            self.regions
-                .iter()
-                .map(|r| (r.name.as_str(), r.region.header())),
+            self.regions.iter().map(|r| (r.name.as_str(), &r.header)),
             view,
         )
         .is_empty()
@@ -539,13 +787,13 @@ impl Painter {
     pub fn headers(&self) -> Vec<Header> {
         newest_first(&self.regions)
             .into_iter()
-            .map(|r| *r.region.header())
+            .map(|r| r.header)
             .collect()
     }
 
     /// The zooms a frontend offers over these regions and the outline.
     pub fn zooms(&self) -> (u8, u8) {
-        let zooms = view_zooms(self.regions.iter().map(|r| r.region.header()));
+        let zooms = view_zooms(self.regions.iter().map(|r| &r.header));
         (*zooms.start(), *zooms.end())
     }
 
@@ -575,17 +823,18 @@ impl Painter {
     ) -> Drawn {
         let (w, h) = view.size();
         let mut fb = vec![0u16; (w as usize) * (h as usize)];
-        let (attribution, pending) = match Frame::new(&mut fb, w, h) {
+        let (attribution, pending, unreadable) = match Frame::new(&mut fb, w, h) {
             Some(mut frame) => match blend {
                 Some(b) => self.draw_world_into(b, ink, style, percent, &mut frame),
                 None => self.draw_into(view, ink, style, percent, &mut frame),
             },
-            None => (outline::ATTRIBUTION.to_string(), 0),
+            None => (outline::ATTRIBUTION.to_string(), 0, 0),
         };
         Drawn {
             fb,
             attribution,
             pending,
+            unreadable,
         }
     }
 
@@ -608,19 +857,20 @@ impl Painter {
         // Opaque black, as the Rgb565 frame's zeros widen.
         let mut rgba = [0u8, 0, 0, 0xff].repeat((w as usize) * (h as usize));
         let blend = self.world_blend(view);
-        let (attribution, pending) = match RgbaFrame::new(&mut rgba, w, h) {
+        let (attribution, pending, unreadable) = match RgbaFrame::new(&mut rgba, w, h) {
             Some(frame) => match &blend {
                 Some(b) => {
                     self.draw_world_into(b, ink, style, percent, &mut frame.smoothed(smooth))
                 }
                 None => self.draw_into(view, ink, style, percent, &mut frame.smoothed(smooth)),
             },
-            None => (outline::ATTRIBUTION.to_string(), 0),
+            None => (outline::ATTRIBUTION.to_string(), 0, 0),
         };
         DrawnRgba {
             rgba,
             attribution,
             pending,
+            unreadable,
         }
     }
 
@@ -643,7 +893,7 @@ impl Painter {
         percent: u32,
         smooth: bool,
         rgba: &mut [u8],
-    ) -> Option<(String, usize)> {
+    ) -> Option<(String, usize, usize)> {
         let (w, h) = blend.size();
         let frame = RgbaFrame::new(rgba, w, h)?;
         Some(self.draw_world_into(blend, ink, style, percent, &mut frame.smoothed(smooth)))
@@ -662,7 +912,7 @@ impl Painter {
         style: Style,
         percent: u32,
         frame: &mut D,
-    ) -> (String, usize)
+    ) -> (String, usize, usize)
     where
         D: Coverage<Color = Rgb565, Error = core::convert::Infallible>,
     {
@@ -673,20 +923,27 @@ impl Painter {
         let (aux, warp) = blend_grid(blend);
         let rings = blend_rings(blend);
         let order = drawn(
-            self.regions
-                .iter()
-                .map(|r| (r.name.as_str(), r.region.header())),
+            self.regions.iter().map(|r| (r.name.as_str(), &r.header)),
             &aux,
         );
         let mut shown: Vec<usize> = Vec::new();
+        let mut unreadable = 0usize;
         for &i in &order {
             let installed = &self.regions[i];
-            let area = warped_area(aux.area_of(&installed.region.header().bounds), &warp, frame);
+            let area = warped_area(aux.area_of(&installed.header.bounds), &warp, frame);
             if area.is_zero_sized() {
                 continue;
             }
-            if let Some(owed) = region_into_warped(
-                &installed.region,
+            let region = match installed.open() {
+                Ok(region) => region,
+                Err(cause) => {
+                    self.maps.read_failed(&installed.name, &cause);
+                    unreadable += 1;
+                    continue;
+                }
+            };
+            match region_into_warped(
+                &region,
                 &aux,
                 &rings,
                 area,
@@ -697,9 +954,15 @@ impl Painter {
                 &mut self.scratch,
                 frame,
             ) {
-                attribution = installed.region.attribution().to_string();
-                shown.push(i);
-                pending += owed;
+                Ok(owed) => {
+                    attribution = installed.attribution.clone();
+                    shown.push(i);
+                    pending += owed;
+                }
+                Err(cause) => {
+                    self.maps.read_failed(&installed.name, &cause);
+                    unreadable += 1;
+                }
             }
         }
         for i in shown {
@@ -725,7 +988,7 @@ impl Painter {
             );
             attribution = format!("{attribution} · {}", timezones::ATTRIBUTION);
         }
-        (attribution, pending)
+        (attribution, pending, unreadable)
     }
 
     /// [`draw`](Self::draw)'s picture into `frame`: its credit and the
@@ -737,15 +1000,13 @@ impl Painter {
         style: Style,
         percent: u32,
         frame: &mut D,
-    ) -> (String, usize)
+    ) -> (String, usize, usize)
     where
         D: Coverage<Color = Rgb565, Error = core::convert::Infallible>,
     {
         self.refresh();
         let order = drawn(
-            self.regions
-                .iter()
-                .map(|r| (r.name.as_str(), r.region.header())),
+            self.regions.iter().map(|r| (r.name.as_str(), &r.header)),
             view,
         );
         let mut attribution = outline::ATTRIBUTION.to_string();
@@ -753,9 +1014,7 @@ impl Painter {
         let mut pending = 0;
         // The outline goes under the view unless one region fills it.
         let whole = frame.bounding_box();
-        let filled = order
-            .iter()
-            .any(|&i| self.regions[i].region.area(view) == whole);
+        let filled = order.iter().any(|&i| self.regions[i].area(view) == whole);
         if !filled {
             // Hard, as the tile cache draws it under a composed frame
             // (`tiles::outline_under`): the two pictures agree there.
@@ -780,11 +1039,20 @@ impl Painter {
         // there: a region still arriving draws no coarser stand-in over
         // them (audit of 1836, finding 2).
         let mut solid: Vec<(Rectangle, u8)> = Vec::new();
+        let mut unreadable = 0usize;
         for &i in &order {
             let installed = &self.regions[i];
-            let area = installed.region.area(view);
-            if let Some(owed) = region_into(
-                &installed.region,
+            let area = installed.area(view);
+            let region = match installed.open() {
+                Ok(region) => region,
+                Err(cause) => {
+                    self.maps.read_failed(&installed.name, &cause);
+                    unreadable += 1;
+                    continue;
+                }
+            };
+            match region_into(
+                &region,
                 view,
                 area,
                 &solid,
@@ -798,12 +1066,18 @@ impl Painter {
                 &mut self.scratch,
                 frame,
             ) {
-                attribution = installed.region.attribution().to_string();
-                shown.push(i);
-                pending += owed;
-                if owed == 0 {
-                    let data = installed.region.header().max_zoom.min(view.zoom());
-                    solid.push((area, data));
+                Ok(owed) => {
+                    attribution = installed.attribution.clone();
+                    shown.push(i);
+                    pending += owed;
+                    if owed == 0 {
+                        let data = installed.header.max_zoom.min(view.zoom());
+                        solid.push((area, data));
+                    }
+                }
+                Err(cause) => {
+                    self.maps.read_failed(&installed.name, &cause);
+                    unreadable += 1;
                 }
             }
         }
@@ -830,7 +1104,7 @@ impl Painter {
             );
             attribution = format!("{attribution} · {}", timezones::ATTRIBUTION);
         }
-        (attribution, pending)
+        (attribution, pending, unreadable)
     }
 
     /// The names `view` shows from every region that reaches into it, in
@@ -873,16 +1147,13 @@ impl Painter {
                 (i64::from(q.x), i64::from(q.y))
             };
             let order = drawn(
-                self.regions
-                    .iter()
-                    .map(|r| (r.name.as_str(), r.region.header())),
+                self.regions.iter().map(|r| (r.name.as_str(), &r.header)),
                 &aux,
             );
             for i in order {
                 let mut found = Vec::new();
-                if self.regions[i]
-                    .region
-                    .view_labels(&aux, lines, &mut found)
+                if self
+                    .labelled(i, |region| region.view_labels(&aux, lines, &mut found))
                     .is_ok()
                 {
                     for mut l in found {
@@ -901,17 +1172,14 @@ impl Painter {
         }
         self.refresh();
         let order = drawn(
-            self.regions
-                .iter()
-                .map(|r| (r.name.as_str(), r.region.header())),
+            self.regions.iter().map(|r| (r.name.as_str(), &r.header)),
             view,
         );
         let mut out = Vec::new();
         for i in order.iter().copied() {
             let mut found = Vec::new();
-            if self.regions[i]
-                .region
-                .view_labels(view, lines, &mut found)
+            if self
+                .labelled(i, |region| region.view_labels(view, lines, &mut found))
                 .is_ok()
             {
                 out.extend(found);
@@ -921,13 +1189,27 @@ impl Painter {
         // the view, so the outline's own names are what is on screen.
         let (w, h) = view.size();
         let whole = Rectangle::new(Point::zero(), (w, h).into());
-        if !order
-            .iter()
-            .any(|&i| self.regions[i].region.area(view) == whole)
-        {
+        if !order.iter().any(|&i| self.regions[i].area(view) == whole) {
             outline::names(outline::NAMES_50M, view, &mut out);
         }
         out
+    }
+
+    /// The names of region `i` read through the shared handle: an open
+    /// or read that fails is said once per file and cause
+    /// ([`Maps::read_failed`]), and the region's names are left out.
+    fn labelled<F>(&self, i: usize, read: F) -> Result<(), String>
+    where
+        F: FnOnce(&Region<File>) -> Result<(), leviculum_map::region::RegionError>,
+    {
+        let installed = &self.regions[i];
+        let outcome = installed
+            .open()
+            .and_then(|region| read(&region).map_err(|e| format!("{e:?}")));
+        if let Err(cause) = &outcome {
+            self.maps.read_failed(&installed.name, cause);
+        }
+        outcome
     }
 
     /// Mark the autoloaded region `i` viewed, at most every
@@ -1136,7 +1418,8 @@ where
 /// `area` of `frame` (1799 item 0): as [`region_into`], but every placed
 /// point bent onto the blended screen, nothing cleared, and no building
 /// footprints — the blend never reaches the zooms that draw them. How
-/// many tiles are not there yet; `None` when a tile could not be read.
+/// many tiles are not there yet; the cause when a tile could not be
+/// read.
 #[allow(clippy::too_many_arguments)]
 fn region_into_warped<D>(
     region: &Region<File>,
@@ -1149,16 +1432,12 @@ fn region_into_warped<D>(
     read: &mut Vec<(ViewTile, Vec<u8>)>,
     fill: &mut FillScratch,
     frame: &mut D,
-) -> Option<usize>
+) -> Result<usize, String>
 where
     D: Coverage<Color = Rgb565, Error = core::convert::Infallible>,
 {
-    let Ok(pending) = region.read_view(aux, read) else {
-        return None;
-    };
-    let Ok(tiles) = draw_tiles(read) else {
-        return None;
-    };
+    let pending = region.read_view(aux, read).map_err(|e| format!("{e:?}"))?;
+    let tiles = draw_tiles(read).map_err(|e| format!("{e:?}"))?;
     let h = frame.bounding_box().size.height;
     // A bucket head a row of the frame.
     fill.heads.resize(h as usize, 0);
@@ -1184,13 +1463,13 @@ where
         &mut work,
         &mut NoClock,
     );
-    Some(pending)
+    Ok(pending)
 }
 
 /// Draw `region`'s tiles of `view` into `area` of `frame`, with their
 /// building footprints where the view draws them ([`draws_buildings`]);
-/// how many of its tiles are not there yet (1291), `None` when a tile
-/// could not be read, and the region is left out.
+/// how many of its tiles are not there yet (1291), or the cause when a
+/// tile could not be read, and the region is left out.
 #[allow(clippy::too_many_arguments)]
 fn region_into<D>(
     region: &Region<File>,
@@ -1209,16 +1488,12 @@ fn region_into<D>(
     buildings: &mut Vec<(TileId, Vec<u8>)>,
     fill: &mut FillScratch,
     frame: &mut D,
-) -> Option<usize>
+) -> Result<usize, String>
 where
     D: Coverage<Color = Rgb565, Error = core::convert::Infallible>,
 {
-    let Ok(pending) = region.read_view(view, read) else {
-        return None;
-    };
-    let Ok(mut tiles) = draw_tiles(read) else {
-        return None;
-    };
+    let pending = region.read_view(view, read).map_err(|e| format!("{e:?}"))?;
+    let mut tiles = draw_tiles(read).map_err(|e| format!("{e:?}"))?;
     buildings.clear();
     if draws_buildings(style, ink, view.zoom()) {
         // A section that does not read leaves the buildings out, never
@@ -1288,7 +1563,7 @@ where
             &mut NoClock,
         );
     }
-    Some(pending)
+    Ok(pending)
 }
 
 /// What a region's pass draws into of `area` (1836): all of it when the
@@ -1947,7 +2222,7 @@ mod tests {
                     .expect("data");
             }
         }
-        let area = painter.regions()[0].region.area(&view);
+        let area = painter.regions()[0].area(&view);
         let count = |a: &[u16], b: &[u16]| {
             let (mut inside, mut differ) = (0usize, 0usize);
             for y in 0..240u32 {
@@ -2065,7 +2340,7 @@ mod tests {
         }
         // The relief lies under the vector map alone: count inside the
         // region's box, the only ground a region draws.
-        let area = painter.regions()[0].region.area(&view);
+        let area = painter.regions()[0].area(&view);
         let mut differ = 0usize;
         let mut inside = 0usize;
         for y in 0..320u32 {
@@ -2228,12 +2503,7 @@ mod tests {
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../leviculum-map/fixtures");
         let mut painter = Painter::new(Maps::new(Some(fixture)));
         painter.refresh();
-        let region = painter
-            .regions
-            .first()
-            .expect("the Florence cut")
-            .region
-            .header();
+        let region = painter.regions.first().expect("the Florence cut").header;
         let view = Viewport::new(
             project(LatLon {
                 lat_e7: (region.bounds.north + region.bounds.south) / 2,
@@ -2402,5 +2672,153 @@ mod tests {
             side(&e, false),
             "nor west of the east region"
         );
+    }
+
+    /// The open descriptors of this process that point at a `*.lmr` under
+    /// `dir`. Counting only those keeps the number steady while other
+    /// tests of this binary open their own files beside this one. The
+    /// directory is canonicalized first: `/proc/self/fd` targets are
+    /// resolved paths, and a tempdir under a `TMPDIR` symlink is not.
+    fn lmr_fds(dir: &Path) -> usize {
+        let dir = dir.canonicalize().expect("the maps dir resolves");
+        let n = std::fs::read_dir("/proc/self/fd")
+            .expect("fd dir")
+            .filter_map(Result::ok)
+            .filter_map(|e| std::fs::read_link(e.path()).ok())
+            .filter(|t| t.starts_with(&dir) && t.extension().is_some_and(|x| x == "lmr"))
+            .count();
+        println!("lmr_fds dir={} n={n}", dir.display());
+        n
+    }
+
+    /// Order 1942 item 1: one handle per region file, shared by every
+    /// painter. A hundred regions held by sixteen painters at once must
+    /// cost one descriptor per region, not one per region per painter —
+    /// 71 regions times 14 workers starved the messenger of descriptors
+    /// under the 1024 soft limit on 2026-11-16.
+    #[test]
+    fn a_hundred_regions_under_sixteen_painters_hold_one_handle_each() {
+        use leviculum_map::mercator::{project, LatLon};
+        let dir = tempfile::tempdir().expect("tmp");
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../leviculum-map/fixtures/firenze.lmr");
+        for n in 0..100 {
+            std::fs::copy(&fixture, dir.path().join(format!("auto-{n:03}.lmr"))).expect("copy");
+        }
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let view = Viewport::new(
+            project(LatLon::from_degrees(43.7714, 11.2542)),
+            14,
+            240,
+            160,
+        );
+        // Every painter draws once and then holds its regions, as the
+        // tile cache's workers do between frames; the count is taken
+        // while all sixteen hold.
+        let drew = std::sync::Barrier::new(17);
+        let counted = std::sync::Barrier::new(17);
+        std::thread::scope(|s| {
+            for _ in 0..16 {
+                let maps = maps.clone();
+                let (drew, counted) = (&drew, &counted);
+                s.spawn(move || {
+                    let mut painter = Painter::new(maps);
+                    let _ = painter.draw(&view, Ink::Colour, Style::M9, 100);
+                    drew.wait();
+                    counted.wait();
+                });
+            }
+            drew.wait();
+            let held = lmr_fds(dir.path());
+            counted.wait();
+            assert!(
+                held <= 100 + 16,
+                "sixteen painters hold {held} descriptors on 100 regions; \
+                 one shared handle per region allows at most 116"
+            );
+        });
+    }
+
+    /// Order 1942 item 2: a store of thousands of regions cannot exhaust
+    /// anything. Two thousand region files are all listed with their
+    /// headers, while the open handles stay under the bound — regions
+    /// away from the view are closed and reopened on demand.
+    #[test]
+    fn two_thousand_regions_stay_under_the_open_bound() {
+        use leviculum_map::mercator::{project, LatLon};
+        let dir = tempfile::tempdir().expect("tmp");
+        let first = dir.path().join("auto-0000.lmr");
+        oltrarno_region(&first, 14..=14, usize::MAX);
+        for n in 1..2000 {
+            std::fs::copy(&first, dir.path().join(format!("auto-{n:04}.lmr"))).expect("copy");
+        }
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut painter = Painter::new(maps);
+        // Mid-Atlantic: none of the two thousand reaches this view.
+        let view = Viewport::new(project(LatLon::from_degrees(20.0, -40.0)), 6, 240, 160);
+        let _ = painter.draw(&view, Ink::Colour, Style::M9, 100);
+        assert_eq!(painter.regions().len(), 2000, "every header is known");
+        let held = lmr_fds(dir.path());
+        // 256 is [`OPEN_REGIONS`]; the literal keeps this test compiling
+        // at b4ce4568a, where no bound existed, so it runs red there.
+        assert!(
+            held <= 256 + 16,
+            "{held} region files held open; the bound is 256"
+        );
+    }
+
+    /// Order 1942 item 2, the reopening half: a region whose handle the
+    /// bound closed opens again on demand, with the header it had.
+    #[test]
+    fn an_evicted_region_reopens_on_demand() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../leviculum-map/fixtures/firenze.lmr");
+        for n in 0..(OPEN_REGIONS + 5) {
+            std::fs::copy(&fixture, dir.path().join(format!("auto-{n:03}.lmr"))).expect("copy");
+        }
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let (regions, problems) = maps.load();
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(regions.len(), OPEN_REGIONS + 5);
+        assert!(lmr_fds(dir.path()) <= OPEN_REGIONS + 1);
+        for r in &regions {
+            let region = r.open().expect("the closed handle reopens");
+            assert_eq!(*region.header(), r.header, "{}", r.name);
+        }
+        assert!(lmr_fds(dir.path()) <= OPEN_REGIONS + 1);
+    }
+
+    /// Order 1942 item 5: a region of the view that cannot be read is
+    /// counted on the drawn view — the picture is not whole — and said
+    /// as `MAP_READ_FAILED` once per file and cause, not once per frame.
+    #[test]
+    fn an_unreadable_region_is_counted_and_said_once() {
+        use leviculum_map::mercator::{project, LatLon};
+        let dir = tempfile::tempdir().expect("tmp");
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../leviculum-map/fixtures/firenze.lmr");
+        std::fs::copy(&fixture, dir.path().join("auto-good.lmr")).expect("copy");
+        std::fs::copy(&fixture, dir.path().join("auto-gone.lmr")).expect("copy");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut painter = Painter::new(maps.clone());
+        let view = Viewport::new(
+            project(LatLon::from_degrees(43.7714, 11.2542)),
+            14,
+            240,
+            160,
+        );
+        let whole = painter.draw(&view, Ink::Colour, Style::M9, 100);
+        assert_eq!(whole.unreadable, 0, "both copies read");
+        // The file breaks under the open handle, as a file truncated or
+        // rewritten while shown would: the next draws must say so, once.
+        std::fs::write(dir.path().join("auto-gone.lmr"), b"not a region").expect("break");
+        let broken = painter.draw(&view, Ink::Colour, Style::M9, 100);
+        assert_eq!(broken.unreadable, 1, "the broken copy is counted");
+        let again = painter.draw(&view, Ink::Colour, Style::M9, 100);
+        assert_eq!(again.unreadable, 1, "still counted on every frame");
+        let said = maps.read_failures();
+        assert_eq!(said.len(), 1, "one line per file and cause: {said:?}");
+        assert_eq!(said[0].0, "auto-gone.lmr");
     }
 }
