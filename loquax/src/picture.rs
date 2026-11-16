@@ -49,7 +49,7 @@ use leviculum_map::draw::{
 use leviculum_map::labels::ViewLabel;
 use leviculum_map::mercator::World;
 use leviculum_map::outline;
-use leviculum_map::region::{Header, Region, TileId};
+use leviculum_map::region::{Header, Region, RegionError, TileId};
 use leviculum_map::timezones;
 use leviculum_map::viewport::{ViewTile, Viewport, MAX_VIEW_ZOOM};
 use leviculum_mapfill::coverage::{Coverage, Hard};
@@ -229,6 +229,10 @@ pub fn newest_first(regions: &[Installed]) -> Vec<&Installed> {
     order
 }
 
+/// The header check that refuses a region in the version 5 layout of
+/// before 1714 ([`load`]).
+const OLD_LAYOUT: &str = "reader version";
+
 /// The paths of every `*.lmr` in `dir`, by name; none for a missing
 /// directory.
 fn region_files(dir: &Path) -> Vec<PathBuf> {
@@ -246,6 +250,14 @@ fn region_files(dir: &Path) -> Vec<PathBuf> {
 
 /// Every `*.lmr` in `dir`, by name, and a line for each that did not open.
 /// A missing directory is no regions, not an error.
+///
+/// A region cut in the version 5 layout of before 1714, whose header
+/// bytes 124..128 were reserved zeros, reads as minimum reader version 0
+/// and is refused as `Header("reader version")` (1919, the audit of
+/// 1714). An autoloaded one is removed here, so the next view over its
+/// place asks for that place and the autoload cuts it again; a hand
+/// placed one stays, and its line says in user words that it must be
+/// loaded again.
 pub fn load(dir: &Path) -> (Vec<Installed>, Vec<String>) {
     let paths = region_files(dir);
     let (mut regions, mut problems) = (Vec::new(), Vec::new());
@@ -255,15 +267,23 @@ pub fn load(dir: &Path) -> (Vec<Installed>, Vec<String>) {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-        match File::open(&path)
-            .map_err(|e| e.to_string())
-            .and_then(|f| Region::open(f).map_err(|e| format!("{e:?}")))
-        {
-            Ok(region) => regions.push(Installed {
+        match File::open(&path).map(Region::open) {
+            Ok(Ok(region)) => regions.push(Installed {
                 name,
                 region,
                 modified,
             }),
+            Ok(Err(RegionError::Header(OLD_LAYOUT))) => match is_auto(&name) {
+                true => {
+                    let removed = std::fs::remove_file(&path);
+                    tracing::info!("MAPLOAD old_layout file={name} removed={}", removed.is_ok());
+                }
+                false => problems.push(format!(
+                    "map {name} was made by an older Loquax and cannot be read: \
+                     load the map of this place again"
+                )),
+            },
+            Ok(Err(error)) => problems.push(format!("map {}: {error:?}", path.display())),
             Err(error) => problems.push(format!("map {}: {error}", path.display())),
         }
     }
