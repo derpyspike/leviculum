@@ -759,6 +759,9 @@ pub async fn run(options: DaemonOptions) -> Result<(), String> {
                     + if quiet_pumps >= QUIET_PUMPS { PUMP_QUIET } else { PUMP };
                 let mut unstarted = None;
                 for event in events {
+                    let Some(event) = home_census(&census_ask, &mut census, event) else {
+                        continue;
+                    };
                     match event {
                         OutboxEvent::Ready { .. } => {
                             engine_ready = true;
@@ -821,7 +824,6 @@ pub async fn run(options: DaemonOptions) -> Result<(), String> {
                                 collect_groups(&collector, &mut groups, destination);
                             }
                         }
-                        OutboxEvent::Census(answer) => census_ask.keep(&mut census, answer),
                         // A node proved an upload (1409): asked about at the
                         // end of the next sync rounds.
                         OutboxEvent::Uploaded { message_id, transient_id, node: proved_by } => {
@@ -1704,6 +1706,23 @@ impl CensusAsk {
             return Some(owed.dump);
         }
         None
+    }
+}
+
+/// The home engine's census answer (1732): kept in `slot` only when it
+/// answers the census `ask` owes, as [`pump_group`] does for a group's.
+/// Every other event is handed back to the loop.
+fn home_census(
+    ask: &CensusAsk,
+    slot: &mut Option<crate::outbox::EngineCensus>,
+    event: OutboxEvent,
+) -> Option<OutboxEvent> {
+    match event {
+        OutboxEvent::Census(answer) => {
+            ask.keep(slot, answer);
+            None
+        }
+        other => Some(other),
     }
 }
 
@@ -4626,5 +4645,59 @@ mod tests {
             .push_back(OutboxEvent::Census(answer(owed, 11)));
         pump_group(&mut store, &mut sender, &mut engine, None, &ask);
         assert_eq!(engine.census, Some(answer(owed, 11)));
+    }
+
+    /// 1746: the home engine's census answer goes through `home_census`,
+    /// the function `run` hands every home event to first. An answer of a
+    /// census that printed without it, arriving after the next one was
+    /// asked, leaves the home's slot empty.
+    #[test]
+    fn the_homes_late_census_answer_leaves_its_slot_empty() {
+        let now = tokio::time::Instant::now();
+        let mut ask = CensusAsk::default();
+        let first = ask.periodic(now).expect("nothing owed, so it asks");
+        assert_eq!(
+            ask.ready(false, now + super::super::census::ANSWER_WAIT),
+            Some(false),
+            "printed without answers"
+        );
+        let second = ask
+            .signal(now + Duration::from_secs(5))
+            .expect("asks again");
+        assert_ne!(first, second);
+        let mut home = None;
+        let handed_back = home_census(&ask, &mut home, OutboxEvent::Census(answer(first, 40)));
+        assert_eq!(
+            handed_back, None,
+            "a census answer is the census's, not the loop's"
+        );
+        assert_eq!(home, None, "the first census's late answer is not kept");
+    }
+
+    /// The twin: the answer carrying the number of the census owed fills
+    /// the home's slot, and any other event goes back to the loop
+    /// untouched.
+    #[test]
+    fn the_homes_answer_to_the_census_owed_fills_its_slot() {
+        let now = tokio::time::Instant::now();
+        let mut ask = CensusAsk::default();
+        let first = ask.periodic(now).expect("asks");
+        assert_eq!(
+            ask.ready(false, now + super::super::census::ANSWER_WAIT),
+            Some(false)
+        );
+        let second = ask
+            .signal(now + Duration::from_secs(5))
+            .expect("asks again");
+        assert_ne!(first, second);
+        let mut home = None;
+        let handed_back = home_census(&ask, &mut home, OutboxEvent::Census(answer(second, 40)));
+        assert_eq!(handed_back, None);
+        assert_eq!(home, Some(answer(second, 40)));
+        let other = OutboxEvent::Refused {
+            detail: "full".into(),
+        };
+        assert_eq!(home_census(&ask, &mut home, other.clone()), Some(other));
+        assert_eq!(home, Some(answer(second, 40)), "the slot is left as it was");
     }
 }
