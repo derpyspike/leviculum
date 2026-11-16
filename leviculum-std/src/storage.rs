@@ -1476,10 +1476,6 @@ impl leviculum_core::traits::Storage for Storage {
         self.inner.local_path_owner(dest_hash)
     }
 
-    fn note_unproven_local_path_expiry(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> u8 {
-        self.inner.note_unproven_local_path_expiry(dest_hash)
-    }
-
     fn clear_local_path_owner(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) {
         self.inner.clear_local_path_owner(dest_hash)
     }
@@ -1613,15 +1609,6 @@ mod tests {
         assert_eq!(s.local_path_owner(&b), Some(4));
         s.clear_local_path_owners_of(4);
         assert_eq!(s.local_path_owner(&b), None);
-
-        // Order 1905: the unproven-expiry count is delegated too, and a new
-        // owner record starts it again.
-        assert_eq!(s.note_unproven_local_path_expiry(&a), u8::MAX);
-        s.set_local_path_owner(a, 3);
-        assert_eq!(s.note_unproven_local_path_expiry(&a), 1);
-        assert_eq!(s.note_unproven_local_path_expiry(&a), 2);
-        s.set_local_path_owner(a, 3);
-        assert_eq!(s.note_unproven_local_path_expiry(&a), 1);
     }
 
     /// Codeberg #336: the names come off the filesystem, so `hex_decode`

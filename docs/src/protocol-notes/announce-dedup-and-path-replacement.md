@@ -409,70 +409,41 @@ expired one was set outranks the expiry and nothing is marked: on
 miauhaus the first of two requests expired 1.6 s after the second one's
 proof came back over the same next hop.
 
-**A local client's own path is not marked, for a bounded number of
-tries.** A path a connected local client owns is exempt from the
-unresponsive mark for up to `LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT - 1`
-consecutive unproven link-request expiries (order 1881, bounded by
-orders 1898 and 1905; `PATH_KEPT_LOCAL reason=local_client_owns
-unproven=N`). The reference marks it when the initiator was one hop away
-(`Transport.py:746-753`), and then the next relayed copy of the client's
-own emission takes the path at any length (`Transport.py:1819-1824`): on
-miauhaus on 2026-11-15 the Loquax home on the same host was reached over
-a 7-hop backbone route for two hours and every phone's link request left
-the box. A client on the IPC socket cannot have moved; an expired request
-says it did not answer, not that the route is wrong.
+**A local client's own path is not marked.** A path a connected local
+client owns is exempt from the unresponsive mark (order 1881, bounded by
+order 1898; `PATH_KEPT_LOCAL reason=local_client_owns`). The reference
+marks it when the initiator was one hop away (`Transport.py:746-753`),
+and then the next relayed copy of the client's own emission takes the
+path at any length (`Transport.py:1819-1824`): on miauhaus on 2026-11-15
+the Loquax home on the same host was reached over a 7-hop backbone route
+for two hours and every phone's link request left the box. A client on
+the IPC socket cannot have moved; an expired request says it did not
+answer, not that the route is wrong.
 
-Owned means all of:
+The exemption covers only a path the client is known to own, so a client
+cannot hold the path of a destination it does not host. Owned means all
+of:
 
 - the path runs over a connected, online local client's interface, at
   hops 0 with no next hop (the client's own announce; a HEADER_2 copy
   another transport node relayed to the client installs a path with a
   next hop and stays markable);
-- and either the client installed the first copy of that emission this
-  daemon remembers (the path's random blobs hold every copy heard, taken
-  or not), or a link proof for the destination, its signature checked
-  against the destination's cached key, came back over the client's
-  interface. A proof the transport could not check (no announce cached
-  when the link request passed) counts for nothing.
+- and either the client installed the path before any copy of that
+  emission was heard here (the path's random blobs hold every copy heard,
+  taken or not), or a link proof for the destination, its signature
+  checked against the destination's cached key, came back over the
+  client's interface (the client answered for it). A proof the transport
+  could not check (no announce cached when the link request passed)
+  proves nothing.
 
-Neither condition shows that the client hosts the destination:
-
-- "Installed first" means "the first copy this daemon remembers". A local
-  process that hands in a captured announce of someone else's destination
-  after an lnsd restart, after the path expired, or after the path was
-  evicted meets it, and so does a client with a faster route of its own.
-  This is the replay case, and the path table cannot tell it from a real
-  host.
-- A proof over the client shows that the destination answered, not that
-  the client hosts it. Any relay can forward a proof: a client that
-  passes the link request on to the real destination gets its proof back
-  and hands it in.
-
-So the hold is bounded. After `LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT` (3)
-consecutive unproven expiries, with no checked proof over the client in
-between, the ownership ends and the path is marked like any other; the
-network's copy of the emission then takes it back
-(`unresponsive_same_emission`). A checked proof over the client, or a new
-install by it, starts the count again. The bound applies whichever way
-the client became the owner. An expiry counts only when it reaches the
-mark: one inside `PATH_REQUEST_MIN_INTERVAL_MS` (20 s) of the last path
-request for the destination is throttled before sub-case 4, so the three
-counted expiries span at least 40 s. A replaying client thus holds a foreign
-path for at most three dead link requests. A client that relays for a
-destination keeps the path only while the destination keeps answering
-through it, which makes it a working route; that is accepted under the
-deviation rule below and pinned by
-`a_relayed_proof_holds_the_path_only_up_to_the_bound`.
-
-The hold also ends when the client disconnects (`set_local_client(id,
-false)`, which forgets every ownership of that interface, so a new client
-under a reused index inherits nothing) or when an announce installs the
-destination from anywhere else. Every writer of the unresponsive state
-goes through `mark_path_unresponsive`, the two offline-interface writers
-(`distrust_offline_path`, `reoriginate_toward_peer_links`) included; an
-offline interface never holds an owned path, so those always mark.
-Sub-case 4 of the link-table expiry refuses the next hop only when the
-mark was taken, so a kept path logs no `PATH_UNRESPONSIVE`.
+The hold ends when the client disconnects (`set_local_client(id, false)`)
+or an announce installs the destination from anywhere else. Every writer
+of the unresponsive state goes through `mark_path_unresponsive`, the two
+offline-interface writers (`distrust_offline_path`,
+`reoriginate_toward_peer_links`) included; an offline interface never
+holds an owned path, so those always mark. Sub-case 4 of the link-table
+expiry refuses the next hop only when the mark was taken, so a kept path
+logs no `PATH_UNRESPONSIVE`.
 
 Against the reference: Python never lets a local client's copy of an
 emission it has already heard from the network displace that path.
@@ -485,28 +456,21 @@ same-emission fewer-hops clause (`same_emission_fewer_hops`, Codeberg
 put the path back on the box. Without a bound, that clause plus the
 exemption gave a permanent hold to any destination a local client
 replays: the network's copy of the same emission could never win the
-path back. Now a replay of a destination the network announced first
-owns nothing and is marked at the first dead request, and any owned
-path, however it became owned, is marked at the bound. What remains a
-deviation under the deviation rule is the bounded hold on an owned path:
-the wire is unchanged (a path entry and its state are ours alone), the
-semantics a Python peer sees are unchanged (link requests still reach the
-destination, over the shorter route), and it measurably serves Priority 1
-(the two hours of miauhaus traffic leaving the box). Tests: the transport
-units `a_local_clients_replay_of_a_network_destination_is_not_pinned`,
-`a_local_clients_replay_twelve_seconds_later_is_not_pinned`,
-`a_replay_after_a_restart_holds_a_foreign_path`,
-`an_owned_path_survives_dead_requests_below_the_bound_and_with_proofs_between`,
-`a_relayed_proof_holds_the_path_only_up_to_the_bound`,
-`a_disconnect_forgets_the_clients_ownership`,
+path back. The ownership rule is what keeps that from being a hijack: a
+replay of a destination the network announced first owns nothing until
+a link proof comes back over the client, which only the holder of the
+destination's key can produce. What remains a deviation under the
+deviation rule is the hold on an owned path: the wire is unchanged (a
+path entry and its state are ours alone), the semantics a Python peer
+sees are unchanged (link requests still reach the destination, over the
+shorter route), and it measurably serves Priority 1 (the two hours of
+miauhaus traffic leaving the box). Tests: the transport units
+`a_local_clients_replay_of_a_network_destination_is_not_pinned`,
 `a_disconnected_clients_path_is_markable_again`,
-`a_relayed_announce_from_a_local_client_stays_markable` and
-`a_proof_over_the_client_makes_its_path_its_own`; in `leviculum-std/tests`,
-`local_client_path_ownership.rs`, `audit_1898_first_install_pin.rs`,
-`audit_1898_relayed_proof_pin.rs` and `audit_1898_reused_index.rs`.
-`a_kept_local_path_gets_no_next_hop_refusal` pins behaviour that
-predates the rule (an owned path has no next hop, so
-`refuse_unresponsive_next_hop` has nothing to refuse).
+`a_relayed_announce_from_a_local_client_stays_markable`,
+`a_proof_over_the_client_makes_its_path_its_own`,
+`a_kept_local_path_gets_no_next_hop_refusal`, and
+`leviculum-std/tests/local_client_path_ownership.rs`.
 
 The mvr is `leviculum-core/src/node/mvr_path_answer_through_us.rs`: the
 three-node loop (a neighbour that routes the destination through us

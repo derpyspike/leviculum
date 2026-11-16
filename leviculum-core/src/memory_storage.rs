@@ -448,18 +448,15 @@ pub struct MemoryStorage {
     /// time the client is seen.
     local_client_known_dests: BoundedMap<[u8; TRUNCATED_HASHBYTES], u64>,
 
-    // Local client path ownership (orders 1898, 1905)
+    // Local client path ownership (order 1898)
     /// Destination to the local client interface that owns its path
-    /// (`Storage::set_local_path_owner`) and the consecutive unproven
-    /// link-request expiries counted against it since the owner was set
-    /// (`Storage::note_unproven_local_path_expiry`). Removal: an announce
-    /// that installs the destination from elsewhere, the client's
-    /// disconnect, the expiry bound.
+    /// (`Storage::set_local_path_owner`). Removal: an announce that
+    /// installs the destination from elsewhere, the client's disconnect.
     ///
     /// **Eviction: oldest first.** Same population as
     /// `local_client_dest_map`; an owner dropped early only makes its path
     /// markable again, the behaviour of every path that is not owned.
-    local_path_owners: BoundedMap<[u8; TRUNCATED_HASHBYTES], (usize, u8)>,
+    local_path_owners: BoundedMap<[u8; TRUNCATED_HASHBYTES], usize>,
 
     // Discovery path requests
     /// Pending discovery path requests: dest_hash → (requesting_interface, timeout_ms)
@@ -976,11 +973,10 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // local_path_owners: BTreeMap<[u8; 16], (usize, u8)>, 3x (orders 1898, 1905)
+        // local_path_owners: BTreeMap<[u8; 16], usize>, 3x (order 1898)
         let n = self.local_path_owners.len();
-        let raw = (n
-            * (HASH_ORDER_BYTES + TRUNCATED_HASHBYTES + core::mem::size_of::<(usize, u8)>()))
-            as u64;
+        let raw =
+            (n * (HASH_ORDER_BYTES + TRUNCATED_HASHBYTES + core::mem::size_of::<usize>())) as u64;
         let est = raw * 3;
         total += est;
         let _ = writeln!(
@@ -1779,23 +1775,11 @@ impl Storage for MemoryStorage {
     }
 
     fn set_local_path_owner(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], iface_id: usize) {
-        self.local_path_owners.insert(dest_hash, (iface_id, 0));
-    }
-
-    fn note_unproven_local_path_expiry(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> u8 {
-        match self.local_path_owners.get_mut(dest_hash) {
-            Some((_, expiries)) => {
-                *expiries = expiries.saturating_add(1);
-                *expiries
-            }
-            None => u8::MAX,
-        }
+        self.local_path_owners.insert(dest_hash, iface_id);
     }
 
     fn local_path_owner(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<usize> {
-        self.local_path_owners
-            .get(dest_hash)
-            .map(|(iface, _)| *iface)
+        self.local_path_owners.get(dest_hash).copied()
     }
 
     fn clear_local_path_owner(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) {
@@ -1803,7 +1787,7 @@ impl Storage for MemoryStorage {
     }
 
     fn clear_local_path_owners_of(&mut self, iface_id: usize) {
-        self.local_path_owners.retain(|_, (i, _)| *i != iface_id);
+        self.local_path_owners.retain(|_, i| *i != iface_id);
     }
 
     // Local Client Known Destinations
@@ -3128,7 +3112,7 @@ mod diagnostic_model_tests {
         );
         assert_eq!(
             raw_bytes_of(&dump, "local_path_owners"),
-            (HASH_ORDER_BYTES + TRUNCATED_HASHBYTES + size_of::<(usize, u8)>()) as u64,
+            (HASH_ORDER_BYTES + TRUNCATED_HASHBYTES + size_of::<usize>()) as u64,
         );
         assert_eq!(
             raw_bytes_of(&dump, "discovery_path_requests"),
