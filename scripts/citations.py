@@ -43,7 +43,8 @@ scanner over the text, tested in scripts/citations-selftest.py.
 - Any file: `ANCHOR: name` ... `ANCHOR_END: name` in a comment, mdBook's
   own anchor syntax, cited as `anchor:name`.
 
-An item's range starts at its doc comments and attributes, so a citation that
+An item's range starts at its doc comments and attributes (in Rust also a
+`//` comment block directly above it), so a citation that
 pointed at the doc comment of a function names that function.
 
 A citation `A::B` matches an item when `A::B` is a suffix, segment by
@@ -72,7 +73,8 @@ header_start = _PREREQ.header_start
 class Item:
     names: list  # each a list of segments, outermost first
     kind: str
-    start: int  # first line (1-based), doc comments and attributes included
+    start: int  # first line (1-based), doc comments, a `//` block directly above
+                # and attributes included (Rust)
     end: int  # last line
     head: int  # the line the item's keyword or name stands on
     children: list = field(default_factory=list)
@@ -287,7 +289,10 @@ def _rust_items(text):
     def add(name, kind, head_off, end_off, chain):
         head = line(head_off)
         end = line(end_off)
-        start = _extend_up(lines, head, ("///", "//!", "#[", "/**", "*", "*/"))
+        # A `//` block directly above an item is read with it, as its doc
+        # comment is: the comment a test carries above `#[test]` says what
+        # that test pins (order 1935, the 1908 control read by hand).
+        start = _extend_up(lines, head, ("//", "#[", "/**", "*", "*/"))
         # `//!` belongs to the enclosing module, never to the item below it.
         while start < head and lines[start - 1].strip().startswith("//!"):
             start += 1
@@ -389,7 +394,7 @@ def _members(masked, text, op, cl, parent, lines, line):
                 continue  # tuple struct field
         head = line(a + m.start(1))
         end = line(b)
-        start = _extend_up(lines, head, ("///", "#[", "/**", "*", "*/"))
+        start = _extend_up(lines, head, ("//", "#[", "/**", "*", "*/"))
         names = [n + [name] for n in parent.names]
         parent.children.append(Item(names, "variant" if parent.kind == "enum" else "field",
                                     max(start, parent.head + 1), end, head, min_segs=2))
@@ -699,7 +704,13 @@ def _pick(found, spec):
     if km:
         kind, spec = km.group(1), km.group(2)
     segs = split_item(spec)
-    hits = [it for it in found if matches(it, segs) and (kind is None or it.kind == kind)]
+    named = [it for it in found if matches(it, segs) and (kind is None or it.kind == kind)]
+    # A member (method, field, variant, key) names its owner: an item
+    # reached through fewer segments than its `min_segs` is not a match,
+    # it is the rule of checks-and-citations.md section 9 broken.
+    hits = [it for it in named if len(segs) >= it.min_segs]
+    if not hits and named:
+        return "needs-owner", named
     exact = [it for it in hits if segs in it.names]
     if exact:
         hits = exact
@@ -724,16 +735,37 @@ LINE_CITE = re.compile(
     r":(\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*)(?![\d\w])"
 )
 
-# `host.tld:port` and similar, never a file (the list of
-# leviculum-std/tests/doc_citations.rs#NON_FILE_EXTENSIONS).
-NON_FILE_EXTENSIONS = {"com", "net", "org", "io", "dev", "local", "onion", "i2p", "de",
-                       "network", "example", "invalid", "localhost", "lan", "internal"}
+def _foreign_sets(path=None):
+    """(non-file extensions, external prefixes) of scripts/citation-foreign.txt,
+    the one definition this module and leviculum-std/tests/doc_citations.rs
+    both read."""
+    path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "citation-foreign.txt")
+    ext, pre = set(), []
+    with open(path, encoding="utf-8") as fh:
+        for raw in fh:
+            line = raw.split("#", 1)[0].strip()
+            if not line:
+                continue
+            kind, _, value = line.partition(" ")
+            value = value.strip()
+            if kind == "non-file-extension" and value:
+                ext.add(value)
+            elif kind == "external-prefix" and value:
+                pre.append(value)
+            else:
+                raise ValueError(f"{path}: cannot read the line {raw.rstrip()!r}")
+    return ext, tuple(pre)
 
-# Other repositories, spelled with their own name in front
-# (leviculum-std/tests/doc_citations.rs#EXTERNAL_PREFIXES), and the pinned
-# references under reference/.
-EXTERNAL_PREFIXES = ("periculum/", "ble-reticulum/", "columba/", "Sideband/", "LXMF-Tools/",
-                     "nrf-softdevice/", "Adafruit_nRF52_Bootloader/", "i2pd/", "reference/")
+
+# `host.tld:port` and similar, never a file; other repositories, spelled
+# with their own name in front. Both from scripts/citation-foreign.txt.
+NON_FILE_EXTENSIONS, EXTERNAL_PREFIXES = _foreign_sets()
+
+# What no item of this tree can be checked in: the other repositories, and
+# the pinned references under reference/ (which the Rust guard checks where
+# they are checked out, and this module never reads).
+OTHER_TREES = EXTERNAL_PREFIXES + ("reference/",)
 
 SKIP_DIRS = {".git", "target", "book", "node_modules", "reference"}
 
@@ -844,7 +876,7 @@ def locate(tree, cited, citing, text):
     ext = base.rsplit(".", 1)[-1] if "." in base else ""
     if ext in NON_FILE_EXTENSIONS:
         return "notfile", None, "host"
-    if any(cited.startswith(p) for p in EXTERNAL_PREFIXES) or cited.startswith(("/", "~", "../")):
+    if any(cited.startswith(p) for p in OTHER_TREES) or cited.startswith(("/", "~", "../")):
         return "foreign", None, "other-repo"
     if cited in tree.files:
         return "tree", cited, "root"

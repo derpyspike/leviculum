@@ -41,7 +41,7 @@ recorded, and the bench measurement below reads it first.
   local changes nobody published; the bench measurement below is what
   covers that gap. Citations are `Adafruit_nRF52_Bootloader/<path>:<line>`
   at that tag. The citation guard counts them as external and cannot
-  open them (`leviculum-std/tests/doc_citations.rs`, `EXTERNAL_PREFIXES`);
+  open them (`external-prefix` in `scripts/citation-foreign.txt`);
   a reader re-checks them against the tag.
 * **0.4.3 (RAK).** This is RAKwireless's own version number, not an
   Adafruit tag: Adafruit has no `0.4.3`, and RAK publishes binaries

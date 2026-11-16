@@ -127,6 +127,7 @@ use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 /// Identifier search window in lines around the cited span.
 ///
@@ -138,42 +139,31 @@ use std::path::{Path, PathBuf};
 /// both sides.
 const WINDOW: usize = 8;
 
+/// The one definition of what is not a file of this tree, shared with
+/// `scripts/citations.py` (the name guard and the drift census):
+/// `non-file-extension <ext>` and `external-prefix <prefix>` lines, with the
+/// reason for each entry beside it. `scripts/check-citation-foreign.py`
+/// refuses a tree where either guard holds a set of its own.
+const FOREIGN: &str = include_str!("../../scripts/citation-foreign.txt");
+
+/// The values of `FOREIGN`'s lines of one kind, in file order.
+fn foreign(kind: &str) -> Vec<&'static str> {
+    FOREIGN
+        .lines()
+        .map(|l| l.split('#').next().unwrap_or_default().trim())
+        .filter_map(|l| l.split_once(' '))
+        .filter(|(k, _)| *k == kind)
+        .map(|(_, v)| v.trim())
+        .collect()
+}
+
 /// Path prefixes that refer to sibling repositories. These citations are
 /// counted and reported but cannot be existence-checked from this
 /// workspace.
-///
-/// `columba/` is the phone app whose BLE behaviour we interoperate with,
-/// checked out read-only beside this one (`schneckenschreck:/home/lew/
-/// coding/columba`, branch `main`). It joined the list when the duplicate
-/// rule started porting Columba functions line by line: a citation that
-/// names the Kotlin file and line is what lets the next reader check the
-/// port against the real thing instead of against a transcription.
-const EXTERNAL_PREFIXES: &[&str] = &[
-    "periculum/",
-    "ble-reticulum/",
-    "columba/",
-    // Sideband, the other LXMF messenger whose voice messages we play
-    // (1222): cited from a clone of github.com/markqvist/Sideband at
-    // ef572b5 (2026-10-01), which no host keeps beside this tree.
-    "Sideband/",
-    // SebastianObi's LXMF-Tools, whose distribution-group bot the relayed
-    // posts of 1482 are read after: cited from a clone of
-    // github.com/SebastianObi/LXMF-Tools at 6ec9528 (2025-03-19), which no
-    // host keeps beside this tree.
-    "LXMF-Tools/",
-    // A crates.io dependency, cited by the nRF gate scripts. Its source is
-    // under `~/.cargo`, never in this tree, so it can only be counted.
-    "nrf-softdevice/",
-    // The Adafruit nRF52 bootloader the boards carry (1601, OTA stage 1):
-    // cited from a clone of github.com/adafruit/Adafruit_nRF52_Bootloader at
-    // tag 0.9.0 (a73fe207), which no host keeps beside this tree.
-    "Adafruit_nRF52_Bootloader/",
-    // i2pd, the I2P router the I2P interface talks SAM to (1654, its
-    // five-second session linger): cited from a clone of
-    // github.com/PurpleI2P/i2pd at tag 2.56.0 (fb90b01f), the version
-    // Debian ships, which no host keeps beside this tree.
-    "i2pd/",
-];
+fn external_prefixes() -> &'static [&'static str] {
+    static SET: OnceLock<Vec<&'static str>> = OnceLock::new();
+    SET.get_or_init(|| foreign("external-prefix"))
+}
 
 /// The vendored references. A citation into one of these that is not
 /// checked out is skipped and counted rather than checked.
@@ -211,17 +201,11 @@ const SOURCE_CRATES: &[&str] = &[
 /// Extensions that make a `name.ext:number` look like a citation while being
 /// a `host:port`. Only reachable in `Corpus::Source`, where citations are not
 /// backticked and a config example like `peer.example.com:5000` sits in an
-/// ordinary string literal. A blocklist rather than an extension allowlist on
-/// purpose: an allowlist silently drops a citation into a file type nobody
-/// thought of, this can only produce visible noise.
-///
-/// `network` is our own server's top-level domain, the shipped server list's
-/// first entry (`auto_servers.rs`, #471 step 3); `example` and `invalid` are
-/// the RFC 2606 and RFC 6761 names tests and cells dial.
-const NON_FILE_EXTENSIONS: &[&str] = &[
-    "com", "net", "org", "io", "dev", "local", "onion", "i2p", "de", "network", "example",
-    "invalid",
-];
+/// ordinary string literal.
+fn non_file_extensions() -> &'static [&'static str] {
+    static SET: OnceLock<Vec<&'static str>> = OnceLock::new();
+    SET.get_or_init(|| foreign("non-file-extension"))
+}
 
 /// Directories never walked, for either the corpus or the resolution index.
 /// `docs/book` would shadow the doc sources; `target` holds build output and
@@ -305,7 +289,7 @@ struct Citation {
 /// Admitting them by directory keeps the pattern as tight as it was —
 /// `.githooks/` matches nothing else in the corpus, where a bare
 /// extensionless token would match ordinary prose. It fails closed like
-/// `NON_FILE_EXTENSIONS` beside it: a new extensionless file outside these
+/// `non_file_extensions` beside it: a new extensionless file outside these
 /// directories is uncovered rather than falsely flagged.
 const EXTENSIONLESS_DIRS: &[&str] = &[".githooks"];
 
@@ -539,7 +523,7 @@ fn scan(root: &Path, files: &[PathBuf], corpus: Corpus) -> Vec<Citation> {
                     continue;
                 }
                 let ext = m[1].rsplit('.').next().unwrap_or_default();
-                if NON_FILE_EXTENSIONS.contains(&ext) {
+                if non_file_extensions().contains(&ext) {
                     continue;
                 }
             }
@@ -1001,7 +985,7 @@ fn check<'a>(root: &Path, citations: &'a [Citation]) -> (Counts, Vec<Failure>, V
     let mut drifted = Vec::new();
 
     for c in citations {
-        if EXTERNAL_PREFIXES.iter().any(|p| c.path.starts_with(p)) {
+        if external_prefixes().iter().any(|p| c.path.starts_with(p)) {
             counts.external += 1;
             continue;
         }
@@ -2970,7 +2954,7 @@ fn anchor_citations<'a>(
         if !class.takes(c) {
             continue;
         }
-        if EXTERNAL_PREFIXES.iter().any(|p| c.path.starts_with(p)) {
+        if external_prefixes().iter().any(|p| c.path.starts_with(p)) {
             counts.external += 1;
             continue;
         }

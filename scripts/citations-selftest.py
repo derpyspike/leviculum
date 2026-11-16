@@ -17,6 +17,7 @@ The fixture texts are put together at run time (`L`, `N`), so this file
 holds no citation-shaped string the guard would read as one.
 """
 
+import argparse
 import os
 import subprocess
 import sys
@@ -28,6 +29,7 @@ GUARD = os.path.join(HERE, "check-citations-by-name.py")
 CENSUS = os.path.join(HERE, "citation-census.py")
 CONTROL = os.path.join(HERE, "citations-control-1908.tsv")
 CONTROL_REV = "8482638d6"
+FOREIGN = os.path.join(HERE, "check-citation-foreign.py")
 
 FAILED = []
 HELD = []
@@ -68,6 +70,14 @@ impl Other {
 }
 
 pub fn beta() {}
+
+pub mod one {
+    pub fn twin() {}
+}
+
+pub mod two {
+    pub fn twin() {}
+}
 """
 
 
@@ -130,13 +140,35 @@ def guard_controls(repo):
     control("guard: a renamed fn is refused", rc == 1 and "has no item `beta`" in out, out)
     reset(repo)
 
-    write(repo, "docs/src/page.md", BASE_PAGE + f"\nBoth `{N(LIB, 'new')}`.\n")
+    write(repo, "docs/src/page.md", BASE_PAGE + f"\nBoth `{N(LIB, 'twin')}`.\n")
     rc, out = run(GUARD, repo, "--base", "HEAD")
     control("guard: an ambiguous name is refused", rc == 1 and "names 2 items" in out, out)
+    write(repo, "docs/src/page.md", BASE_PAGE + f"\nOne `{N(LIB, 'one::twin')}`.\n")
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: the module makes it one", rc == 0, out)
+    reset(repo)
+
+    write(repo, "docs/src/page.md", BASE_PAGE + f"\nBare `{N(LIB, 'new')}`.\n")
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a member without its owner is refused",
+            rc == 1 and "is a member; write it with its owner" in out
+            and "`Thing::new`" in out and "`Other::new`" in out, out)
     write(repo, "docs/src/page.md", BASE_PAGE + f"\nOne `{N(LIB, 'Thing::new')}`.\n")
     rc, out = run(GUARD, repo, "--base", "HEAD")
-    control("guard: the owner makes it one", rc == 0, out)
+    control("guard: the owner makes a member one", rc == 0, out)
     reset(repo)
+
+    bad = "crate/src/bad.rs"
+    with open(os.path.join(repo, bad), "wb") as fh:
+        fh.write(b"pub fn x() {}\n// \xff\xfe not UTF-8\n")
+    git(repo, "add", bad)
+    git(repo, "commit", "-q", "-m", "a tracked file that is not UTF-8")
+    write(repo, "docs/src/page.md", BASE_PAGE + f"\nUnreadable `{N(bad, 'x')}`.\n")
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a name into a file it cannot read is refused and not counted",
+            rc == 1 and f"cannot read {bad}" in out and "1 name citation(s) checked" in out, out)
+    reset(repo)
+    git(repo, "reset", "-q", "--hard", "HEAD~1")
 
     write(repo, "docs/src/page.md",
           BASE_PAGE + f"\nThe phone's `{N('columba/app/src/Foo.kt', 'bar')}`.\n")
@@ -161,7 +193,18 @@ def guard_controls(repo):
 
     write(repo, "docs/src/page.md", BASE_PAGE.replace(L(LIB, 2), L(LIB, 3)))
     rc, out = run(GUARD, repo, "--base", "HEAD")
-    control("guard: a renumbered existing citation passes", rc == 0, out)
+    control("guard: a number changed while the cited file is unchanged is refused",
+            rc == 1 and "a new line citation" in out, out)
+    write(repo, "docs/src/page.md", page(f"The last is `beta` (`{L(LIB, 20)}`).",
+                                         f"Beta is `{N(LIB, 'beta')}`."))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a new citation in the place of an old one is refused",
+            rc == 1 and "a new line citation" in out, out)
+    write(repo, LIB, "// one\n// two\n// three\n" + LIB_RS)
+    write(repo, "docs/src/page.md", BASE_PAGE.replace(L(LIB, 2), L(LIB, 5)))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: lines inserted above the item and the number follows: passes", rc == 0, out)
+    reset(repo)
     moved = page(f"Beta is `{N(LIB, 'beta')}`.", "Text between.",
                  f"The first is `alpha` (`{L(LIB, 2)}`).")
     write(repo, "docs/src/page.md", moved)
@@ -215,6 +258,9 @@ def census_controls(repo):
         f"Doc line: `alpha` (`{L(LIB, 1)}`).",
         f"| `beta` | `{L(LIB, 2)}` | `alpha` |",
     ))
+    write(repo, "crate/src/pins.rs",
+          "fn first() {}\n\n// What the test below pins.\n#[test]\nfn t_pin() {}\n")
+    write(repo, "docs/src/pins.md", page(f"Pinned at `t_pin` (`{L('crate/src/pins.rs', 3)}`)."))
     write(repo, "docs/src/spelled.md", page(
         f"The file is `{LIB}`.", f"Spelled: `alpha` (`{L('src/lib.rs', 3)}`)."))
     write(repo, "docs/src/foreign.md", page(
@@ -243,6 +289,9 @@ def census_controls(repo):
             v(c, 5).get("verdict") == "agree", out)
     control("census: a table row reads the cell before, never the one after",
             v(c, 6).get("label") == "beta" and v(c, 6).get("verdict") == "drift", out)
+    control("census: a // block directly above a test belongs to that test",
+            v("docs/src/pins.md", 0).get("verdict") == "agree"
+            and v("docs/src/pins.md", 0).get("item") == "t_pin", out)
     s = "docs/src/spelled.md"
     control("census: a shortened path the page spells out is placed",
             v(s, 0).get("verdict") == "agree" and v(s, 0).get("how") == "spelled", out)
@@ -254,30 +303,121 @@ def census_controls(repo):
     control("census: exits 0", rc == 0, out)
 
 
-def history_control():
-    have = subprocess.run(["git", "-C", ROOT, "cat-file", "-e", CONTROL_REV + "^{commit}"],
+WAIVE = "LEVICULUM_CITATION_CONTROL_WAIVE"
+
+
+def history_control(root):
+    """The 64 citations of 8482638d6 keep their verdicts. A clone without
+    that commit cannot run this control, and a control that cannot look
+    fails: only an explicit waiver (`LEVICULUM_CITATION_CONTROL_WAIVE`, for
+    a host that knows it holds a shallow clone) turns it into a printed
+    WAIVED line."""
+    have = subprocess.run(["git", "-C", root, "cat-file", "-e", CONTROL_REV + "^{commit}"],
                           capture_output=True).returncode == 0
+    name = "census: the 64 citations 8482638d6 renumbered keep their verdicts"
     if not have:
-        print(f"SKIPPED census: control 1908 needs commit {CONTROL_REV}, which this clone "
-              "does not have (a shallow clone)")
+        why = (f"control 1908 needs commit {CONTROL_REV}, which the clone at {root} does "
+               "not have (a shallow clone?)")
+        if os.environ.get(WAIVE):
+            print(f"WAIVED  {name}: {why}; waived by {WAIVE}={os.environ[WAIVE]}")
+            return
+        control(name, False, f"{why}. Deepen the clone, or set {WAIVE} to waive it.")
         return
-    r = subprocess.run([sys.executable, "-I", CENSUS, "--rev", CONTROL_REV, "--quiet",
-                        "--control", CONTROL], capture_output=True, text=True)
+    r = subprocess.run([sys.executable, "-I", CENSUS, "--root", root, "--rev", CONTROL_REV,
+                        "--quiet", "--control", CONTROL], capture_output=True, text=True)
     last = [ln for ln in r.stdout.splitlines() if ln.startswith("CONTROL rows=")]
-    control("census: the 64 citations 8482638d6 renumbered keep their verdicts",
-            r.returncode == 0 and last and "rows=64 held=64" in last[0],
+    control(name, r.returncode == 0 and last and "rows=64 held=64" in last[0],
             r.stdout + r.stderr)
 
 
-def main():
-    repo = scratch()
+def shallow_controls(repo):
+    """Both tools in a `git clone --depth 1` of the scratch repository: the
+    guard has no base there and the census control no history, and each
+    must say so with exit 1 rather than pass having looked at nothing."""
+    git(repo, "commit", "-q", "--allow-empty", "-m", "second, so depth 1 cuts something")
+    shallow = tempfile.mkdtemp(prefix="citations-selftest-shallow-")
     try:
-        guard_controls(repo)
-        language_controls(repo)
-        census_controls(repo)
+        subprocess.run(["git", "clone", "-q", "--depth", "1", "file://" + repo, shallow],
+                       check=True, capture_output=True)
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("LEVICULUM_CITATION_BASE", WAIVE)}
+        r = subprocess.run([sys.executable, "-I", GUARD, "--root", shallow],
+                           capture_output=True, text=True, env=env)
+        control("shallow: the guard without a base exits 1 and says why",
+                r.returncode == 1 and "shallow" in r.stdout + r.stderr, r.stdout + r.stderr)
+        r = subprocess.run([sys.executable, "-I", GUARD, "--root", shallow, "--base", "HEAD"],
+                           capture_output=True, text=True, env=env)
+        control("shallow: the guard with --base runs", r.returncode == 0, r.stdout + r.stderr)
+        me = os.path.abspath(__file__)
+        r = subprocess.run([sys.executable, "-I", me, "--history-only", "--root", shallow],
+                           capture_output=True, text=True, env=env)
+        control("shallow: the selftest without the 1908 commit exits 1",
+                r.returncode == 1 and "FAILED" in r.stdout, r.stdout + r.stderr)
+        r = subprocess.run([sys.executable, "-I", me, "--history-only", "--root", shallow],
+                           capture_output=True, text=True, env={**env, WAIVE: "selftest"})
+        control("shallow: the waiver turns it into a printed WAIVED line",
+                r.returncode == 0 and f"waived by {WAIVE}=selftest" in r.stdout,
+                r.stdout + r.stderr)
     finally:
-        subprocess.run(["rm", "-rf", repo], check=False)
-    history_control()
+        subprocess.run(["rm", "-rf", shallow], check=False)
+
+
+def foreign_controls():
+    """scripts/check-citation-foreign.py refuses a guard that holds a set of
+    its own beside the shared file."""
+    rc, out = run_plain(FOREIGN)
+    control("sets: both guards read the shared file", rc == 0, out)
+    rust = os.path.join(ROOT, "leviculum-std", "tests", "doc_citations.rs")
+    with open(rust, encoding="utf-8") as fh:
+        text = fh.read()
+    scratch_dir = tempfile.mkdtemp(prefix="citations-selftest-sets-")
+    try:
+        own = os.path.join(scratch_dir, "own.rs")
+        with open(own, "w", encoding="utf-8") as fh:
+            fh.write(text + '\nconst MORE: &[&str] = &["onion"];\n')
+        rc, out = run_plain(FOREIGN, "--rust", own)
+        control("sets: a literal set beside the shared file is refused",
+                rc == 1 and 'holds the literal "onion"' in out, out)
+        cut = os.path.join(scratch_dir, "cut.rs")
+        with open(cut, "w", encoding="utf-8") as fh:
+            fh.write(text.replace("include_str!", "include_bytes!"))
+        rc, out = run_plain(FOREIGN, "--rust", cut)
+        control("sets: a Rust guard that does not read the shared file is refused",
+                rc == 1 and "does not read the shared file" in out, out)
+        py = os.path.join(scratch_dir, "own.py")
+        with open(os.path.join(HERE, "citations.py"), encoding="utf-8") as fh:
+            ptext = fh.read()
+        with open(py, "w", encoding="utf-8") as fh:
+            fh.write(ptext + '\nMORE = {"lan"}\n')
+        rc, out = run_plain(FOREIGN, "--python", py)
+        control("sets: a Python literal beside the shared file is refused",
+                rc == 1 and 'holds the literal "lan"' in out, out)
+    finally:
+        subprocess.run(["rm", "-rf", scratch_dir], check=False)
+
+
+def run_plain(script, *args):
+    r = subprocess.run([sys.executable, "-I", script, *args], capture_output=True, text=True)
+    return r.returncode, r.stdout + r.stderr
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--history-only", action="store_true",
+                    help="run only the 1908 history control (the shallow controls use it)")
+    ap.add_argument("--root", default=ROOT, help="the clone the history control reads")
+    args = ap.parse_args(argv)
+    if not args.history_only:
+        repo = scratch()
+        try:
+            guard_controls(repo)
+            language_controls(repo)
+            census_controls(repo)
+            shallow_controls(repo)
+        finally:
+            subprocess.run(["rm", "-rf", repo], check=False)
+        foreign_controls()
+    history_control(args.root)
     if FAILED:
         print(f"citations selftest: {len(FAILED)} control(s) FAILED: {', '.join(FAILED)}")
         return 1

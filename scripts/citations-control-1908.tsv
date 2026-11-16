@@ -1,79 +1,91 @@
 # Positive control of scripts/citation-census.py: the 64 line citations commit
 # 8482638d6 (order 1908, the revert of 1848) renumbered, with the verdict each
-# must get in the census of 8482638d6. Columns: citing file, line in it, the
-# citation as written, verdict. Checked by hand on 2026-11-16:
-#   drift (36)    the label names an item of the cited file and the line lies
-#                 outside it, e.g. `TimeSource::rank` at transport.rs:1868, a
-#                 field doc of another struct; the numbers were already wrong
-#                 at a4d1a932a and the renumbering carried them over;
-#   agree (16)    the line lies in the named item's doc comment or signature,
-#                 e.g. `Transport::emission_secs` at 5936, inside its doc;
-#   nolabel (12)  the sentence names no identifier for the citation (5), or
-#                 one that is no item of transport.rs (7: the call sites of
-#                 `has_packet_hash` and `add_packet_hash`, the variable
-#                 `emitted_secs`, two constants of another file, and
-#                 `Node::set_wall_time_unix_secs`, a method of another type).
-docs/src/concepts/core-lock-budget.md	384	leviculum-std/src/event_log.rs:2017	agree
-docs/src/concepts/core-lock-budget.md	399	leviculum-core/src/transport.rs:7251	agree
-docs/src/concepts/core-lock-budget.md	401	leviculum-std/src/event_log.rs:2134	agree
-docs/src/concepts/loquax-homes.md	264	leviculum-core/src/transport.rs:7771-7774	nolabel
-docs/src/concepts/loquax-reachability.md	331	leviculum-core/src/transport.rs:13073	nolabel
-docs/src/concepts/operating-modes.md	81	leviculum-core/src/transport.rs:243-247	agree
-docs/src/concepts/operating-modes.md	86	leviculum-core/src/transport.rs:15004-15036	agree
-docs/src/concepts/python-rns-compatibility.md	121	leviculum-core/src/memory_storage.rs:1470	nolabel
-docs/src/concepts/python-rns-compatibility.md	321	leviculum-core/src/transport.rs:4754	nolabel
-docs/src/concepts/python-rns-compatibility.md	323	leviculum-core/src/transport.rs:4801	nolabel
-docs/src/concepts/python-rns-compatibility.md	327	leviculum-core/src/transport.rs:10020	agree
-docs/src/concepts/time-and-clocks.md	96	leviculum-core/src/transport.rs:5936	agree
-docs/src/concepts/time-and-clocks.md	104	leviculum-core/src/transport.rs:5936	agree
-docs/src/concepts/time-and-clocks.md	302	leviculum-core/src/transport.rs:6167	agree
-docs/src/concepts/time-and-clocks.md	327	leviculum-core/src/transport.rs:1868	drift
-docs/src/concepts/time-and-clocks.md	328	leviculum-core/src/transport.rs:1947	drift
-docs/src/concepts/time-and-clocks.md	347	transport.rs:4323	drift
-docs/src/concepts/time-and-clocks.md	380	leviculum-core/src/transport.rs:6052	nolabel
-docs/src/concepts/time-and-clocks.md	390	leviculum-core/src/transport.rs:6060	nolabel
-docs/src/concepts/time-and-clocks.md	395	transport.rs:26214	drift
-docs/src/concepts/time-and-clocks.md	397	transport.rs:26672	drift
-docs/src/concepts/time-and-clocks.md	427	leviculum-core/src/transport.rs:5936	agree
-docs/src/concepts/time-and-clocks.md	433	leviculum-core/src/transport.rs:6062	drift
-docs/src/concepts/time-and-clocks.md	440	transport.rs:6167	agree
-docs/src/concepts/time-and-clocks.md	442	transport.rs:5372	drift
-docs/src/concepts/time-and-clocks.md	448	transport.rs:25855	drift
-docs/src/concepts/time-and-clocks.md	600	leviculum-core/src/transport.rs:5936	agree
-docs/src/concepts/time-and-clocks.md	657	transport.rs:5382	nolabel
-docs/src/concepts/time-and-clocks.md	661	transport.rs:26696	drift
-docs/src/concepts/time-and-clocks.md	666	leviculum-core/src/transport.rs:6186	nolabel
-docs/src/concepts/time-and-clocks.md	670	leviculum-core/src/transport.rs:6171	nolabel
-docs/src/concepts/time-and-clocks.md	676	transport.rs:25756	drift
-docs/src/concepts/time-and-clocks.md	678	transport.rs:26611	drift
-docs/src/concepts/time-and-clocks.md	689	leviculum-core/src/transport.rs:6167	agree
-docs/src/concepts/time-and-clocks.md	700	leviculum-core/src/transport.rs:26307	drift
-docs/src/concepts/time-and-clocks.md	709	transport.rs:25952	drift
-docs/src/concepts/time-and-clocks.md	711	transport.rs:25901	drift
-docs/src/concepts/time-and-clocks.md	726	transport.rs:26537	drift
-docs/src/concepts/time-and-clocks.md	728	transport.rs:26611	drift
-docs/src/concepts/time-and-clocks.md	750	transport.rs:6016	agree
-docs/src/concepts/time-and-clocks.md	754	transport.rs:26857	drift
-docs/src/concepts/time-and-clocks.md	756	transport.rs:26905	drift
-docs/src/concepts/time-and-clocks.md	768	transport.rs:26976	drift
-docs/src/concepts/time-and-clocks.md	822	transport.rs:25855	drift
-docs/src/concepts/time-and-clocks.md	859	transport.rs:6167	agree
-docs/src/concepts/time-and-clocks.md	903	leviculum-core/src/transport.rs:6062	drift
-docs/src/concepts/time-and-clocks.md	909	leviculum-core/src/transport.rs:6016	agree
-docs/src/concepts/time-and-clocks.md	1014	leviculum-core/src/transport.rs:26266	drift
-docs/src/concepts/time-and-clocks.md	1019	transport.rs:26214	drift
-docs/src/concepts/time-and-clocks.md	1021	transport.rs:26672	drift
-docs/src/concepts/time-and-clocks.md	1023	leviculum-core/src/transport.rs:26391	drift
-docs/src/concepts/time-and-clocks.md	1025	leviculum-core/src/transport.rs:25996	drift
-docs/src/concepts/time-and-clocks.md	1027	transport.rs:26611	drift
-docs/src/concepts/time-and-clocks.md	1034	leviculum-core/src/transport.rs:26348	drift
-docs/src/concepts/time-and-clocks.md	1041	transport.rs:25901	drift
-docs/src/concepts/time-and-clocks.md	1044	leviculum-core/src/transport.rs:26307	drift
-docs/src/concepts/time-and-clocks.md	1048	transport.rs:25952	drift
-docs/src/concepts/time-and-clocks.md	1058	leviculum-core/src/transport.rs:26438	drift
-docs/src/concepts/time-and-clocks.md	1066	transport.rs:26696	drift
-docs/src/concepts/time-and-clocks.md	1076	transport.rs:25855	drift
-docs/src/concepts/time-and-clocks.md	1092	transport.rs:26537	drift
-docs/src/rnode-protocol.md	385	leviculum-core/src/transport.rs:4754	nolabel
-leviculum-lxmf/tests/two_homes.rs	322	leviculum-core/src/transport.rs:7771-7773	nolabel
-leviculum-nrf/queue-budget/src/tests.rs	437	leviculum-core/src/transport.rs:6848-6851	drift
+# must get in the census of 8482638d6.
+#
+# Columns: citing file, line in it, the citation as written, the label (the
+# identifier the citing text gives it: its own code span, else the nearest
+# code span before it in the same sentence, else "-"), the cited line's text
+# at 8482638d6 (first 80 characters, leading blanks dropped), the item a human
+# reader assigns that line to, and the verdict.
+#
+# How it was made (order 1935, rebuilding what 1928 wrote): every row read by
+# hand from `git show 8482638d6:<path>` alone, with no census output read
+# before the file was written. The text column is `git show` copied; the
+# label is read from the citing file at 8482638d6, the item from the cited
+# file around the line (its enclosing fn, the doc comment or the `//` comment
+# block directly above a fn, which a reader assigns to that fn). The verdict
+# follows from label and item alone:
+#   agree    the label names the item that holds the line (a range: the item
+#            its range ends on);
+#   drift    the label names an item of the cited file, and another item
+#            holds the line;
+#   nolabel  there is no label, or it names no item of the cited file (said
+#            in brackets in the label column).
+# Counts: agree 41, drift 11, nolabel 12. The version order 1928 wrote said
+# agree 16, drift 36, nolabel 12: the 25 rows that moved from drift to agree
+# cite a line of the `//` comment block directly above the test fn their
+# label names.
+docs/src/concepts/core-lock-budget.md	384	leviculum-std/src/event_log.rs:2017	FileSink	struct FileSink {	FileSink	agree
+docs/src/concepts/core-lock-budget.md	399	leviculum-core/src/transport.rs:7251	handle_announce	/// the reported shape can hide under it). It is deliberately lower than the	Transport::handle_announce (its doc comment)	agree
+docs/src/concepts/core-lock-budget.md	401	leviculum-std/src/event_log.rs:2134	writer_loop	fn writer_loop(mut file: File, queue: &SinkQueue, init_time: Instant) {	writer_loop	agree
+docs/src/concepts/loquax-homes.md	264	leviculum-core/src/transport.rs:7771-7774	-	if announce_emitted > path_timebase {	Transport::handle_announce_inner (body)	nolabel
+docs/src/concepts/loquax-reachability.md	331	leviculum-core/src/transport.rs:13073	discovers_paths (an item of traits.rs, none of transport.rs)	let discovers = self.config.enable_transport	Transport::handle_path_request (body)	nolabel
+docs/src/concepts/operating-modes.md	81	leviculum-core/src/transport.rs:243-247	DEFAULT_AR_GRACE	const DEFAULT_AR_TARGET: u32 = 3600;	DEFAULT_AR_TARGET to DEFAULT_AR_GRACE (the range ends on DEFAULT_AR_GRACE)	agree
+docs/src/concepts/operating-modes.md	86	leviculum-core/src/transport.rs:15004-15036	update_announce_rate	fn update_announce_rate(	Transport::update_announce_rate	agree
+docs/src/concepts/python-rns-compatibility.md	121	leviculum-core/src/memory_storage.rs:1470	-	fn clean_announce_cache(	clean_announce_cache	nolabel
+docs/src/concepts/python-rns-compatibility.md	321	leviculum-core/src/transport.rs:4754	has_packet_hash (a Storage method, no item of transport.rs)	&& self.storage.has_packet_hash(&full_packet_hash)	Transport::process_incoming_inner (body)	nolabel
+docs/src/concepts/python-rns-compatibility.md	323	leviculum-core/src/transport.rs:4801	add_packet_hash (a Storage method, no item of transport.rs)	self.storage.add_packet_hash(full_packet_hash);	Transport::process_incoming_inner (body)	nolabel
+docs/src/concepts/python-rns-compatibility.md	327	leviculum-core/src/transport.rs:10020	forward_on_interface_from	fn forward_on_interface_from(	Transport::forward_on_interface_from	agree
+docs/src/concepts/time-and-clocks.md	96	leviculum-core/src/transport.rs:5936	Transport::emission_secs	///    otherwise poison its path entries. With no anchor seated the	Transport::emission_secs (its doc comment)	agree
+docs/src/concepts/time-and-clocks.md	104	leviculum-core/src/transport.rs:5936	Transport::emission_secs	///    otherwise poison its path entries. With no anchor seated the	Transport::emission_secs (its doc comment)	agree
+docs/src/concepts/time-and-clocks.md	302	leviculum-core/src/transport.rs:6167	learn_emission_timebase	fn learn_emission_timebase(&mut self, emitted_secs: u64, now_ms: u64) {	Transport::learn_emission_timebase	agree
+docs/src/concepts/time-and-clocks.md	327	leviculum-core/src/transport.rs:1868	TimeSource::rank	/// in the response.	LinkTableExport::age_secs (its field doc)	drift
+docs/src/concepts/time-and-clocks.md	328	leviculum-core/src/transport.rs:1947	BIRTH_ANCHOR_RANK	TimeSource::Host => 2,	TimeSource::rank (body)	drift
+docs/src/concepts/time-and-clocks.md	347	transport.rs:4323	set_wall_time_unix_secs	to_dst = %HexShort(destination_hash),	Transport::send_proof (body)	drift
+docs/src/concepts/time-and-clocks.md	380	leviculum-core/src/transport.rs:6052	Node::set_wall_time_unix_secs (Node is no type of transport.rs)	pub fn set_wall_time_unix_secs(&mut self, unix_secs: u64, source: TimeSource) ->	Transport::set_wall_time_unix_secs	nolabel
+docs/src/concepts/time-and-clocks.md	390	leviculum-core/src/transport.rs:6060	EMISSION_PLAUSIBLE_MIN_SECS, EMISSION_LEARN_CEILING_SECS (constants of constants.rs)	if !(EMISSION_SANITY_FLOOR_SECS..=EMISSION_LEARN_CEILING_SECS).contains(&unix_se	Transport::set_wall_time_unix_secs (body)	nolabel
+docs/src/concepts/time-and-clocks.md	395	transport.rs:26214	test_implausibly_low_wall_time_injection_is_refused	// and unlike a learned announce, a host injection CLAIMS to know	test_implausibly_low_wall_time_injection_is_refused (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	397	transport.rs:26672	test_absurd_wall_time_injection_is_refused	"no sequence of adoptions may move the floor past the ceiling"	test_timebase_floor_cannot_pass_learn_ceiling (body)	drift
+docs/src/concepts/time-and-clocks.md	427	leviculum-core/src/transport.rs:5936	emission_secs	///    otherwise poison its path entries. With no anchor seated the	Transport::emission_secs (its doc comment)	agree
+docs/src/concepts/time-and-clocks.md	433	leviculum-core/src/transport.rs:6062	time_source	return false;	Transport::set_wall_time_unix_secs (body)	drift
+docs/src/concepts/time-and-clocks.md	440	transport.rs:6167	learn_emission_timebase	fn learn_emission_timebase(&mut self, emitted_secs: u64, now_ms: u64) {	Transport::learn_emission_timebase	agree
+docs/src/concepts/time-and-clocks.md	442	transport.rs:5372	learn_emission_timebase	// 1-hop path when this node is a client of a local shared instance:	Transport::send_to_destination (body)	drift
+docs/src/concepts/time-and-clocks.md	448	transport.rs:25855	test_own_announce_echo_reseeds_timebase_before_echo_drop	// still-circulating pre-restart announce is exactly the value its	test_own_announce_echo_reseeds_timebase_before_echo_drop (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	600	leviculum-core/src/transport.rs:5936	Transport::emission_secs	///    otherwise poison its path entries. With no anchor seated the	Transport::emission_secs (its doc comment)	agree
+docs/src/concepts/time-and-clocks.md	657	transport.rs:5382	EMISSION_TIMESTAMP_MAX_SECS (a constant of constants.rs)	// Python equivalent: Transport.py outbound() lines 980-991.	Transport::send_to_destination (body)	nolabel
+docs/src/concepts/time-and-clocks.md	661	transport.rs:26696	test_emission_secs_saturates_at_wire_field_max	assert_eq!(transport.emission_secs(now), REAL_UNIX_SECS);	test_absurd_wall_time_injection_is_refused (body)	drift
+docs/src/concepts/time-and-clocks.md	666	leviculum-core/src/transport.rs:6186	emitted_secs <= current (an expression, no item)	return;	Transport::learn_emission_timebase (body)	nolabel
+docs/src/concepts/time-and-clocks.md	670	leviculum-core/src/transport.rs:6171	EMISSION_LEARN_CEILING_SECS (a constant of constants.rs)	if emitted_secs > EMISSION_LEARN_CEILING_SECS {	Transport::learn_emission_timebase (body)	nolabel
+docs/src/concepts/time-and-clocks.md	676	transport.rs:25756	test_clockless_node_learns_emission_timebase_from_announce	// its own emission timebase, advanced by the monotonic clock, so	test_clockless_node_learns_emission_timebase_from_announce (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	678	transport.rs:26611	test_timebase_floor_cannot_pass_learn_ceiling	// over-ceiling emissions are refused outright (pinned in	test_timebase_floor_cannot_pass_learn_ceiling (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	689	leviculum-core/src/transport.rs:6167	learn_emission_timebase	fn learn_emission_timebase(&mut self, emitted_secs: u64, now_ms: u64) {	Transport::learn_emission_timebase	agree
+docs/src/concepts/time-and-clocks.md	700	leviculum-core/src/transport.rs:26307	test_birth_anchor_value_clears_the_window_but_not_the_rank	// build floor sits AT the sanity window's lower bound by	test_birth_anchor_value_clears_the_window_but_not_the_rank (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	709	transport.rs:25952	test_clockless_first_timebase_adoption_is_unbounded	// unix time in a single step, or the #155 restart fix is dead.	test_clockless_first_timebase_adoption_is_unbounded (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	711	transport.rs:25901	test_clockless_timebase_advance_is_bounded_after_first_adoption	// below both 2^40 and the learn ceiling) must not capture every	test_clockless_timebase_advance_is_bounded_after_first_adoption (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	726	transport.rs:26537	test_timebase_walk_is_capped_per_announce_not_per_identity	// and, one step weaker than the #161 review stated, even repeat	test_timebase_walk_is_capped_per_announce_not_per_identity (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	728	transport.rs:26611	test_timebase_floor_cannot_pass_learn_ceiling	// over-ceiling emissions are refused outright (pinned in	test_timebase_floor_cannot_pass_learn_ceiling (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	750	transport.rs:6016	Transport::announce_emission_secs	/// the field from `time.time()` unvalidated (Destination.py:282), so	Transport::announce_emission_secs (its doc comment)	agree
+docs/src/concepts/time-and-clocks.md	754	transport.rs:26857	test_own_wall_clock_is_not_plausibility_bounded_on_emission	// desynchronise our announces from a network that does not	test_own_wall_clock_is_not_plausibility_bounded_on_emission (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	756	transport.rs:26905	test_implausible_own_wall_clock_warns_once_and_leaves_emission_unchanged	// (below EMISSION_PLAUSIBLE_MIN_SECS or above the learn ceiling),	test_implausible_own_wall_clock_warns_once_and_leaves_emission_unchanged (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	768	transport.rs:26976	test_incoming_emission_not_plausibility_checked_on_acceptance	// how a #155 node is reachable at all), and an absurdly high	test_incoming_emission_not_plausibility_checked_on_acceptance (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	822	transport.rs:25855	test_own_announce_echo_reseeds_timebase_before_echo_drop	// still-circulating pre-restart announce is exactly the value its	test_own_announce_echo_reseeds_timebase_before_echo_drop (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	859	transport.rs:6167	learn_emission_timebase	fn learn_emission_timebase(&mut self, emitted_secs: u64, now_ms: u64) {	Transport::learn_emission_timebase	agree
+docs/src/concepts/time-and-clocks.md	903	leviculum-core/src/transport.rs:6062	Transport::time_source	return false;	Transport::set_wall_time_unix_secs (body)	drift
+docs/src/concepts/time-and-clocks.md	909	leviculum-core/src/transport.rs:6016	announce_emission_secs	/// the field from `time.time()` unvalidated (Destination.py:282), so	Transport::announce_emission_secs (its doc comment)	agree
+docs/src/concepts/time-and-clocks.md	1014	leviculum-core/src/transport.rs:26266	test_refused_gnss_seed_reports_false_and_keeps_source	// Codeberg #166 item 1: a refused seed must be visible to the	test_refused_gnss_seed_reports_false_and_keeps_source (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	1019	transport.rs:26214	test_implausibly_low_wall_time_injection_is_refused	// and unlike a learned announce, a host injection CLAIMS to know	test_implausibly_low_wall_time_injection_is_refused (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	1021	transport.rs:26672	test_absurd_wall_time_injection_is_refused	"no sequence of adoptions may move the floor past the ceiling"	test_timebase_floor_cannot_pass_learn_ceiling (body)	drift
+docs/src/concepts/time-and-clocks.md	1023	leviculum-core/src/transport.rs:26391	test_platform_clock_outside_the_window_is_not_a_time_source	// of #161 §3), but it does not raise the anchor's rank, so tickets	test_platform_clock_outside_the_window_is_not_a_time_source (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	1025	leviculum-core/src/transport.rs:25996	test_implausibly_low_floor_recovers_in_one_adoption	// The realistic #161 trigger — two LNodes reboot together and one	test_implausibly_low_floor_recovers_in_one_adoption (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	1027	transport.rs:26611	test_timebase_floor_cannot_pass_learn_ceiling	// over-ceiling emissions are refused outright (pinned in	test_timebase_floor_cannot_pass_learn_ceiling (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	1034	leviculum-core/src/transport.rs:26348	test_birth_anchor_adoption_is_unbounded_despite_a_plausible_value	// this is the test that sees it: the jump here is 120 days, so a	test_birth_anchor_adoption_is_unbounded_despite_a_plausible_value (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	1041	transport.rs:25901	test_clockless_timebase_advance_is_bounded_after_first_adoption	// below both 2^40 and the learn ceiling) must not capture every	test_clockless_timebase_advance_is_bounded_after_first_adoption (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	1044	leviculum-core/src/transport.rs:26307	test_birth_anchor_value_clears_the_window_but_not_the_rank	// build floor sits AT the sanity window's lower bound by	test_birth_anchor_value_clears_the_window_but_not_the_rank (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	1048	transport.rs:25952	test_clockless_first_timebase_adoption_is_unbounded	// unix time in a single step, or the #155 restart fix is dead.	test_clockless_first_timebase_adoption_is_unbounded (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	1058	leviculum-core/src/transport.rs:26438	test_stamps_never_run_ahead_of_the_estimate_across_anchor_changes	// across a scripted sequence of anchor changes — birth, traffic	test_stamps_never_run_ahead_of_the_estimate_across_anchor_changes (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	1066	transport.rs:26696	test_emission_secs_saturates_at_wire_field_max	assert_eq!(transport.emission_secs(now), REAL_UNIX_SECS);	test_absurd_wall_time_injection_is_refused (body)	drift
+docs/src/concepts/time-and-clocks.md	1076	transport.rs:25855	test_own_announce_echo_reseeds_timebase_before_echo_drop	// still-circulating pre-restart announce is exactly the value its	test_own_announce_echo_reseeds_timebase_before_echo_drop (its leading comment)	agree
+docs/src/concepts/time-and-clocks.md	1092	transport.rs:26537	test_timebase_walk_is_capped_per_announce_not_per_identity	// and, one step weaker than the #161 review stated, even repeat	test_timebase_walk_is_capped_per_announce_not_per_identity (its leading comment)	agree
+docs/src/rnode-protocol.md	385	leviculum-core/src/transport.rs:4754	has_packet_hash (a Storage method, no item of transport.rs)	&& self.storage.has_packet_hash(&full_packet_hash)	Transport::process_incoming_inner (body)	nolabel
+leviculum-lxmf/tests/two_homes.rs	322	leviculum-core/src/transport.rs:7771-7773	-	if announce_emitted > path_timebase {	Transport::handle_announce_inner (body)	nolabel
+leviculum-nrf/queue-budget/src/tests.rs	437	leviculum-core/src/transport.rs:6848-6851	proof_timeout_ms (a field of a struct of transport.rs)	pub(crate) fn remove_paths_for_interface(	Transport::remove_paths_for_interface	drift

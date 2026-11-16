@@ -42,8 +42,9 @@ then the counts, and with --table N the N files with the most drift.
     scripts/citation-census.py                     the working tree
     scripts/citation-census.py --rev 8482638d6     a commit, read by git
     scripts/citation-census.py --control F.tsv     each row of F (file, line
-                                                   in file, citation,
-                                                   verdict) must come out
+                                                   in file, citation, label,
+                                                   cited text, item read by
+                                                   hand, verdict) must come out
                                                    with that verdict; exit 1
                                                    otherwise
 
@@ -285,7 +286,7 @@ def main(argv=None):
     ap.add_argument("--only", nargs="*", help="only these living texts")
     ap.add_argument("--table", type=int, default=0, help="print the N files with most drift")
     ap.add_argument("--quiet", action="store_true", help="counts and table only")
-    ap.add_argument("--control", help="TSV of file, line, citation, verdict that must hold")
+    ap.add_argument("--control", help="TSV of file, line, citation, label, text, item, verdict that must hold")
     args = ap.parse_args(argv)
 
     tree = C.Tree(args.root, args.rev)
@@ -294,6 +295,12 @@ def main(argv=None):
     if args.control:
         with open(args.control, encoding="utf-8") as fh:
             rows = [ln.rstrip("\n").split("\t") for ln in fh if ln.strip() and not ln.startswith("#")]
+        # file, line, citation, then what a reader saw (label, the cited
+        # line's text, the item), and the verdict last
+        bad_rows = [r for r in rows if len(r) != 7]
+        if bad_rows:
+            raise SystemExit(f"{args.control}: a row needs 7 columns: {bad_rows[0]}")
+        rows = [(r[0], r[1], r[2], r[6]) for r in rows]
         only = {r[0] for r in rows}
     recs = census(tree, only)
     if not args.quiet:

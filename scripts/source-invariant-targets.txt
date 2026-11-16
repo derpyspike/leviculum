@@ -234,6 +234,9 @@ skip  leviculum-std   link_establishment_timeout_parity # in-process timeout for
 skip  leviculum-std   local_emission_hold        # in-process transport hold of a local client's young emission (reviewer decision 2026-11-16); subject is the code
 skip  leviculum-std   audit_1922b_fresh_emission_replay   # in-process transport: a replay of network-first emissions earns no hold (audit of 1922); subject is the code
 skip  leviculum-std   audit_1922b_owner_positive_control  # in-process transport: the owner's locally-first emission keeps its hold through the echo (audit of 1922); subject is the code
+skip  leviculum-std   audit_citation_guard_swap           # spawns python3 and git: the citation guard refuses a line citation swapped in for an old one (audit of 1928)
+skip  leviculum-std   audit_citation_guard_member_owner   # spawns python3 and git: the citation guard refuses a member cited without its owner (audit of 1928)
+skip  leviculum-std   audit_citation_guard_unreadable     # spawns python3 and git: the citation guard refuses a name into a file it cannot read (audit of 1928)
 skip  leviculum-std   log_stream_split           # spawns a process to split its streams
 skip  leviculum-std   lxmd_messagestore_takeover # spawns lxmd against a temp-dir store
 skip  leviculum-std   lxmf_rapid_identical_messages # in-process dedup behaviour; subject is the code

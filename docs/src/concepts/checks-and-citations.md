@@ -695,7 +695,7 @@ because a refusal still leaves the citation red and a reader has to
 unpick it.
 
 Step 4 above, read from the other side, is the mechanism. The proof is
-`Placed::Proved` (`leviculum-std/tests/doc_citations.rs:3473`) — the
+`Placed::Proved` (`leviculum-std/tests/doc_citations.rs:3457`) — the
 mapped line's text *now* against the text the *cited number* held in
 the base. The premise of the whole map is therefore that every number
 in the corpus is one the base was right about, and a citation an
@@ -784,9 +784,9 @@ rewrites and run once.*
 
 Built 2026-09-27. The proximity test had lived inline in the checker,
 closed over the current file's lines; it is now `ident_resolves`
-(`leviculum-std/tests/doc_citations.rs:718`), a function over the lines
+(`leviculum-std/tests/doc_citations.rs:702`), a function over the lines
 it is handed, and `place_citation` asks it a second time against the
-base copy of the file (`leviculum-std/tests/doc_citations.rs:3685`). A
+base copy of the file (`leviculum-std/tests/doc_citations.rs:3669`). A
 map repair is emitted only where both halves hold: the map proves the
 move, *and* the base resolved the citation's own identifier at the
 citation's own number. The refusal above is the other branch.
@@ -879,18 +879,53 @@ cites a span between `ANCHOR: <name>` and `ANCHOR_END: <name>`. The
 scanners that find items are described at the top of
 `scripts/citations.py`.
 
-`scripts/check-citations-by-name.py` runs first in `just citation-guard`
-and refuses two things. A name citation that does not resolve to exactly
-one item: a renamed or deleted item, a name two items share, a path into
-another repository, and a base name or shortened path, which it never
-resolves, because order 1848 matched a citation into another repository
-by its base name. And a **new** `path:line` citation into this tree,
-counted per text and per cited path against the merge base with
-`origin/master` (never older than the commit that added the guard): a
-citation that only moved, or that the fixer renumbered, keeps its count
-and passes. Citations into `reference/` and other repositories keep the
-line form. A fixture line that must hold a citation-shaped string as
-data carries `citation-guard: line-fixture`.
+`scripts/check-citations-by-name.py` runs in `just citation-guard`, after
+the selftest, and refuses the following. Each refusal has a control of that
+name in `scripts/citations-selftest.py`, which `just citation-guard` runs
+first.
+
+- **A name that does not resolve to exactly one item.** A renamed or
+  deleted item ("guard: a renamed fn is refused"); a name two items share
+  ("guard: an ambiguous name is refused"); a member written without its
+  owner, `new` where `Thing::new` is meant, even when only one `new`
+  exists ("guard: a member without its owner is refused"); a file of this
+  tree the guard cannot read, which is refused as `cannot read <path>` and
+  not counted as checked ("guard: a name into a file it cannot read is
+  refused and not counted"); a path into another repository ("guard: a
+  name into another repository is refused"); and a base name or shortened
+  path, which it never resolves, because order 1848 matched a citation
+  into another repository by its base name ("guard: a base name is
+  refused, not guessed").
+- **A new `path:line` citation into this tree.** Every line citation on a
+  line the diff adds or changes is refused ("guard: a new line citation is
+  refused", "guard: a new bare-name line citation is refused"), with one
+  exception: a line the diff took away held a citation into the same path
+  whose numbers git's line map of the cited file carries to the new ones.
+  That is the map the fixer above follows, so a renumbered citation passes
+  ("guard: lines inserted above the item and the number follows: passes"),
+  and so does one whose paragraph moved while the cited file stayed ("guard:
+  a moved existing citation passes"). A number changed by hand is refused
+  ("guard: a number changed while the cited file is unchanged is refused"),
+  and so is a new citation in the place of an old one into the same file
+  ("guard: a new citation in the place of an old one is refused"). The diff
+  runs against the merge base with `origin/master`, never older than the
+  commit that added the guard; the parents of merges that bring in a branch
+  without the guard count as bases as well, since what stood there did so
+  before the rule existed.
+- **A shallow clone without a named base.** Its only commit is the base,
+  so the guard would check nothing; it exits 1 and says so unless
+  `--base` or `LEVICULUM_CITATION_BASE` names one ("shallow: the guard
+  without a base exits 1 and says why").
+
+Citations into `reference/` and other repositories keep the line form
+("guard: a new citation into another repository passes"). A fixture line
+that must hold a citation-shaped string as data carries
+`citation-guard: line-fixture` ("guard: a marked fixture line passes").
+Both guards read one definition of what is not a file here, the host
+suffixes and the other repositories' prefixes, from
+`scripts/citation-foreign.txt`; `scripts/check-citation-foreign.py`
+refuses a guard that holds a set of its own ("sets: both guards read the
+shared file", "sets: a literal set beside the shared file is refused").
 
 The existing line citations are left alone on purpose. Order 1848
 converted 195 files in one pass and trusted numbers that had already
@@ -904,8 +939,14 @@ label its text gives it, the item at the cited line, and a verdict
 ten files, converts only `agree` lines automatically, lists `drift` lines
 for a hand fix, and is audited before the next wave.
 `scripts/citations-selftest.py` is the positive control of both tools,
-including the 64 citations commit 8482638d6 renumbered, whose verdicts
-were checked by hand (`scripts/citations-control-1908.tsv`).
+including the 64 citations commit 8482638d6 renumbered
+(`scripts/citations-control-1908.tsv`): each row carries the cited line's
+text at that commit and the item a reader assigns it to, read from `git
+show` alone, and the verdict follows from those. A clone without that
+commit fails the control unless `LEVICULUM_CITATION_CONTROL_WAIVE` waives
+it, which the output then prints ("shallow: the selftest without the 1908
+commit exits 1", "shallow: the waiver turns it into a printed WAIVED
+line").
 
 ### What C cannot reach
 

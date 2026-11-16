@@ -1,0 +1,61 @@
+# What a citation guard reads as "not a file of this tree", once for both:
+# scripts/citations.py (the name guard and the drift census) and
+# leviculum-std/tests/doc_citations.rs (the line guard) read this file, and
+# scripts/check-citation-foreign.py in `just citation-guard` refuses a tree
+# where either holds a set of its own.
+#
+# One entry per line, `<kind> <value>`; `#` starts a comment.
+
+# Extensions that make a `name.ext:number` look like a citation while being
+# a `host:port`. A blocklist rather than an extension allowlist on purpose:
+# an allowlist silently drops a citation into a file type nobody thought of,
+# this can only produce visible noise. `network` is our own server's
+# top-level domain, the shipped server list's first entry (`auto_servers.rs`,
+# #471 step 3); `example` and `invalid` are the RFC 2606 and RFC 6761 names
+# tests and cells dial; `localhost`, `lan` and `internal` are the host names
+# of a home network.
+non-file-extension com
+non-file-extension net
+non-file-extension org
+non-file-extension io
+non-file-extension dev
+non-file-extension local
+non-file-extension onion
+non-file-extension i2p
+non-file-extension de
+non-file-extension network
+non-file-extension example
+non-file-extension invalid
+non-file-extension localhost
+non-file-extension lan
+non-file-extension internal
+
+# Path prefixes that name sibling repositories. These citations are counted
+# and reported but cannot be existence-checked from this workspace. The
+# pinned references under `reference/` are not listed: the line guard checks
+# them where they are checked out.
+external-prefix periculum/
+external-prefix ble-reticulum/
+# The phone app whose BLE behaviour we interoperate with, checked out
+# read-only beside this one (schneckenschreck, branch `main`). It joined the
+# list when the duplicate rule started porting Columba functions line by
+# line: a citation that names the Kotlin file and line is what lets the next
+# reader check the port against the real thing.
+external-prefix columba/
+# Sideband, the other LXMF messenger whose voice messages we play (1222):
+# cited from a clone of github.com/markqvist/Sideband at ef572b5
+# (2026-10-01), which no host keeps beside this tree.
+external-prefix Sideband/
+# SebastianObi's LXMF-Tools, whose distribution-group bot the relayed posts
+# of 1482 are read after: a clone at 6ec9528 (2025-03-19).
+external-prefix LXMF-Tools/
+# A crates.io dependency, cited by the nRF gate scripts. Its source is under
+# `~/.cargo`, never in this tree, so it can only be counted.
+external-prefix nrf-softdevice/
+# The Adafruit nRF52 bootloader the boards carry (1601, OTA stage 1): a clone
+# of github.com/adafruit/Adafruit_nRF52_Bootloader at tag 0.9.0 (a73fe207).
+external-prefix Adafruit_nRF52_Bootloader/
+# i2pd, the I2P router the I2P interface talks SAM to (1654, its five-second
+# session linger): a clone of github.com/PurpleI2P/i2pd at tag 2.56.0
+# (fb90b01f), the version Debian ships.
+external-prefix i2pd/
