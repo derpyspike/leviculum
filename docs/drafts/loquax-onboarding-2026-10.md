@@ -83,17 +83,17 @@ shows none: it maps the state to "sent" (`loquax-android/src/session.rs:1245`).
 
 | Where | What the user sees | New text |
 |---|---|---|
-| `loquax/src/ui.rs:2520` | `via mailbox` on a bubble | `via relay` |
-| `loquax/src/ui.rs:2541` | `in the mailbox` (state) | `waiting at a relay` |
-| `loquax/src/ui.rs:2581` | toast `fetching the mailbox` | `checking the relay` |
-| `loquax/src/ui.rs:3521-3550` | title `no mailbox`, `mailbox 9c31e0a2 adopted · synced 14:05 · next 14:20` and its shorter forms | `no relay`, `relay 9c31e0a2 ...` |
+| `loquax/src/ui.rs:2519` | `via mailbox` on a bubble | `via relay` |
+| `loquax/src/ui.rs:2540` | `in the mailbox` (state) | `waiting at a relay` |
+| `loquax/src/ui.rs:2580` | toast `fetching the mailbox` | `checking the relay` |
+| `loquax/src/ui.rs:3520-3549` | title `no mailbox`, `mailbox 9c31e0a2 adopted · synced 14:05 · next 14:20` and its shorter forms | `no relay`, `relay 9c31e0a2 ...` |
 | `loquax/src/keys.rs:687` | help line `fetch the mailbox` | `check the relay` |
 | `loquax/src/mailbox.rs:91-127` | the reasons an adoption gives (`no mailbox was selected ...`, `no mailbox chosen: ...`) | `relay` for `mailbox` |
 | `loquax/src/mailbox_state.rs:164-174` | `mailbox: 9c31e0a2 kept`, `... adopted: ...` on stderr | `relay: ...` |
 | `loquax/src/mailbox_state.rs:227` | `could not record the mailbox: ...` | `... the relay: ...` |
 | `loquax/src/shell.rs:751` | toast `mailbox <new> adopted, <old> did not answer` | `relay ...` |
 | `loquax/src/fetch.rs:131` | `the mailbox sync failed: ...` | `checking the relay failed: ...` |
-| `loquax/src/tui.rs:1853` | `no mailbox chosen: no propagation node has been heard` | `no relay chosen: ...` |
+| `loquax/src/tui.rs:1849` | `no mailbox chosen: no propagation node has been heard` | `no relay chosen: ...` |
 | `loquax/src/tui.rs:797` | key script word `until delivery mailbox` | accept `relay` and keep `mailbox` |
 | `loquax/src/main.rs:496` | source word `mailbox` in the `LNMSG_PN` line | `relay`; the event catalogue (`leviculum-std/src/event_log.rs:783`) names the word |
 | `docs/src/man/loquax.1.md` | section MAILBOX and 16 lines | section RELAY; MAILBOX becomes the home node's section |
