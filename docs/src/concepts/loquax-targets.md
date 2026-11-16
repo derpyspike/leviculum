@@ -82,13 +82,13 @@ Rows marked (1341) or (1371) were MISSING before that pass and are closed by it.
 | 12 | Photo size, three tiers | `Core.photoSize` (`SettingsActivity.java:541`) | `photo_rows` (`loquax/src/gui/chat.rs:1377`) (settings) (1371) | `PaletteCommand::PhotoSize` (`loquax/src/ui.rs:6072`) (palette `photo size`) (1371) |
 | 13 | View a photo | `PhotoActivity` (`ChatActivity.java:2015`) | `Intent::ViewPhoto` (`loquax/src/gui.rs:1973`) (own viewer) | `view_photo` (`loquax/src/ui.rs:4814`), `UiEffect::ShowPhoto` (`loquax/src/shell.rs:468`) (system viewer) |
 | 14 | Camera | `Core.stage` (`ChatActivity.java:1215`) | n/a | n/a |
-| 15 | Send a file | `Core.file` (`ChatActivity.java:1715`) | `Intent::SendFile` (`loquax/src/gui.rs:1653`), `Finished::Send` (`loquax/src/shell.rs:895`) (1341) | `PaletteCommand::SendFile` (`loquax/src/ui.rs:6090`) (palette `send file`, a typed path), `UiEffect::Attach` (`loquax/src/shell.rs:438`) (1371) |
+| 15 | Send a file | `Core.file` (`ChatActivity.java:1715`) | `Intent::SendFile` (`loquax/src/gui.rs:1653`), `Finished::Send` (`loquax/src/shell.rs:907`) (1341) | `PaletteCommand::SendFile` (`loquax/src/ui.rs:6090`) (palette `send file`, a typed path), `UiEffect::Attach` (`loquax/src/shell.rs:438`) (1371) |
 | 16 | Open and save a received file | `Core.saveFile` (`ChatActivity.java:1915`) | `Intent::OpenFile` (`loquax/src/gui.rs:1974`), `UiEffect::OpenFile` (`loquax/src/shell.rs:486`) | `open_file` (`loquax/src/ui.rs:4823`), `UiEffect::OpenFile` (`loquax/src/shell.rs:486`) |
 | 17 | Record a voice message | `input` (`RecordingBar.java:368`) | `Message::RecPress` (`loquax/src/gui/chat.rs:2657`), `UiEffect::Recording` (`loquax/src/shell.rs:573`), `mic.rs` | `record_key` (`loquax/src/ui.rs:5380`), `UiEffect::Recording` (`loquax/src/shell.rs:573`), `mic.rs` |
 | 18 | Play a voice message | `Core.voicePcm` (`ChatActivity.java:1864`) | `Intent::PlayVoice` (`loquax/src/gui.rs:1977`), `UiEffect::PlayVoice` (`loquax/src/shell.rs:505`) | `play_voice` (`loquax/src/ui.rs:4832`), `UiEffect::PlayVoice` (`loquax/src/shell.rs:505`) |
 | 19 | Groups: new, join, members, add, remove, leave, delete, start again | `Core.group` (`GroupDialogs.java:51`) | `Intent::Group` (`loquax/src/gui.rs:1736`) (all verbs) | `PaletteCommand::NewGroup` (`loquax/src/ui.rs:6157`) to `PaletteCommand::StartAgain` (`loquax/src/ui.rs:6239`) |
 | 20 | Map with positions | `Core.friends` (`MapPane.java:456`) | `Intent::ShowMap` (`loquax/src/gui.rs:1816`) | `PaletteCommand::Map` (`loquax/src/ui.rs:6107`), `tui/map.rs` |
-| 21 | Buildings on the map | `draws_buildings` (`loquax/src/picture.rs:1223`) (shared) | `draws_buildings` (`loquax/src/picture.rs:1223`) | `draws_buildings` (`loquax/src/picture.rs:1223`) (sixel, kitty) |
+| 21 | Buildings on the map | `draws_buildings` (`loquax/src/picture.rs:1498`) (shared) | `draws_buildings` (`loquax/src/picture.rs:1498`) | `draws_buildings` (`loquax/src/picture.rs:1498`) (sixel, kitty) |
 | 22 | Load the map area | `prefetch` (`MapView.java:1291`) (autoload) | `Intent::LoadMapArea` (`loquax/src/gui.rs:2001`) | `PaletteCommand::LoadMapArea` (`loquax/src/ui.rs:6103`) |
 | 23 | Delete all downloaded maps | `Core.deleteRegions` (`SettingsActivity.java:791`) | `Intent::DeleteAllRegions` (`loquax/src/gui.rs:1768`) | `PaletteCommand::DeleteAllMaps` (`loquax/src/ui.rs:6082`) (palette `delete all maps`), `UiEffect::DeleteAllMaps` (`loquax/src/shell.rs:456`) (1371) |
 | 24 | Mesh positions (nodes nearby) | `nearby` (`MapPane.java:498`) | `Message::AddNearby` (`loquax/src/gui.rs:2408`) | `nearby` (`loquax/src/tui/map.rs:1796`) |
@@ -102,7 +102,7 @@ Rows marked (1341) or (1371) were MISSING before that pass and are closed by it.
 | 32 | Rename | `Core.rename` (`ContactActivity.java:610`) | row menu, its field (1371) | `PaletteCommand::Rename` (`loquax/src/ui.rs:6126`) |
 | 33 | Forget a conversation | `Core.forget` (`ContactActivity.java:489`) | row menu, asked once (1371) | `PaletteCommand::DeleteConversation` (`loquax/src/ui.rs:6051`) (palette `delete conversation`, asked once) |
 | 34 | Add a contact by code, typed or pasted | `Core.addContact` (`AddContact.java:96`) | `Message::NewGo` (`loquax/src/gui.rs:1459`) | `PaletteCommand::AddContact` (`loquax/src/ui.rs:6151`) |
-| 35 | A contact code from a QR | `Java_network_leviculum_loquax_Native_scan` (`loquax-android/src/lib.rs:391`) (the scanner screen's decoder) | `Message::PickCode` (`loquax/src/gui.rs:2425`), `Message::PickCode` (`loquax/src/gui/chat.rs:1479`), `image_codes` (`loquax/src/scan.rs:39`) (1341) | `PaletteCommand::CodeFromPicture` (`loquax/src/ui.rs:6094`) (palette `code in a picture`, a typed path), `UiEffect::ScanCode` (`loquax/src/shell.rs:441`) (1371) |
+| 35 | A contact code from a QR | `Java_network_leviculum_loquax_Native_scan` (`loquax-android/src/lib.rs:396`) (the scanner screen's decoder) | `Message::PickCode` (`loquax/src/gui.rs:2425`), `Message::PickCode` (`loquax/src/gui/chat.rs:1479`), `image_codes` (`loquax/src/scan.rs:39`) (1341) | `PaletteCommand::CodeFromPicture` (`loquax/src/ui.rs:6094`) (palette `code in a picture`, a typed path), `UiEffect::ScanCode` (`loquax/src/shell.rs:441`) (1371) |
 | 36 | My code | `EXTRA_TEXT` (`ProfileActivity.java:285`) | `Intent::ShareCode` (`loquax/src/gui.rs:1670`), `profile_layer` (`loquax/src/gui.rs:3232`) (settings row, QR) (1371) | `PaletteCommand::MyCode` (`loquax/src/ui.rs:6256`) |
 | 37 | Home setup | `Core.startHere` (`WelcomeActivity.java:589`) | CLI (`Setup` (`loquax/src/main.rs:211`)) | CLI (`Setup` (`loquax/src/main.rs:211`)) |
 | 38 | Link a device | `Core.linkDevice` (`ProfileActivity.java:385`) | CLI (`Join` (`loquax/src/main.rs:241`), `Admit` (`loquax/src/main.rs:225`)) | CLI (`Join` (`loquax/src/main.rs:241`), `Admit` (`loquax/src/main.rs:225`)) |
@@ -192,7 +192,7 @@ a channel layer on top of propagation nodes is not to be built again.
   in the lock through the window's theme reader (leviculum-ui-iced, mundy);
   neither `rfd` nor another dialog crate is in the tree, and zbus needs no
   GTK. The shell sends the pick as the phone sends its picker's
-  (`attach` (`loquax/src/shell.rs:1017`)): a picture scaled at the reader's photo size, a file
+  (`attach` (`loquax/src/shell.rs:1029`)): a picture scaled at the reader's photo size, a file
   whole up to what a receiver takes. Saving a received file is the
   existing save under the home's `files/` and the system's handler
   (`UiEffect::OpenFile` (`loquax/src/shell.rs:486`)), the same in both desktop targets.
