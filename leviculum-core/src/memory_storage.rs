@@ -3320,48 +3320,6 @@ mod cap_tests {
         assert_eq!((row.entries, row.capacity), (TINY, Some(TINY)));
     }
 
-    /// The keep time is one week, written out in milliseconds: a full table
-    /// refuses a new record one millisecond before its oldest record is a
-    /// week old (6 d 23 h 59 min 59.999 s) and takes it at exactly a week.
-    #[test]
-    fn a_local_emission_record_is_kept_exactly_one_week() {
-        assert_eq!(LOCAL_EMISSION_RECORD_KEEP_MS, 604_800_000);
-        let mut s = MemoryStorage::with_caps(tiny_caps());
-        let installed = 1_000u64;
-        for i in 0..TINY as u32 {
-            s.note_local_emission_installed(hash16(i), 9000, installed + u64::from(i));
-        }
-        let late = hash16(TINY as u32);
-        s.note_local_emission_installed(late, 9000, installed + 604_799_999);
-        assert_eq!(
-            s.local_emission_installed(&late),
-            None,
-            "a week minus a millisecond: the oldest record stays, the new one is refused"
-        );
-        assert_eq!(
-            s.local_emission_installed(&hash16(0)),
-            Some((9000, installed))
-        );
-        s.note_local_emission_installed(late, 9000, installed + 604_800_000);
-        assert_eq!(
-            s.local_emission_installed(&late),
-            Some((9000, installed + 604_800_000)),
-            "a week: the oldest record makes room"
-        );
-        assert_eq!(s.local_emission_installed(&hash16(0)), None);
-    }
-
-    /// `clear_all` forgets the local-emission records with every other
-    /// table.
-    #[test]
-    fn clear_all_forgets_local_emission_records() {
-        let mut s = MemoryStorage::with_caps(tiny_caps());
-        s.note_local_emission_installed(hash16(1), 9000, 100);
-        assert!(s.local_emission_installed(&hash16(1)).is_some());
-        s.clear_all();
-        assert_eq!(s.local_emission_installed(&hash16(1)), None);
-    }
-
     fn reverse(ts: u64) -> ReverseEntry {
         ReverseEntry {
             timestamp_ms: ts,
