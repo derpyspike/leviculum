@@ -30,7 +30,7 @@ your own allocator. The reference firmware `leviculum-nrf` targets
 ## The sans-IO contract
 
 The core is a state machine with exactly three ways in, and one way out. The way
-out is always a `TickOutput` (`leviculum-core/src/transport.rs:645`), carrying
+out is always a `TickOutput` (`leviculum-core/src/transport.rs#TickOutput`), carrying
 `actions` to perform, `events` that occurred, and `next_deadline_ms`, the time at
 which you must next tick the timer. It is `#[must_use]`: dropping it loses
 outbound packets and events.

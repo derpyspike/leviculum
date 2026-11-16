@@ -38,7 +38,7 @@ not credit makes the reading nobody's (Lew 2026-11-13,
 [the expedition map](loquax-expedition-map.md); the chat draws a copy's
 writer by the same rule, `groups::copy_writer`, 1696, 1702, 1728); a collector's
 stream row only where the reader chose that collector, and none can be
-chosen yet, `Writers`, `loquax/src/ui.rs:7110`), the screen model keeps
+chosen yet, `Writers`, `loquax/src/ui.rs#Writers`), the screen model keeps
 each peer's latest and hands every one to the store (`take_telemetry`,
 `loquax/src/ui.rs:6989`), and the store keeps the fields whole in its
 `fields` column (`loquax/src/store.rs:3994`) and the positions in a table of
