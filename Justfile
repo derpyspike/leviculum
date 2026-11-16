@@ -812,8 +812,14 @@ check-processor-seam:
 # nearly free here. No tier ran this suite before — `fast` runs `--lib` only
 # and `standard` names leviculum-std suites one by one — which is the
 # Guarantee-B-masking-C shape the concept page warns about.
-[doc('Check that path:line citations still point at what they claim')]
+#
+# First, about 5 s: the positive controls of the citation tools, then the
+# guard that a new citation names its item and every name citation resolves
+# to exactly one (docs/src/concepts/checks-and-citations.md, section 9).
+[doc('Check that citations resolve and that no new one is a line number')]
 citation-guard:
+    python3 -I scripts/citations-selftest.py
+    python3 -I scripts/check-citations-by-name.py
     {{manifest}} citation-guard -- cargo test -p leviculum-std --test doc_citations -- --nocapture
 
 # The drift census of the existing path:line citations (about 10 s): one
