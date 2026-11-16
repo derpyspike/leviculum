@@ -2970,6 +2970,88 @@ mod tests {
         );
     }
 
+    /// A `VIEW_INCOMPLETE`'s loads (1934): each area of the view still to
+    /// come, what it does, its box in degrees and its bytes; every line of
+    /// the watch is said without a fault.
+    #[test]
+    fn the_watchdogs_lines_name_the_loads() {
+        use crate::ui::maploading::{Area, Kind, Loads};
+        use crate::ui::viewload::{Cell, CellState};
+        use crate::ui::viewwatch::{Cause, Context, ViewEvent};
+        let w = nth(1);
+        let loads = Loads {
+            areas: vec![
+                Area {
+                    bounds: w.bounds,
+                    kind: Kind::Loading { milli: 500 },
+                    bytes_done: 5,
+                    bytes: 10,
+                },
+                Area {
+                    bounds: w.bounds,
+                    kind: Kind::Waiting,
+                    bytes_done: 0,
+                    bytes: 0,
+                },
+                Area {
+                    bounds: w.bounds,
+                    kind: Kind::Stalled {
+                        milli: 1,
+                        quiet_s: 9,
+                    },
+                    bytes_done: 1,
+                    bytes: 10,
+                },
+                Area {
+                    bounds: w.bounds,
+                    kind: Kind::Failed { retry_s: 3 },
+                    bytes_done: 0,
+                    bytes: 0,
+                },
+            ],
+            offline: false,
+        };
+        assert_eq!(
+            loads_line(&loads),
+            "running:11.262,43.740,11.283,43.755:5/10;waiting:11.262,43.740,11.283,43.755:0/0;\
+             stalled:11.262,43.740,11.283,43.755:1/10;failed:11.262,43.740,11.283,43.755:0/0"
+        );
+        let cell = Cell { z: 12, x: 1, y: 2 };
+        for event in [
+            ViewEvent::Settled {
+                view: (1.0, 2.0, 12),
+                cells: 3,
+            },
+            ViewEvent::Whole { ms: 1, bytes: 2 },
+            ViewEvent::Incomplete {
+                ms: 5000,
+                missing: 1,
+                grey: 0,
+                standin: 1,
+                outline: 0,
+                share: 0.5,
+                first: vec![cell],
+                context: Context {
+                    loads: loads_line(&loads),
+                    cache: "1/2".into(),
+                    disk: 3,
+                },
+            },
+            ViewEvent::Regressed {
+                cell,
+                from: CellState::Drawn,
+                to: CellState::Outline,
+                cause: Cause::Evict,
+            },
+            ViewEvent::RegressedMore {
+                more: 2,
+                cause: Cause::Land,
+            },
+        ] {
+            say_view(&event);
+        }
+    }
+
     /// The load order rule (1934, Lew 2026-11-16: "from far away you must
     /// not load deep zoom levels while the picture you look at is not
     /// done yet"): zoomed out over Morocco to z6 after a z10 visit left a
