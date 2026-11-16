@@ -409,149 +409,37 @@ expired one was set outranks the expiry and nothing is marked: on
 miauhaus the first of two requests expired 1.6 s after the second one's
 proof came back over the same next hop.
 
-**A local client's own path is not marked, for a bounded number of
-tries.** A path a connected local client owns is exempt from the
-unresponsive mark for up to `LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT - 1`
-consecutive unproven link-request expiries (order 1881, bounded by
-orders 1898 and 1905; `PATH_KEPT_LOCAL reason=local_client_owns
-unproven=N`). The reference marks it when the initiator was one hop away
-(`Transport.py:746-753`), and then the next relayed copy of the client's
-own emission takes the path at any length (`Transport.py:1819-1824`): on
-miauhaus on 2026-11-15 the Loquax home on the same host was reached over
-a 7-hop backbone route for two hours and every phone's link request left
-the box. A client on the IPC socket cannot have moved; an expired request
-says it did not answer, not that the route is wrong.
-
-Owned means all of:
-
-- the path runs over a connected, online local client's interface, at
-  hops 0 with no next hop (the client's own announce; a HEADER_2 copy
-  another transport node relayed to the client installs a path with a
-  next hop and stays markable);
-- and either the client installed the first copy of that emission this
-  daemon remembers (the path's random blobs hold every copy heard, taken
-  or not), or a link proof for the destination, its signature checked
-  against the destination's cached key, came back over the client's
-  interface. A proof the transport could not check (no announce cached
-  when the link request passed) counts for nothing.
-
-Neither condition shows that the client hosts the destination:
-
-- "Installed first" means "the first copy this daemon remembers". A local
-  process that hands in a captured announce of someone else's destination
-  after an lnsd restart, after the path expired, or after the path was
-  evicted meets it, and so does a client with a faster route of its own.
-  This is the replay case, and the path table cannot tell it from a real
-  host.
-- A proof over the client shows that the destination answered, not that
-  the client hosts it. Any relay can forward a proof: a client that
-  passes the link request on to the real destination gets its proof back
-  and hands it in.
-
-So the hold is bounded. After `LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT` (3)
-consecutive unproven expiries, with no counting proof over the client in
-between, the ownership ends and the path is marked like any other; the
-network's copy of the emission then takes it back
-(`unresponsive_same_emission`). Two things start the count again: a new
-first-heard install by the client (a newer emission of a destination it
-holds the key to), and a checked proof over the client of a link whose
-request entered at the same ingress (interface and peer) as the last dead
-request the count holds (order 1914): the client answered the neighbour it
-had let down. The proof of a probe that the owner itself or a sibling
-local-client connection started leaves the count and the ownership as they
-are (order 1909), and so does the proof of a request from any other
-ingress. The interface class alone was not enough: a local process that
-also reaches lnsd over a TCP, LAN or backbone connection starts its probes
-there, and under order 1909 their proofs counted as network-initiated, so a
-client that answered only those, while every other initiator's request
-died, held the path without limit. A proof grants an ownership the path
-does not have only while the path is not marked unresponsive, so a
-self-started probe after the bound does not hand the path back. Handing in
-the same emission again is no first-heard
-install and restarts nothing. The bound applies whichever way the client
-became the owner. An expiry counts only when it reaches the mark: one
-inside `PATH_REQUEST_MIN_INTERVAL_MS` (20 s) of the last path request for
-the destination is throttled before sub-case 4, so the three counted
-expiries span at least 40 s. The expiry of a link request that was set
-before the last checked proof counts too: sub-case 4 calls
-`mark_path_unresponsive` before it asks `link_proven_since`, which only
-decides whether the next hop is refused. Such a stale expiry costs a
-proven owner one of its three credits. Skipping it would need a proof
-that counts, and `link_proven_since` sees every validated link, the
-local clients' own probes included, so it would reopen the hole above.
-
-The bound is per replay, not per destination. Each lnsd restart, each
-expiry of the path and each eviction of it from `path_table` forgets the
-random blobs, so the next hand-in of the same capture is a first-heard
-install again and starts a new count of three. A local client can force
-the eviction itself: every announce of a fresh identity it generates
-installs a new path, and `path_table` is a `BoundedMap` that evicts the
-oldest entry once it holds `TableCaps::path_cap` entries
-(`leviculum-core/src/memory_storage.rs:310`, built at `:527`; 32 768 in
-the desktop profile, 8 192 in the compact one). Ingress control only
-holds such a burst and releases it later, it caps nothing, so `path_cap`
-is the only limit. A destination the network keeps announcing is
-re-inserted at the back on each announce, so the client has to install
-`path_cap` fresh paths between two of its announces, which also evicts
-every other path the node holds. A kept path is not proven to be a
-working route. A proof is matched only by where its link request entered
-this node; Reticulum link requests name no initiator, so lnsd cannot tell
-whose request it was. A client whose own probes enter at the same ingress
-as the network's requests (it reaches lnsd through the same backbone peer
-or the same multiplexed peer the dead requests came from) can still
-restart the count while other initiators' requests die. What the rule does
-guarantee is that a client relaying for a destination keeps the path only
-while some request from the neighbour whose request died last is answered
-through it; that is accepted under the deviation rule below and pinned by
-`a_relayed_proof_holds_the_path_only_up_to_the_bound` and
-`a_client_proving_probes_from_its_own_network_connection_loses_the_path`.
-
-The hold also ends when the client disconnects (`set_local_client(id,
-false)`, which forgets every ownership of that interface, so a new client
-under a reused index inherits nothing) or when an announce installs the
-destination from anywhere else. Every writer of the unresponsive state
-goes through `mark_path_unresponsive`, the two offline-interface writers
-(`distrust_offline_path`, `reoriginate_toward_peer_links`) included; an
-offline interface never holds an owned path, so those always mark.
-Sub-case 4 of the link-table expiry refuses the next hop only when the
-mark was taken, so a kept path logs no `PATH_UNRESPONSIVE`.
-
-Against the reference: Python never lets a local client's copy of an
-emission it has already heard from the network displace that path.
-Its equal-or-fewer-hops branch wants an unseen random blob AND a strictly
-newer emission (`Transport.py:1765-1776`, the test at `:1772`), so a
-same-emission copy at hops 0 is refused however short it is. Here the
-same-emission fewer-hops clause (`same_emission_fewer_hops`, Codeberg
-#231) lets the client's hops-0 copy take the path, which is how the
-08:38 field case (the backbone echo landed before the home's own copy)
-put the path back on the box. Without a bound, that clause plus the
-exemption gave a permanent hold to any destination a local client
-replays: the network's copy of the same emission could never win the
-path back. Now a replay of a destination the network announced first
-owns nothing and is marked at the first dead request, and any owned
-path, however it became owned, is marked at the bound. What remains a
-deviation under the deviation rule is the bounded hold on an owned path:
-the wire is unchanged (a path entry and its state are ours alone), the
-semantics a Python peer sees are unchanged (link requests still reach the
-destination, over the shorter route), and it measurably serves Priority 1
-(the two hours of miauhaus traffic leaving the box). Tests: the transport
-units `a_local_clients_replay_of_a_network_destination_is_not_pinned`,
-`a_local_clients_replay_twelve_seconds_later_is_not_pinned`,
-`a_replay_after_a_restart_holds_a_foreign_path`,
-`an_owned_path_survives_dead_requests_below_the_bound_and_with_proofs_between`,
-`a_relayed_proof_holds_the_path_only_up_to_the_bound`,
-`only_a_network_initiated_proof_restarts_the_owners_count`,
-`a_disconnect_forgets_the_clients_ownership`,
-`a_disconnected_clients_path_is_markable_again`,
-`a_relayed_announce_from_a_local_client_stays_markable` and
-`a_proof_over_the_client_makes_its_path_its_own`; in `leviculum-std/tests`,
-`local_client_path_ownership.rs`, `audit_1898_first_install_pin.rs`,
-`audit_1898_relayed_proof_pin.rs`, `audit_1898_reused_index.rs`,
-`audit_1905_self_proven_probe.rs`, `audit_1905_rereplay.rs` and
-`audit_1905_rehand_same_emission.rs`.
-`a_kept_local_path_gets_no_next_hop_refusal` pins behaviour that
-predates the rule (an owned path has no next hop, so
-`refuse_unresponsive_next_hop` has nothing to refuse).
+**A local client's young emission is not marked.** A connected local
+client's hops-0 path is exempt from the unresponsive mark, and so from
+replacement by a relayed copy of the same emission, only while that
+emission is young: for at most `LOCAL_EMISSION_HOLD_MS` (one hour) after
+this daemon first installed it from a local-client interface
+(`Transport::mark_path_unresponsive`, `PATH_KEPT_LOCAL
+reason=young_local_emission`). After that, or once the client has
+disconnected, the reference's rule applies unchanged: an expired request
+from a one-hop initiator marks the path (`Transport.py:746-753`) and the
+next relayed copy of the emission takes it at any length
+(`Transport.py:1819-1824`). A newer emission always wins, as before. The
+reference has no exemption; on miauhaus on 2026-11-15 its rule had the
+Loquax home on the same host reached over a 7-hop backbone route for two
+hours, and every phone's link request left the box. The bound is the
+emission and not the client's behaviour: a process that replays a
+captured announce cannot make a newer emission without the destination's
+private key, so whatever requests it answers or lets die, a path it
+captured is kept at most the hold and then repaired, while the genuine
+owner renews the hold with every announce (a Loquax home on a shared
+instance announces every 30 minutes, `ANNOUNCE_EVERY_ON_SHARED`). The
+first install of an emission is what counts: handing the same emission in
+again, re-replaying it after the network took the path back, or
+reconnecting restarts nothing. Deviation rule: the wire is unchanged, the
+state is ours alone, P1 gains the field case, and a local attacker's worst
+case is the hold. What it is not: the hold does not show the client hosts
+the destination. The record of first installs is not persisted and a full
+table (`TableCaps::local_dest_cap`) records nothing new until its oldest
+entry is a week old, so after an lnsd restart the same capture earns one
+more hold, and on a full table a new client's emission earns none. Tests:
+`leviculum-std/tests/local_emission_hold.rs`, with every attack of orders
+1898 to 1914 held to the hour.
 
 The mvr is `leviculum-core/src/node/mvr_path_answer_through_us.rs`: the
 three-node loop (a neighbour that routes the destination through us

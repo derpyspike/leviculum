@@ -893,60 +893,34 @@ pub trait Storage {
     /// Remove entries older than `expiry_ms`. Returns count removed.
     fn expire_local_client_known_dests(&mut self, now_ms: u64, expiry_ms: u64) -> usize;
 
-    // Local client path ownership (orders 1898, 1905)
-    /// Record that the local client on `iface_id` owns the path to
-    /// `dest_hash`, with no unproven link-request expiry counted against
-    /// it: it installed the first copy of that emission this daemon
-    /// remembers, or a checked link proof for the destination came back
-    /// over its interface. Only an owned path is kept from an unresponsive
-    /// mark (`Transport::mark_path_unresponsive`), and only below
-    /// `LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT` consecutive unproven expiries.
+    // Local emission installs (reviewer decision 2026-11-16)
+    /// Record that a local client's hops-0 copy of `dest_hash`'s emission
+    /// `emission_secs` installed its path at `now_ms`. The first install of
+    /// an emission is kept: the same emission again (a re-hand, a re-replay,
+    /// a reconnect) restarts nothing, and an older emission never replaces
+    /// a newer record. Only a newer emission starts a new record. The record
+    /// bounds how long `Transport::mark_path_unresponsive` keeps the path
+    /// (`LOCAL_EMISSION_HOLD_MS`).
     ///
     /// The default keeps nothing, which is right for a store that never
-    /// serves local clients (the boards): no path is owned, every path is
-    /// markable. A store behind a shared instance must override all six.
-    fn set_local_path_owner(&mut self, _dest_hash: [u8; TRUNCATED_HASHBYTES], _iface_id: usize) {}
-
-    /// Count one more consecutive unproven link-request expiry against the
-    /// owner of the path to `dest_hash` and return the count so far
-    /// (order 1905). `ingress` is where the dead request entered, `None`
-    /// when the caller does not know; it replaces the ingress the last count
-    /// remembered (order 1914). `set_local_path_owner` starts the count at
-    /// zero again. The default owns nothing and returns `u8::MAX`, which no
-    /// hold survives.
-    fn note_unproven_local_path_expiry(
+    /// serves local clients (the boards): no path is held, every path is
+    /// markable. A store behind a shared instance must override both.
+    fn note_local_emission_installed(
         &mut self,
-        _dest_hash: &[u8; TRUNCATED_HASHBYTES],
-        _ingress: Option<crate::storage_types::LinkIngress>,
-    ) -> u8 {
-        u8::MAX
+        _dest_hash: [u8; TRUNCATED_HASHBYTES],
+        _emission_secs: u64,
+        _now_ms: u64,
+    ) {
     }
 
-    /// A checked link proof came back over the owner of the path to
-    /// `dest_hash` for a link request that entered at `ingress` (order
-    /// 1914). Restart the unproven-expiry count, and return true, only when
-    /// `ingress` is where the last counted dead request entered: the client
-    /// answered the neighbour whose request it had let die. A proof of a
-    /// request from anywhere else, its own probes over a second connection
-    /// among them, leaves the count as it is. The default owns nothing.
-    fn note_local_path_proof(
-        &mut self,
+    /// The emission and first-install time of the record
+    /// [`Self::note_local_emission_installed`] keeps for `dest_hash`.
+    fn local_emission_installed(
+        &self,
         _dest_hash: &[u8; TRUNCATED_HASHBYTES],
-        _ingress: crate::storage_types::LinkIngress,
-    ) -> bool {
-        false
-    }
-
-    /// The local client interface that owns the path to `dest_hash`, if any.
-    fn local_path_owner(&self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<usize> {
+    ) -> Option<(u64, u64)> {
         None
     }
-
-    /// Forget the owner of the path to `dest_hash`.
-    fn clear_local_path_owner(&mut self, _dest_hash: &[u8; TRUNCATED_HASHBYTES]) {}
-
-    /// Forget every path the local client on `iface_id` owns (it disconnected).
-    fn clear_local_path_owners_of(&mut self, _iface_id: usize) {}
 
     // Discovery Path Requests
     /// Record a pending discovery path request.

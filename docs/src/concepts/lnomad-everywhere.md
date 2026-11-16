@@ -759,7 +759,7 @@ two).** Slice 3's network seam: one node, lent, not a second one.
   stopping takes the node to itself.
 - **Which node.** With the mailbox on the phone, its node: the home node
   lends it once it runs (`DaemonOptions::lends`,
-  `loquax/src/home/daemon.rs:247`), at every start, a restart included,
+  `loquax/src/home/daemon.rs:272`), at every start, a restart included,
   since the screens' leaf reaches nothing past the mailbox, which is no
   transport node. With the mailbox on a computer, the screens' leaf,
   whose rendezvous carries its links on. The fetch identifies with the

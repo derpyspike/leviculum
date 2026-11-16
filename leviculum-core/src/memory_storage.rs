@@ -34,7 +34,7 @@ use crate::constants::{
 use crate::identity::Identity;
 use crate::storage_census::CollectionCount;
 use crate::storage_types::{
-    AnnounceEntry, AnnounceRateEntry, LinkEntry, LinkIngress, PacketReceipt, PathEntry, PathState,
+    AnnounceEntry, AnnounceRateEntry, LinkEntry, PacketReceipt, PathEntry, PathState,
     ReceiptStatus, ReverseEntry,
 };
 use crate::traits::Storage;
@@ -48,6 +48,13 @@ const COMPACT_PACKET_HASH_CAP: usize = 10_000;
 
 /// Compact identity capacity for constrained devices.
 const COMPACT_IDENTITY_CAP: usize = 1_000;
+
+/// How old a local-emission record (`MemoryStorage::local_emission_installs`)
+/// must be before a full table may drop it for a new one: one week, the
+/// default path lifetime (`TransportConfig::path_expiry_secs`, Python's
+/// `PATHFINDER_E`). A replayer that waits this long for its capture to
+/// earn a second hold has held nothing for a week.
+pub const LOCAL_EMISSION_RECORD_KEEP_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
 /// Per-table ceilings (Codeberg #421).
 ///
@@ -79,12 +86,13 @@ const COMPACT_IDENTITY_CAP: usize = 1_000;
 /// | `known_dest_use` | 168 | 50 000 → 8.4 MB | 4 096 → 0.7 MB |
 /// | `local_client_dest_map` | 168 | 4 096 → 0.7 MB | 1 024 → 0.2 MB |
 /// | `local_client_known_dests` | 144 | 4 096 → 0.6 MB | 1 024 → 0.1 MB |
+/// | `local_emission_installs` | 168 | 4 096 → 0.7 MB | 1 024 → 0.2 MB |
 /// | `dest_ratchet_keys` | 384 | 4 096 → 1.6 MB | 1 024 → 0.4 MB |
 /// | `receipts` | 384 | 1 024 → 0.4 MB | 1 024 → 0.4 MB |
 /// | `known_identities` | 1 656 | 50 000 → 82.8 MB | 1 000 → 1.7 MB |
 /// | packet dedup (both generations) | 96 | 1 000 000 → 96 MB | 10 000 → 1.0 MB |
 ///
-/// Desktop totals about 339 MB, of which 179 MB is the two caps that already
+/// Desktop totals about 340 MB, of which 179 MB is the two caps that already
 /// existed (dedup and identities). Compact totals about 22 MB, which is what
 /// makes it fit a Raspberry Pi Zero 2W: 512 MB shared with the GPU, no swap.
 /// A path table whose blob windows are all full (64 blobs, the Python
@@ -275,11 +283,6 @@ struct RateSlot {
 /// rather than one each (#715).
 pub const DEPARTED_REVERSE_IFACES_CAP: usize = 256;
 
-/// One owned local path (orders 1898, 1905, 1914): the owning local-client
-/// interface, the consecutive unproven link-request expiries counted since
-/// the owner was set, and the ingress of the last one counted.
-type LocalPathOwner = (usize, u8, Option<LinkIngress>);
-
 /// In-memory storage with configurable per-collection capacity limits.
 ///
 /// Uses BTreeMap/BTreeSet for all collections. Not persistent, all data is
@@ -453,20 +456,19 @@ pub struct MemoryStorage {
     /// time the client is seen.
     local_client_known_dests: BoundedMap<[u8; TRUNCATED_HASHBYTES], u64>,
 
-    // Local client path ownership (orders 1898, 1905)
-    /// Destination to the local client interface that owns its path
-    /// (`Storage::set_local_path_owner`) and the consecutive unproven
-    /// link-request expiries counted against it since the owner was set
-    /// (`Storage::note_unproven_local_path_expiry`), with the ingress of the
-    /// last one counted, which a proof must match to restart the count
-    /// (`Storage::note_local_path_proof`, order 1914). Removal: an announce
-    /// that installs the destination from elsewhere, the client's
-    /// disconnect, the expiry bound.
+    // Local emission installs (reviewer decision 2026-11-16)
+    /// Destination to `(emission_secs, first_install_ms)` of the newest
+    /// emission a local client installed at hops 0
+    /// (`Storage::note_local_emission_installed`).
     ///
-    /// **Eviction: oldest first.** Same population as
-    /// `local_client_dest_map`; an owner dropped early only makes its path
-    /// markable again, the behaviour of every path that is not owned.
-    local_path_owners: BoundedMap<[u8; TRUNCATED_HASHBYTES], LocalPathOwner>,
+    /// **Eviction: never early.** An entry dropped while its emission can
+    /// still be replayed would hand a replayer a fresh hold, so a full table
+    /// drops its oldest entry only once that entry is
+    /// [`LOCAL_EMISSION_RECORD_KEEP_MS`] old, and otherwise records nothing:
+    /// an unrecorded install holds nothing, which is Python's behaviour. A
+    /// genuine client's newer emission replaces its own entry and needs no
+    /// room.
+    local_emission_installs: BoundedMap<[u8; TRUNCATED_HASHBYTES], (u64, u64)>,
 
     // Discovery path requests
     /// Pending discovery path requests: dest_hash → (requesting_interface, timeout_ms)
@@ -550,7 +552,7 @@ impl MemoryStorage {
             known_ratchets: BoundedMap::new(caps.destination_cap),
             local_client_dest_map: BoundedMap::new(caps.local_dest_cap),
             local_client_known_dests: BoundedMap::new(caps.local_dest_cap),
-            local_path_owners: BoundedMap::new(caps.local_dest_cap),
+            local_emission_installs: BoundedMap::new(caps.local_dest_cap),
             discovery_path_requests: BoundedMap::new(caps.path_cap),
             dest_ratchet_keys: BoundedMap::new(caps.local_dest_cap),
             known_dest_use: BoundedMap::new(caps.destination_cap),
@@ -645,7 +647,7 @@ impl MemoryStorage {
         self.known_ratchets.clear();
         self.local_client_dest_map.clear();
         self.local_client_known_dests.clear();
-        self.local_path_owners.clear();
+        self.local_emission_installs.clear();
         self.discovery_path_requests.clear();
         self.dest_ratchet_keys.clear();
         self.known_dest_use.clear();
@@ -983,19 +985,6 @@ impl MemoryStorage {
             n, raw, est
         );
 
-        // local_path_owners: BTreeMap<[u8; 16], LocalPathOwner>, 3x (orders 1898, 1905, 1914)
-        let n = self.local_path_owners.len();
-        let raw = (n
-            * (HASH_ORDER_BYTES + TRUNCATED_HASHBYTES + core::mem::size_of::<LocalPathOwner>()))
-            as u64;
-        let est = raw * 3;
-        total += est;
-        let _ = writeln!(
-            s,
-            "local_path_owners: {} entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
-            n, raw, est
-        );
-
         // local_client_known_dests: BTreeMap<[u8; 16], u64>, 3x
         let n = self.local_client_known_dests.len();
         let raw =
@@ -1005,6 +994,19 @@ impl MemoryStorage {
         let _ = writeln!(
             s,
             "local_client_known_dests: {} entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
+            n, raw, est
+        );
+
+        // local_emission_installs: BTreeMap<[u8; 16], (u64, u64)>, 3x
+        let n = self.local_emission_installs.len();
+        let raw = (n
+            * (HASH_ORDER_BYTES + TRUNCATED_HASHBYTES + core::mem::size_of::<(u64, u64)>()))
+            as u64;
+        let est = raw * 3;
+        total += est;
+        let _ = writeln!(
+            s,
+            "local_emission_installs: {} entries, raw {} bytes, estimated {} bytes (BTreeMap 3x)",
             n, raw, est
         );
 
@@ -1715,9 +1717,9 @@ impl Storage for MemoryStorage {
                 self.local_client_known_dests.capacity(),
             ),
             CollectionCount::bounded(
-                "local_path_owners",
-                self.local_path_owners.len(),
-                self.local_path_owners.capacity(),
+                "local_emission_installs",
+                self.local_emission_installs.len(),
+                self.local_emission_installs.capacity(),
             ),
             CollectionCount::bounded(
                 "discovery_path_requests",
@@ -1785,55 +1787,6 @@ impl Storage for MemoryStorage {
             .retain(|(i, _), _| *i != iface_id);
     }
 
-    fn set_local_path_owner(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], iface_id: usize) {
-        self.local_path_owners
-            .insert(dest_hash, (iface_id, 0, None));
-    }
-
-    fn note_unproven_local_path_expiry(
-        &mut self,
-        dest_hash: &[u8; TRUNCATED_HASHBYTES],
-        ingress: Option<LinkIngress>,
-    ) -> u8 {
-        match self.local_path_owners.get_mut(dest_hash) {
-            Some((_, expiries, last_dead)) => {
-                *expiries = expiries.saturating_add(1);
-                *last_dead = ingress;
-                *expiries
-            }
-            None => u8::MAX,
-        }
-    }
-
-    fn note_local_path_proof(
-        &mut self,
-        dest_hash: &[u8; TRUNCATED_HASHBYTES],
-        ingress: LinkIngress,
-    ) -> bool {
-        match self.local_path_owners.get_mut(dest_hash) {
-            Some((_, expiries, last_dead)) if *last_dead == Some(ingress) => {
-                *expiries = 0;
-                *last_dead = None;
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn local_path_owner(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<usize> {
-        self.local_path_owners
-            .get(dest_hash)
-            .map(|(iface, _, _)| *iface)
-    }
-
-    fn clear_local_path_owner(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) {
-        self.local_path_owners.remove(dest_hash);
-    }
-
-    fn clear_local_path_owners_of(&mut self, iface_id: usize) {
-        self.local_path_owners.retain(|_, (i, _, _)| *i != iface_id);
-    }
-
     // Local Client Known Destinations
     fn set_local_client_known_dest(
         &mut self,
@@ -1857,6 +1810,51 @@ impl Storage for MemoryStorage {
         self.local_client_known_dests
             .retain(|_, last_seen| now_ms.saturating_sub(*last_seen) < expiry_ms);
         before - self.local_client_known_dests.len()
+    }
+
+    fn note_local_emission_installed(
+        &mut self,
+        dest_hash: [u8; TRUNCATED_HASHBYTES],
+        emission_secs: u64,
+        now_ms: u64,
+    ) {
+        match self.local_emission_installs.get(&dest_hash) {
+            // The first install of this emission stands; an older one
+            // never replaces a newer record.
+            Some(&(recorded, _)) if recorded >= emission_secs => return,
+            Some(_) => {
+                self.local_emission_installs
+                    .insert(dest_hash, (emission_secs, now_ms));
+                return;
+            }
+            None => {}
+        }
+        if self.local_emission_installs.len() >= self.local_emission_installs.capacity() {
+            let oldest = self
+                .local_emission_installs
+                .iter()
+                .min_by_key(|(_, &(_, installed))| installed)
+                .map(|(k, &(_, installed))| (*k, installed));
+            match oldest {
+                Some((key, installed))
+                    if now_ms.saturating_sub(installed) >= LOCAL_EMISSION_RECORD_KEEP_MS =>
+                {
+                    self.local_emission_installs.remove(&key);
+                }
+                // Full of records young enough to be replayed: record
+                // nothing, so this install holds nothing.
+                _ => return,
+            }
+        }
+        self.local_emission_installs
+            .insert(dest_hash, (emission_secs, now_ms));
+    }
+
+    fn local_emission_installed(
+        &self,
+        dest_hash: &[u8; TRUNCATED_HASHBYTES],
+    ) -> Option<(u64, u64)> {
+        self.local_emission_installs.get(dest_hash).copied()
     }
 
     // Discovery Path Requests
@@ -3105,7 +3103,7 @@ mod diagnostic_model_tests {
         s.set_path_request_time(hash(6), 0);
         s.remember_known_ratchet(hash(7), [0u8; RATCHET_SIZE], 0);
         s.set_local_client_known_dest(hash(8), 0);
-        s.set_local_path_owner(hash(8), 0);
+        s.note_local_emission_installed(hash(8), 0, 0);
         s.set_discovery_path_request(hash(9), 0, 0);
 
         let (dump, _) = s.diagnostic_dump_non_packet_cache();
@@ -3155,8 +3153,8 @@ mod diagnostic_model_tests {
             (HASH_ORDER_BYTES + TRUNCATED_HASHBYTES + size_of::<u64>()) as u64,
         );
         assert_eq!(
-            raw_bytes_of(&dump, "local_path_owners"),
-            (HASH_ORDER_BYTES + TRUNCATED_HASHBYTES + size_of::<LocalPathOwner>()) as u64,
+            raw_bytes_of(&dump, "local_emission_installs"),
+            (HASH_ORDER_BYTES + TRUNCATED_HASHBYTES + size_of::<(u64, u64)>()) as u64,
         );
         assert_eq!(
             raw_bytes_of(&dump, "discovery_path_requests"),
@@ -3268,6 +3266,58 @@ mod cap_tests {
         let mut h = [0u8; TRUNCATED_HASHBYTES];
         h[..4].copy_from_slice(&n.to_be_bytes());
         h
+    }
+
+    /// The first install of an emission stands: the same emission again
+    /// and an older one leave the record, a newer one replaces it.
+    #[test]
+    fn a_local_emission_record_keeps_its_first_install() {
+        let mut s = MemoryStorage::with_caps(tiny_caps());
+        let d = hash16(1);
+        assert_eq!(s.local_emission_installed(&d), None);
+        s.note_local_emission_installed(d, 9000, 100);
+        s.note_local_emission_installed(d, 9000, 5_000);
+        assert_eq!(s.local_emission_installed(&d), Some((9000, 100)));
+        s.note_local_emission_installed(d, 8999, 6_000);
+        assert_eq!(s.local_emission_installed(&d), Some((9000, 100)));
+        s.note_local_emission_installed(d, 9001, 7_000);
+        assert_eq!(s.local_emission_installed(&d), Some((9001, 7_000)));
+    }
+
+    /// A full table records nothing new while its oldest record is younger
+    /// than `LOCAL_EMISSION_RECORD_KEEP_MS`, so no record a replayer could
+    /// still use is dropped; once the oldest is that old it makes room.
+    #[test]
+    fn a_full_local_emission_table_drops_only_a_week_old_record() {
+        let mut s = MemoryStorage::with_caps(tiny_caps());
+        for i in 0..TINY as u32 {
+            s.note_local_emission_installed(hash16(i), 9000, u64::from(i));
+        }
+        let late = hash16(TINY as u32);
+        s.note_local_emission_installed(late, 9000, LOCAL_EMISSION_RECORD_KEEP_MS - 1);
+        assert_eq!(s.local_emission_installed(&late), None, "no room yet");
+        assert_eq!(s.local_emission_installed(&hash16(0)), Some((9000, 0)));
+        // A newer emission of a recorded destination needs no room.
+        s.note_local_emission_installed(hash16(5), 9001, 50);
+        assert_eq!(s.local_emission_installed(&hash16(5)), Some((9001, 50)));
+
+        s.note_local_emission_installed(late, 9000, LOCAL_EMISSION_RECORD_KEEP_MS);
+        assert_eq!(
+            s.local_emission_installed(&late),
+            Some((9000, LOCAL_EMISSION_RECORD_KEEP_MS))
+        );
+        assert_eq!(
+            s.local_emission_installed(&hash16(0)),
+            None,
+            "the oldest went"
+        );
+        assert_eq!(s.local_emission_installed(&hash16(1)), Some((9000, 1)));
+        let row = s
+            .collection_counts()
+            .into_iter()
+            .find(|c| c.name == "local_emission_installs")
+            .unwrap();
+        assert_eq!((row.entries, row.capacity), (TINY, Some(TINY)));
     }
 
     fn reverse(ts: u64) -> ReverseEntry {

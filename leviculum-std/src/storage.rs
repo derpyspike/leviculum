@@ -1468,37 +1468,21 @@ impl leviculum_core::traits::Storage for Storage {
         self.inner.remove_local_client_dests(iface_id)
     }
 
-    fn set_local_path_owner(&mut self, dest_hash: [u8; TRUNCATED_HASHBYTES], iface_id: usize) {
-        self.inner.set_local_path_owner(dest_hash, iface_id)
-    }
-
-    fn local_path_owner(&self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) -> Option<usize> {
-        self.inner.local_path_owner(dest_hash)
-    }
-
-    fn note_unproven_local_path_expiry(
+    fn note_local_emission_installed(
         &mut self,
-        dest_hash: &[u8; TRUNCATED_HASHBYTES],
-        ingress: Option<leviculum_core::storage_types::LinkIngress>,
-    ) -> u8 {
+        dest_hash: [u8; TRUNCATED_HASHBYTES],
+        emission_secs: u64,
+        now_ms: u64,
+    ) {
         self.inner
-            .note_unproven_local_path_expiry(dest_hash, ingress)
+            .note_local_emission_installed(dest_hash, emission_secs, now_ms)
     }
 
-    fn note_local_path_proof(
-        &mut self,
+    fn local_emission_installed(
+        &self,
         dest_hash: &[u8; TRUNCATED_HASHBYTES],
-        ingress: leviculum_core::storage_types::LinkIngress,
-    ) -> bool {
-        self.inner.note_local_path_proof(dest_hash, ingress)
-    }
-
-    fn clear_local_path_owner(&mut self, dest_hash: &[u8; TRUNCATED_HASHBYTES]) {
-        self.inner.clear_local_path_owner(dest_hash)
-    }
-
-    fn clear_local_path_owners_of(&mut self, iface_id: usize) {
-        self.inner.clear_local_path_owners_of(iface_id)
+    ) -> Option<(u64, u64)> {
+        self.inner.local_emission_installed(dest_hash)
     }
     // Local Client Known Destinations
     fn set_local_client_known_dest(
@@ -1609,42 +1593,6 @@ mod tests {
         (Storage::new(&path).unwrap(), path)
     }
 
-    /// Order 1898: lnsd's store keeps a local client's path ownership. The
-    /// trait's default keeps nothing, so a missing delegation here would
-    /// leave every local client's path markable without a test going red.
-    #[test]
-    fn local_path_ownership_is_kept_and_cleared() {
-        use leviculum_core::traits::Storage as _;
-        let (mut s, _dir) = temp_storage();
-        let a = [0xA1; TRUNCATED_HASHBYTES];
-        let b = [0xB2; TRUNCATED_HASHBYTES];
-        s.set_local_path_owner(a, 3);
-        s.set_local_path_owner(b, 4);
-        assert_eq!(s.local_path_owner(&a), Some(3));
-        s.clear_local_path_owner(&a);
-        assert_eq!(s.local_path_owner(&a), None);
-        assert_eq!(s.local_path_owner(&b), Some(4));
-        s.clear_local_path_owners_of(4);
-        assert_eq!(s.local_path_owner(&b), None);
-
-        // Order 1905: the unproven-expiry count is delegated too, and a new
-        // owner record starts it again.
-        assert_eq!(s.note_unproven_local_path_expiry(&a, None), u8::MAX);
-        s.set_local_path_owner(a, 3);
-        assert_eq!(s.note_unproven_local_path_expiry(&a, None), 1);
-        assert_eq!(s.note_unproven_local_path_expiry(&a, None), 2);
-        s.set_local_path_owner(a, 3);
-        assert_eq!(s.note_unproven_local_path_expiry(&a, None), 1);
-
-        // Order 1914: a proof restarts the count only from the ingress of
-        // the last counted dead request, and that is delegated too.
-        assert_eq!(s.note_unproven_local_path_expiry(&a, Some((7, None))), 2);
-        assert!(!s.note_local_path_proof(&a, (8, None)));
-        assert_eq!(s.note_unproven_local_path_expiry(&a, Some((7, None))), 3);
-        assert!(s.note_local_path_proof(&a, (7, None)));
-        assert_eq!(s.note_unproven_local_path_expiry(&a, None), 1);
-    }
-
     /// Codeberg #336: the names come off the filesystem, so `hex_decode`
     /// reads bytes. The old body sliced the `&str` at even byte offsets,
     /// which panics whenever a character straddles one — and an emoji is
@@ -1731,6 +1679,16 @@ mod tests {
         use leviculum_core::traits::Storage as CoreStorage;
 
         let (mut storage, _dir) = temp_storage();
+
+        // The local-emission record (reviewer decision 2026-11-16) reaches
+        // the inner store: the trait default would keep nothing.
+        let own = [0x07u8; TRUNCATED_HASHBYTES];
+        CoreStorage::note_local_emission_installed(&mut storage, own, 9000, 10);
+        CoreStorage::note_local_emission_installed(&mut storage, own, 9000, 20);
+        assert_eq!(
+            CoreStorage::local_emission_installed(&storage, &own),
+            Some((9000, 10))
+        );
 
         // Verify packet hash dedup works (was no-op before this commit)
         let hash = [0x42u8; 32];
