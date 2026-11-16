@@ -279,12 +279,15 @@ impl ViewWatch {
                     ),
                     cells: cells.len(),
                 });
+                // The view settled 300 ms after the last input, whenever
+                // the first frame after that came.
+                let at_ms = self.input_ms + SETTLE_MS;
                 self.settled.insert(Settled {
-                    at_ms: now_ms,
+                    at_ms,
                     fetched: self.input_fetched,
                     whole: false,
                     whole_said: false,
-                    next_ms: now_ms + WHOLE_BOUND_MS,
+                    next_ms: at_ms + WHOLE_BOUND_MS,
                     drawn: Vec::new(),
                     epoch: seen.epoch,
                     regions: seen.regions.len(),
@@ -379,11 +382,18 @@ impl ViewWatch {
     /// The next instant the watch has something to decide, for a
     /// frontend that draws only when asked: the settle after the last
     /// input, or the next `VIEW_INCOMPLETE`. `None` once the settled view
-    /// is whole.
-    pub fn next_due_ms(&self) -> Option<u64> {
+    /// is whole. With `repeats` off, for a frontend whose every wake is a
+    /// frame drawn (the phone): no wake for the settle, which is dated to
+    /// the input anyway, and none after the first `VIEW_INCOMPLETE`, whose
+    /// repeats ride on the frames it draws anyway, so a view that stays
+    /// incomplete offline costs it no frame every 10 s.
+    pub fn next_due_ms(&self, repeats: bool) -> Option<u64> {
         match &self.settled {
+            // A settle needs no frame of its own: it is dated to the input.
+            None if !repeats => self.key.map(|_| self.input_ms + SETTLE_MS + WHOLE_BOUND_MS),
             None => self.key.map(|_| self.input_ms + SETTLE_MS),
             Some(s) if s.whole => None,
+            Some(s) if s.late.is_some() && !repeats => None,
             Some(s) => Some(s.next_ms),
         }
     }
@@ -459,7 +469,7 @@ mod tests {
             .observe(100, &seen(&v, &[], false), Context::default)
             .is_empty());
         assert_eq!(
-            w.next_due_ms(),
+            w.next_due_ms(true),
             Some(300),
             "300 ms after the last moving frame"
         );
@@ -481,7 +491,7 @@ mod tests {
         );
         assert_eq!(e[0].line(), "VIEW_WHOLE ms=1600 bytes=1234");
         assert!(w.observe(9_000, &s, Context::default).is_empty());
-        assert_eq!(w.next_due_ms(), None);
+        assert_eq!(w.next_due_ms(true), None);
         assert_eq!(w.badge(), None);
     }
 
@@ -530,6 +540,16 @@ mod tests {
             "{line}"
         );
         assert_eq!(w.badge().as_deref(), Some("5 s 100 %"));
+        assert_eq!(w.next_due_ms(true), Some(15_300), "the repeat");
+        let mut phone = ViewWatch::new();
+        phone.observe(1_000, &seen(&v, &r, false), Context::default);
+        assert_eq!(phone.next_due_ms(false), Some(6_300), "no settle wake");
+        // Settled late, dated to the input: incomplete at 5 s after it.
+        assert_eq!(
+            names(&phone.observe(6_300, &seen(&v, &r, false), Context::default)),
+            ["VIEW_SETTLED", "VIEW_INCOMPLETE"]
+        );
+        assert_eq!(w.next_due_ms(false), None, "no frame for a repeat");
         assert!(w
             .observe(15_299, &seen(&v, &r, false), Context::default)
             .is_empty());

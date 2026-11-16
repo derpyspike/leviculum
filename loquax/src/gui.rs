@@ -2699,7 +2699,7 @@ impl App {
         }
         let now = self.now_ms();
         self.watch
-            .next_due_ms()
+            .next_due_ms(true)
             .map(|due| due.saturating_sub(now).max(1))
     }
 

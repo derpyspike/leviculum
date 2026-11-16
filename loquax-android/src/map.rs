@@ -114,6 +114,9 @@ pub struct Renderer {
     /// What the screen needs from the loader, decided frame by frame
     /// (1292).
     loads: ViewLoads,
+    /// The view watchdog (1934): whether the settled view is whole within
+    /// 5 s, said as events.
+    view_watch: loquax::ui::viewwatch::ViewWatch,
     autoload: bool,
     /// The config's `map_fling` (1188).
     fling: bool,
@@ -172,6 +175,7 @@ impl Renderer {
             loader: Loader::new(maps, source, cache).with_heights(heights),
             watch: Watch::default(),
             loads: ViewLoads::new(),
+            view_watch: loquax::ui::viewwatch::ViewWatch::new(),
             autoload: config.map_autoload.unwrap_or(true),
             fling: config.map_fling.unwrap_or(true),
             relief: config.map_relief.unwrap_or(true),
@@ -798,6 +802,35 @@ impl Renderer {
             Ok(shot) => shot,
             Err(error) => return failed(error),
         };
+        // The view watchdog (1934) over the frame drawn: its lines said
+        // as events, its next decision a wake for Java (`retry_in_ms`).
+        let watch_due = match self.autoload && !request.own_only {
+            true => {
+                let watched = view.at_zoom(rest_zoom);
+                let seen = loquax::ui::viewwatch::Observed {
+                    view: &watched,
+                    moving: request.moving,
+                    regions: &setup.regions,
+                    pending: shot.missing,
+                    grey: 0,
+                    epoch: self.maps.epoch(),
+                    fetched: self.maps.fetched(),
+                };
+                let (frames, maps, loads) = (&self.frames, &self.maps, &treat.loads);
+                let context = || loquax::ui::viewwatch::Context {
+                    loads: loquax::mapload::loads_line(loads),
+                    cache: format!("{}/{}", frames.tile_memory().1, frames.tile_cap()),
+                    disk: maps.usage().1,
+                };
+                for event in self.view_watch.observe(now, &seen, context) {
+                    loquax::mapload::say_view(&event);
+                }
+                self.view_watch
+                    .next_due_ms(false)
+                    .map(|due| due.saturating_sub(now).max(1))
+            }
+            false => None,
+        };
         let (w, h) = shot.view.size();
         // The blend the frame was drawn through, when it is curved
         // (1799): marks and the own dot are placed with it, never with
@@ -893,7 +926,12 @@ impl Renderer {
             // A box waits to retry (1821): the instant of the loader's
             // next own move, so Java posts a frame for it and a box that
             // failed at rest is retried with no touch.
-            retry_in_ms: self.loader.next_due_ms(now),
+            // The view watchdog's next decision too (1934): a view that
+            // settled is judged though no frame was otherwise due.
+            retry_in_ms: match (self.loader.next_due_ms(now), watch_due) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            },
             notice,
             ms: u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX),
             dark: table == MapTheme::Dark,
