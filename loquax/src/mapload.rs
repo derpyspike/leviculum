@@ -53,7 +53,10 @@
 //! - Autoloaded regions are a cache under a cap, named [`AUTO_PREFIX`],
 //!   evicted least recently viewed first (a painter marks a region viewed
 //!   by its file's modification time). A file without the prefix was placed
-//!   by hand and is never evicted, nor counted.
+//!   by hand and is never evicted, nor counted. A file a running load
+//!   writes is never evicted (1836); a landing for the screen takes the
+//!   files of paused loads first, each load stopped for it and its box
+//!   queued again (the audit of 1836, finding 4).
 //!
 //! - A region that landed wants its height packs (1863): the blocks of
 //!   the height catalogue ([`leviculum_mapcut::heights`]) under its box,
@@ -85,6 +88,7 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::string::{String, ToString};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Instant, SystemTime};
@@ -402,12 +406,41 @@ enum Hold {
 struct Gate {
     hold: Mutex<Hold>,
     changed: Condvar,
+    /// The load is for what the user looks at ([`Rank::on_screen`]): its
+    /// landing may take a paused load's file first (audit of 1836,
+    /// finding 4). Kept by [`Loader::steer`].
+    screen: AtomicBool,
 }
 
 impl Gate {
+    /// Set the hold; a stop is for good, whoever set it.
     fn set(&self, hold: Hold) {
-        *self.hold.lock().unwrap_or_else(PoisonError::into_inner) = hold;
+        let mut held = self.hold.lock().unwrap_or_else(PoisonError::into_inner);
+        if *held != Hold::Stop {
+            *held = hold;
+        }
         self.changed.notify_all();
+    }
+
+    /// Stop a load that waits paused, for an eviction to take its file
+    /// (audit of 1836, finding 4): whether it was paused and is stopped
+    /// now. A load that runs is left alone.
+    fn claim(&self) -> bool {
+        let mut held = self.hold.lock().unwrap_or_else(PoisonError::into_inner);
+        let paused = *held == Hold::Pause;
+        if paused {
+            *held = Hold::Stop;
+            self.changed.notify_all();
+        }
+        paused
+    }
+
+    fn set_screen(&self, screen: bool) {
+        self.screen.store(screen, AtomicOrdering::Relaxed);
+    }
+
+    fn screen(&self) -> bool {
+        self.screen.load(AtomicOrdering::Relaxed)
     }
 
     /// Wait while paused; whether the load goes on (`false`: stop).
@@ -571,9 +604,19 @@ pub struct Loader {
     writing: Writing,
 }
 
-/// The names of the region files being written in place, shared by the
-/// loader and its jobs (1836).
-type Writing = Arc<Mutex<Vec<String>>>;
+/// The region files loads write now, shared by the loader and its jobs
+/// (1836).
+type Writing = Arc<Mutex<Vec<Writer>>>;
+
+/// A region file a load writes: its name, and the load's gate when the
+/// file is written in place under that name, so an eviction for the
+/// screen may stop the load while it waits paused and take the file
+/// (audit of 1836, finding 4). A file written beside the region it
+/// replaces has none: the name is the installed region's.
+struct Writer {
+    name: String,
+    gate: Option<Arc<Gate>>,
+}
 
 /// A file's place in [`Writing`] while its load holds it; gone with it.
 struct Written {
@@ -582,11 +625,14 @@ struct Written {
 }
 
 impl Written {
-    fn new(writing: &Writing, name: &str) -> Self {
+    fn new(writing: &Writing, name: &str, gate: Option<Arc<Gate>>) -> Self {
         writing
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push(name.to_string());
+            .push(Writer {
+                name: name.to_string(),
+                gate,
+            });
         Self {
             writing: Arc::clone(writing),
             name: name.to_string(),
@@ -597,7 +643,7 @@ impl Written {
 impl Drop for Written {
     fn drop(&mut self) {
         let mut names = self.writing.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(n) = names.iter().position(|w| *w == self.name) {
+        if let Some(n) = names.iter().position(|w| w.name == self.name) {
             names.remove(n);
         }
     }
@@ -1383,6 +1429,9 @@ impl Loader {
             .any(|r| r.hold == Hold::Run && r.rank.on_screen())
             || self.queue.iter().any(|q| q.rank.on_screen());
         let mut steps = Vec::new();
+        for r in &self.running {
+            r.gate.set_screen(r.rank.on_screen());
+        }
         let set = |r: &mut Running, hold: Hold, steps: &mut Vec<Step>| {
             if r.hold == hold || r.hold == Hold::Stop {
                 return;
@@ -1478,6 +1527,7 @@ impl Loader {
         let (tx, rx) = channel();
         let progress = Arc::new(Mutex::new(LoadProgress::default()));
         let gate = Arc::new(Gate::default());
+        gate.set_screen(rank.on_screen());
         let job = Job {
             dir: dir.to_path_buf(),
             maps: self.maps.clone(),
@@ -1614,9 +1664,12 @@ impl Job {
             true => self.dir.join(format!("{name}{PART_SUFFIX}")),
             false => path.clone(),
         };
-        // No other load's eviction takes the file while this one writes
-        // it, running or paused (1836).
-        let _held = Written::new(&self.writing, &name);
+        // No other load's eviction takes the file while this one runs
+        // (1836); while it waits paused, a landing for the screen may
+        // stop it and take the file written in place (audit of 1836,
+        // finding 4).
+        let gate = (!replaces).then(|| Arc::clone(&self.gate));
+        let _held = Written::new(&self.writing, &name, gate);
         // As wide as the tile painters (1473): one core count for the map.
         let threads = crate::picture::cores();
         let maps = self.maps.clone();
@@ -1677,7 +1730,17 @@ impl Job {
                 return Err(error);
             }
         };
-        let evicted = evict_keeping(&self.dir, self.cache_bytes, &kept(&self.writing, &name))?;
+        // A landing for the screen takes the paused loads' files first.
+        let first = match self.gate.screen() {
+            true => paused(&self.writing),
+            false => Vec::new(),
+        };
+        let evicted = evict_keeping(
+            &self.dir,
+            self.cache_bytes,
+            &kept(&self.writing, &name),
+            &first,
+        )?;
         Ok(Landed {
             bytes: loaded.stats.bytes,
             name,
@@ -1770,6 +1833,7 @@ impl HeightJob {
                 &self.dir,
                 self.cache_bytes,
                 &kept(&self.writing, &self.region),
+                &[],
             )?;
         }
         Ok(landed)
@@ -1920,22 +1984,45 @@ fn overlaps(a: &Bounds, b: &Bounds) -> bool {
 /// stay. A height pack goes with the last autoloaded region over its
 /// block (1863), whether that went now or before. The names removed.
 pub fn evict(dir: &Path, cap: u64, keep: &str) -> std::io::Result<Vec<String>> {
-    evict_keeping(dir, cap, &[keep.to_string()])
+    evict_keeping(dir, cap, &[keep.to_string()], &[])
 }
 
 /// `keep` and every file a load writes now ([`Writing`], 1836).
 fn kept(writing: &Writing, keep: &str) -> Vec<String> {
-    let mut names = writing
+    let mut names: Vec<String> = writing
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .clone();
+        .iter()
+        .map(|w| w.name.clone())
+        .collect();
     names.push(keep.to_string());
     names
 }
 
+/// The files written in place by loads that wait paused now, each with
+/// its load's gate (audit of 1836, finding 4).
+fn paused(writing: &Writing) -> Vec<(String, Arc<Gate>)> {
+    writing
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .filter_map(|w| w.gate.as_ref().map(|g| (w.name.clone(), Arc::clone(g))))
+        .filter(|(_, g)| *g.hold.lock().unwrap_or_else(PoisonError::into_inner) == Hold::Pause)
+        .collect()
+}
+
 /// [`evict`] keeping every name of `keep`: the region just loaded and the
-/// files loads still write, running or paused (1836).
-pub fn evict_keeping(dir: &Path, cap: u64, keep: &[String]) -> std::io::Result<Vec<String>> {
+/// files loads still write (1836). The files of `first`, paused loads'
+/// own, go before any other while the directory is over `cap`, each only
+/// if its load still waits paused and is stopped for it ([`Gate::claim`]):
+/// what the screen needs space for takes what the view left first (audit
+/// of 1836, finding 4).
+fn evict_keeping(
+    dir: &Path,
+    cap: u64,
+    keep: &[String],
+    first: &[(String, Arc<Gate>)],
+) -> std::io::Result<Vec<String>> {
     let mut auto: Vec<(SystemTime, String, u64)> = Vec::new();
     let mut packs: Vec<(String, u64, Option<Bounds>)> = Vec::new();
     for entry in std::fs::read_dir(dir)? {
@@ -1985,6 +2072,22 @@ pub fn evict_keeping(dir: &Path, cap: u64, keep: &[String]) -> std::io::Result<V
         Ok(())
     };
     orphans(&auto, &mut total, &mut evicted)?;
+    for (name, gate) in first {
+        if total <= cap {
+            break;
+        }
+        let Some(n) = auto.iter().position(|a| a.1 == *name) else {
+            continue;
+        };
+        if !gate.claim() {
+            continue;
+        }
+        let (_, name, len) = auto.remove(n);
+        remove_evicted(&dir.join(&name))?;
+        total = total.saturating_sub(len);
+        evicted.push(name);
+        orphans(&auto, &mut total, &mut evicted)?;
+    }
     let mut n = 0;
     while n < auto.len() && total > cap {
         if keep.contains(&auto[n].1) {
@@ -2716,15 +2819,16 @@ mod tests {
         region.verify().expect("the resumed load's region verifies");
     }
 
-    /// A paused load's file is in the maps directory, an autoloaded
-    /// region like any other: a landing that evicts to stay under the cap
-    /// must not take a file a load is still writing (1836), or the load
-    /// writes on into a file no painter sees and fails when it is done.
+    /// A paused load's file is in the maps directory, an autoloaded region
+    /// like any other. When the screen needs space it is the first to go
+    /// (order 1836 item 5, its audit's finding 4): the screen's box lands
+    /// over a cap below two regions, the paused load's file is evicted,
+    /// the load is told to stop rather than write on into a file no
+    /// painter sees, hands its box back and lands later from the start.
     #[test]
-    fn a_landing_does_not_evict_a_file_a_paused_load_writes() {
+    fn a_landing_for_the_screen_takes_a_paused_file_first_and_it_loads_again() {
         let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
         let dir = tempfile::tempdir().expect("tmp");
-        // A cap below any one region: every landing evicts all it may.
         let mut loader = Loader::new(
             Maps::new(Some(dir.path().to_path_buf())),
             Source::Url(serve.url("o.pmtiles")),
@@ -2748,7 +2852,13 @@ mod tests {
             assert!(Instant::now() < deadline, "a never paused with its file");
             std::thread::sleep(Duration::from_millis(5));
         }
-        let steps = poll_until(&mut loader, 20, |s| landed(s, &b));
+        let steps = poll_until(&mut loader, 20, |s| {
+            landed(s, &b)
+                && s.contains(&Step::Held {
+                    want: a.clone(),
+                    how: Held::Dropped,
+                })
+        });
         let evicted: Vec<String> = steps
             .iter()
             .filter_map(|s| match s {
@@ -2758,13 +2868,62 @@ mod tests {
             .flatten()
             .collect();
         assert!(
-            evicted.iter().all(|n| auto_bounds(n) != Some(a.bounds)),
-            "the paused load's file was evicted: {evicted:?}"
+            evicted.iter().any(|n| auto_bounds(n) == Some(a.bounds)),
+            "the paused load's file went first: {evicted:?}"
         );
-        let steps = poll_until(&mut loader, 30, |s| {
+        assert!(!a_file(), "and it is gone");
+        assert!(!landed(&steps, &a), "{steps:?}");
+        // Nothing for the screen is left: a loads again and lands.
+        loader.schedule(Vec::new(), Vec::new(), 30);
+        let steps = poll_until(&mut loader, 40, |s| {
             landed(s, &a) || s.iter().any(|s| matches!(s, Step::Failed { .. }))
         });
         assert!(landed(&steps, &a), "{steps:?}");
+    }
+
+    /// The eviction's order (audit of 1836, finding 4): four regions of
+    /// 100 bytes, a cap of 300, below the four. The paused load's file
+    /// goes first, though the oldest viewed is another; a running load's
+    /// file and the one just landed are kept; the paused load is stopped
+    /// for good. A paused file whose load runs again by the time the
+    /// eviction claims it stays, and the oldest goes instead.
+    #[test]
+    fn a_paused_file_goes_first_and_a_running_ones_stays() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let name = |n: i32| auto_name(&nth(n).bounds, (14, 15));
+        let at = |n: u64| SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000 + n);
+        for (n, viewed) in [(1, at(1)), (2, at(2)), (3, at(3)), (4, at(4))] {
+            let f = File::create(dir.path().join(name(n))).expect("create");
+            f.set_len(100).expect("len");
+            f.set_modified(viewed).expect("mtime");
+        }
+        // 1 is the oldest viewed, 2 a paused load's, 3 a running one's,
+        // 4 just landed.
+        let paused_gate = Arc::new(Gate::default());
+        paused_gate.set(Hold::Pause);
+        let running_gate = Arc::new(Gate::default());
+        let first = vec![
+            (name(2), Arc::clone(&paused_gate)),
+            (name(3), Arc::clone(&running_gate)),
+        ];
+        let keep = vec![name(2), name(3), name(4)];
+        let evicted = evict_keeping(dir.path(), 300, &keep, &first).expect("evict");
+        assert_eq!(evicted, [name(2)]);
+        assert_eq!(*paused_gate.hold.lock().expect("hold"), Hold::Stop);
+        assert_eq!(*running_gate.hold.lock().expect("hold"), Hold::Run);
+        // Stopped is for good: the loader's resume does not undo it.
+        paused_gate.set(Hold::Run);
+        assert_eq!(*paused_gate.hold.lock().expect("hold"), Hold::Stop);
+        // The same over again with the paused load resumed before the
+        // eviction claims it: its file stays, the oldest goes.
+        let f = File::create(dir.path().join(name(2))).expect("create");
+        f.set_len(100).expect("len");
+        f.set_modified(at(2)).expect("mtime");
+        let resumed = Arc::new(Gate::default());
+        let first = vec![(name(2), Arc::clone(&resumed))];
+        let evicted = evict_keeping(dir.path(), 300, &keep, &first).expect("evict");
+        assert_eq!(evicted, [name(1)]);
+        assert_eq!(*resumed.hold.lock().expect("hold"), Hold::Run);
     }
 
     /// Once nothing for the screen runs or waits, the paused loads go on,
