@@ -182,7 +182,6 @@ pub mod tracks;
 pub mod transfer;
 pub mod verbs;
 pub mod viewload;
-pub mod viewwatch;
 pub mod voice;
 pub mod zoom;
 

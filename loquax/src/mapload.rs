@@ -1576,96 +1576,6 @@ impl Drop for Loader {
     }
 }
 
-/// Say one line of the view watchdog ([`crate::ui::viewwatch`], 1934)
-/// as a structured event at INFO, on every frontend that carries the
-/// autoload. The watch limits them itself: one `VIEW_SETTLED` and one
-/// `VIEW_WHOLE` a settled view, a `VIEW_INCOMPLETE` every
-/// [`AGAIN_MS`](crate::ui::viewwatch::AGAIN_MS) at most, a bounded number
-/// of `VIEW_REGRESSED`.
-pub fn say_view(event: &crate::ui::viewwatch::ViewEvent) {
-    use crate::ui::viewwatch::{key, ViewEvent};
-    match event {
-        ViewEvent::Settled { view, cells } => tracing::info!(
-            event = "VIEW_SETTLED",
-            view = %format!("{:.5},{:.5},{}", view.0, view.1, view.2),
-            cells = *cells,
-        ),
-        ViewEvent::Whole { ms, bytes } => {
-            tracing::info!(event = "VIEW_WHOLE", ms = *ms, bytes = *bytes)
-        }
-        ViewEvent::Incomplete {
-            ms,
-            missing,
-            grey,
-            standin,
-            outline,
-            share,
-            first,
-            context,
-        } => tracing::info!(
-            event = "VIEW_INCOMPLETE",
-            ms = *ms,
-            missing = *missing,
-            grey = *grey,
-            standin = *standin,
-            outline = *outline,
-            share = %format!("{share:.2}"),
-            first = %first.iter().map(key).collect::<Vec<_>>().join(","),
-            loads = %context.loads,
-            cache = %context.cache,
-            disk = context.disk,
-        ),
-        ViewEvent::Regressed {
-            cell,
-            from,
-            to,
-            cause,
-        } => tracing::info!(
-            event = "VIEW_REGRESSED",
-            cell = %key(cell),
-            from = from.word(),
-            to = to.word(),
-            cause = cause.word(),
-        ),
-        ViewEvent::RegressedMore { more, cause } => tracing::info!(
-            event = "VIEW_REGRESSED",
-            cell = %format!("+{more}"),
-            from = "drawn",
-            to = "-",
-            cause = cause.word(),
-        ),
-    }
-}
-
-/// The loads a `VIEW_INCOMPLETE` names (1934): each area of the view
-/// still to come, what it does, and its box in degrees.
-pub fn loads_line(loads: &crate::ui::maploading::Loads) -> String {
-    use crate::ui::maploading::Kind;
-    let deg = |v: i32| f64::from(v) / 1e7;
-    loads
-        .areas
-        .iter()
-        .map(|a| {
-            let what = match a.kind {
-                Kind::Loading { .. } => "running",
-                Kind::Stalled { .. } => "stalled",
-                Kind::Waiting => "waiting",
-                Kind::Failed { .. } => "failed",
-            };
-            format!(
-                "{what}:{:.3},{:.3},{:.3},{:.3}:{}/{}",
-                deg(a.bounds.west),
-                deg(a.bounds.south),
-                deg(a.bounds.east),
-                deg(a.bounds.north),
-                a.bytes_done,
-                a.bytes
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(";")
-}
-
 /// Whether a load of `load` brings `want`, the screen's own box (1527):
 /// its box and zooms inside the load's.
 fn brings(load: &MapWant, want: &MapWant) -> bool {
@@ -1765,12 +1675,8 @@ impl Job {
         let maps = self.maps.clone();
         let mut bumped: Option<Instant> = None;
         let shared = Arc::clone(&self.progress);
-        // The bytes of this load already added to the directory's count.
-        let mut counted = 0u64;
         let mut progress = |p: LoadProgress| {
             *shared.lock().unwrap_or_else(PoisonError::into_inner) = p;
-            maps.add_fetched(p.bytes_done.saturating_sub(counted));
-            counted = counted.max(p.bytes_done);
             let due =
                 bumped.is_none_or(|at| at.elapsed().as_millis() >= u128::from(PROGRESS_EVERY_MS));
             // A file written beside the region it replaces is no painter's

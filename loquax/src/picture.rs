@@ -130,8 +130,6 @@ struct MapsInner {
     dir: Option<PathBuf>,
     epoch: AtomicU64,
     progress: AtomicU64,
-    /// Archive bytes the autoload fetched into this directory (1934).
-    fetched: AtomicU64,
 }
 
 impl Maps {
@@ -142,7 +140,6 @@ impl Maps {
                 dir,
                 epoch: AtomicU64::new(0),
                 progress: AtomicU64::new(0),
-                fetched: AtomicU64::new(0),
             }),
         }
     }
@@ -172,17 +169,6 @@ impl Maps {
     /// A region being written gained tiles.
     pub fn arrived(&self) {
         self.inner.progress.fetch_add(1, Ordering::SeqCst);
-    }
-
-    /// Archive bytes the autoload fetched into this directory so far, a
-    /// running count (1934): the view watchdog's `VIEW_WHOLE bytes=`.
-    pub fn fetched(&self) -> u64 {
-        self.inner.fetched.load(Ordering::SeqCst)
-    }
-
-    /// A load fetched `bytes` more.
-    pub fn add_fetched(&self, bytes: u64) {
-        self.inner.fetched.fetch_add(bytes, Ordering::SeqCst);
     }
 
     /// Every region there now, and a line for each that did not open.

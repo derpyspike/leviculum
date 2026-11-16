@@ -91,7 +91,6 @@ use loquax::ui::scene::{LayoutClass, NodeId, Scene, TabId};
 use loquax::ui::strings::{Lang, StrId};
 use loquax::ui::viewload::holding;
 use loquax::ui::viewload::{ViewLoads, ViewWants};
-use loquax::ui::viewwatch::{Context, Observed, ViewWatch};
 use loquax::ui::{Pane, UiEvent, MAP_LOADED_ALREADY, MAP_LOADING_HERE_WORDS};
 use loquax::when::WallTime;
 
@@ -650,9 +649,6 @@ pub enum Message {
     Painted(Arc<Shown>),
     /// The wheel may have come to rest.
     WheelRest,
-    /// The view watchdog's wake (1934): the view settles, or is due to be
-    /// said incomplete.
-    ViewWatch,
     /// The screen is about to draw a frame (1431): the wheel's glide
     /// moves on, and a frame held back for the frame interval is asked.
     Frame(Instant),
@@ -1088,13 +1084,6 @@ struct App {
     wheel: Option<Instant>,
     /// A wake for the wheel's rest is set.
     wheel_timer: bool,
-    /// The view watchdog (1934): whether the view on screen is whole
-    /// within [`loquax::ui::viewwatch::WHOLE_BOUND_MS`] of settling.
-    watch: ViewWatch,
-    /// The maps directory, whose fetched bytes `VIEW_WHOLE` says.
-    map_dir: loquax::picture::Maps,
-    /// A wake for the watch is asked.
-    watch_timer: bool,
     /// The wheel's zoom on its way (1431).
     glide: Option<Glide>,
     /// When the worker was last asked for a frame, and whether one is
@@ -1231,7 +1220,6 @@ impl App {
 
     fn new(frames: Frames, asks: Option<Asks>) -> Self {
         let setup = map::setup(frames.painter());
-        let map_dir = frames.painter().maps().clone();
         let centre = fit(&[], map::area((1, 1)), &setup).0;
         let empty = crate::shell::Model::new(&[]).scene(LayoutClass::Wide);
         Self {
@@ -1274,9 +1262,6 @@ impl App {
             busy: false,
             wheel: None,
             wheel_timer: false,
-            watch: ViewWatch::new(),
-            map_dir,
-            watch_timer: false,
             glide: None,
             asked_at: None,
             owed: false,
@@ -2643,9 +2628,6 @@ impl App {
                 self.owed = false;
                 self.tick(now);
             }
-            Message::ViewWatch => {
-                self.watch_timer = false;
-            }
             Message::WheelRest => {
                 self.wheel_timer = false;
                 let rested = self
@@ -2684,59 +2666,6 @@ impl App {
         {
             let _ = asks.send(Want::MapView(wants));
         }
-    }
-
-    /// Whether the view watchdog watches: the map on screen with the
-    /// autoload on. A map that is not to load is not late.
-    fn watching(&self) -> bool {
-        self.seen.autoload && self.screen == Screen::Map && self.size.is_some()
-    }
-
-    /// The wait until the view watchdog next has something to decide.
-    fn watch_due(&self) -> Option<u64> {
-        if !self.watching() {
-            return None;
-        }
-        let now = self.now_ms();
-        self.watch
-            .next_due_ms()
-            .map(|due| due.saturating_sub(now).max(1))
-    }
-
-    /// The view watchdog's look at the frame on screen (1934): its lines
-    /// said as events, and handed back for a walk to judge.
-    fn watch_view(&mut self) -> Vec<loquax::ui::viewwatch::ViewEvent> {
-        if !self.watching() {
-            return Vec::new();
-        }
-        let view = self.view.at_zoom(self.view.tile_zoom());
-        let now = self.now_ms();
-        let fetched = self.map_dir.fetched();
-        let pending = self.shown.as_ref().map_or(0, |s| s.missing);
-        let seen = Observed {
-            view: &view,
-            moving: self.moving(),
-            regions: &self.setup.regions,
-            pending,
-            grey: 0,
-            epoch: self.seen.maps,
-            fetched,
-        };
-        let frames = &self.frames;
-        let loads = &self.seen.loads;
-        let context = || {
-            let frames = frames.lock().unwrap_or_else(PoisonError::into_inner);
-            Context {
-                loads: loquax::mapload::loads_line(loads),
-                cache: format!("{}/{}", frames.tile_memory().1, frames.tile_cap()),
-                disk: frames.painter().maps().usage().1,
-            }
-        };
-        let events = self.watch.observe(now, &seen, context);
-        for event in &events {
-            loquax::mapload::say_view(event);
-        }
-        events
     }
 
     /// The worker's next job, when it is free: the frame the view asks
@@ -2967,13 +2896,6 @@ impl App {
         if self.wheel.is_some() && !self.wheel_timer {
             self.wheel_timer = true;
             tasks.push(after(WHEEL_REST_MS, Message::WheelRest));
-        }
-        self.watch_view();
-        if let Some(ms) = self.watch_due() {
-            if !self.watch_timer {
-                self.watch_timer = true;
-                tasks.push(after(ms, Message::ViewWatch));
-            }
         }
         let frames = self.frames.clone();
         match self.next_job() {
@@ -3617,24 +3539,6 @@ impl App {
             .into(),
             false => Space::new().into(),
         };
-        // The view watchdog's badge (1934), in a debug build only: the
-        // seconds since the view settled and the share still missing,
-        // red in the top right corner, once the view is late.
-        let badge: Element<'_, Message> = match self.watch.badge() {
-            Some(words) if cfg!(debug_assertions) => container(
-                container(text(words).size(12).color(Color::WHITE))
-                    .padding([2, 6])
-                    .style(|_: &Theme| container::Style {
-                        background: Some(iced::Background::Color(Color::from_rgb(0.8, 0.1, 0.1))),
-                        ..container::Style::default()
-                    }),
-            )
-            .width(Length::Fill)
-            .align_right(Length::Fill)
-            .padding(6)
-            .into(),
-            _ => Space::new().into(),
-        };
         let card: Element<'_, Message> = match self.selected_card() {
             Some(card) => self.pin_card(card),
             None => Space::new().into(),
@@ -3650,20 +3554,9 @@ impl App {
         // the picture's margin past the pane (an eighth of it) painted
         // over the rail beside it (the audit of 1757).
         let map = container(
-            stack![
-                Space::new(),
-                picture,
-                canvas,
-                empty,
-                card,
-                locations,
-                // The watchdog's badge before the menu, which draws over
-                // it; the card, the list and the menu keep their places.
-                badge,
-                menu
-            ]
-            .width(Length::Fill)
-            .height(Length::Fill),
+            stack![Space::new(), picture, canvas, empty, card, locations, menu]
+                .width(Length::Fill)
+                .height(Length::Fill),
         )
         .width(Length::Fill)
         .height(Length::Fill)

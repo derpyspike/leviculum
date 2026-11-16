@@ -224,63 +224,6 @@ pub fn uncovered(view: &Viewport, regions: &[Header]) -> f64 {
     gaps as f64 / f64::from(SAMPLES * SAMPLES)
 }
 
-/// What a point of the screen is drawn from (1934): the view's own zoom
-/// ([`Self::Drawn`]), a stand-in for it, or the world outline alone.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum CellState {
-    /// A complete region of the current profile holds it at the view's
-    /// zoom (or its deepest, overzoomed, past [`DEEPEST_LOAD`]).
-    Drawn,
-    /// A region reaches it, but not as [`Self::Drawn`]: one still
-    /// arriving, one of an old profile, or one of other zooms. What draws
-    /// there is a coarser or a sharper region's tile stood in.
-    StandIn,
-    /// No region reaches it at any zoom: the world outline alone draws.
-    Outline,
-}
-
-impl CellState {
-    /// The word for the log.
-    pub fn word(self) -> &'static str {
-        match self {
-            Self::Drawn => "drawn",
-            Self::StandIn => "standin",
-            Self::Outline => "outline",
-        }
-    }
-}
-
-/// Every screen cell of `view` (1934), the tiles of its load zoom the
-/// screen's sample points fall in, each with what draws it: the worst of
-/// its sample points ([`CellState`]), in the order the samples run, row by
-/// row from the top left.
-pub fn screen_cells(view: &Viewport, regions: &[Header]) -> Vec<(Cell, CellState)> {
-    let zoom = need_zoom(view);
-    let mut cells: Vec<(Cell, CellState)> = Vec::new();
-    for at in samples(view, SAMPLES) {
-        let source = match held(regions, at, zoom) {
-            true => CellState::Drawn,
-            false => {
-                let p = unproject(at);
-                let b = |h: &Header| {
-                    (h.bounds.west..=h.bounds.east).contains(&p.lon_e7)
-                        && (h.bounds.south..=h.bounds.north).contains(&p.lat_e7)
-                };
-                match regions.iter().any(b) {
-                    true => CellState::StandIn,
-                    false => CellState::Outline,
-                }
-            }
-        };
-        let cell = Cell::of(at, zoom);
-        match cells.iter_mut().find(|(c, _)| *c == cell) {
-            Some((_, was)) => *was = (*was).max(source),
-            None => cells.push((cell, source)),
-        }
-    }
-    cells
-}
-
 /// The boxes of the regions that hold a view at `view_zoom` with their
 /// data (1812): the loads' treatment leaves them alone, whatever box
 /// loads over them.
@@ -844,44 +787,6 @@ mod tests {
             loads.decide(&view, &[r], 710, false, None).is_some(),
             "a region landed"
         );
-    }
-
-    /// 1934: the screen's cells say what draws them, the worst sample of
-    /// each: the view's own zoom, a stand-in, or the outline alone.
-    #[test]
-    fn the_screen_cells_say_what_draws_them() {
-        let (r, at) = florence();
-        let inside = Viewport::new(Cell::of(at, 13).centre(), 16, 480, 320);
-        let cells = screen_cells(&inside, &[r]);
-        assert!(!cells.is_empty());
-        assert!(cells
-            .iter()
-            .all(|(c, s)| c.z == 15 && *s == CellState::Drawn));
-        let arriving = Header {
-            streamed: true,
-            len: 0,
-            ..r
-        };
-        assert!(screen_cells(&inside, &[arriving])
-            .iter()
-            .all(|(_, s)| *s == CellState::StandIn));
-        let coarse = region(r.bounds, (10, 12));
-        assert!(screen_cells(&inside, &[coarse])
-            .iter()
-            .all(|(_, s)| *s == CellState::StandIn));
-        assert!(screen_cells(&inside, &[])
-            .iter()
-            .all(|(_, s)| *s == CellState::Outline));
-        // Half past the region's east edge: both kinds, every cell once.
-        let mut half = inside;
-        half.pan(1024, 0);
-        let cells = screen_cells(&half, &[r]);
-        assert!(cells.iter().any(|(_, s)| *s == CellState::Drawn));
-        assert!(cells.iter().any(|(_, s)| *s == CellState::Outline));
-        let mut keys: Vec<Cell> = cells.iter().map(|(c, _)| *c).collect();
-        keys.sort();
-        keys.dedup();
-        assert_eq!(keys.len(), cells.len());
     }
 
     #[test]

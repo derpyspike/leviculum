@@ -100,7 +100,6 @@ use loquax::picture::Maps;
 use loquax::ui::map::MapWant;
 use loquax::ui::maploading::{milli_of, Kind, Loads, STALL_MS as TREAT_STALL_MS};
 use loquax::ui::viewload::{gaps, uncovered, GAP_SHARE, MIN_ZOOM};
-use loquax::ui::viewwatch::{ViewEvent, WHOLE_BOUND_MS};
 
 use super::first_tile;
 use super::{draw, prefetch, App, Frames, Job, Message, Order, Pointer, Screen, Want};
@@ -354,20 +353,6 @@ pub struct Verdict {
     pub zoom: String,
 }
 
-/// A line of the window's view watchdog (1934) as the walk heard it.
-pub struct ViewSaid {
-    pub t: u64,
-    pub event: ViewEvent,
-    /// Said during a rest that expects a fill, over the archive's data:
-    /// a `VIEW_INCOMPLETE` then is judged against `bound_ms`.
-    pub judged: bool,
-    /// The rest's bound for a whole view: [`WHOLE_BOUND_MS`] at full
-    /// speed, the real network's; at a limited rate the rest's own fill
-    /// bound ([`Walk::fill_bound_for`]: [`FILL_BASE_MS`] plus twice the
-    /// time the view's own bytes take at that rate), never less.
-    pub bound_ms: u64,
-}
-
 pub struct Walk {
     pub serve: Serve,
     _dir: tempfile::TempDir,
@@ -380,10 +365,6 @@ pub struct Walk {
     pub rate: u64,
     pub frames: Vec<FrameRec>,
     pub events: Vec<(u64, Ev)>,
-    /// The view watchdog's lines (1934), every frame's.
-    pub view_events: Vec<ViewSaid>,
-    /// A rest that expects a fill runs, with its bound for a whole view.
-    judging: Option<u64>,
     pub checks: Vec<Check>,
     pub fault: Fault,
     inject: Inject,
@@ -546,8 +527,6 @@ impl Walk {
             rate,
             frames: Vec::new(),
             events: Vec::new(),
-            view_events: Vec::new(),
-            judging: None,
             checks: Vec::new(),
             fault: Fault::default(),
             inject,
@@ -798,18 +777,6 @@ impl Walk {
             busy_wake = true;
             self.busy_woken = true;
         }
-        // The window's view watchdog (1934), as the window runs it on
-        // every frame.
-        let data_here = self.app.view.tile_zoom() >= MIN_ZOOM
-            && inside_archive(&self.area, &self.view_now().bounds());
-        for event in self.app.watch_view() {
-            self.view_events.push(ViewSaid {
-                t,
-                event,
-                judged: self.judging.is_some() && data_here,
-                bound_ms: self.judging.unwrap_or(WHOLE_BOUND_MS),
-            });
-        }
         self.frames.push(FrameRec {
             t,
             centre: self.app.view.centre,
@@ -930,12 +897,6 @@ impl Walk {
             self.checkpoint(label, None, bound_ms, false);
             return;
         }
-        // The watchdog's bound for this rest (1934): the real network's
-        // 5 s at full speed, the rest's own scaled bound on a limited link.
-        self.judging = expects.then_some(match self.rate {
-            0 => WHOLE_BOUND_MS,
-            _ => bound_ms.max(WHOLE_BOUND_MS),
-        });
         let from = self.now_ms();
         let until = from + bound_ms;
         let mut filled_at = None;
@@ -953,7 +914,6 @@ impl Walk {
         }
         // A landing's last progress and the names' fade settle.
         self.run(4);
-        self.judging = None;
         self.checkpoint(label, filled_at.map(|at| at - from), bound_ms, expects);
     }
 
@@ -1438,42 +1398,6 @@ pub fn rules(walk: &Walk) -> Vec<Verdict> {
             format!("{}", c.zoom_milli / 1000),
         ));
     }
-
-    // view_whole_in_bound (1934): no view the walk rested on over data
-    // with a reachable source was said incomplete at or past its bound,
-    // and no drawn cell of a settled view was lost.
-    let late: Vec<String> = walk
-        .view_events
-        .iter()
-        .filter(|v| match v.event {
-            ViewEvent::Incomplete { ms, .. } => v.judged && ms >= v.bound_ms,
-            ViewEvent::Regressed { .. } | ViewEvent::RegressedMore { .. } => true,
-            _ => false,
-        })
-        .map(|v| format!("t={} {}", v.t, v.event.line()))
-        .collect();
-    let wholes: Vec<u64> = walk
-        .view_events
-        .iter()
-        .filter_map(|v| match v.event {
-            ViewEvent::Whole { ms, .. } => Some(ms),
-            _ => None,
-        })
-        .collect();
-    out.push(v(
-        "view_whole_in_bound",
-        late.is_empty(),
-        format!(
-            "{} late or regressed, {} whole (max {} ms)",
-            late.len(),
-            wholes.len(),
-            wholes.iter().max().copied().unwrap_or(0)
-        ),
-        format!("none; {WHOLE_BOUND_MS} ms at full speed, the rest's bound when throttled"),
-        late.first().cloned().unwrap_or_default(),
-        String::new(),
-        String::new(),
-    ));
 
     // screen_first: no load starts for anything else while the screen
     // lacks data; loads already running are measured, not failed.
