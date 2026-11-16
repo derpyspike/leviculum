@@ -1,4 +1,5 @@
-//! Per-test capture of plain (non-`event=`) WARN-level tracing records.
+//! Per-test capture of WARN-level tracing records: a plain record by its
+//! message, a structured `event=` record without one by its event name.
 //!
 //! The structured event-log layer ([`crate::event_log`]) captures only
 //! records that carry an `event = "..."` field.  A few interop tests
@@ -95,7 +96,13 @@ impl<S: Subscriber> Layer<S> for WarnCaptureLayer {
         }
         let mut visitor = MessageVisitor::default();
         event.record(&mut visitor);
-        let Some(message) = visitor.message else {
+        // A structured event carries no message (the event catalogue
+        // forbids one): it is captured by its `event` name instead, so a
+        // test can tell a catalogued event was logged at WARN.
+        let Some(message) = visitor
+            .message
+            .or_else(|| visitor.event.map(|name| format!("event={name}")))
+        else {
             return;
         };
         let line = format!("{} {}\n", event.metadata().target(), message);
@@ -111,9 +118,18 @@ impl<S: Subscriber> Layer<S> for WarnCaptureLayer {
 #[derive(Default)]
 struct MessageVisitor {
     message: Option<String>,
+    event: Option<String>,
 }
 
 impl Visit for MessageVisitor {
+    fn record_str(&mut self, field: &Field, value: &str) {
+        if field.name() == "event" {
+            self.event = Some(value.to_string());
+        } else {
+            self.record_debug(field, &value);
+        }
+    }
+
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
         if field.name() == "message" {
             self.message = Some(format!("{value:?}"));

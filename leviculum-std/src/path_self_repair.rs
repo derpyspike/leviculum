@@ -162,6 +162,47 @@ impl SelfRepair {
     }
 }
 
+/// What the beat says about its own ability to ask the daemon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum HealthNotice {
+    /// The daemon cannot be asked, for a cause not reported before: warn.
+    Failing { reason: String },
+    /// The daemon answers again after a reported failure: say so once.
+    Resumed { after: String },
+}
+
+/// Whether the beat can ask its daemon, so a beat that cannot is visible at
+/// the default log level without repeating itself every beat: one warning
+/// on the first failure and on each change of cause, one info line when the
+/// answers come back.
+#[derive(Debug, Default)]
+pub(crate) struct BeatHealth {
+    /// The cause of the failure last reported, `None` while answers flow.
+    failing: Option<String>,
+}
+
+impl BeatHealth {
+    /// One query failed for `reason`. Returns the warning to log, or `None`
+    /// when the same cause was reported already.
+    pub(crate) fn failed(&mut self, reason: &str) -> Option<HealthNotice> {
+        if self.failing.as_deref() == Some(reason) {
+            return None;
+        }
+        self.failing = Some(reason.to_string());
+        Some(HealthNotice::Failing {
+            reason: reason.to_string(),
+        })
+    }
+
+    /// One query was answered. Returns the resume line to log, or `None`
+    /// when nothing failed before.
+    pub(crate) fn answered(&mut self) -> Option<HealthNotice> {
+        self.failing
+            .take()
+            .map(|after| HealthNotice::Resumed { after })
+    }
+}
+
 /// Build the beat's [`PathSight`] from the daemon's two `rnpath` answers,
 /// decoded to JSON by the RPC client: `next_hop` is the next hop's hash as
 /// lowercase hex — the destination itself on a direct path
@@ -354,6 +395,44 @@ mod tests {
             s.assess(quiet_end + 30_000 + 61_000, &relayed()),
             Verdict::Repair { .. }
         ));
+    }
+
+    /// Audit of 1939: a beat that cannot ask its daemon warns on the first
+    /// failure, stays quiet while the cause repeats, warns again when the
+    /// cause changes, and says once at info that answers resumed.
+    #[test]
+    fn a_failing_beat_warns_once_per_cause_and_once_on_resume() {
+        let mut h = BeatHealth::default();
+        assert_eq!(h.answered(), None, "nothing to resume before any failure");
+        assert_eq!(
+            h.failed("RPC failed: auth"),
+            Some(HealthNotice::Failing {
+                reason: "RPC failed: auth".into()
+            })
+        );
+        assert_eq!(h.failed("RPC failed: auth"), None, "no repeat per beat");
+        assert_eq!(h.failed("RPC failed: auth"), None, "no repeat per beat");
+        assert_eq!(
+            h.failed("RPC failed: refused"),
+            Some(HealthNotice::Failing {
+                reason: "RPC failed: refused".into()
+            }),
+            "a changed cause is reported"
+        );
+        assert_eq!(
+            h.answered(),
+            Some(HealthNotice::Resumed {
+                after: "RPC failed: refused".into()
+            })
+        );
+        assert_eq!(h.answered(), None, "the resume is said once");
+        assert_eq!(
+            h.failed("RPC failed: auth"),
+            Some(HealthNotice::Failing {
+                reason: "RPC failed: auth".into()
+            }),
+            "a failure after a resume is reported afresh"
+        );
     }
 
     /// The two RPC answers of a healthy client read as a direct sight,

@@ -223,3 +223,89 @@ async fn audit_1939_a_never_announced_destination_is_not_repaired() {
     p.client.stop().await.expect("stop client");
     p.daemon.stop().await.expect("stop daemon");
 }
+
+/// A beat that cannot ask its daemon is visible at the default log level:
+/// a client whose `rpc_key` is wrong gets `PATH_SELF_REPAIR_SKIP` at warn
+/// once for the cause, not once per beat.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn audit_1939_a_beat_with_a_wrong_rpc_key_warns_once() {
+    let evlog = leviculum_std::test_support::event_log::init_event_log();
+    let warns = leviculum_std::test_support::warn_capture::register_warn_capture();
+
+    let identity = Identity::generate(&mut OsRng);
+    let instance = format!("audit1939_wrongkey_{}", std::process::id());
+    let daemon_dir = tempfile::tempdir().expect("daemon dir");
+    let mut daemon = ReticulumNodeBuilder::new()
+        .identity(identity)
+        .enable_transport(true)
+        .share_instance(true)
+        .instance_name(instance.clone())
+        .storage_path(daemon_dir.path().join("storage"))
+        .build()
+        .await
+        .expect("build daemon");
+    daemon.start().await.expect("start daemon");
+
+    // The client reads its key from a config directory that names a key
+    // the daemon was never keyed with.
+    let wrong_dir = tempfile::tempdir().expect("wrong key dir");
+    std::fs::write(
+        wrong_dir.path().join("config"),
+        "[reticulum]\n  rpc_key = 00112233445566778899aabbccddeeff\n",
+    )
+    .expect("write config");
+    let client_dir = tempfile::tempdir().expect("client storage");
+    let mut client = ReticulumNodeBuilder::new()
+        .enable_transport(false)
+        .connect_to_shared_instance(instance.clone())
+        .shared_instance_config_dir(wrong_dir.path().to_path_buf())
+        .path_self_repair_beat_ms(BEAT_MS)
+        .storage_path(client_dir.path().to_path_buf())
+        .build()
+        .await
+        .expect("build client");
+    client.start().await.expect("start client");
+
+    let dest = destination("wrongkey");
+    let dest_hash = *dest.hash();
+    client.register_destination(dest);
+    client
+        .announce_destination(&dest_hash, None)
+        .await
+        .expect("announce");
+    // Positive control: the data path works, only the RPC key is wrong.
+    assert!(
+        wait_until(Duration::from_secs(10), || daemon.has_path(&dest_hash)).await,
+        "baseline: the daemon must learn the destination"
+    );
+
+    // Eight beats at least.
+    tokio::time::sleep(Duration::from_millis(8 * BEAT_MS)).await;
+
+    let dest_field = format!("dest={dest_hash}");
+    let skips: Vec<String> = evlog
+        .dump()
+        .into_iter()
+        .filter(|l| l.starts_with("PATH_SELF_REPAIR_SKIP ") && l.contains(&dest_field))
+        .collect();
+    assert_eq!(
+        skips.len(),
+        1,
+        "one PATH_SELF_REPAIR_SKIP for the cause, not one per beat: {skips:?}"
+    );
+    assert!(
+        skips[0].contains("reason=RPC_failed") && skips[0].contains("authentication_failed"),
+        "the line names the cause: {}",
+        skips[0]
+    );
+    let warned = warns.snapshot();
+    assert!(
+        warned
+            .lines()
+            .any(|l| l.ends_with("event=PATH_SELF_REPAIR_SKIP")),
+        "the skip is a WARN record, visible at the default level: {warned}"
+    );
+
+    client.stop().await.expect("stop client");
+    daemon.stop().await.expect("stop daemon");
+}
