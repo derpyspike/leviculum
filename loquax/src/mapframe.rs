@@ -1436,6 +1436,13 @@ impl Frames {
         self.tiles.stats
     }
 
+    /// Keep no curved memo (order 1943): the phone's facade turns it
+    /// off, since a world frame there may not allocate a frame of its
+    /// own (1797, `map_heap`'s law).
+    pub fn set_curved_memo(&mut self, on: bool) {
+        self.tiles.set_curved_memo(on);
+    }
+
     /// The tile cache's tiles and bytes.
     pub fn tile_memory(&self) -> (usize, usize) {
         (self.tiles.len(), self.tiles.bytes())
