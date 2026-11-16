@@ -865,6 +865,48 @@ cited span" distinguishes a citation a refactor slid past from one
 nobody has read in a year, and a reader should not have to subtract two
 four-digit line numbers to learn which one they are looking at.
 
+### 9. A new citation names its item
+
+A line number names whatever stands on that line today, so every batch
+that inserts a line above it repoints it, and the fixer above only
+follows what git's line map can see. A name survives the move. **A new
+citation into this tree is written `<path>#<Item>`**, with `path` from
+the repository root: `leviculum-core/src/transport.rs#Transport::emission_secs`,
+`Justfile#citation-guard`, `docs/src/concepts/checks-and-citations.md#what-c-cannot-reach`.
+Members are written with their owner (`Type::method`); a name two items
+share takes a kind prefix (`fn:`, `field:`); `<path>#anchor:<name>`
+cites a span between `ANCHOR: <name>` and `ANCHOR_END: <name>`. The
+scanners that find items are described at the top of
+`scripts/citations.py`.
+
+`scripts/check-citations-by-name.py` runs first in `just citation-guard`
+and refuses two things. A name citation that does not resolve to exactly
+one item: a renamed or deleted item, a name two items share, a path into
+another repository, and a base name or shortened path, which it never
+resolves, because order 1848 matched a citation into another repository
+by its base name. And a **new** `path:line` citation into this tree,
+counted per text and per cited path against the merge base with
+`origin/master` (never older than the commit that added the guard): a
+citation that only moved, or that the fixer renumbered, keeps its count
+and passes. Citations into `reference/` and other repositories keep the
+line form. A fixture line that must hold a citation-shaped string as
+data carries `citation-guard: line-fixture`.
+
+The existing line citations are left alone on purpose. Order 1848
+converted 195 files in one pass and trusted numbers that had already
+drifted, so it wrote wrong names that resolved; the guard was green
+because it checks that a name exists, not that it is the item the text
+means. Conversion therefore waits for the measurement:
+`just citation-census` prints, for every existing line citation, the
+label its text gives it, the item at the cited line, and a verdict
+(`agree`, `drift`, `nolabel`, `foreign`; the rule is in
+`scripts/citation-census.py#judge`). Conversion runs in waves of at most
+ten files, converts only `agree` lines automatically, lists `drift` lines
+for a hand fix, and is audited before the next wave.
+`scripts/citations-selftest.py` is the positive control of both tools,
+including the 64 citations commit 8482638d6 renumbered, whose verdicts
+were checked by hand (`scripts/citations-control-1908.tsv`).
+
 ### What C cannot reach
 
 Issue comments, commit messages and batch reports carry hundreds of
