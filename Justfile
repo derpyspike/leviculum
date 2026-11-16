@@ -2998,8 +2998,10 @@ render-walk *ARGS:
 # against a 200 kB/s source, a 503 window, a dropped link, a stalled
 # request, a cache at its cap) checked by named rules
 # (view_filled_at_rest, screen_first, nothing_lost, no_regress,
-# same_view_same_picture, no_spin, fault_recovers, frame_never_blank;
-# loquax/tests/support/load_walk.rs). The phone's path walks too (1821):
+# same_view_same_picture, no_spin, fault_recovers, frame_never_blank, and
+# since 1812 the map's loading treatment: loading_is_visible,
+# progress_moves_with_bytes, no_treatment_when_complete,
+# idle_draws_nothing; loquax/tests/support/load_walk.rs). The phone's path walks too (1821):
 # two sessions drive the facade's render() with frames asked only as
 # MapView asks them (the fill at rest and the 503 fault that heals hands
 # off; loquax-android/tests/map.rs, the_phone_load_walk_holds_its_rules),

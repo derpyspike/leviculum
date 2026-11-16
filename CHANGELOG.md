@@ -20,6 +20,14 @@ Toolchain: Rust 1.97.1
 
 ### Added
 
+- loquax map loading in place (#232, 1812): every area of the map's view
+  whose data is still to come shows it in the picture, on the window and
+  the phone: moving blue stripes and a bar filled to the bytes arrived
+  while it loads, grey while it waits its turn, red when it failed, amber
+  when no data came for ten seconds; data already there stays bare. One
+  translated line says how far ("Loading the map · 42 %"), when a failed
+  area tries again (the window offers "Try now"), or offline, in place of
+  "Loading the map of this area"; the terminal's title carries it.
 - I2P (#99, #284, 1576): lnsd's `I2PInterface` now makes the destination
   the reference makes, Ed25519 instead of i2pd's DSA-SHA1 default, and keeps
   its key under the reference's file name, so rnsd and lnsd on one config

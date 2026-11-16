@@ -1086,6 +1086,24 @@ config, #471) says the map works without a step. Decided 2026-10-27
   "Loading the map of this area" only for a load for the screen
   (`loading_here`, 1292); a load for an area the view left says nothing,
   and "No map here yet" shows over it.
+- *Where it loads, in place (1812).* Every area of the view whose data is
+  still to come carries a treatment in the picture itself
+  (`loquax::ui::maploading`): sparse blue stripes that move while bytes
+  arrive, a blue edge and a bar along the bottom of what the screen shows
+  of it, filled to the bytes done of the bytes planned; grey still
+  stripes and a dashed edge for an area waiting its turn; red for one
+  that failed. A load that receives no byte for ten seconds stops moving
+  and turns amber. A region that already holds the view's zoom stays
+  bare, whatever box loads over it, and a completed area simply loses its
+  stripes, the map under it unmoved. One line beside the map says the
+  same in words, through the translations: "Loading the map · 42 %",
+  "No map data for 12 s", "Map not loaded · next try in 7 s" (the window
+  adds "Try now"), "The map waits its turn", and offline once for the
+  view; the phone's chip and the terminal's title carry it in place of
+  "Loading the map of this area". The stripes step eight times a second
+  only while a load moves; an idle map draws no frame for them. The load
+  walk holds it (`loading_is_visible`, `progress_moves_with_bytes`,
+  `no_treatment_when_complete`, `idle_draws_nothing`).
 - *Disk.* Loaded regions are named `auto-<box>-z<min>-<max>.lmr` and are a
   cache of `map_cache_mb` megabytes (500 by default, a hundred or more city
   places), the least recently viewed evicted first, viewed meaning drawn,
