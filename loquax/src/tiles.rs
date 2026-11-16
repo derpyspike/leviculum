@@ -308,11 +308,6 @@ pub struct TileCache {
     pub stats: Stats,
     /// The last curved frame drawn whole (order 1943).
     curved: Option<CurvedMemo>,
-    /// Whether a curved frame is kept as the memo: on by default; the
-    /// phone turns it off — a world frame there is drawn straight into
-    /// the Bitmap and allocates nothing frame-sized beside it (1797,
-    /// `map_heap`'s law), so its curved frames stay drawn whole.
-    memo_on: bool,
     /// A frame's buffer handed back ([`recycle`](Self::recycle)), composed
     /// into next.
     spare: Vec<u8>,
@@ -344,7 +339,6 @@ impl TileCache {
             screen: None,
             stats: Stats::default(),
             curved: None,
-            memo_on: true,
             spare: Vec::new(),
             #[cfg(test)]
             reference: false,
@@ -376,16 +370,6 @@ impl TileCache {
     /// is Mercator already, and be placed as a flat one.
     pub fn set_screen(&mut self, screen: Option<(u32, u32)>) {
         self.screen = screen;
-    }
-
-    /// Keep no curved memo (order 1943): the phone's path, whose world
-    /// frames may not allocate a frame of their own (1797); dropping it
-    /// also drops the one held.
-    pub fn set_curved_memo(&mut self, on: bool) {
-        self.memo_on = on;
-        if !on {
-            self.curved = None;
-        }
     }
 
     /// The blended mapping of `view` when the blend holds there: the
@@ -535,7 +519,7 @@ impl TileCache {
             // is a copy, and a moving frame rides the memo shifted,
             // owing the real one, so a pan under the blend never waits
             // on a whole-frame draw.
-            if let Some(memo) = self.curved.as_ref().filter(|_| self.memo_on) {
+            if let Some(memo) = &self.curved {
                 if memo.screen == self.screen {
                     if memo.view == frame.view
                         && memo.smooth == smooth
@@ -575,16 +559,14 @@ impl TileCache {
             // (order 1942 item 5).
             return drawn.map(|(credit, owed, unreadable)| {
                 let owed = owed + unreadable;
-                if self.memo_on {
-                    self.curved = Some(CurvedMemo {
-                        view: frame.view,
-                        screen: self.screen,
-                        smooth,
-                        owed,
-                        attribution: credit.clone(),
-                        rgba: rgba.to_vec(),
-                    });
-                }
+                self.curved = Some(CurvedMemo {
+                    view: frame.view,
+                    screen: self.screen,
+                    smooth,
+                    owed,
+                    attribution: credit.clone(),
+                    rgba: rgba.to_vec(),
+                });
                 (credit, owed)
             });
         }
