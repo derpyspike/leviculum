@@ -275,6 +275,8 @@ struct Inner {
     scene: Arc<Mutex<Scene>>,
     /// [`schema::Event::Changed::counts`] as the last scene made it.
     counts: u64,
+    /// [`schema::Event::Changed::map`] as last said (1694 D).
+    map_gate: crate::friends::MapGate,
     gone: bool,
     /// Whether the TCP interface to the home node was up at the last look,
     /// none before the first, and when that look was.
@@ -2533,6 +2535,7 @@ impl Inner {
             row_cache: std::cell::RefCell::default(),
             request_shown: false,
             turn_own: false,
+            map_gate: crate::friends::MapGate::default(),
             pump_thread: None,
             just_added: std::collections::BTreeSet::new(),
             keys_told: Arc::default(),
@@ -2750,12 +2753,25 @@ impl Inner {
         if dirty || self.scene_at() != Some(self.model.lists_revision()) {
             self.show_scene();
         }
-        if dirty || owed {
+        // The map's word (1694 D): a pin the clock aged says `changed`
+        // by itself, and every `changed` says whether the map moved.
+        let mut gate = std::mem::take(&mut self.map_gate);
+        let map_moved = gate.moved(self.model.revision, || {
+            crate::friends::map_word(
+                &self.model,
+                wall_now(self.offset).unix_secs,
+                self.lang,
+                |peer| self.photo(peer),
+            )
+        });
+        self.map_gate = gate;
+        if dirty || owed || map_moved {
             // The lists first: a screen told `changed` reads them at once,
             // and may find the lock held by the next turn (1464).
             let _ = self.events.send(Event::Changed {
                 v: VERSION,
                 counts: self.counts,
+                map: self.map_gate.word(),
             });
         }
         true

@@ -334,7 +334,11 @@ fn query() -> impl Strategy<Value = Query> {
 
 fn event() -> impl Strategy<Value = Event> {
     prop_oneof![
-        (u32s(), any::<u64>()).prop_map(|(v, counts)| Event::Changed { v, counts }),
+        (u32s(), any::<u64>(), any::<u64>()).prop_map(|(v, counts, map)| Event::Changed {
+            v,
+            counts,
+            map
+        }),
         (u32s(), text()).prop_map(|(v, text)| Event::Notice { v, text }),
         (u32s(), text(), text()).prop_map(|(v, state, detail)| Event::Sync { v, state, detail }),
         (u32s(), any::<bool>()).prop_map(|(v, up)| Event::Link { v, up }),

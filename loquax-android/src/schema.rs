@@ -2817,6 +2817,14 @@ pub enum Event {
         v: u32,
         #[serde(default)]
         counts: u64,
+        /// What the map draws, as one word (1694 D): the friends' answer
+        /// without the own position, which the phone adds itself, and the
+        /// tracks ([`loquax::ui::UiModel::map_marks`]). The map asks its
+        /// friends and draws its frame again only when it moved, not for a
+        /// chat line, a link or a sync; and a `changed` comes for it alone
+        /// when only the clock aged a pin.
+        #[serde(default)]
+        map: u64,
     },
     /// A line for the user: what the terminal shows as a toast.
     Notice { v: u32, text: String },
