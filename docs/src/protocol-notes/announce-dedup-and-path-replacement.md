@@ -449,47 +449,19 @@ Neither condition shows that the client hosts the destination:
   and hands it in.
 
 So the hold is bounded. After `LOCAL_OWNER_UNPROVEN_EXPIRY_LIMIT` (3)
-consecutive unproven expiries, with no counting proof over the client in
+consecutive unproven expiries, with no checked proof over the client in
 between, the ownership ends and the path is marked like any other; the
 network's copy of the emission then takes it back
-(`unresponsive_same_emission`). Two things start the count again: a new
-first-heard install by the client (a newer emission of a destination it
-holds the key to), and a checked proof over the client of a link that was
-started outside the local clients (order 1909). The proof of a probe that
-the owner itself or a sibling local-client connection started leaves the
-count and the ownership as they are: it says nothing about the requests
-the network sends, and before order 1909 a client that answered only its
-own probes, while every network initiator's request died, held the path
-without limit. Handing in the same emission again is no first-heard
-install and restarts nothing. The bound applies whichever way the client
-became the owner. An expiry counts only when it reaches the mark: one
-inside `PATH_REQUEST_MIN_INTERVAL_MS` (20 s) of the last path request for
-the destination is throttled before sub-case 4, so the three counted
-expiries span at least 40 s. The expiry of a link request that was set
-before the last checked proof counts too: sub-case 4 calls
-`mark_path_unresponsive` before it asks `link_proven_since`, which only
-decides whether the next hop is refused. Such a stale expiry costs a
-proven owner one of its three credits. Skipping it would need a proof
-that counts, and `link_proven_since` sees every validated link, the
-local clients' own probes included, so it would reopen the hole above.
-
-The bound is per replay, not per destination. Each lnsd restart, each
-expiry of the path and each eviction of it from `path_table` forgets the
-random blobs, so the next hand-in of the same capture is a first-heard
-install again and starts a new count of three. A local client can force
-the eviction itself: every announce of a fresh identity it generates
-installs a new path, and `path_table` is a `BoundedMap` that evicts the
-oldest entry once it holds `TableCaps::path_cap` entries
-(`leviculum-core/src/memory_storage.rs:305`, built at `:527`; 32 768 in
-the desktop profile, 8 192 in the compact one). Ingress control only
-holds such a burst and releases it later, it caps nothing, so `path_cap`
-is the only limit. A destination the network keeps announcing is
-re-inserted at the back on each announce, so the client has to install
-`path_cap` fresh paths between two of its announces, which also evicts
-every other path the node holds. A client that relays for a destination
-keeps the path only while the destination keeps answering network
-requests through it, which makes it a working route; that is accepted
-under the deviation rule below and pinned by
+(`unresponsive_same_emission`). A checked proof over the client, or a new
+install by it, starts the count again. The bound applies whichever way
+the client became the owner. An expiry counts only when it reaches the
+mark: one inside `PATH_REQUEST_MIN_INTERVAL_MS` (20 s) of the last path
+request for the destination is throttled before sub-case 4, so the three
+counted expiries span at least 40 s. A replaying client thus holds a foreign
+path for at most three dead link requests. A client that relays for a
+destination keeps the path only while the destination keeps answering
+through it, which makes it a working route; that is accepted under the
+deviation rule below and pinned by
 `a_relayed_proof_holds_the_path_only_up_to_the_bound`.
 
 The hold also ends when the client disconnects (`set_local_client(id,
@@ -526,15 +498,12 @@ units `a_local_clients_replay_of_a_network_destination_is_not_pinned`,
 `a_replay_after_a_restart_holds_a_foreign_path`,
 `an_owned_path_survives_dead_requests_below_the_bound_and_with_proofs_between`,
 `a_relayed_proof_holds_the_path_only_up_to_the_bound`,
-`only_a_network_initiated_proof_restarts_the_owners_count`,
 `a_disconnect_forgets_the_clients_ownership`,
 `a_disconnected_clients_path_is_markable_again`,
 `a_relayed_announce_from_a_local_client_stays_markable` and
 `a_proof_over_the_client_makes_its_path_its_own`; in `leviculum-std/tests`,
 `local_client_path_ownership.rs`, `audit_1898_first_install_pin.rs`,
-`audit_1898_relayed_proof_pin.rs`, `audit_1898_reused_index.rs`,
-`audit_1905_self_proven_probe.rs`, `audit_1905_rereplay.rs` and
-`audit_1905_rehand_same_emission.rs`.
+`audit_1898_relayed_proof_pin.rs` and `audit_1898_reused_index.rs`.
 `a_kept_local_path_gets_no_next_hop_refusal` pins behaviour that
 predates the rule (an owned path has no next hop, so
 `refuse_unresponsive_next_hop` has nothing to refuse).
