@@ -71,7 +71,8 @@
 //! - `no_treatment_when_complete` (1812): a pause that filled shows no
 //!   treatment on the screen.
 //! - `idle_draws_nothing` (1812): no frame is drawn only because the
-//!   stripes' step moved unless the frame carries a moving treatment.
+//!   stripes' step moved unless the frame on screen when it was asked
+//!   showed a moving treatment.
 //!
 //! With `LOQUAX_LOAD_WALK=DIR` the pictures go to `DIR/full/`, the
 //! verdicts to `DIR/rows-load.tsv` and the per-frame traces to
@@ -97,7 +98,7 @@ use loquax::mapload::{
 };
 use loquax::picture::Maps;
 use loquax::ui::map::MapWant;
-use loquax::ui::maploading::{milli_of, Area, Kind, Loads, STALL_MS as TREAT_STALL_MS};
+use loquax::ui::maploading::{milli_of, Kind, Loads, STALL_MS as TREAT_STALL_MS};
 use loquax::ui::viewload::{gaps, uncovered, GAP_SHARE, MIN_ZOOM};
 
 use super::first_tile;
@@ -243,8 +244,10 @@ pub struct FrameRec {
     /// no treatment, when judged ([`SETTLE_MS`], the view at rest).
     pub treat: Option<(usize, usize)>,
     /// The drawn frame differs from the one before only in the stripes'
-    /// step, and shows no moving treatment.
+    /// step, and the frame on screen when it was asked showed nothing moving.
     pub idle_phase_draw: bool,
+    /// Pixels of the drawn frame the loads' treatment changed.
+    pub treated_px: u64,
 }
 
 /// A loader event on the walk's clock.
@@ -332,8 +335,8 @@ pub enum Inject {
     /// The last loads are kept once the loader has none (1812):
     /// `no_treatment_when_complete`.
     StaleTreatment,
-    /// After the first filled pause the window is told a load moves
-    /// far off the view (1812): `idle_draws_nothing`.
+    /// After the first filled pause a frame is asked for the stripes'
+    /// next step while nothing loads (1812): `idle_draws_nothing`.
     IdleTicks,
 }
 
@@ -575,9 +578,28 @@ impl Walk {
         let mut missing = self.frames.last().map_or(0, |f| f.missing);
         let mut treat = None;
         let mut idle_phase_draw = false;
-        match self.app.next_job() {
+        let mut treated_px = 0;
+        let job = match (self.inject, self.app.next_job()) {
+            // The positive control (1812): once a pause filled, a frame is
+            // asked for the stripes' next step though nothing loads, as a
+            // window would that ticked its animation while idle.
+            (Inject::IdleTicks, None) if self.checks.iter().any(|c| c.filled) => {
+                let step = self.app.shown.as_ref().map_or(0, |s| s.order.phase) + 1;
+                self.app
+                    .order()
+                    .map(|o| Job::Draw(Box::new(Order { phase: step, ..o })))
+            }
+            (_, job) => job,
+        };
+        match job {
             Some(Job::Draw(order)) => {
                 let before = self.app.shown.as_ref().map(|s| s.order.clone());
+                let moved_before = self.app.shown.as_ref().is_some_and(|s| {
+                    s.painted
+                        .pieces
+                        .iter()
+                        .any(|p| matches!(p.kind, Kind::Loading { .. }))
+                });
                 let shown = draw(&self.app.frames, *order);
                 // 1812: a frame drawn only for the stripes' next step must
                 // show stripes that move.
@@ -588,12 +610,11 @@ impl Walk {
                             ..b
                         } == shown.order
                 });
-                let moving_treatment = shown
-                    .painted
-                    .pieces
-                    .iter()
-                    .any(|p| matches!(p.kind, Kind::Loading { .. }));
-                idle_phase_draw = phase_only && !moving_treatment;
+                // Asked while the frame on screen showed nothing moving:
+                // the frame that finds the stripes gone (their area came
+                // to be held) is the one the window learns it from.
+                idle_phase_draw = phase_only && !moved_before;
+                treated_px = shown.painted.pixels;
                 drew = true;
                 missing = shown.missing;
                 self.last_fading = shown.fading;
@@ -712,19 +733,6 @@ impl Walk {
                 true => loads = self.stale.clone().unwrap_or(loads),
                 false => self.stale = Some(loads.clone()),
             },
-            Inject::IdleTicks if self.checks.iter().any(|c| c.filled) => {
-                loads.areas.push(Area {
-                    bounds: Bounds {
-                        west: -1_700_000_000,
-                        south: -800_000_000,
-                        east: -1_690_000_000,
-                        north: -790_000_000,
-                    },
-                    kind: Kind::Loading { milli: 0 },
-                    bytes_done: 0,
-                    bytes: 0,
-                });
-            }
             _ => {}
         }
         if loads != self.app.seen.loads {
@@ -785,6 +793,7 @@ impl Walk {
             raw,
             treat,
             idle_phase_draw,
+            treated_px,
         });
         let next = t + 16;
         let now = self.now_ms();
@@ -936,7 +945,28 @@ impl Walk {
             shown = draw(&self.app.frames, order);
         }
         let crop = crop_screen(&shown, &self.app);
-        let treated_px = treated_on_screen(&shown);
+        let mut treated_px = treated_on_screen(&shown);
+        // The positive control (1812): the stale loads painted as a
+        // painter would that forgot the regions holding the view, the
+        // treatment left over complete data.
+        if self.inject == Inject::StaleTreatment {
+            let mut scratch =
+                vec![0u8; shown.view.size().0 as usize * shown.view.size().1 as usize * 4];
+            let forgot = loquax::ui::maploading::paint(
+                &mut scratch,
+                &shown.view,
+                &shown.order.loads,
+                &[],
+                &loquax::ui::maploading::Brush {
+                    phase: shown.order.phase,
+                    dark: false,
+                    scale: shown.order.scale,
+                    margin: shown.order.margin,
+                    look: loquax::ui::maploading::Look::default(),
+                },
+            );
+            treated_px = pieces_on_screen(&shown, &forgot.pieces);
+        }
         let mut crop = crop;
         if self.inject == Inject::PerturbPicture {
             let seen_before = self.checks.iter().any(|c| {
@@ -1184,13 +1214,16 @@ fn prefill_cache(maps: &std::path::Path, url: &str, copies: usize) {
 /// Pixels of `shown`'s screen, its margins cut, its treatment's pieces
 /// cover (1812).
 fn treated_on_screen(shown: &super::Shown) -> u64 {
+    pieces_on_screen(shown, &shown.painted.pieces)
+}
+
+/// Pixels of `shown`'s screen, its margins cut, `pieces` cover.
+fn pieces_on_screen(shown: &super::Shown, pieces: &[loquax::ui::maploading::Piece]) -> u64 {
     let (mx, my) = shown.order.margin;
     let (w, h) = shown.view.size();
     let (x0, y0) = (mx as i32, my as i32);
     let (x1, y1) = (w as i32 - mx as i32, h as i32 - my as i32);
-    shown
-        .painted
-        .pieces
+    pieces
         .iter()
         .map(|p| {
             let cw = (p.x1.min(x1) - p.x0.max(x0)).max(0);
@@ -1282,11 +1315,26 @@ fn frame_blank(shown: &super::Shown) -> bool {
     let super::Handle::Rgba { pixels, .. } = &shown.handle else {
         return false;
     };
+    // The map's own pixels (1812): the loads' treatment says the data is
+    // still to come, it is no picture of the map. Plain ground under it,
+    // in any of the colours the treatment makes of the ground, is ground;
+    // a stand-in between the stripes is still a picture.
+    let width = shown.view.size().0 as usize;
     let ground = ground_rgba();
+    let dark = shown.order.style.theme == leviculum_mapfill::style::MapTheme::Dark;
+    let tints: std::collections::HashSet<[u8; 3]> =
+        loquax::ui::maploading::ground_tints([ground[0], ground[1], ground[2]], dark)
+            .into_iter()
+            .collect();
     let mut hits = 0u32;
     let mut total = 0u32;
-    for px in pixels.chunks_exact(4).step_by(16) {
-        hits += u32::from(px == ground);
+    for (n, px) in pixels.chunks_exact(4).enumerate().step_by(16) {
+        let plain = px == ground || {
+            let (x, y) = ((n % width) as f64 + 0.5, (n / width) as f64 + 0.5);
+            shown.painted.pieces.iter().any(|p| p.contains(x, y))
+                && tints.contains(&[px[0], px[1], px[2]])
+        };
+        hits += u32::from(plain);
         total += 1;
     }
     f64::from(hits) / f64::from(total.max(1)) > BLANK_SHARE
@@ -1651,7 +1699,7 @@ pub fn rules(walk: &Walk) -> Vec<Verdict> {
                 && prev.centre == f.centre
                 && prev.zoom_milli == f.zoom_milli
             {
-                blank_frames.push(f.t);
+                blank_frames.push((f.t, prev.treated_px));
             }
         }
         last_drawn = Some(f);
@@ -1691,7 +1739,12 @@ pub fn rules(walk: &Walk) -> Vec<Verdict> {
         blank_checks
             .iter()
             .map(|i| walk.checks[*i].label.clone())
-            .chain(blank_frames.iter().take(3).map(|t| format!("frame t={t}")))
+            .chain(
+                blank_frames
+                    .iter()
+                    .take(3)
+                    .map(|(t, px)| format!("frame t={t} (the frame before: {px} px treated)")),
+            )
             .take(3)
             .collect::<Vec<_>>()
             .join("; "),
@@ -2240,6 +2293,10 @@ pub fn run_set(set: &str) -> Vec<(Walk, Vec<Verdict>)> {
             walks.push(cache_at_cap(0, 0));
             walks.push(desert_rest(&ERG_CHEBBI, 0, 0, Inject::None));
             walks.push(desert_rest(&BANI, 0, 0, Inject::None));
+        }
+        // One session alone, for a look at it (1812).
+        "wheel-slow" => {
+            walks.push(wheel_in_rested(SLOW_RATE, 40, 12, 16, Inject::None));
         }
         other => panic!("no load walk set named {other}"),
     }

@@ -254,6 +254,80 @@ fn ink(kind: Kind, dark: bool) -> [u8; 3] {
     }
 }
 
+/// The stripes' strength on the light map, of 256.
+const STRIPE_ALPHA: u16 = 104;
+/// On the dark map, which swallows a thin tint.
+const STRIPE_ALPHA_DARK: u16 = 150;
+/// The edges'.
+const EDGE_ALPHA: u16 = 216;
+/// The bar's filled part.
+const BAR_ALPHA: u16 = 240;
+/// The bar's track.
+const TRACK_ALPHA: u16 = 88;
+
+/// The bar's track colour on a light or a dark map.
+fn track(dark: bool) -> [u8; 3] {
+    match dark {
+        true => [0xff, 0xff, 0xff],
+        false => [0x00, 0x00, 0x00],
+    }
+}
+
+/// `b` over `a` with `alpha` of 256.
+fn mix(a: [u8; 3], b: [u8; 3], alpha: u16) -> [u8; 3] {
+    let keep = 256 - alpha;
+    let c = |i: usize| ((u16::from(a[i]) * keep + u16::from(b[i]) * alpha) >> 8) as u8;
+    [c(0), c(1), c(2)]
+}
+
+/// Every colour [`Look::Stripes`] makes of a pixel of plain `ground`
+/// (1812): each state's ink at the stripes', the edges' and the bar's
+/// strength, alone and over a stripe. What tells a frame of bare ground
+/// under the treatment from a picture of the map, without the frame
+/// before the treatment.
+pub fn ground_tints(ground: [u8; 3], dark: bool) -> Vec<[u8; 3]> {
+    let kinds = [
+        Kind::Loading { milli: 0 },
+        Kind::Stalled {
+            milli: 0,
+            quiet_s: 0,
+        },
+        Kind::Waiting,
+        Kind::Failed { retry_s: 0 },
+    ];
+    let stripe = match dark {
+        true => STRIPE_ALPHA_DARK,
+        false => STRIPE_ALPHA,
+    };
+    let mut out = alloc::vec![ground];
+    for kind in kinds {
+        let colour = ink(kind, dark);
+        // A stripe, an edge over it, the bar over both: three layers at
+        // most meet on one pixel.
+        let mut layer = alloc::vec![ground];
+        for _ in 0..3 {
+            layer = layer
+                .iter()
+                .flat_map(|&under| {
+                    [
+                        under,
+                        mix(under, colour, stripe),
+                        mix(under, colour, EDGE_ALPHA),
+                        mix(under, colour, BAR_ALPHA),
+                        mix(under, track(dark), TRACK_ALPHA),
+                    ]
+                })
+                .collect();
+            layer.sort_unstable();
+            layer.dedup();
+        }
+        out.extend(layer);
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 /// `b` over the pixel at `i` with `alpha` of 256.
 #[inline]
 fn blend(rgba: &mut [u8], i: usize, b: [u8; 3], alpha: u16) {
@@ -390,8 +464,8 @@ pub fn paint(
         dash: px(8.0),
         // A dark ground swallows a thin tint: stronger stripes there.
         stripe_alpha: match dark {
-            true => 150,
-            false => 104,
+            true => STRIPE_ALPHA_DARK,
+            false => STRIPE_ALPHA,
         },
     };
     for area in order {
@@ -521,14 +595,14 @@ fn fill(
         if top || bottom {
             for x in p.x0..p.x1 {
                 if dashed(x) {
-                    blend(rgba, base + x as usize * 4, colour, 216);
+                    blend(rgba, base + x as usize * 4, colour, EDGE_ALPHA);
                     changed += 1;
                 }
             }
         } else if dashed(y) {
             for x in [full.x0, full.x1 - edge] {
                 for ex in x.max(p.x0)..(x + edge).min(p.x1) {
-                    blend(rgba, base + ex as usize * 4, colour, 216);
+                    blend(rgba, base + ex as usize * 4, colour, EDGE_ALPHA);
                     changed += 1;
                 }
             }
@@ -555,18 +629,15 @@ fn bar(
     let y0 = (y1 - g.bar).max(clipped.y0);
     let width = i64::from(clipped.x1 - clipped.x0);
     let split = clipped.x0 + (width * i64::from(milli.min(1000)) / 1000) as i32;
-    let track = match dark {
-        true => [0xff, 0xff, 0xff],
-        false => [0x00, 0x00, 0x00],
-    };
+    let track = track(dark);
     let row = w as usize * 4;
     for p in free {
         for y in y0.max(p.y0)..y1.min(p.y1) {
             for x in p.x0..p.x1 {
                 let i = y as usize * row + x as usize * 4;
                 match x < split {
-                    true => blend(rgba, i, colour, 240),
-                    false => blend(rgba, i, track, 88),
+                    true => blend(rgba, i, colour, BAR_ALPHA),
+                    false => blend(rgba, i, track, TRACK_ALPHA),
                 }
                 changed += 1;
             }
@@ -935,6 +1006,40 @@ mod tests {
             loads.line(Lang::En).as_deref(),
             Some("Offline · the map loads when the network is back")
         );
+    }
+
+    /// Plain ground under every state's treatment is one of the tints;
+    /// the map's own colours are not.
+    #[test]
+    fn plain_ground_under_the_treatment_is_a_tint() {
+        let ground = [0x80, 0x80, 0x80];
+        let tints = ground_tints(ground, false);
+        let v = view();
+        let b = bounds_of(&v, 0.0, 0.0, 400.0, 300.0);
+        for kind in [
+            Kind::Loading { milli: 500 },
+            Kind::Stalled {
+                milli: 500,
+                quiet_s: 11,
+            },
+            Kind::Waiting,
+            Kind::Failed { retry_s: 3 },
+        ] {
+            let loads = Loads {
+                areas: alloc::vec![area(b, kind)],
+                offline: false,
+            };
+            let mut rgba = grey(&v);
+            let brush = Brush {
+                margin: (20, 20),
+                ..brush(3, false, 1.0, Look::Stripes)
+            };
+            paint(&mut rgba, &v, &loads, &[], &brush);
+            for px in rgba.chunks_exact(4) {
+                assert!(tints.contains(&[px[0], px[1], px[2]]), "{kind:?}: {px:?}");
+            }
+        }
+        assert!(!tints.contains(&[0x20, 0x90, 0x40]));
     }
 
     #[test]

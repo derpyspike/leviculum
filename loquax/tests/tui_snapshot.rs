@@ -3025,10 +3025,7 @@ async fn opening_the_map_at_a_place_loads_its_region_and_the_next_frame_draws_it
     // The place's region is what the screen shows: the title says so in
     // words since 1527, since 1812 the loads' one line with how far it is
     // (`maploading::Loads::line`), not the older "loading map".
-    assert!(
-        !en || before.contains("Loading the map · "),
-        "{before}"
-    );
+    assert!(!en || before.contains("Loading the map · "), "{before}");
     // No region holds the place yet: the radar meanwhile (1386), centred
     // on the one pin, which it says, at the fit's zoom the region keeps.
     assert!(

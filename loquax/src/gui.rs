@@ -2137,9 +2137,7 @@ impl App {
         // held back for the frame interval (1431).
         // And while a load's stripes move (1812): only then, an idle map
         // asks for no frame.
-        if self.screen == Screen::Map
-            && (self.animating() || self.owed || self.seen.loads.animates())
-        {
+        if self.screen == Screen::Map && (self.animating() || self.owed || self.loads_move()) {
             all.push(window::frames().map(Message::Frame));
         }
         Subscription::batch(all)
@@ -2732,8 +2730,33 @@ impl App {
             motion: self.motion,
             time_zones: self.time_zones.then(loquax::zoneclock::unix_minute),
             loads: self.seen.loads.clone(),
-            phase: self.seen.loads.phase(self.now_ms()),
+            phase: self.load_phase(),
         })
+    }
+
+    /// The stripes' step for the next frame (1812): it moves only while a
+    /// load moves AND the frame on screen shows it moving; otherwise it
+    /// stays where the last frame had it, so the order is the same and no
+    /// frame is drawn for it. A load whose area the regions hold already
+    /// is drawn bare and asks for nothing.
+    fn load_phase(&self) -> u32 {
+        let last = self.shown.as_ref().map_or(0, |s| s.order.phase);
+        match self.loads_move() {
+            true => self.seen.loads.phase(self.now_ms()),
+            false => last,
+        }
+    }
+
+    /// A load moves, and the frame on screen shows it ([`load_phase`]),
+    /// or none is on screen yet to say.
+    fn loads_move(&self) -> bool {
+        self.seen.loads.animates()
+            && self.shown.as_ref().is_none_or(|s| {
+                s.painted
+                    .pieces
+                    .iter()
+                    .any(|p| matches!(p.kind, loquax::ui::maploading::Kind::Loading { .. }))
+            })
     }
 
     /// The pins as the frame draws them, and the radar where no region
