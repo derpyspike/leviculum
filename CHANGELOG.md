@@ -855,6 +855,10 @@ Toolchain: Rust 1.97.1
 
 ### Fixed
 
+- leviculum-map-tool ground cut (#232, 1938): a TIFF input whose image
+  directory sits at the end of the file and is cut inside its last entry
+  is refused as a short directory; the reader panicked on it.
+
 - A board no longer loses a frame whose preamble begins inside the last
   detector horizon of a pre-transmit listening window (#466): the
   acquisition-jitter and CSMA-backoff windows now run their hardware RX
