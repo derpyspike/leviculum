@@ -943,7 +943,7 @@ const AGE_STEPS: [i64; 4] = [10 * 60, 3600, 6 * 3600, EPISODE_FLOOR_SECS];
 /// What of `input` the clock moves at `now` in `window` (1694 A): every
 /// track drawn the same at two moments has the same marks. The windows'
 /// bounds move by the local day; a part of a track changes its look when
-/// its fix crosses an [`AGE_STEPS`] age, which the fixes, in time order,
+/// its fix crosses an `AGE_STEPS` age, which the fixes, in time order,
 /// count by bisection. A dwell's end and a segment's newer end are fixes,
 /// so they are counted too. Cheap enough for every clock event:
 /// `O(peers · log fixes)`.
