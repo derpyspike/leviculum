@@ -151,7 +151,7 @@ cannot read yet.
 
 **O5, the LoRa cadence for the Mailbox's announces, not built.** The
 Mailbox announces at start and every 360 minutes on every interface,
-`ANNOUNCE_EVERY` (`loquax/src/home/daemon.rs:74`), whatever moves.
+`loquax/src/home/daemon.rs#ANNOUNCE_EVERY`, whatever moves.
 
 ## M6. Every Loquax is a home; an external Mailbox is a second one
 
