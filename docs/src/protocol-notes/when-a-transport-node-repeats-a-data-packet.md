@@ -106,7 +106,7 @@ forward on `transport_id == Some(own hash)`, with the `for_local` synthesis
 arm. The LINKREQUEST path already carried the same gate (`designated_hop`),
 added for the LRPROOF echo storm; data never got it.
 
-`Path::needs_relay()` (`leviculum-core/src/storage_types.rs#PathEntry::needs_relay`, `hops > 1 && next_hop.is_some()`)
+`Path::needs_relay()` (`storage_types.rs:60`, `hops > 1 && next_hop.is_some()`)
 is not the predicate for this and never was. It answers how to rewrite the
 header of a packet already accepted for forwarding, mirroring the
 `remaining_hops` split above. Gating acceptance on it would kill the last hop

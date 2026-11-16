@@ -74,7 +74,7 @@ const REASSEMBLY_LIMITS: BleReassemblyLimits = BleReassemblyLimits::new(
 ///
 /// The vendored impl this replaces — `GattValue for heapless::Vec<u8,
 /// N>` — is `unwrap!(Self::from_slice(data))` (nrf-softdevice
-/// vendor/trouble-host/src/types/gatt_traits.rs#<? as FixedGattValue>), and the field T114 panicked on exactly that
+/// gatt_traits.rs:97), and the field T114 panicked on exactly that
 /// line twice on 2026-09-12 with two phones connected: the macro's
 /// generated `on_write`/`on_hvx` feed `from_gatt` whatever the event
 /// buffer delivered, with no length gate between the air and the
@@ -880,7 +880,7 @@ async fn gatt_events(conn: &Connection, server: &NotifyAwareServer) -> Option<[u
                 // whole, never truncated into the defragmenter — a cut
                 // fragment completing a reassembly is worse than a lost
                 // one. Before #387 this input was a panic in the
-                // vendored `from_gatt` (vendor/trouble-host/src/types/gatt_traits.rs#<? as FixedGattValue>).
+                // vendored `from_gatt` (gatt_traits.rs:97).
                 if data.oversize() {
                     BLE_GATT_OVERSIZE.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                     crate::log::log_fmt(
@@ -1188,7 +1188,7 @@ pub(crate) use leviculum_firmware::ble_link::session::{
 /// `BLE_GATT_WRITE_OVERSIZE` / `BLE_GATT_NOTIFY_OVERSIZE` line; this is
 /// the running total that makes the drops quotable from a capture.
 /// Before #387 this exact input was not a counter but a panic
-/// (nrf-softdevice vendor/trouble-host/src/types/gatt_traits.rs#<? as FixedGattValue>), twice on the field T114.
+/// (nrf-softdevice gatt_traits.rs:97), twice on the field T114.
 pub(crate) static BLE_GATT_OVERSIZE: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(0);
 

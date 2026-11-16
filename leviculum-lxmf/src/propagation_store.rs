@@ -30,9 +30,9 @@
 //! than a redesign. Verb by verb (`leviculum-nrf/record-log/src/lib.rs`):
 //!
 //! * [`PropagationStore::append`] ↔ `RecordLog::append(key, time, tag, body)`
-//!   (`leviculum-nrf/record-log/src/lib.rs#RecordLog::count`) — key = transient ID, `time` = received-at (truncated to
+//!   (`lib.rs:429`) — key = transient ID, `time` = received-at (truncated to
 //!   `u32` on the board), `tag` = stamp value.
-//! * [`PropagationStore::for_each`] ↔ `RecordLog::for_each` (`leviculum-nrf/record-log/src/lib.rs#RecordLog::append`).
+//! * [`PropagationStore::for_each`] ↔ `RecordLog::for_each` (`lib.rs:541`).
 //!   The visitor sees directory data only, never a full body; the record log
 //!   yields `Record { key, time, tag, len }` and the adapter fills
 //!   `destination_hash` from the record's own destination — its first 16
@@ -41,9 +41,9 @@
 //!   the adapter's own business, not a body read through this boundary; why
 //!   the read is a separate trait is the section below.
 //! * [`PropagationBodyStore::read_body`] ↔ `RecordLog::read_body`
-//!   (`leviculum-nrf/record-log/src/lib.rs#RecordLog::for_each_seq`).
-//! * [`PropagationStore::purge`] ↔ `RecordLog::purge` (`leviculum-nrf/record-log/src/lib.rs#RecordLog::sequence`).
-//! * [`PropagationStore::free_space`] ↔ `RecordLog::free_bytes` (`leviculum-nrf/record-log/src/lib.rs#RecordLog::program_run`)
+//!   (`lib.rs:574`).
+//! * [`PropagationStore::purge`] ↔ `RecordLog::purge` (`lib.rs:709`).
+//! * [`PropagationStore::free_space`] ↔ `RecordLog::free_bytes` (`lib.rs:683`)
 //!   and [`PropagationStore::capacity`] ↔ `sectors() × SECTOR_PAYLOAD`.
 //! * [`PropagationStore::space_required`] is the one verb with no record-log
 //!   counterpart: that adapter answers [`StorageError::Full`] only for a body
@@ -334,7 +334,7 @@ pub trait PropagationStore {
 
     /// Number of stored messages — one directory pass by default; the record
     /// log's mount already reports the same count
-    /// (`leviculum-nrf/record-log/src/lib.rs#RecordLog::count`).
+    /// (`leviculum-nrf/record-log/src/lib.rs:420`).
     fn count(&self) -> Result<usize, StorageError> {
         let mut total = 0usize;
         self.for_each(&mut |_| total += 1)?;

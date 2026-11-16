@@ -126,12 +126,12 @@ fn a_rename_between_two_names_is_pending() {
 }
 
 /// The limit the BLE name is cut at: [`DEVICE_NAME_LEN`], 11 bytes
-/// (`leviculum-nrf/ble-tx/src/lib.rs#drain_wait_budget`).
+/// (`leviculum-nrf/ble-tx/src/lib.rs:143`).
 ///
 /// The SoftDevice imposes the ceiling it sits under, not the 11 itself.
 /// The GAP device name is reserved in the SoftDevice's own attribute table
 /// (`max_len: DEVICE_NAME_LEN`, `vloc` `BLE_GATTS_VLOC_STACK`,
-/// `leviculum-nrf/src/ble/mod.rs#init`), which by default has room for
+/// `leviculum-nrf/src/ble/mod.rs:849`), which by default has room for
 /// `BLE_GAP_DEVNAME_DEFAULT_LEN` = 31 bytes (`nrf-softdevice-s140`
 /// bindings at rev `5949a5b`, `src/bindings.rs:639`, mirrored as
 /// [`GAP_DEVNAME_DEFAULT_LEN`]); the advertisement side is bounded by the

@@ -1,7 +1,7 @@
 //! Bounds for GATT values a peer controls (Codeberg #387).
 //!
 //! `nrf-softdevice`'s `GattValue` impl for `heapless::Vec<u8, N>` is
-//! `unwrap!(Self::from_slice(data))` (vendor/trouble-host/src/types/gatt_traits.rs#<? as FixedGattValue>): a peer write
+//! `unwrap!(Self::from_slice(data))` (gatt_traits.rs:97): a peer write
 //! longer than the characteristic's declared width panics the board.
 //! The field T114 hit exactly that on 2026-09-12 with two phones
 //! connected — twice, `PANIC_COUNT` 1 and 2, post-mortem naming that

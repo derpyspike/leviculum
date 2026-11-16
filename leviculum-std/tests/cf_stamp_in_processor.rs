@@ -16,7 +16,7 @@
 //! actually write the mistake — call it, `.await` it — is what fails here.
 //! That is a tripwire on the spelling, not a proof of the property. The
 //! property is not available: `StampExecutor::generate`
-//! (leviculum-lxmf/src/stamp.rs#StampCancel::cancel) returns `Pin<Box<dyn Future>>`, which any
+//! (leviculum-lxmf/src/stamp.rs:74) returns `Pin<Box<dyn Future>>`, which any
 //! synchronous `fn` can drive to completion with
 //! `futures::executor::block_on`. That is one instance of the residual hole
 //! `leviculum-std/src/driver/processor.rs` names in its module doc — the hole

@@ -19,7 +19,7 @@
 //! For one inbound link packet the core emits `LinkProofRequested` first
 //! and `LinkDataReceived` second, from the same
 //! `handle_plain_data_packet` call
-//! (`leviculum-core/src/node/link_management.rs#NodeCore::refuse_off_link_interface`). The engine
+//! (`leviculum-core/src/node/link_management.rs:1562-1590`). The engine
 //! therefore queues the proof hash per link and pops it when the matching
 //! data event is processed; per-link FIFO order is the emission order.
 

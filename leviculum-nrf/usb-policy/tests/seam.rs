@@ -11,8 +11,8 @@ use leviculum_usb_policy::*;
 // ---------------------------------------------------------------------------
 
 /// The request a 1200-baud touch puts on the wire. lnflash sends no bytes
-/// itself: `touch_1200` (`lnflash/src/entry.rs#touch_1200`) calls `set_baud_1200`
-/// (`lnflash/src/sys.rs#Fd::set_baud_1200`), which `cfmakeraw`s the termios (8 data bits, no
+/// itself: `touch_1200` (`lnflash/src/entry.rs:44`) calls `set_baud_1200`
+/// (`lnflash/src/sys.rs:64`), which `cfmakeraw`s the termios (8 data bits, no
 /// parity, CSTOPB untouched, i.e. one stop bit) and sets B1200 both ways.
 /// Linux's cdc-acm driver turns that `tcsetattr` into SET_LINE_CODING
 /// (`acm_tty_set_termios` -> `acm_set_line` in `drivers/usb/class/cdc-acm.c`):

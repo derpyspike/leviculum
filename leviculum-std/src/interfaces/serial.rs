@@ -1236,12 +1236,12 @@ const MEDIA_QUERY_ANSWER_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// How long a media profile ([`leviculum_core::envelope::TYPE_MEDIA_PROFILE`])
 /// waits for the board's answer: lnflash's 3.5 s control-conversation window
-/// (`ACK_WITHIN`, `lnflash/src/radio.rs#ACK_WITHIN`), not the query's 2 s.
+/// (`ACK_WITHIN`, `lnflash/src/radio.rs:57`), not the query's 2 s.
 ///
 /// The profile is the one media frame the board answers only after a flash
 /// write: the firmware applies it, then waits for the store task to settle
 /// the page (`crate::telemetry::confirm`) for up to `PERSIST_CONFIRM_WITHIN`,
-/// 2500 ms (`leviculum-nrf/src/telemetry.rs#PERSIST_CONFIRM_WITHIN`), before it writes either
+/// 2500 ms (`leviculum-nrf/src/telemetry.rs:430`), before it writes either
 /// the report, [`leviculum_core::envelope::REFUSE_PERSIST_PENDING`] (still
 /// writing) or [`leviculum_core::envelope::REFUSE_PERSIST`] (gave up). A 2 s window
 /// called a board whose save was merely slow unanswered although it had
@@ -2295,7 +2295,7 @@ mod tests {
 
     /// The ten bandwidths `RadioConfig::from_wire_config`
     /// (`leviculum-nrf/src/lora.rs`) has an SX1262 register code for, and the
-    /// only ones `bw_code_to_hz` (`leviculum-nrf/src/sx1262.rs#bw_code_to_hz`) ever
+    /// only ones `bw_code_to_hz` (`leviculum-nrf/src/sx1262.rs:234`) ever
     /// returns. Written out here rather than imported so this test states the
     /// firmware's acceptance set independently of whatever the host computes.
     const FIRMWARE_ACCEPTS_HZ: [u32; 10] = [
@@ -2309,7 +2309,7 @@ mod tests {
     /// `SerialInterface` block naming one builds, spawns, and puts a value on
     /// the wire that `RadioConfig::from_wire_config` returns `None` for. The
     /// legacy contract for a config the driver cannot take is silence
-    /// (`leviculum-nrf/src/usb.rs#retic_serial_task`), so the board stays on the PHY it
+    /// (`leviculum-nrf/src/usb.rs:891-911`), so the board stays on the PHY it
     /// already had while the host's airtime bucket goes on pricing every
     /// frame at the bandwidth it asked for.
     #[test]

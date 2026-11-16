@@ -5,7 +5,7 @@
 //! ## The field record
 //!
 //! `loquax --test python_interop lnmsg_send_reaches_a_python_lxmf_receiver`
-//! red at `loquax/tests/python_interop.rs#lnmsg_send_reaches_a_python_lxmf_receiver` (1611's log, the instance's event dump):
+//! red at `python_interop.rs:228` (1611's log, the instance's event dump):
 //!
 //! ```text
 //! PKT_RX  dst=3b13f21a.. hops=0 iface=Local[..-0]/0 len=208 ph=01215a2e.. type=Announce t=717

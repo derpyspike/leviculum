@@ -229,7 +229,7 @@ async fn main(spawner: Spawner) {
     // `leviculum_core::mgmt_allow_store::remote_mgmt_decision`, and it is
     // deliberately not the daemon's: `lnsd` and Python's `rnsd` register
     // the handler with an empty list and consult it per request
-    // (`leviculum-std/src/config.rs#ReticulumConfig`), which is safe on a machine
+    // (`leviculum-std/src/config.rs:88-96`), which is safe on a machine
     // with an operator and a login, and is not safe on a board left on a
     // mast — an unattended node announcing a management destination with
     // nobody on the list is advertising a door (#235).

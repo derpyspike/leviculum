@@ -25,24 +25,24 @@ option B) and the vector path with our own filler (handheld-messenger.md,
 ## What Loquax receives of telemetry today
 
 Since slice (a), every position. The engine passes an incoming message's
-fields on (`Message::fields`, `leviculum-lxmf/src/message.rs#Message::fields`):
+fields on (`Message::fields`, `leviculum-lxmf/src/message.rs:84`):
 `RouterEvent::MessageReceived` becomes `OutboxEvent::Received` with the
 fields beside id, source, title, body and the verification
-(`loquax/src/engine.rs#Engine::absorb`, `loquax/src/outbox.rs#OutboxEvent::Received`). The core reads
+(`loquax/src/engine.rs:525`, `loquax/src/outbox.rs:330`). The core reads
 the two telemetry fields into positions (`telemetry::read`,
-`loquax/src/telemetry.rs#read`; a group's copy books its position under
+`loquax/src/telemetry.rs:198`; a group's copy books its position under
 the writer, not the group, only where the signature was verified and a
 group the reader joined itself lists that writer at the copy's epoch,
-`copy_writer`, `loquax/src/ui.rs#copy_writer` — a named writer the rule does
+`copy_writer`, `loquax/src/ui.rs:7069` — a named writer the rule does
 not credit makes the reading nobody's (Lew 2026-11-13,
 [the expedition map](loquax-expedition-map.md); the chat draws a copy's
 writer by the same rule, `groups::copy_writer`, 1696, 1702, 1728); a collector's
 stream row only where the reader chose that collector, and none can be
-chosen yet, `Writers`, `loquax/src/ui.rs#Writers`), the screen model keeps
+chosen yet, `Writers`, `loquax/src/ui.rs:7091`), the screen model keeps
 each peer's latest and hands every one to the store (`take_telemetry`,
-`loquax/src/ui.rs#take_telemetry`), and the store keeps the fields whole in its
-`fields` column (`loquax/src/store.rs#apply`) and the positions in a table of
-their own (`SCHEMA_V2`, `loquax/src/store.rs#SCHEMA_V2`). The sender's timestamp
+`loquax/src/ui.rs:6970`), and the store keeps the fields whole in its
+`fields` column (`loquax/src/store.rs:3994`) and the positions in a table of
+their own (`SCHEMA_V2`, `loquax/src/store.rs:205`). The sender's timestamp
 is still not carried: `OutboxEvent`, the screen's `Message` and every type
 the model folds derive `Eq`, which an `f64` cannot, so carrying it is a
 change of its own and not the one line of plumbing the fields were.
@@ -55,17 +55,17 @@ peer's conversation with its position lost.
 What the core reads them with, all in `leviculum-lxmf`, `no_std + alloc`:
 
 - the field numbers, `FIELD_TELEMETRY` and `FIELD_TELEMETRY_STREAM`
-  (`leviculum-lxmf/src/constants.rs#FIELD_TELEMETRY_STREAM`, `leviculum-lxmf/src/constants.rs#FIELD_TELEMETRY_STREAM`);
-- the Telemeter codec, `Telemetry` (`leviculum-lxmf/src/telemetry.rs#Telemetry`)
+  (`leviculum-lxmf/src/constants.rs:61`, `leviculum-lxmf/src/constants.rs:62`);
+- the Telemeter codec, `Telemetry` (`leviculum-lxmf/src/telemetry.rs:176`)
   with `Telemetry::decode_field_value`
-  (`leviculum-lxmf/src/telemetry.rs#Telemetry::decode_field_value`), and its `Location` in the wire's
-  scaled integers (`leviculum-lxmf/src/telemetry.rs#Location`);
+  (`leviculum-lxmf/src/telemetry.rs:341`), and its `Location` in the wire's
+  scaled integers (`leviculum-lxmf/src/telemetry.rs:56`);
 - the stream decoder for a collector's rows, `decode_stream_field_value`
-  (`leviculum-lxmf/src/telemetry.rs#decode_stream_field_value`);
+  (`leviculum-lxmf/src/telemetry.rs:493`);
 - the request reader, `telemetry_request_timebase`
-  (`leviculum-lxmf/src/telemetry.rs#telemetry_request_timebase`), whose command id is a
+  (`leviculum-lxmf/src/telemetry.rs:800`), whose command id is a
   documented assumption (`COMMAND_TELEMETRY_REQUEST`,
-  `leviculum-lxmf/src/telemetry.rs#COMMAND_TELEMETRY_REQUEST`).
+  `leviculum-lxmf/src/telemetry.rs:790`).
 
 ## 1. What the user sees
 
@@ -298,8 +298,8 @@ pin at "now" forever.
 **Stale.** Decided 2026-10-27 (Lew): a fix is drawn as current up to 2 h old and dimmed
 after that, with its age always beside it. Two hours is twice the station
 profile's heartbeat (`max_interval_ms`, 60 min,
-`leviculum-nrf/telemetry-policy/src/lib.rs#PolicyParams::STATION`; the tracker's is 15 min,
-`leviculum-nrf/telemetry-policy/src/lib.rs#PolicyParams::TRACKER`), so a board that misses
+`leviculum-nrf/telemetry-policy/src/lib.rs:190`; the tracker's is 15 min,
+`leviculum-nrf/telemetry-policy/src/lib.rs:175`), so a board that misses
 one report stays current and one that misses two goes dim. A fix is never
 removed for its age alone; it goes with a delete. This closes
 handheld-messenger.md's open "how other nodes' positions age out of the
@@ -1273,10 +1273,10 @@ Spoken by kitty, WezTerm, Ghostty and Konsole by their own documentation,
 not checked here. The crate is
 `ratatui-image` 11.0.6 (MIT), already in the tree behind
 `leviculum-ui-ratatui`'s `images` feature
-(`leviculum-ui-ratatui/Cargo.toml#dependencies.ratatui-image`), built without its default
+(`leviculum-ui-ratatui/Cargo.toml:40`), built without its default
 `chafa-dyn` so no C library comes in; `lnomad` draws pictures through it.
 Its terminal query (`Pictures::detect`,
-`leviculum-ui-ratatui/src/images.rs#Pictures::detect`) picks the protocol at start and
+`leviculum-ui-ratatui/src/images.rs:113`) picks the protocol at start and
 falls back to half-blocks.
 
 **Sixel.** The DEC bitmap format, palette-based (so a map's flat colours

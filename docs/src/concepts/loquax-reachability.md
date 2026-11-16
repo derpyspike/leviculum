@@ -78,7 +78,7 @@ path's interface changes. Nothing medium-aware enters transport
 - **Mechanism.** When Loquax and the mailbox run on one computer, both
   are clients of the same daemon's shared instance, an abstract AF_UNIX
   socket `\0rns/<instance_name>` (`shared_instance`,
-  `leviculum-std/src/config.rs#ReticulumConfig::shared_instance`); TCP loopback only where a
+  `leviculum-std/src/config.rs:102-121`); TCP loopback only where a
   configuration asks for it, as Python does
   (`reference/Reticulum/RNS/Reticulum.py:683`). The path request and the
   link run inside the daemon over its local interfaces: zero network
@@ -87,13 +87,13 @@ path's interface changes. Nothing medium-aware enters transport
   `hops=0`.
 - **What the code does today (read 2026-11-04, not yet measured).** A
   desktop Loquax that is a client of a mailbox attaches to the shared
-  instance as `Role::Client` (`attach_as`, `loquax/src/shell.rs#start`;
-  `Upstream::Shared`, `loquax/src/engine/shell.rs#Upstream::Shared`) and dials
+  instance as `Role::Client` (`attach_as`, `loquax/src/shell.rs:1855`;
+  `Upstream::Shared`, `loquax/src/engine/shell.rs:433`) and dials
   nothing: the only callers of the rendezvous rotation (`dial`,
-  `loquax/src/engine/shell.rs#Attached::dial`) are the leaf, the phone's own
+  `loquax/src/engine/shell.rs:616`) are the leaf, the phone's own
   mailbox and the mailbox daemon. The daemon on a shared instance dials
   its rendezvous as a peer (`DaemonUpstream::Shared`,
-  `loquax/src/home/daemon.rs#run`), which it needs for devices that are
+  `loquax/src/home/daemon.rs:381`), which it needs for devices that are
   elsewhere, not for the one beside it. So on one lnsd the client should
   find the mailbox through the local interface with no rendezvous
   dialled. Slice 1 turns this reading into a cell before anything else
@@ -107,7 +107,7 @@ path's interface changes. Nothing medium-aware enters transport
   instance of their own.
 - **A phone that is its own mailbox's device** (1264's case): the
   screens' leaf dials the phone mailbox's node on a loopback port
-  (`loquax-android/src/mailbox.rs#Here::start`). That is a socket, but it never
+  (`loquax-android/src/mailbox.rs:558`). That is a socket, but it never
   leaves the phone, and no network change touches it. It reads "local".
   An in-process channel instead of loopback TCP saves a socket, not a
   hop; it is a later cleanup, not part of the ladder.
@@ -122,8 +122,8 @@ path's interface changes. Nothing medium-aware enters transport
 - **Mechanism.** The mailbox is a board or a computer with Bluetooth in
   range. Our Columba mesh link is the shortest way there is: one BLE
   hop. The BLE interface reports a peer's arrival and departure to the
-  driver (`report_peer_up`, `leviculum-std/src/interfaces/ble/mod.rs#BleTask::report_peer_up`;
-  `report_peer_lost`, `leviculum-std/src/interfaces/ble/mod.rs#BleTask::report_peer_lost`).
+  driver (`report_peer_up`, `leviculum-std/src/interfaces/ble/mod.rs:1804`;
+  `report_peer_lost`, `leviculum-std/src/interfaces/ble/mod.rs:1780`).
   When the path to `loquax.home` stands on the BLE interface, the race
   names the way Bluetooth and drops the rendezvous. The device needs no
   list of the mailbox's BLE identity: the path's interface tells it.
@@ -299,7 +299,7 @@ same. It stays behind the measurement this page demanded from the start
 
 Our own node, `leviculum.network`, is preconfigured; the Android app
 already ships it as its default server (`DEFAULT_SERVERS`,
-`loquax-android/src/mailbox.rs#DEFAULT_SERVERS`). The list may hold several. Anyone
+`loquax-android/src/mailbox.rs:42`). The list may hold several. Anyone
 who runs a mailbox on a public server has a rendezvous for their own
 phones by that fact, and other operators may offer one. Order 1190
 hardens the rendezvous (caps per source, silent clients timed out).
@@ -327,10 +327,10 @@ that receives the forwarded request on an ordinary (`Full`) interface,
 holds no path and has no local clients, re-originates nothing: the
 reference gates the search on the receiving interface's mode
 (`reference/Reticulum/RNS/Transport.py:2918`), and so does lnsd
-(`discovers_paths`, `leviculum-core/src/traits.rs#InterfaceMode::discovers_paths`;
-`leviculum-core/src/transport.rs#Transport::handle_path_request`). lnsd widens the gate only for
+(`discovers_paths`, `leviculum-core/src/traits.rs:115`;
+`leviculum-core/src/transport.rs:13094`). lnsd widens the gate only for
 interfaces that report live peers, and today only BLE does
-(`leviculum-std/src/interfaces/ble/mod.rs#BleTask::report_peer_up`). Without an announce of
+(`leviculum-std/src/interfaces/ble/mod.rs:1812`). Without an announce of
 `loquax.home` no relay holds its path either. So A worked only when the
 mailbox's own daemon was node A's direct neighbour, and failed when a
 third relay stood between them. 1196 closes it by announcing
@@ -386,7 +386,7 @@ Not a way of its own: how the device learns 2b, 3 and 4.
   announce carries the list in its app data, signed as the announce is,
   so every way that delivers an announce teaches the device every direct
   way, and the rendezvous stays the bootstrap. `loquax.home` is announced
-  without app data today (`announce_home`, `loquax/src/home/daemon.rs#announce_home`),
+  without app data today (`announce_home`, `loquax/src/home/daemon.rs:290`),
   and no Python program registers a handler for it, so a Python peer
   relays the announce and ignores the blob. The LXMF delivery announce
   is not touched: its app data is LXMF's.
@@ -460,7 +460,7 @@ the device keeps the most direct way that answers.
   The outbox's retries carry a send that was cut off; a message is never
   dropped by a change of way, and never sent twice: a send repeated
   after a cut is matched to the first by its client id
-  (`outbox_by_client`, `loquax/src/home/server.rs#send`).
+  (`outbox_by_client`, `loquax/src/home/server.rs:249`).
 - **The network change** (1298's `Network` word, below) restarts the
   race; the settle of 1298 folds a burst of callbacks into one race.
 - **The re-race.** A device kept on an indirect way (relayed or mesh)
@@ -504,10 +504,10 @@ The shipped rendezvous list is a bootstrap, not an architecture (Lew,
   (`get_interface_announce_data`, `reference/Reticulum/RNS/Discovery.py:96-186`),
   every node keeps the registry, and ours is byte compatible with
   Python's (`list_discovered_interfaces`,
-  `leviculum-std/src/discovery.rs#list_discovered_interfaces`). Autoconnect with a ceiling is
+  `leviculum-std/src/discovery.rs:461`). Autoconnect with a ceiling is
   the zero-config design ([zero config](zero-config.md), "The server
   list"), and it takes only transport nodes as Python does
-  (`leviculum-std/src/autoconnect.rs#AutoConnectManager::poll`). Loquax reads that registry
+  (`leviculum-std/src/autoconnect.rs:379`). Loquax reads that registry
   for the phone and the mailbox; the shipped list stays what the node
   already makes it, `bootstrap_only`. No pool of our own.
 - **The one design question: the access point port.** A discovery

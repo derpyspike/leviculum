@@ -57,7 +57,6 @@
 //! ```
 //!
 //! Sans-hardware, deterministic, a few seconds.
-#![cfg(feature = "serial")]
 
 use std::sync::Arc;
 use std::sync::Mutex;

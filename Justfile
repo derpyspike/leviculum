@@ -806,35 +806,15 @@ check-submodules:
 check-processor-seam:
     @bash scripts/check-processor-compile-fail.sh
 
-# Guarantee C step 3: citations must still point at what they claim.
-# Living texts cite code by name (`<path>#<Item>`, order 1848,
-# docs/src/concepts/checks-and-citations.md "Citations name items"):
-# scripts/check-name-citations.py resolves every one of them and refuses a
-# `file:line` citation outside the shrinking list of files not converted
-# yet (scripts/line-citations-pending.txt); its selftest is the positive
-# control (a renamed item, an ambiguous name, a deleted anchor and a line
-# citation fail, a moved item stays green). The two take about 5 s. The
-# line citations still standing in the pending files, and the ones into the
-# pinned references, stay under the cargo test, which reads the old form.
-# No tier ran this suite before — `fast` runs `--lib` only and `standard`
-# names leviculum-std suites one by one — which is the Guarantee-B-masking-C
-# shape the concept page warns about.
-[doc('Check that citations still point at what they claim')]
+# Guarantee C step 3: `path:line` citations in docs/src/** and in the Rust
+# sources of leviculum-core/-lxmf/-std must still point at what they claim.
+# ~3 s, and the leviculum-std test deps are already built by `mvr`, so it is
+# nearly free here. No tier ran this suite before — `fast` runs `--lib` only
+# and `standard` names leviculum-std suites one by one — which is the
+# Guarantee-B-masking-C shape the concept page warns about.
+[doc('Check that path:line citations still point at what they claim')]
 citation-guard:
-    python3 scripts/citations-selftest.py
-    python3 scripts/check-name-citations.py
     {{manifest}} citation-guard -- cargo test -p leviculum-std --test doc_citations -- --nocapture
-
-# Order 1848: the book turns each name citation into a link to the item's
-# current lines (scripts/mdbook-citations.py). mdbook only warns when a
-# preprocessor fails, so this builds the book and checks a sample of 30 links
-# against the tree, and that no citation span went unlinked. Needs mdbook,
-# which the gate hosts have (scripts/install-ci.sh); about 3 s.
-[doc('Build the book and check its citation links land')]
-book-citation-links:
-    rm -rf target/book-citation-links
-    mdbook build docs -d {{justfile_directory()}}/target/book-citation-links
-    python3 scripts/check-book-citation-links.py --book target/book-citation-links
 
 # Codeberg #205: no commit since the pinned baseline may carry a machine-
 # authorship trailer. ~20 ms — one `git log` over the range and one `awk`.
@@ -1595,7 +1575,7 @@ tree-clean-selftest:
 #   run all still ahead of it. The `~3.5 min` in the recipe's own doc
 #   string is older than half the dependency list.
 [doc('The coder-pass gate: every guard in `fast` that costs under 10 s')]
-guards: tree-snapshot tree-clean-selftest check-submodules check-third-party check-trailers check-integ-bin-list check-ci-pipeline check-ci-secrets publish-selftest nightly-green-selftest check-publish-nightly-gate package-selftest site-publish-selftest site-unpack-docs-selftest deb-stamp-selftest version-guard lock-contention-selftest toolchain-status-selftest sweep-selftest tmp-leftovers-selftest window-bench-selftest dfu-exit-selftest m9-walk-selftest btvirt-selftest check-firmware-images check-plain-clone check-supervised-spawns check-core-lock-census check-env-knobs check-test-ports test-retry-guard no-printf-grep-pipes check-ignored-source check-just-docs check-guards-subset check-standard-integ check-python-test-prerequisites check-config-table-citations prepush-guard nrf-evt-max-size nrf-gap-device-name nrf-board-pins nrf-sd-guard nrf-uf2-volumes nrf-fw-readback rnode-chip-offsets nrf-shellcheck embassy-pins log-diff-mask-selftest firmware-no-hal firmware-no-chip-cfg nrf-module-reach check-fuzz-lock changelog-links loquax-name m0-build-gate lxmf-embedded-gate loquax-core-no-std map-core-no-std lnomad-core-no-std m9-render-no-std lnomad-core-no-tui-static ui-no-terminal-static check-source-invariant-census nessa-check nessa-check-selftest registry-merge-selftest
+guards: tree-snapshot tree-clean-selftest check-submodules check-third-party check-trailers check-integ-bin-list check-ci-pipeline check-ci-secrets publish-selftest nightly-green-selftest check-publish-nightly-gate package-selftest site-publish-selftest site-unpack-docs-selftest deb-stamp-selftest version-guard lock-contention-selftest toolchain-status-selftest sweep-selftest tmp-leftovers-selftest window-bench-selftest dfu-exit-selftest m9-walk-selftest btvirt-selftest check-firmware-images check-plain-clone check-supervised-spawns check-core-lock-census check-env-knobs check-test-ports test-retry-guard no-printf-grep-pipes check-ignored-source check-just-docs check-guards-subset check-standard-integ check-python-test-prerequisites check-config-table-citations prepush-guard nrf-evt-max-size nrf-gap-device-name nrf-board-pins nrf-sd-guard nrf-uf2-volumes nrf-fw-readback rnode-chip-offsets nrf-shellcheck embassy-pins log-diff-mask-selftest firmware-no-hal firmware-no-chip-cfg nrf-module-reach check-fuzz-lock changelog-links loquax-name m0-build-gate lxmf-embedded-gate loquax-core-no-std map-core-no-std lnomad-core-no-std m9-render-no-std lnomad-core-no-tui-static ui-no-terminal-static check-source-invariant-census nessa-check nessa-check-selftest
 
 # Tier 0 (~3.5 min, runs on every git push): submodule pins + commit-message
 # trailers + the single-integ-bin-list guard (#310)
@@ -1627,7 +1607,7 @@ guards: tree-snapshot tree-clean-selftest check-submodules check-third-party che
 # `check-all-targets` dependency compiles those targets but does not lint
 # them, which is exactly the gap.
 [doc('Tier 0 (~3.5 min): the gate every git push runs')]
-fast: tree-snapshot tree-clean-selftest check-submodules check-third-party check-trailers check-integ-bin-list check-ci-pipeline check-ci-secrets publish-selftest nightly-green-selftest check-publish-nightly-gate package-selftest site-publish-selftest site-unpack-docs-selftest deb-stamp-selftest version-guard lock-contention-selftest toolchain-status-selftest sweep-selftest tmp-leftovers-selftest window-bench-selftest dfu-exit-selftest m9-walk-selftest btvirt-selftest check-firmware-images check-plain-clone check-supervised-spawns check-core-lock-census check-env-knobs check-test-ports test-retry-guard no-printf-grep-pipes check-ignored-source check-just-docs check-guards-subset check-standard-integ check-python-test-prerequisites check-config-table-citations prepush-guard check-processor-seam mvr supervised-spawn lint-nrf lint-lr11xx nrf-stack-frames nrf-store-gap nrf-flash-budget m9-reproducible nrf-reproducible nrf-evt-max-size nrf-gap-device-name nrf-board-pins nrf-sd-guard nrf-uf2-volumes nrf-fw-readback rnode-chip-offsets nrf-shellcheck embassy-pins log-diff-mask-selftest firmware-no-hal firmware-no-chip-cfg nrf-module-reach hw-witness check-fuzz-lock fuzz-selftest fuzz-regress notices-guard doc-touched doc-gate changelog-links loquax-name core-no-tracing lnsd-minimal event-catalog m0-build-gate lxmf-embedded-gate loquax-core-no-std map-core-no-std lnomad-core-no-std m9-render-no-std lnomad-core-no-tui ui-no-terminal i686-usize-gate no-atomic64-gate check-all-targets deb-features-check deb-floor-check citation-guard source-invariant-tests tmp-leftovers nessa-check nessa-check-selftest registry-merge-selftest
+fast: tree-snapshot tree-clean-selftest check-submodules check-third-party check-trailers check-integ-bin-list check-ci-pipeline check-ci-secrets publish-selftest nightly-green-selftest check-publish-nightly-gate package-selftest site-publish-selftest site-unpack-docs-selftest deb-stamp-selftest version-guard lock-contention-selftest toolchain-status-selftest sweep-selftest tmp-leftovers-selftest window-bench-selftest dfu-exit-selftest m9-walk-selftest btvirt-selftest check-firmware-images check-plain-clone check-supervised-spawns check-core-lock-census check-env-knobs check-test-ports test-retry-guard no-printf-grep-pipes check-ignored-source check-just-docs check-guards-subset check-standard-integ check-python-test-prerequisites check-config-table-citations prepush-guard check-processor-seam mvr supervised-spawn lint-nrf lint-lr11xx nrf-stack-frames nrf-store-gap nrf-flash-budget m9-reproducible nrf-reproducible nrf-evt-max-size nrf-gap-device-name nrf-board-pins nrf-sd-guard nrf-uf2-volumes nrf-fw-readback rnode-chip-offsets nrf-shellcheck embassy-pins log-diff-mask-selftest firmware-no-hal firmware-no-chip-cfg nrf-module-reach hw-witness check-fuzz-lock fuzz-selftest fuzz-regress notices-guard doc-touched doc-gate changelog-links loquax-name core-no-tracing lnsd-minimal event-catalog m0-build-gate lxmf-embedded-gate loquax-core-no-std map-core-no-std lnomad-core-no-std m9-render-no-std lnomad-core-no-tui ui-no-terminal i686-usize-gate no-atomic64-gate check-all-targets deb-features-check deb-floor-check citation-guard source-invariant-tests tmp-leftovers nessa-check nessa-check-selftest
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings
     {{manifest}} workspace-lib -- cargo test --workspace --lib
@@ -3363,13 +3343,3 @@ nessa-check-selftest script="scripts/nessa-render.py":
     run "$scratch/bin"
     [ "$status" -ne 0 ] || fail "a source moved since the last render passed without resvg"
     echo "nessa-check-selftest: ok, without resvg the untouched copy passes in the sha256-list mode, a tampered head-256.png fails without resvg $withresvg, and a moved source fails"
-
-# Order 1848: the append-only registries (the mvr module list, the
-# source-invariant census) merge by git's union driver (.gitattributes), so
-# two lanes that each add a line do not conflict. This merges two such
-# branches in a scratch repository with and without the attribute: the
-# first must conflict (the control), the second must merge cleanly with both
-# lines once. Under a second.
-[doc('Check that two registry additions merge without a conflict')]
-registry-merge-selftest:
-    @python3 scripts/registry-merge-selftest.py

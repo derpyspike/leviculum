@@ -15,7 +15,7 @@ Reticulum transport interface that carries HDLC frames. The actual
 > port is the debug log output. The higher-numbered port is the
 > Reticulum transport interface that carries HDLC frames. The actual
 > `/dev/ttyACM*` numbers depend on other connected USB devices.
-> (`leviculum-nrf/README.md#usb-serial-ports`)
+> (`leviculum-nrf/README.md:44-46`)
 
 Each CDC-ACM class occupies two USB interfaces (a Communication
 interface plus a Data interface), so the two ports map onto four USB
@@ -38,7 +38,7 @@ sudo cp udev/99-leviculum.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules
 ```
 
-(`leviculum-nrf/README.md#usb-serial-ports`)
+(`leviculum-nrf/README.md:50-53`)
 
 After the next plug-in, the symlinks point at the correct ports
 regardless of enumeration order. The names are board-family specific,
@@ -51,8 +51,8 @@ keyed off the per-board USB PID:
 
 (Symlink names and PIDs: `leviculum-nrf/udev/99-leviculum.rules`. The
 firmware-side USB VID/PID constants:
-`leviculum-nrf/src/boards/t114.rs#CONFIG` for `1209:0001`,
-`leviculum-nrf/src/boards/rak4631.rs#CONFIG` for `1209:0002`.)
+`leviculum-nrf/src/boards/t114.rs:189-190` for `1209:0001`,
+`leviculum-nrf/src/boards/rak4631.rs:210-211` for `1209:0002`.)
 
 > **Multiple boards of the same kind.** The short symlinks
 > (`/dev/leviculum-transport`) land on whichever device udev sees first.
@@ -80,7 +80,7 @@ The debug port is plain text at 115200 baud:
 picocom /dev/leviculum-debug -b 115200
 ```
 
-(`leviculum-nrf/README.md#reading-debug-output`)
+(`leviculum-nrf/README.md:59-60`)
 
 On the debug port you will see the boot banner, the firmware git SHA and
 the periodic diagnostics the firmware emits: the `[FW_BUILD]` banner
@@ -199,7 +199,7 @@ implements no RNode KISS command set — there is no `CMD_DETECT`,
 > `SerialInterface` honours [the LoRa keys] too and configures the
 > attached LNode's radio over the serial port — the LNode frames HDLC,
 > so it cannot be driven by the KISS-framed `RNodeInterface`.
-> (`docs/src/guide/configuration.md#rnode-and-serial-rnodeinterface-serialinterface`)
+> (`docs/src/guide/configuration.md:611-620`)
 
 ```ini
 [interfaces]
@@ -224,12 +224,12 @@ For a RAK4631 / WisMesh Pocket V2 the only change is the port
 
 **Who applies the LoRa keys.** Under `lnsd` the five LoRa keys are sent
 to the board as a radio-config frame at interface startup
-(`leviculum-std/src/interfaces/serial.rs#radio_bring_up`), so the config decides
+(`leviculum-std/src/interfaces/serial.rs:555`), so the config decides
 the channel. Under Python-RNS `rnsd` they are inert: its
 `SerialInterface` reads port settings only and pushes nothing to the
 board, which then keeps whatever profile is in its flash — the compiled
 `eu_medium` default (869.463 MHz, BW 125 kHz, SF8, CR4/5, 22 dBm;
-`leviculum-nrf/src/lora.rs#RadioConfig::eu_medium`, `RadioConfig::eu_medium`) or the
+`leviculum-nrf/src/lora.rs:641-670`, `RadioConfig::eu_medium`) or the
 preset chosen at flash time. The values above are that default written
 out, so a Python-driven LNode and an `lnsd`-driven one land on the same
 channel. Changing the channel of a Python-driven board is a reflash
@@ -258,7 +258,7 @@ writes a frame it has started to its end
 that still tears frames this way: under rnsd, restart rnsd between
 deposits. `lnsd`'s reader drops the one torn frame too, but stays in
 phase, because a flag on an empty buffer starts a frame
-(`leviculum-core/src/framing/hdlc.rs#Deframer::process_byte`; the mvr
+(`leviculum-core/src/framing/hdlc.rs:313`; the mvr
 `a_frame_torn_by_a_gap_leaves_the_serial_decoder_in_phase` holds it).
 
 After editing `/etc/reticulum/config`, restart the daemon so it picks up
@@ -288,8 +288,8 @@ lnstest diag --config /etc/reticulum
 
 A standalone LNode answers probes on one destination,
 `rnstransport.probe`, and announces it 15 s after boot and then every
-2 hours (`schedule_initial_mgmt_announce`, `leviculum-core/src/node/mod.rs#NodeCore::enable_probe_responder`;
-`MGMT_ANNOUNCE_INTERVAL_MS`, `leviculum-core/src/constants.rs#MGMT_ANNOUNCE_INTERVAL_MS`).
+2 hours (`schedule_initial_mgmt_announce`, `leviculum-core/src/node/mod.rs:876`;
+`MGMT_ANNOUNCE_INTERVAL_MS`, `leviculum-core/src/constants.rs:219`).
 The hash is carried in the announce itself, but it is also printed on
 the debug port — the `probe=` field of the `[IDENTITY]` banner, repeated
 every 5 s (see [Reading the debug port](#reading-the-debug-port)). That
@@ -326,7 +326,7 @@ the board again is quicker.
 
 The probe destination is the only addressed service the firmware
 offers. Remote management is not enabled on the standalone binary
-(`leviculum-nrf/src/node_loop.rs#build_node` sets `respond_to_probes` and
+(`leviculum-nrf/src/node_loop.rs:322` sets `respond_to_probes` and
 nothing else), so `rnstatus -R` and `rnpath -R` have no responder;
 `rncp`, `rnsh` and `rnx` have no counterpart either. What the board
 does beyond that — forwarding announces, answering path requests,

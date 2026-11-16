@@ -695,8 +695,8 @@ Nothing in this section is built yet, except where a dated note says otherwise.
      and interface numbers (`periculum/periculum/devices/lnode.toml:24-32`).
      The one ESP32-S3 on the bench, the Heltec V4, is a `firmware = "rnode"`
      device (`periculum/rig.toml.example:112-115`).
-   - The recipes exist: `check-lr11xx-esp32s3` (`Justfile#check-lr11xx-esp32s3`) and
-     `build-esp32` (`Justfile#build-esp32`). Neither runs in a gate. The Xtensa
+   - The recipes exist: `check-lr11xx-esp32s3` (`Justfile:154`) and
+     `build-esp32` (`Justfile:172`). Neither runs in a gate. The Xtensa
      compiler is optional per host, and `.woodpecker/nightly.yml` has no
      step for either.
    - The host toolchain pin stays at 1.97.1 until esp-rs ships a

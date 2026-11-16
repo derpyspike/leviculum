@@ -14,7 +14,7 @@
 //! interface writes (the radio config, the queries, the media verbs, data)
 //! is covered at one site. The board's receiver is the core `Deframer`,
 //! which undoes any escaped byte (`Deframer::process_byte`,
-//! `leviculum-core/src/framing/hdlc.rs#Deframer::process_byte`), so the escape changes
+//! `leviculum-core/src/framing/hdlc.rs:325-327`), so the escape changes
 //! nothing it decodes. The serial interface's own reader is the same
 //! `Deframer`, so an escaped flow byte from the board decodes too.
 //!
