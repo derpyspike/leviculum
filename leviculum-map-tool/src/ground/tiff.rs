@@ -297,22 +297,30 @@ impl<'a> Tiff<'a> {
         order.sort_by_key(|&n| im.offsets[n]);
         let mut spans: Vec<(u64, u64, Vec<u8>)> = Vec::new();
         let mut k = 0;
+        // Offsets and counts come from the file: every sum is checked, an
+        // overflow is a chunk past the end of any file.
+        let past = || err("chunks past the end of the file");
         while k < order.len() {
             let start = im.offsets[order[k]];
-            let mut end = start + im.counts[order[k]];
+            let mut end = start.checked_add(im.counts[order[k]]).ok_or_else(past)?;
             let mut j = k + 1;
             // Join chunks whose gap is small, up to a span of MAX_CHUNK.
             while j < order.len() {
                 let (o, c) = (im.offsets[order[j]], im.counts[order[j]]);
-                if o > end + (64 << 10) || o + c - start > MAX_CHUNK {
+                let o_end = o.checked_add(c).ok_or_else(past)?;
+                let gap_bound = end.checked_add(64 << 10).ok_or_else(past)?;
+                // Sorted by offset, so o >= start and o_end >= start.
+                let span = o_end.checked_sub(start).ok_or_else(past)?;
+                if o > gap_bound || span > MAX_CHUNK {
                     break;
                 }
-                end = end.max(o + c);
+                end = end.max(o_end);
                 j += 1;
             }
-            let b = self.src.read_range(start, end - start)?;
-            if (b.len() as u64) < end - start {
-                return Err(err("chunks past the end of the file"));
+            let len = end.checked_sub(start).ok_or_else(past)?;
+            let b = self.src.read_range(start, len)?;
+            if (b.len() as u64) < len {
+                return Err(past());
             }
             spans.push((start, end, b));
             k = j;
@@ -564,19 +572,33 @@ mod tests {
         }
     }
 
-    /// A valid 8-bit strip file and the end of its image directory.
+    /// An 8-bit file whose image directory is valid, and the end of that
+    /// directory. Its 5 rows make one strip, so the strip offset (273)
+    /// and byte count (279) are one LONG each, and the reader takes them
+    /// as inline values: the offset reads as the address the writer put
+    /// in the field (the start of the value area, 182) and the count as
+    /// 186. Those are not where the samples lie, and with compression 1
+    /// the writer still deflates them, so this file serves the
+    /// directory's checks in `open`, not a read through `window`.
     fn small() -> (Vec<u8>, usize) {
         let samples: Vec<u16> = (0..6 * 5).map(|i| i as u16).collect();
         let file = write_test_tiff(6, 5, &samples, 8, 1, [0.1, 0.1], [-5.0, 31.0]);
         (file, 8 + 2 + 12 * 14 + 4)
     }
 
+    /// Pins behaviour that existed before the merge f619d118a13c; it is
+    /// green without that range's changes and is not proof of a change.
     #[test]
     fn a_tag_value_past_the_end_of_the_file_is_refused() {
         let (file, ifd_end) = small();
-        assert!(Tiff::open(&Mem(file.clone())).is_ok(), "the control opens");
-        // The file ends with its directory: the strip table, the scale and
-        // the tiepoint the tags point at are past the end.
+        let whole = Mem(file.clone());
+        let control = Tiff::open(&whole).expect("the control opens");
+        // One strip: offset and count are the inline fields, 182 and 186.
+        assert_eq!(control.images[0].offsets, vec![182]);
+        assert_eq!(control.images[0].counts, vec![186]);
+        // The file ends with its directory: the scale and the tiepoint the
+        // tags point at are past the end. The strip offset and count are
+        // not, one strip each, so the reader takes them inline.
         let short = Mem(file[..ifd_end].to_vec());
         let e = Tiff::open(&short).err().expect("refused").to_string();
         assert!(e.contains("tag past the end"), "{e}");
@@ -626,6 +648,8 @@ mod tests {
         assert_eq!(got.ok(), Some(true), "400 tags");
     }
 
+    /// Pins behaviour that existed before the merge f619d118a13c; it is
+    /// green without that range's changes and is not proof of a change.
     #[test]
     fn every_unsupported_directory_is_refused_by_name() {
         let (file, _) = small();
@@ -659,6 +683,35 @@ mod tests {
                 "{want}: {e:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_chunk_whose_end_overflows_u64_is_refused_not_a_panic() {
+        let (mut file, _) = small();
+        // Tag 273 (the sixth, k = 5) as one LONG8 whose eight bytes sit
+        // at the start of the value area (182, past the directory), the
+        // offset 0xffff_ffff_ffff_fff0; tag 279 (k = 8) one inline LONG
+        // byte count of 100. Offset plus count does not fit in u64.
+        let entry = |k: usize| 8 + 2 + 12 * k;
+        let area = 8 + 2 + 12 * 14 + 4;
+        file[entry(5) + 2..entry(5) + 4].copy_from_slice(&16u16.to_le_bytes());
+        file[entry(5) + 4..entry(5) + 8].copy_from_slice(&1u32.to_le_bytes());
+        file[entry(5) + 8..entry(5) + 12].copy_from_slice(&(area as u32).to_le_bytes());
+        file[area..area + 8].copy_from_slice(&0xffff_ffff_ffff_fff0u64.to_le_bytes());
+        file[entry(8) + 4..entry(8) + 8].copy_from_slice(&1u32.to_le_bytes());
+        file[entry(8) + 8..entry(8) + 12].copy_from_slice(&100u32.to_le_bytes());
+        let file = Mem(file);
+        let t = Tiff::open(&file).expect("the directory itself is readable");
+        assert_eq!(t.images[0].offsets, vec![0xffff_ffff_ffff_fff0]);
+        assert_eq!(t.images[0].counts, vec![100]);
+        let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            t.window(0, (0, 0, 6, 5))
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default()
+        }));
+        let e = got.expect("a refusal, not a panic");
+        assert!(e.ends_with("chunks past the end of the file"), "{e}");
     }
 
     #[test]
