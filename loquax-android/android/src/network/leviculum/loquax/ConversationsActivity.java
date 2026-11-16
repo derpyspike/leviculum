@@ -928,13 +928,6 @@ public class ConversationsActivity extends Activity implements Events.Listener {
     private boolean refreshOwed;
     private boolean panesOwed;
     /**
-     * What the map draws, as the library said it last (1694 D): the map
-     * asks its friends and draws a frame only when it moved. Before, every
-     * `changed` (a chat line, a link, a sync) drew a whole frame.
-     */
-    private long mapWord;
-    private boolean mapOwed;
-    /**
      * One refresh per frame (1464), however many events came in it: a first
      * pull says `changed` hundreds of times, and the Pixel's list asked 341
      * times in 44 s, once per event.
@@ -957,10 +950,8 @@ public class ConversationsActivity extends Activity implements Events.Listener {
                     // A line the hub brought, or how the link stands.
                     roomsPane.draw();
                 }
-                if (onMap && mapOwed) {
-                    // A position that came moves its pin; a chat line, a
-                    // link or a sync leave the map as it is (1694 D).
-                    mapOwed = false;
+                if (onMap) {
+                    // A position that came moves its pin.
                     mapPane.ask();
                 }
                 if (onExplore) {
@@ -1073,13 +1064,7 @@ public class ConversationsActivity extends Activity implements Events.Listener {
     public void onEvent(Map<String, Object> event) {
         String kind = Core.str(event, "t");
         if ("changed".equals(kind)) {
-            // The list and the open pane at the next frame (1464); the
-            // map only when its word moved (1694 D).
-            long word = Core.num(event, "map");
-            if (word != mapWord) {
-                mapWord = word;
-                mapOwed = true;
-            }
+            // The list and the open pane at the next frame (1464).
             panesOwed = true;
             refresh();
         } else if ("stopped".equals(kind)) {

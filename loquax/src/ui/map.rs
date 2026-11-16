@@ -531,65 +531,6 @@ pub fn pins_of(
     order.into_iter().map(|i| all[i].clone()).collect()
 }
 
-/// The world area a frame of a flat view centred on `centre`, `size`
-/// pixels at `unit` world units a pixel, takes its pins and tracks from
-/// (1694 B): the view and one view's width and height on every side,
-/// snapped outwards to a grid of view-sized cells, `[x0, x1) x [y0, y1)`.
-/// A fix outside it changes no frame; the snap keeps the area still while
-/// a drag stays inside one cell, so a pan that the drawn frame's margins
-/// serve ([`crate::mapframe`]) is not made to draw again by a pin that
-/// crossed the area's edge. `None` where the view spans a quarter of the
-/// world or more: there the frame is near the globe and every pin counts.
-pub fn clip_area(centre: World, unit: f64, size: (u32, u32)) -> Option<(i64, i64, i64, i64)> {
-    const WORLD: f64 = 4_294_967_296.0;
-    let (w, h) = (
-        f64::from(size.0.max(1)) * unit,
-        f64::from(size.1.max(1)) * unit,
-    );
-    if !(w.is_finite() && h.is_finite()) || w <= 0.0 || h <= 0.0 || w.max(h) * 4.0 >= WORLD {
-        return None;
-    }
-    let (cx, cy) = (f64::from(centre.x), f64::from(centre.y));
-    let snap_down = |v: f64, step: f64| libm::floor(v / step) * step;
-    let snap_up = |v: f64, step: f64| libm::ceil(v / step) * step;
-    Some((
-        snap_down(cx - 1.5 * w, w) as i64,
-        snap_down(cy - 1.5 * h, h) as i64,
-        snap_up(cx + 1.5 * w, w) as i64,
-        snap_up(cy + 1.5 * h, h) as i64,
-    ))
-}
-
-/// Whether `at` lies in `area` ([`clip_area`]); x wraps round the world.
-pub fn inside_area(at: World, area: (i64, i64, i64, i64)) -> bool {
-    const WORLD: i64 = 1 << 32;
-    let (x, y) = (i64::from(at.x), i64::from(at.y));
-    y >= area.1
-        && y < area.3
-        && [-WORLD, 0, WORLD]
-            .iter()
-            .any(|shift| x + shift >= area.0 && x + shift < area.2)
-}
-
-/// `pins` and `tracks` less what lies outside `area` (1694 B), the pin
-/// `keep` (the selected one, whose card shows wherever it is) kept.
-pub fn clip(
-    pins: Vec<MapPin>,
-    tracks: Vec<crate::ui::tracks::Track>,
-    area: (i64, i64, i64, i64),
-    keep: Option<[u8; 16]>,
-) -> (Vec<MapPin>, Vec<crate::ui::tracks::Track>) {
-    let pins = pins
-        .into_iter()
-        .filter(|p| Some(p.peer) == keep || inside_area(p.at, area))
-        .collect();
-    let tracks = tracks
-        .into_iter()
-        .filter(|t| crate::ui::tracks::touches(t, area, 0))
-        .collect();
-    (pins, tracks)
-}
-
 /// The picture's cells in the conversation pane `pane` (its outer
 /// rectangle): inside the border, less the bottom row, which carries the
 /// attribution.
@@ -1626,45 +1567,5 @@ mod tests {
             wheels >= 6 && drags >= 6,
             "{wheels} wheel steps, {drags} drags judged"
         );
-    }
-
-    /// Order 1694 B: the clip area holds still while the view moves
-    /// inside one cell of its grid, covers the view and a view's width on
-    /// each side, and is no area where the view spans a quarter of the
-    /// world.
-    #[test]
-    fn the_clip_area_covers_a_view_round_the_view_and_holds_still_in_a_cell() {
-        let (unit, size) = (16.0, (900u32, 560u32));
-        let (w, h) = (900 * 16, 560 * 16);
-        // A centre on the grid's line plus a little: a drag of 100 px
-        // stays in the cell.
-        let centre = World {
-            x: 100 * w + 10,
-            y: 300 * h + 10,
-        };
-        let area = clip_area(centre, unit, size).expect("a flat view");
-        let moved = World {
-            x: centre.x + 100 * 16,
-            y: centre.y + 50 * 16,
-        };
-        assert_eq!(clip_area(moved, unit, size), Some(area));
-        let (cx, cy) = (i64::from(centre.x), i64::from(centre.y));
-        let (w, h) = (i64::from(w), i64::from(h));
-        assert!(
-            area.0 <= cx - 3 * w / 2 && area.2 >= cx + 3 * w / 2,
-            "{area:?}"
-        );
-        assert!(
-            area.1 <= cy - 3 * h / 2 && area.3 >= cy + 3 * h / 2,
-            "{area:?}"
-        );
-        assert!(inside_area(centre, area));
-        let far = World {
-            x: centre.x + 4 * 900 * 16,
-            y: centre.y,
-        };
-        assert!(!inside_area(far, area));
-        // The whole world in 900 px: no clip.
-        assert_eq!(clip_area(centre, 4_294_967_296.0 / 900.0, size), None);
     }
 }

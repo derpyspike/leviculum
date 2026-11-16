@@ -508,7 +508,7 @@ async fn drive(
 /// window is sent only what it would show differently. The model's clock
 /// moves every second, and the window shows no second of it: a list's
 /// time and the date lines are by the day, a message's time by the
-/// minute, the tracks are kept by their ages ([`loquax::ui::tracks::TrackKey`]), a stale
+/// minute, the tracks are kept by the minute ([`TrackKey`]), a stale
 /// fix by the hour. So the clock counts by the minute here; what else
 /// moves each second (a pin's age in words, a recording's length) moves
 /// the scene or the pins and is sent.
@@ -858,28 +858,6 @@ pub struct Order {
     pub phase: u32,
 }
 
-/// The pins and tracks a frame of `view` draws (1694 B): those inside
-/// [`loquax::ui::map::clip_area`] on a flat view, so a fix far outside the
-/// view changes no [`Order`] and draws no frame. All of them on the globe,
-/// where a turn brings any into view, and under the radar, which points at
-/// pins outside the view. The `selected` pin stays: its card shows it.
-fn clip_order(
-    view: &ExactView,
-    pins: Vec<MapPin>,
-    tracks: Vec<loquax::ui::tracks::Track>,
-    radar: bool,
-    selected: Option<[u8; 16]>,
-) -> (Vec<MapPin>, Vec<loquax::ui::tracks::Track>) {
-    let area = match radar || loquax::mapgesture::turns(view).is_some() {
-        true => None,
-        false => loquax::ui::map::clip_area(view.centre, view.unit(), view.size()),
-    };
-    match area {
-        Some(area) => loquax::ui::map::clip(pins, tracks, area, selected),
-        None => (pins, tracks),
-    }
-}
-
 /// A frame drawn for the window.
 #[derive(Debug)]
 pub struct Shown {
@@ -1062,18 +1040,20 @@ impl Glide {
 }
 
 /// The window's state.
+/// What the window's tracks were derived at ([`App::tracks`]).
+#[derive(Clone, Debug, PartialEq)]
+struct TrackKey {
+    zoom: u8,
+    scale: u32,
+    window: loquax::ui::tracks::TrackWindow,
+    minute: i64,
+    fixes: Vec<([u8; 16], usize, usize)>,
+}
+
 struct App {
     seen: Seen,
-    /// The tracks last derived, and at what (the core's key, 1694 E).
-    track_cache: loquax::ui::tracks::TrackCache,
-    /// The map's picture as the canvas last drew it, and what it drew it
-    /// of (1694 C): iced builds the view after every message, and the
-    /// picture's geometry is made again only when the frame on screen,
-    /// where it lies, its filter, the ground or the size moved.
-    picture: canvas::Cache<Renderer>,
-    picture_key: std::cell::RefCell<Option<PictureKey>>,
-    /// How often the picture's geometry was made (for the tests).
-    picture_draws: std::cell::Cell<u64>,
+    /// The tracks last derived, and at what.
+    track_cache: std::cell::RefCell<Option<(TrackKey, Vec<loquax::ui::tracks::Track>)>>,
     asks: Option<Asks>,
     /// The core's scheduler over the map's frames (1527): the screen at its
     /// zoom loads first.
@@ -1268,10 +1248,7 @@ impl App {
                 cards: Vec::new(),
             },
             asks,
-            track_cache: loquax::ui::tracks::TrackCache::default(),
-            picture: canvas::Cache::new(),
-            picture_key: std::cell::RefCell::new(None),
-            picture_draws: std::cell::Cell::new(0),
+            track_cache: std::cell::RefCell::new(None),
             touched: false,
             frames: Arc::new(Mutex::new(frames)),
             view: ExactView::new(centre, u32::from(setup.zooms.0) * MILLI, 1, 1),
@@ -2736,18 +2713,16 @@ impl App {
     fn order(&self) -> Option<Order> {
         let (w, h) = self.pixels()?;
         let (pins, radar) = self.radar_pins();
-        // While the wheel's zoom glides, the view it ends on: the glide
-        // scales the frame on screen towards it.
-        let view = self.glide.map_or(self.view, |g| g.to);
-        let (pins, tracks) = clip_order(&view, pins, self.tracks(), radar.is_some(), self.selected);
         Some(Order {
-            view,
+            // While the wheel's zoom glides, the view it ends on: the
+            // glide scales the frame on screen towards it.
+            view: self.glide.map_or(self.view, |g| g.to),
             margin: (w / MARGIN_PART, h / MARGIN_PART),
             moving: self.moving(),
             style: self.map_style(),
             scale: self.scale,
             pins,
-            tracks,
+            tracks: self.tracks(),
             radar,
             selected: self.selected,
             zooms: self.zooms(),
@@ -2802,25 +2777,43 @@ impl App {
     }
 
     /// The tracks at the view's tile zoom, as the frame draws them: kept
-    /// while the zoom step, the window, the fixes and their ages stay
-    /// ([`loquax::ui::tracks::TrackKey`]), so a drag does not derive a
-    /// year of fixes every frame, nor a minute of the clock that moved no
-    /// age.
+    /// while the zoom step, the window, the minute and the fixes stay, so
+    /// a drag does not derive a year of fixes every frame.
     fn tracks(&self) -> Vec<loquax::ui::tracks::Track> {
         let Some(now) = self.seen.now else {
             return Vec::new();
         };
+        let key = TrackKey {
+            zoom: self.view.tile_zoom(),
+            scale: self.scale.to_bits(),
+            window: self.seen.track_window,
+            minute: now.unix_secs.div_euclid(60),
+            fixes: self
+                .seen
+                .tracks
+                .iter()
+                .map(|(peer, _, f)| (*peer, Arc::as_ptr(f) as usize, f.len()))
+                .collect(),
+        };
+        let mut cache = self.track_cache.borrow_mut();
+        if let Some((held, tracks)) = cache.as_ref() {
+            if *held == key {
+                return tracks.clone();
+            }
+        }
         // A screen pixel at the tile zoom, so the decimation and the
         // places' cells hold while the wheel turns within the step.
-        let unit = libm::exp2(24.0 - f64::from(self.view.tile_zoom()));
-        self.track_cache.tracks(
+        let unit = libm::exp2(24.0 - f64::from(key.zoom));
+        let tracks = loquax::ui::tracks::tracks(
             &self.seen.tracks,
             self.seen.track_window,
             &now,
             unit,
             self.scale,
             self.lang,
-        )
+        );
+        *cache = Some((key, tracks.clone()));
+        tracks
     }
 
     /// Whether the window has frames to show by itself (1431): the
@@ -3908,18 +3901,6 @@ impl canvas::Program<Message> for QrCanvas {
     }
 }
 
-/// What the map's picture is drawn of (1694 C): the frame on screen, where
-/// it lies (`x`, `y`, `k` as [`App::onto`] says, as bits), whether it is
-/// scaled smoothly, the ground's colour and the canvas's size.
-#[derive(Clone, Debug, PartialEq)]
-struct PictureKey {
-    handle: Option<Handle>,
-    at: [u64; 3],
-    smooth: bool,
-    ground: [u8; 3],
-    size: [u32; 2],
-}
-
 impl canvas::Program<Message> for PictureCanvas<'_> {
     type State = ();
 
@@ -3931,35 +3912,7 @@ impl canvas::Program<Message> for PictureCanvas<'_> {
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        let app = self.app;
-        let onto = app.onto();
-        let smooth = onto.is_some_and(|(_, _, _, k)| (k - 1.0).abs() >= 1e-9 && !app.moving());
-        let ground = leviculum_mapfill::frame::rgb888(app.map_style().theme.palette().background);
-        let key = PictureKey {
-            handle: onto.map(|(shown, ..)| shown.handle.clone()),
-            at: onto.map_or([0; 3], |(_, x, y, k)| {
-                [x.to_bits(), y.to_bits(), k.to_bits()]
-            }),
-            smooth,
-            ground,
-            size: [bounds.width.to_bits(), bounds.height.to_bits()],
-        };
-        let mut held = app.picture_key.borrow_mut();
-        if held.as_ref() != Some(&key) {
-            app.picture.clear();
-            *held = Some(key);
-        }
-        vec![app.picture.draw(renderer, bounds.size(), |frame| {
-            app.picture_draws.set(app.picture_draws.get() + 1);
-            self.paint(frame, bounds);
-        })]
-    }
-}
-
-impl PictureCanvas<'_> {
-    /// The picture: the frame on screen where it lies, and the ground
-    /// round it.
-    fn paint(&self, frame: &mut Frame, bounds: Rectangle) {
+        let mut frame = Frame::new(renderer, bounds.size());
         let whole = Rectangle::with_size(bounds.size());
         let mut covered = None;
         if let Some((shown, x, y, k)) = self.app.onto() {
@@ -3998,6 +3951,7 @@ impl PictureCanvas<'_> {
         for strip in uncovered(whole, covered) {
             frame.fill_rectangle(strip.position(), strip.size(), Color::from_rgb8(r, g, b));
         }
+        vec![frame.into_geometry()]
     }
 }
 
@@ -4322,72 +4276,6 @@ mod tests {
                 None => return (last, false),
             }
         }
-    }
-
-    /// Order 1694 C, the measurement: one minute of the window on
-    /// Florence with Carl sending a fix every 10 s, a view built and drawn
-    /// each second as iced does after a message. Counted: the worker's
-    /// frames, the views built, and the picture's geometry made. Carl in
-    /// Berlin draws no frame (before 1694 every fix made a new order, 6 a
-    /// minute, as Carl in Florence still does); the picture's geometry is
-    /// made once per frame that landed, not once per view built (before,
-    /// one per view: 60 a minute).
-    #[test]
-    fn a_peer_sending_every_ten_seconds_costs_frames_only_inside_the_view() {
-        let (w, h) = (480u32, 320u32);
-        let minute = |lat: f64, lon: f64| {
-            let alice = map::tests::pin(1, "alice", 43.7752, 11.2640);
-            let mut app = window_over_florence(vec![alice.clone()], 14 * MILLI);
-            run(&mut app);
-            let render = |app: &App| {
-                leviculum_ui_iced::headless::render(
-                    app.view(),
-                    &Theme::Light,
-                    Color::BLACK,
-                    Color::WHITE,
-                    w,
-                    h,
-                )
-                .expect("a renderer");
-            };
-            render(&app);
-            let (draws_at, mut frames, mut views) = (app.picture_draws.get(), 0, 0);
-            for s in 1..=60 {
-                if s % 10 == 0 {
-                    let mut seen = app.seen.clone();
-                    let carl = map::tests::pin(3, "Carl", lat + f64::from(s) * 1e-4, lon);
-                    seen.pins = vec![alice.clone(), carl];
-                    app.apply(Message::Seen(Box::new(seen)));
-                }
-                let mut drawn = 0;
-                while let Some(Job::Draw(order)) = app.next_job() {
-                    let shown = draw(&app.frames, *order);
-                    app.apply(Message::Painted(shown));
-                    drawn += 1;
-                }
-                app.busy = false;
-                frames += drawn;
-                render(&app);
-                views += 1;
-            }
-            (frames, views, app.picture_draws.get() - draws_at)
-        };
-        let (frames, views, pictures) = minute(52.52, 13.40);
-        eprintln!(
-            "WINDOW_MINUTE outside: worker frames {frames}/min, views {views}/min, picture geometry {pictures}/min"
-        );
-        assert_eq!(frames, 0, "a fix in Berlin draws no frame");
-        assert_eq!(pictures, 0, "and the picture is not made again");
-        let (frames, views, pictures) = minute(43.7745, 11.2620);
-        eprintln!(
-            "WINDOW_MINUTE inside: worker frames {frames}/min, views {views}/min, picture geometry {pictures}/min"
-        );
-        assert_eq!(frames, 6, "each fix in Florence draws its frame");
-        assert!(
-            pictures <= frames,
-            "{pictures} pictures for {frames} frames"
-        );
-        assert_eq!(views, 60);
     }
 
     fn rgba(shown: &Shown) -> Vec<u8> {
@@ -8481,33 +8369,6 @@ mod tests {
             [255, 255, 255],
             "past the picture"
         );
-    }
-
-    /// Order 1694 B: a fix far outside the view (Carl's, in Berlin, while
-    /// the window shows Florence) changes no [`Order`], so the worker
-    /// draws no frame for it; the control, a fix inside the view, does.
-    /// Before, every pin and track went into the order whole.
-    #[test]
-    fn a_fix_outside_the_view_changes_no_order() {
-        let (w, h) = (900, 560);
-        let (mut app, _rx) = florence_two("Anna", None, w, h);
-        let before = app.order().expect("an order");
-        assert!(!before.pins.is_empty(), "Florence's pins are in the order");
-        let mut seen = app.seen.clone();
-        seen.pins.push(map::tests::pin(3, "Carl", 52.52, 13.40));
-        app.apply(Message::Seen(Box::new(seen)));
-        assert_eq!(app.seen.pins.len(), before.pins.len() + 1);
-        assert_eq!(
-            app.order().expect("an order"),
-            before,
-            "Berlin draws nothing"
-        );
-        // The control: Carl comes to Florence.
-        let mut seen = app.seen.clone();
-        seen.pins.retain(|p| p.label != "Carl");
-        seen.pins.push(map::tests::pin(3, "Carl", 43.7745, 11.2580));
-        app.apply(Message::Seen(Box::new(seen)));
-        assert_ne!(app.order().expect("an order"), before, "Florence draws him");
     }
 
     /// 1699 3a: `map_theme = auto` follows the window, as the terminal
