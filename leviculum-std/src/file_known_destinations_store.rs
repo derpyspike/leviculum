@@ -345,3 +345,36 @@ impl FileKnownDestinationsStore {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Announced, Rank};
+
+    /// Order 1972: equality agrees with `Ord` for every announce time, NaN
+    /// included, so `==` and `cmp` cannot disagree as the derived
+    /// `PartialEq` did (NaN != NaN under `total_cmp`'s Equal).
+    #[test]
+    fn rank_equality_follows_its_order_also_for_nan() {
+        for announced in [f64::NAN, -f64::NAN, 0.0, 1_800_000_000.0] {
+            let rank = Rank {
+                retained: true,
+                announced,
+            };
+            assert!(rank == rank, "{announced} equals itself");
+            assert!(Announced(announced) == Announced(announced));
+        }
+        let pin = Rank {
+            retained: true,
+            announced: f64::NAN,
+        };
+        let other = Rank {
+            retained: false,
+            announced: f64::NAN,
+        };
+        assert!(pin != other, "a pin is not another entry");
+        assert!(
+            Announced(0.0) != Announced(-0.0),
+            "total_cmp tells the zeros apart"
+        );
+    }
+}
