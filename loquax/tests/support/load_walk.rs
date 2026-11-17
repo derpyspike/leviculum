@@ -2842,6 +2842,58 @@ fn a_zoomed_out_view_fills_whole_coarse_first() {
     );
 }
 
+/// The real-cut measurement (the audit of 1933): `LOQUAX_MOROCCO_ARCHIVE`
+/// names a PMTiles cut of the real Protomaps source over Morocco
+/// (z3 to z9). The walk rests a z6 view over it at the order's
+/// 200 kB/s, then wheels out to z5 and in to z9, resting at each rung,
+/// and prints one SMOKE line per rest with the bytes and the time to
+/// full share. A measuring tool: without the variable it does nothing.
+#[test]
+fn a_real_morocco_cut_fills_the_view_at_every_zoom() {
+    let Some(path) = std::env::var_os("LOQUAX_MOROCCO_ARCHIVE").map(PathBuf::from) else {
+        return;
+    };
+    let archive = std::fs::read(path).expect("the archive");
+    let serve = Serve::start(vec![("w.pmtiles".into(), archive)]).expect("serve");
+    let morocco = Bounds {
+        west: -130_000_000,
+        south: 275_000_000,
+        east: -10_000_000,
+        north: 360_000_000,
+    };
+    let ground = Ground {
+        at: project(LatLon::from_degrees(32.0, -6.0)),
+        zoom: 6,
+        cache_bytes: 1 << 30,
+        prefill: 0,
+        size: WALK_SIZE,
+    };
+    let mut walk = Walk::over(serve, "morocco-real", SLOW_RATE, 40, ground, Inject::None);
+    walk.area = morocco;
+    let mut sent = 0;
+    let mut rest = |walk: &mut Walk, label: &str| {
+        walk.rest_bounded(label, 120_000, true);
+        let c = walk.checks.last().expect("the pause");
+        let now = walk.serve.sent();
+        eprintln!(
+            "SMOKE morocco-real {label} filled={} took_ms={} rung_bytes={} total_bytes={} uncovered={:.3}",
+            c.filled,
+            c.fill_took_ms,
+            now - sent,
+            now,
+            c.uncovered
+        );
+        sent = now;
+    };
+    rest(&mut walk, "z6");
+    walk.wheel(-1000, 14);
+    rest(&mut walk, "z5");
+    for z in 6..=9u8 {
+        walk.wheel(1000, 14);
+        rest(&mut walk, &format!("z{z}"));
+    }
+}
+
 /// The patchwork store (order 1943): `count` overlapping cuts of the
 /// walk's archive with mixed zoom spans, named `auto-patch-*`, written
 /// synchronously into `maps` before the first frame — the shape of
@@ -3687,6 +3739,62 @@ pub fn window_variant(out: &std::path::Path) -> Vec<String> {
     }
     std::fs::write(out.join("rows-window-map.tsv"), rows).expect("the rows");
     failed
+}
+
+/// The render walk's autoload scenes (the audit of 1933): the window's
+/// map path with the autoload on over a source throttled to the
+/// order's 200 kB/s — one scene that zooms out from a detailed visit
+/// (z15 to z11, the view fills whole and nothing deeper than the view
+/// starts after it settles) and one that shows a z6 view filling
+/// whole, coarse first, over the Morocco-sized tiered archive. Their
+/// pauses' pictures and their rules go into the walk's sheet beside
+/// the window variant's rows.
+pub fn autoload_variant(out: &std::path::Path) -> Vec<String> {
+    let mut rows = String::new();
+    let mut failed = Vec::new();
+    let z6 = || {
+        let mut walk = tiered_walk(
+            "autoload-z6-fill",
+            &[(MOROCCO_BOX, 3..=6)],
+            MOROCCO_BOX,
+            (31.5, -14.0),
+            6,
+            SLOW_RATE,
+            40,
+        );
+        walk.rest_bounded("z6", 60_000, true);
+        walk
+    };
+    for walk in [zoom_out_from_visit(SLOW_RATE, 40), z6()] {
+        let verdicts = rules(&walk);
+        for v in &verdicts {
+            if !v.pass {
+                failed.push(format!(
+                    "{} {} {}: {} (limit {}) {}",
+                    v.session, v.image, v.rule, v.value, v.limit, v.note
+                ));
+            }
+        }
+        write_out(&walk, &verdicts, Some(out), &mut rows);
+    }
+    std::fs::write(out.join("rows-autoload.tsv"), rows).expect("the rows");
+    failed
+}
+
+/// The render walk's autoload scenes, written when `LOQUAX_RENDER_WALK`
+/// names a directory; without it the test does nothing (the full `just
+/// render-walk` runs it, the audit of 1933).
+#[test]
+fn the_autoload_scenes_walk_for_the_render_walk() {
+    let Some(out) = std::env::var_os("LOQUAX_RENDER_WALK").map(PathBuf::from) else {
+        return;
+    };
+    let failed = autoload_variant(&out);
+    assert!(
+        failed.is_empty(),
+        "the autoload scenes' rules failed:\n{}",
+        failed.join("\n")
+    );
 }
 
 /// The render walk's window variant, written when `LOQUAX_RENDER_WALK`

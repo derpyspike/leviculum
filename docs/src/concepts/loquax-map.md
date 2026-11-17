@@ -1036,12 +1036,18 @@ config, #471) says the map works without a step. Decided 2026-10-27
   s; central Berlin 20.1 MB, 7.90 MB, 412 tiles, 11.7 s; the Vogelsberg
   countryside 2.5 MB, 1.26 MB, 360 tiles, 8.4 s. At most four places per
   opening of the map, one per group of pins a few streets apart.
-- *The visible area:* the view's box, from three zooms above the view's to
-  z15. Before anything is fetched the box's tiles are located from the
-  directories and their bytes summed; over 64 MB of archive the deepest
-  zoom is lowered, down to the view's own, and an area too large even
-  there is refused with "zoom in" instead of a question. An area a region
-  holds at the view's zoom loads nothing.
+- *The visible area:* the view's box, the view's levels only — from three
+  zooms above the view's down to the view's own (1933) — less every level
+  a region already holds over the whole box (the audit of 1933), so a
+  wheel step in fetches only what is new and a zoom out finds its coarse
+  levels present. Deeper detail is cut by deeper views over their smaller
+  boxes. Before anything is fetched the box's tiles are located from the
+  directories and their bytes summed; an area over 64 MB of archive is
+  refused with "zoom in" instead of a question (the deepest zoom asked is
+  the view's own already, so the old lowering has nothing left to lower).
+  An area a region holds at the view's zoom loads nothing, and a box
+  queued for a view the reader zoomed away from is dropped at the next
+  decision.
 - *Showing it.* The region is written in place under its own name as it
   arrives (1291, Lew 2026-11-01: "watch the map fill in"): version 4,
   fetched and cut a round at a time, coarse to fine, each zoom of z0 to

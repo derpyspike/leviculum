@@ -2644,7 +2644,10 @@ mod tests {
             let (xs, ys) = tile_range(&b, 14);
             for x in xs.into_iter().flatten() {
                 for y in ys.clone() {
-                    tiles.insert(TileId { z: 14, x, y }, b"the plan never reads this".to_vec());
+                    tiles.insert(
+                        TileId { z: 14, x, y },
+                        b"the plan never reads this".to_vec(),
+                    );
                 }
             }
         }
@@ -2662,7 +2665,9 @@ mod tests {
         };
         assert!(detail.contains("no tiles there"), "{detail}");
         assert!(
-            toast.as_deref().is_some_and(|t| t.contains("no tiles there")),
+            toast
+                .as_deref()
+                .is_some_and(|t| t.contains("no tiles there")),
             "a hole in the declared coverage speaks: {toast:?}"
         );
         assert!(loader.order().is_empty(), "permanent: not requeued");

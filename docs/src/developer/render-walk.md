@@ -114,6 +114,15 @@ renderer.
   reach). The test is `the_window_map_walks_inside_the_blend` in
   `loquax/tests/support/load_walk.rs`; its rows go to
   `rows-window-map.tsv`.
+- **The autoload scenes** (the audit of 1933), full walk only, run the
+  same window path with the autoload on over a source throttled to
+  200 kB/s: a zoom out from a detailed visit (z15 to z11; the view
+  fills whole, and nothing deeper than the view starts after it
+  settles) and a z6 view filling whole, coarse first, over a
+  Morocco-sized tiered archive. The test is
+  `the_autoload_scenes_walk_for_the_render_walk` in
+  `loquax/tests/support/load_walk.rs`; its rows go to
+  `rows-autoload.tsv`.
 - **The window's screens** are rendered by iced's software renderer:
   - the chats, light and dark
   - the settings
