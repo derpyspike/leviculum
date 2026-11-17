@@ -127,6 +127,8 @@ pub use rpc::{
     rpc_authenticates, rpc_drop_path, rpc_query, rpc_query_hash_param, rpc_query_transport_tables,
     TRANSPORT_TABLE_NAMES,
 };
+/// Durable atomic write of a file that is no secret (order 1972).
+pub use storage::atomic_write_durable;
 /// Writers for private key material: owner-only from creation (L-0039).
 pub use storage::{
     atomic_write_secret, create_secret_dir_all, create_secret_file, narrow_secret_mode,

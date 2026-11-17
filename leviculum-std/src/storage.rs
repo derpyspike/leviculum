@@ -390,11 +390,31 @@ pub fn create_secret_dir_all(path: &Path) -> std::io::Result<()> {
 /// Unix, the directory entry after it, so a power cut leaves the old key or
 /// the new one, never a short file a loader refuses to start on.
 pub fn atomic_write_secret(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    write_synced_then_rename(path, data, create_secret_file)
+}
+
+/// Durable atomic write of a file that is no secret: the data goes to a
+/// `.tmp` file beside `path`, reaches the disk, is renamed over `path`, and
+/// on Unix the directory entry is synced after it. A kill or power cut at
+/// any point leaves the old file or the new one, never a short one.
+/// The mailbox move-in writes the `known_destinations` it received through
+/// here (order 1972): a truncated file there made the next flush rewrite it
+/// with nothing the file alone held.
+pub fn atomic_write_durable(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    write_synced_then_rename(path, data, |temp: &Path| std::fs::File::create(temp))
+}
+
+/// The steps both durable writers share; `create` opens the temp file.
+fn write_synced_then_rename(
+    path: &Path,
+    data: &[u8],
+    create: impl FnOnce(&Path) -> std::io::Result<std::fs::File>,
+) -> std::io::Result<()> {
     use std::io::Write as _;
 
     let temp_path = path.with_extension("tmp");
     {
-        let mut file = create_secret_file(&temp_path)?;
+        let mut file = create(&temp_path)?;
         file.write_all(data)?;
         file.sync_all()?;
     }
@@ -1548,6 +1568,23 @@ mod tests {
             "{err}"
         );
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    /// Order 1972: the mailbox move-in's writer replaces the file whole and
+    /// leaves no temp file behind; into a directory that is gone it fails
+    /// and leaves nothing either.
+    #[test]
+    fn atomic_write_durable_replaces_the_file_whole() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("known_destinations");
+        std::fs::write(&path, vec![0xAA; 4096]).expect("old file");
+        atomic_write_durable(&path, b"new").expect("written");
+        assert_eq!(std::fs::read(&path).expect("read back"), b"new");
+        assert!(!path.with_extension("tmp").exists(), "no temp file left");
+
+        let gone = dir.path().join("gone").join("known_destinations");
+        assert!(atomic_write_durable(&gone, b"new").is_err());
+        assert!(!gone.exists() && !gone.with_extension("tmp").exists());
     }
 
     use crate::file_ratchet_store::{RATCHETKEYS_DIR, RATCHETS_DIR};

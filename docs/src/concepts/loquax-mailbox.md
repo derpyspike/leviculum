@@ -513,7 +513,7 @@ census column.
   builds through the same place.
 - **Known destinations in memory.** The newest `identity_cap` by announce
   time, at load and after every flush (`newest_known_destinations`,
-  `leviculum-std/src/storage.rs:541`). The file keeps those, and of the
+  `leviculum-std/src/storage.rs:561`). The file keeps those, and of the
   entries only the file holds what the reference's cull would keep
   (pinned, used within 8.75 days, never used but announced within six
   minutes), at most `identity_cap` of them, every retained (pinned)
@@ -523,7 +523,7 @@ census column.
   and a load stream the file entry by entry, so neither holds more than
   the caps in memory, where they held 6.3 times the file. The
   remember stamps a flush folds are held to what the identity table still
-  holds (`leviculum-std/src/storage.rs:1203`): the growth soak found them
+  holds (`leviculum-std/src/storage.rs:1223`): the growth soak found them
   rising 111 kB/min at 40 announces a second, cleared only by the hourly
   flush.
 - **Names heard from strangers.** The newest 4 096 (`HEARD_CAP`,

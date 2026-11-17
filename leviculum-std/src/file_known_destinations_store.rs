@@ -66,6 +66,13 @@ impl FileKnownDestinationsStore {
     /// handle reads untouched. The new file goes to a temp file beside the
     /// old one, synced, then renamed over it, so a kill at any point leaves
     /// one complete file.
+    ///
+    /// The production writers of the file in this workspace are this one
+    /// (every flush of a node's storage) and loquax-android's mailbox
+    /// move-in (`loquax-android/src/mailbox.rs`, `take_over`), which puts
+    /// the file a `/move` delivered in place whole, through
+    /// [`crate::storage::atomic_write_durable`]. Outside it, an rnsd on the
+    /// same storage writes it too (`Identity.py:197-239`).
     pub(crate) fn merge_and_save(
         &self,
         held: &BTreeMap<[u8; TRUNCATED_HASHBYTES], KnownDestEntry>,
