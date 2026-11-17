@@ -1174,12 +1174,19 @@ impl Shell {
         }
     }
 
-    /// The regions on disk, told to the model's map setup.
+    /// The regions on disk, told to the model's map setup. With the
+    /// autoload on the offer reaches the source's depth (1933,
+    /// [`crate::ui::map::autoload_zooms`]): a load carries only its
+    /// view's levels now, so the regions alone no longer deepen it.
     fn regions_changed(&mut self) {
         let regions = self.maps.headers();
         let zooms = leviculum_map::choice::view_zooms(regions.iter());
+        let mut zooms = (*zooms.start(), *zooms.end());
+        if self.model.map_autoload {
+            zooms = loquax::ui::map::autoload_zooms(zooms);
+        }
         let setup = MapSetup {
-            zooms: (*zooms.start(), *zooms.end()),
+            zooms,
             regions,
             ..self.model.map_setup.clone()
         };

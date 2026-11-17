@@ -2676,20 +2676,23 @@ fn a_pan_into_the_empty_loads_what_is_on_screen_at_once() {
 /// A region shows itself while it downloads (1291): the autoload writes it
 /// in place, coarse to fine, and every frame on its area shows what has
 /// arrived, the z14 tiles standing in for the z15 ones not there yet, and
-/// says `filling`, so Java asks again in a quarter second. The source is
-/// the loopback server throttled to 8 kB/s, the Grunewald archive (z12 to
-/// z15, 80 kB) about ten seconds of it. While it loads the frames go
-/// from the outline through at least two pictures of stand-ins, and the
-/// whole region ends it.
+/// says `filling` or shows a coarser stand-in, so Java asks again soon.
+/// The source is the loopback server throttled to 8 kB/s, the Grunewald
+/// archive (z12 to z15, 80 kB) about ten seconds of it.
 ///
-/// The link stops at [`REGION_HOLD`], inside the region's tiles, until a
-/// frame has said `filling` (1610): the tiles arrive in a window of under
-/// five seconds, and on a shared runner (pipeline 617) the frames came
-/// slowly enough that none fell into it, `frames 51 filling 0 while
-/// loading [25, 99, 100]`. Held, the half-written region is there for as
-/// long as the host takes to draw it, so the test asks what the product
-/// promises, that a frame drawn on a region still arriving says so, and
-/// not whether the host drew one in time.
+/// Since order 1933 the screen loads coarse first and in small cuts: the
+/// screen's own box (its zoom and the one above) lands first and whole,
+/// then the cells around it, each the view's three levels. So the frame
+/// is not filled by one big region arriving slowly under it — the
+/// `filling` flag, which marked that one arriving region's stand-in
+/// tiles, no longer fires here (the screen box lands whole, and the
+/// coarse cells draw as valid overzoom, not as owed tiles). What the
+/// product still promises, and this measures, is the *picture*: while
+/// the region downloads the frame goes from the world outline through at
+/// least one coarser stand-in to the whole region, each nearer the last,
+/// and it ends filled. The throttle makes the download span frames so
+/// the progression is seen; no byte-level hold is needed, since the
+/// assertion is on the sequence of pictures, not on catching one flag.
 #[test]
 fn a_region_fills_the_frame_in_while_it_downloads() {
     use leviculum_mapcut::serve::Serve;
@@ -2697,7 +2700,6 @@ fn a_region_fills_the_frame_in_while_it_downloads() {
     const ARCHIVE: &[u8] = include_bytes!("../../leviculum-mapcut/fixtures/grunewald.pmtiles");
     let serve = Serve::start(vec![("o.pmtiles".into(), ARCHIVE.to_vec())]).expect("serve");
     serve.throttle(8_000, Duration::from_millis(20));
-    serve.hold_at(REGION_HOLD);
     let home = tempfile::tempdir().expect("home");
     std::fs::create_dir_all(home.path().join("maps")).expect("maps");
     std::fs::write(
@@ -2715,13 +2717,8 @@ fn a_region_fills_the_frame_in_while_it_downloads() {
     // A liveness bound: the throttled link takes about 36 s on the host.
     let deadline = Instant::now() + Duration::from_secs(180);
     let mut frames: Vec<(MapShown, Vec<u8>)> = Vec::new();
-    let mut held = true;
     loop {
         let (shown, rgba) = frame(&loquax_android::map::render(&ask, Some(Vec::new()), now()));
-        if held && shown.filling {
-            serve.release();
-            held = false;
-        }
         let done = !shown.loading && !shown.filling && !shown.pending && frames.len() > 1;
         frames.push((shown, rgba));
         if done {
@@ -2729,7 +2726,7 @@ fn a_region_fills_the_frame_in_while_it_downloads() {
         }
         assert!(
             Instant::now() < deadline,
-            "the region never landed (held at {} bytes: {held})",
+            "the region never landed ({} bytes sent)",
             serve.sent()
         );
         std::thread::sleep(Duration::from_millis(100));
@@ -2744,28 +2741,23 @@ fn a_region_fills_the_frame_in_while_it_downloads() {
         }
     }
     let near: Vec<usize> = states.iter().map(|s| s.1).collect();
-    let filling = frames.iter().filter(|(s, _)| s.filling).count();
-    println!(
-        "frames {} filling {filling} while loading {near:?}",
-        frames.len()
-    );
-    assert!(filling > 0, "a frame said the region is arriving");
+    println!("frames {} while loading {near:?}", frames.len());
+    // The outline and at least one coarser stand-in before the whole
+    // region: the frame fills in, coarse to fine (1933).
     assert!(
         near.len() >= 3,
-        "the outline and two pictures of stand-ins: {near:?}"
+        "the outline and at least one stand-in before the whole: {near:?}"
     );
     assert!(
         near[0] < near[near.len() - 1],
         "the region came nearer: {near:?}"
     );
+    // It ends filled: the last loading picture is all but the final one.
+    assert!(
+        near[near.len() - 1] >= 95,
+        "the region filled the frame: {near:?}"
+    );
 }
-
-/// Where the link of [`a_region_fills_the_frame_in_while_it_downloads`]
-/// stops until a frame says `filling`: a body byte inside the region's
-/// tiles. The plan's directories end, and the first tiles are drawn, by
-/// byte 57 003; the last tile of the region arrives by byte 92 364; the
-/// same on one CPU and on ten (1610).
-const REGION_HOLD: u64 = 75_000;
 
 /// A fault at rest heals with frames asked only as Java asks them
 /// (1821, the audit of 1811). The source answers 503 while the map

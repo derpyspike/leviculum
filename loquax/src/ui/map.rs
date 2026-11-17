@@ -175,9 +175,29 @@ pub fn want_pins(pins: &[MapPin], regions: &[Header]) -> Vec<MapWant> {
     wants
 }
 
-/// The region to load for `view`: its box, from [`VIEW_BELOW`] zooms above
-/// its zoom to [`DEEPEST_LOAD`], the deepest lowered no further than the
-/// view's own. `None` when `regions` hold the box at the view's zoom.
+/// The zooms a frontend offers while the autoload may fetch what is not
+/// installed (1933): at least as deep as an installed region to
+/// [`DEEPEST_LOAD`] would offer, so the reader can zoom toward detail
+/// the source has before any region holds it — the view overzooms what
+/// is there until finer tiles arrive. Without the autoload the offer
+/// stays the regions' and the outline's: past them is plain colour that
+/// nothing will fill (1074). Before 1933 the loads themselves carried
+/// [`DEEPEST_LOAD`], so the first landing deepened the offer; a load now
+/// carries only its view's levels, which would have pinned a fresh start
+/// at the outline's depth for good.
+pub fn autoload_zooms((shallowest, deepest): (u8, u8)) -> (u8, u8) {
+    use leviculum_map::viewport::{MAX_OVERZOOM, MAX_VIEW_ZOOM};
+    (
+        shallowest,
+        deepest.max((DEEPEST_LOAD + MAX_OVERZOOM).min(MAX_VIEW_ZOOM)),
+    )
+}
+
+/// The region to load for `view`: its box, the view's levels alone —
+/// from [`VIEW_BELOW`] zooms above its zoom to the view's own (1933).
+/// Deeper detail is loaded by deeper views over their smaller boxes, so
+/// no box bundles the coarse levels of a wide box with street detail.
+/// `None` when `regions` hold the box at the view's zoom.
 pub fn want_view(view: &Viewport, regions: &[Header]) -> Option<MapWant> {
     let zoom = view.zoom().min(DEEPEST_LOAD);
     let bounds = view.bounds();
@@ -186,7 +206,7 @@ pub fn want_view(view: &Viewport, regions: &[Header]) -> Option<MapWant> {
     }
     Some(MapWant {
         bounds,
-        zooms: (zoom.saturating_sub(VIEW_BELOW), DEEPEST_LOAD),
+        zooms: (zoom.saturating_sub(VIEW_BELOW), zoom),
         floor: zoom,
         reason: LoadReason::View,
         centre: view.centre,

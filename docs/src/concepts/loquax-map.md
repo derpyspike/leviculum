@@ -1082,9 +1082,17 @@ config, #471) says the map works without a step. Decided 2026-10-27
   uncovered at the view's zoom, the cells under the uncovered samples
   are asked for at once, nearest the screen's centre first. A cell is the
   tile three zooms above the view's (z13 at most, about 3 km in Europe;
-  above z10 only), so a pan asks for the same boxes again and a landed
-  cell is never asked twice; its load reaches from three zooms above the
-  view's to z15 as the visible area's does. Then the uncovered cells
+  from z3 up, below which the globe draws from the outline alone), so a
+  pan asks for the same boxes again and a landed cell is never asked
+  twice; its load carries the view's levels alone, from three zooms above
+  the view's to the view's own, as the visible area's does (1933: the
+  deep detail is cut only by deeper views over their smaller cells, so no
+  box bundles a wide box's coarse levels with street detail, a wheel step
+  over loaded ground loads nothing, and at any zoom the whole view fills
+  coarse first — before, a cell bundled z7 with z15 over degrees of land,
+  one such box took 7 min 37 s, and below z10 nothing loaded at all, so a
+  zoomed-out view was a patchwork of visited boxes over the world
+  outline). Then the uncovered cells
   within two tiles of the screen, those in the pan's direction first, and
   while the view moves only those (from z12). One decision every 250 ms
   while the view moves, counted from the last decision, so the frames of

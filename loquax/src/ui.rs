@@ -19031,8 +19031,8 @@ pub(crate) mod tests {
     }
 
     /// `d` on the map asks for the visible area, whether the autoload is on
-    /// or not: from three zooms above the view's to z15, the deepest lowered
-    /// no further than the view's. Over an area held already it says so.
+    /// or not: the view's levels alone, from three zooms above the view's to
+    /// the view's own (1933). Over an area held already it says so.
     #[test]
     fn the_key_loads_the_visible_area_and_a_held_one_is_not_loaded() {
         let mut model = frankfurt(false);
@@ -19045,7 +19045,7 @@ pub(crate) mod tests {
         };
         assert_eq!(want.reason, map::LoadReason::View);
         assert_eq!(want.bounds, shown.bounds());
-        assert_eq!(want.zooms, (state.zoom - 3, 15));
+        assert_eq!(want.zooms, (state.zoom - 3, state.zoom));
         assert_eq!(want.floor, state.zoom);
         let mut setup = model.map_setup.clone();
         setup.regions.push(landed(want));

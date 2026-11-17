@@ -500,7 +500,13 @@ impl Renderer {
         let polled = self.loader.poll(now);
         // A region that landed is drawn; it never moves the view (1819).
         self.steps(polled, &mut notice);
-        let setup = screenmap::setup_for(self.frames.painter(), pins);
+        let mut setup = screenmap::setup_for(self.frames.painter(), pins);
+        if self.autoload {
+            // The offer reaches the source's depth (1933): a load
+            // carries only its view's levels, so the regions alone no
+            // longer deepen it.
+            setup.zooms = loquax::ui::map::autoload_zooms(setup.zooms);
+        }
         let area = screenmap::area((request.w.max(1), request.h.max(1)));
         let scale = (request.density_milli.max(100) as f32) / 1000.0;
         let mut selected = request

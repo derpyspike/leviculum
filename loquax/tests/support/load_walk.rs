@@ -252,7 +252,9 @@ pub struct FrameRec {
 
 /// A loader event on the walk's clock.
 pub enum Ev {
-    Started(Bounds),
+    /// Started: its box and the zooms it asks for (1933: a box's levels
+    /// are judged against the view's).
+    Started(Bounds, (u8, u8)),
     /// Landed: its box, its file name, the names evicted for it.
     Done(Bounds, String, Vec<String>),
     Failed(Bounds, String),
@@ -676,8 +678,7 @@ impl Walk {
             let b = step.want().bounds;
             match step {
                 Step::Started(w) => {
-                    self.events.push((t, Ev::Started(b)));
-                    let _ = w;
+                    self.events.push((t, Ev::Started(b, w.zooms)));
                 }
                 Step::Done {
                     want, landed: l, ..
@@ -816,7 +817,7 @@ impl Walk {
             let steps = self.loader.ask(want, t);
             for step in &steps {
                 if let Step::Started(w) = step {
-                    self.events.push((t, Ev::Started(w.bounds)));
+                    self.events.push((t, Ev::Started(w.bounds, w.zooms)));
                 }
             }
         }
@@ -1162,6 +1163,105 @@ pub fn archive_over(area: &Bounds) -> Vec<u8> {
     padded(&mvt, area, 10..=15, first_tile::FIRST_TILE_PAD, &meta).expect("the archive")
 }
 
+/// The policy sessions' wide coarse ground (1933): about 2.8 by 1.4
+/// degrees around both areas. The tiered archive holds the coarse levels
+/// over it and the street detail only over [`WIDE_BOX`], as the real
+/// source holds the world coarse and every street deep.
+pub const BIG_BOX: Bounds = Bounds {
+    west: 120_000_000,
+    south: 517_000_000,
+    east: 148_000_000,
+    north: 531_000_000,
+};
+
+/// The z3 tile x=3 y=3, pulled in a little so [`tiered`] cuts no edge
+/// tiles of the neighbours: the session standing for Morocco at z6
+/// (1933) plays inside it.
+pub const MOROCCO_BOX: Bounds = Bounds {
+    west: -449_000_000,
+    south: 5_000_000,
+    east: -1_000_000,
+    north: 409_000_000,
+};
+
+/// An archive of tiers (1933): the Grunewald z15 tile in every slot of
+/// each tier's box at its zooms, padded as
+/// [`leviculum_mapcut::pmtiles::padded`] pads, so no two blobs are stored
+/// once and a box's bytes grow with its tiles.
+pub fn tiered(tiers: &[(Bounds, core::ops::RangeInclusive<u8>)]) -> Vec<u8> {
+    use leviculum_map::region::TileId;
+    use leviculum_mapcut::cut::tile_range;
+    use leviculum_mapcut::pmtiles::{tile_id, write, NONE};
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../leviculum-mapcut/fixtures/grunewald.pmtiles");
+    let archive = leviculum_mapcut::pmtiles::Archive::open(&path).expect("the fixture");
+    let z15 = archive
+        .tiles()
+        .expect("tiles")
+        .into_iter()
+        .find(|t| t.z == 15)
+        .expect("a z15 tile");
+    let mvt = archive.mvt(z15).expect("read").expect("the tile");
+    let meta = archive.metadata().expect("metadata");
+    let mut tiles = std::collections::BTreeMap::new();
+    for (bounds, zooms) in tiers {
+        for z in zooms.clone() {
+            let (xs, ys) = tile_range(bounds, z);
+            for x in xs.into_iter().flatten() {
+                for y in ys.clone() {
+                    let t = TileId { z, x, y };
+                    let mut blob = mvt.clone();
+                    // Field 15, length-delimited: unknown to the Tile
+                    // message, [`first_tile::FIRST_TILE_PAD`] bytes that
+                    // differ from tile to tile.
+                    let pad = first_tile::FIRST_TILE_PAD;
+                    blob.push(15 << 3 | 2);
+                    let mut len = pad as u64;
+                    while len >= 0x80 {
+                        blob.push((len as u8) | 0x80);
+                        len >>= 7;
+                    }
+                    blob.push(len as u8);
+                    let mut v = tile_id(t).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+                    blob.extend((0..pad).map(|_| {
+                        v ^= v << 13;
+                        v ^= v >> 7;
+                        v ^= v << 17;
+                        v as u8
+                    }));
+                    tiles.insert(t, blob);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    write(&tiles, NONE, &meta, &mut out).expect("the archive");
+    out
+}
+
+/// A walk over the tiered archive of `tiers`, the view at `at` and
+/// `zoom`, its judged area `area` (1933).
+pub fn tiered_walk(
+    name: &str,
+    tiers: &[(Bounds, core::ops::RangeInclusive<u8>)],
+    area: Bounds,
+    at: (f64, f64),
+    zoom: u8,
+    rate: u64,
+    latency_ms: u64,
+) -> Walk {
+    let serve = Serve::start(vec![("w.pmtiles".into(), tiered(tiers))]).expect("serve");
+    let ground = Ground {
+        at: project(LatLon::from_degrees(at.0, at.1)),
+        zoom,
+        cache_bytes: 1 << 30,
+        prefill: 0,
+    };
+    let mut walk = Walk::over(serve, name, rate, latency_ms, ground, Inject::None);
+    walk.area = area;
+    walk
+}
+
 /// Install `copies` old autoloaded regions of a far corner of the
 /// archive, so a small cache cap evicts them: one region cut at full
 /// speed, copied under names of its own, each a day old.
@@ -1431,7 +1531,7 @@ pub fn rules(walk: &Walk) -> Vec<Verdict> {
                 if *t < from || *t > f.t {
                     continue;
                 }
-                if let Ev::Started(b) = ev {
+                if let Ev::Started(b, _) = ev {
                     let rank = f
                         .order
                         .iter()
@@ -1471,7 +1571,7 @@ pub fn rules(walk: &Walk) -> Vec<Verdict> {
             let still = b.order.iter().any(|(ob, _, _)| ob == bounds);
             let ended = walk.events.iter().any(|(t, ev)| {
                 (*t >= a.t && *t <= b.t)
-                    && matches!(ev, Ev::Started(eb) | Ev::Done(eb, _, _) | Ev::Failed(eb, _) if eb == bounds)
+                    && matches!(ev, Ev::Started(eb, _) | Ev::Done(eb, _, _) | Ev::Failed(eb, _) if eb == bounds)
             });
             if still || ended {
                 continue;
@@ -1503,7 +1603,9 @@ pub fn rules(walk: &Walk) -> Vec<Verdict> {
     let mut prev_t = last_progress;
     for f in &walk.frames {
         let event = walk.events.iter().any(|(t, ev)| {
-            *t > prev_t && *t <= f.t && matches!(ev, Ev::Started(_) | Ev::Done(..) | Ev::Failed(..))
+            *t > prev_t
+                && *t <= f.t
+                && matches!(ev, Ev::Started(..) | Ev::Done(..) | Ev::Failed(..))
         });
         if event || f.sent != prev_sent {
             last_progress = f.t;
@@ -1617,7 +1719,7 @@ pub fn rules(walk: &Walk) -> Vec<Verdict> {
     let mut landed_files: HashMap<String, Bounds> = HashMap::new();
     for (t, ev) in &walk.events {
         match ev {
-            Ev::Started(b) => {
+            Ev::Started(b, _) => {
                 if runs.contains(b) {
                     spins.push(format!("t={t} started while running: {b:?}"));
                 }
@@ -2032,7 +2134,7 @@ pub fn write_out(
     trace.push_str("\nt\tevent\tbounds\tdetail\n");
     for (t, ev) in &walk.events {
         let (kind, b, detail) = match ev {
-            Ev::Started(b) => ("started", b, String::new()),
+            Ev::Started(b, z) => ("started", b, format!("z{}-{}", z.0, z.1)),
             Ev::Done(b, name, evicted) => ("done", b, format!("{name} evicted={evicted:?}")),
             Ev::Failed(b, why) => ("failed", b, why.clone()),
             Ev::Skipped(b, why) => ("skipped", b, (*why).to_string()),
@@ -2221,6 +2323,172 @@ pub fn cache_at_cap(rate: u64, latency: u64) -> Walk {
     walk.rest("east", true);
     walk.drain(bound);
     walk
+}
+
+/// A detailed visit, then four wheel steps out (1933): the view must
+/// fill whole from cuts that carry the view's levels alone, coarse and
+/// small, never the street detail of a wide box. The bounds are explicit:
+/// what the view needs at 200 kB/s is its own levels over view and
+/// margin, about 3 to 4 MB a rest.
+pub fn zoom_out_from_visit(rate: u64, latency: u64) -> Walk {
+    let mut walk = tiered_walk(
+        "zoom-out-visit",
+        &[(BIG_BOX, 7..=11), (WIDE_BOX, 12..=15)],
+        BIG_BOX,
+        AREA_A,
+        15,
+        rate,
+        latency,
+    );
+    walk.rest_bounded("visit-z15", 60_000, true);
+    for _ in 0..4 {
+        walk.wheel(-1000, 14);
+    }
+    walk.rest_bounded("out4-z11", 60_000, true);
+    walk.drain(walk.fill_bound());
+    walk
+}
+
+/// 1933, load walk step "zoom out from a detailed visit": after the
+/// visit, four wheel steps out; the view share reaches 1.0 within the
+/// bound, and no box cut for it carries more than the three zoom levels
+/// above the view zoom it was cut for — its deepest zoom is that view's
+/// own, so its span says it.
+#[test]
+fn zoom_out_from_a_detailed_visit_loads_only_the_view_levels() {
+    let walk = zoom_out_from_visit(SLOW_RATE, 40);
+    let visit = walk.checks.first().expect("the visit's pause");
+    assert!(visit.filled, "the visit itself fills");
+    let out = walk.checks.last().expect("the zoom-out's pause");
+    eprintln!(
+        "SMOKE zoom-out-visit out_filled={} out_took_ms={} sent_bytes={}",
+        out.filled,
+        out.fill_took_ms,
+        walk.serve.sent()
+    );
+    assert!(out.expects_fill, "the z11 view lies over the archive");
+    assert!(
+        out.filled,
+        "the zoomed-out view fills whole within {} ms (uncovered {:.3})",
+        out.fill_bound_ms, out.uncovered
+    );
+    // No box with more than three zoom levels above the view zoom it
+    // was cut for: a box's deepest zoom is that view's (its floor), so
+    // its span says it. A queued box starts after the view moved on,
+    // which is why the view at its start is not the measure.
+    let mut cut = 0;
+    for (t, ev) in &walk.events {
+        let Ev::Started(b, zooms) = ev else { continue };
+        if *t <= visit.t {
+            continue;
+        }
+        cut += 1;
+        assert!(
+            zooms.1 - zooms.0 <= 3,
+            "a box bundles z{}-{} over {b:?}",
+            zooms.0,
+            zooms.1
+        );
+    }
+    assert!(cut > 0, "the zoom out loaded its coarse levels");
+}
+
+/// A ladder of rests from z12 to z15 over the tiered archive, drained:
+/// the ground under the view holds every level the ladder's views draw
+/// (1933).
+pub fn wheel_ladder(rate: u64, latency: u64) -> Walk {
+    let mut walk = tiered_walk(
+        "wheel-loaded",
+        &[(BIG_BOX, 7..=11), (WIDE_BOX, 12..=15)],
+        BIG_BOX,
+        AREA_A,
+        12,
+        rate,
+        latency,
+    );
+    walk.rest_bounded("z12", 60_000, true);
+    walk.drain(walk.fill_bound());
+    for z in 13..=15u8 {
+        walk.wheel(1000, 14);
+        walk.rest_bounded(&format!("z{z}"), 60_000, true);
+        // The rung's prefetch ring lands too: the loaded ground the
+        // wheel phase moves over includes what the scheduler asks ahead.
+        walk.drain(walk.fill_bound());
+    }
+    walk
+}
+
+/// 1933, load walk step "wheel over loaded ground": after the ground is
+/// loaded, ten wheel steps in and out inside it fetch 0 bytes and cut
+/// no box — zooming in overzooms what is there, zooming out finds the
+/// coarse levels already present.
+#[test]
+fn wheel_steps_over_loaded_ground_fetch_nothing() {
+    let mut walk = wheel_ladder(SLOW_RATE, 40);
+    let t0 = walk.now_ms();
+    let sent0 = walk.serve.sent();
+    for milli in [
+        -1000, -1000, 1000, 1000, -1000, -1000, 1000, 1000, -1000, 1000,
+    ] {
+        walk.wheel(milli, 14);
+    }
+    walk.run(30);
+    let cut: Vec<String> = walk
+        .events
+        .iter()
+        .filter(|(t, ev)| *t > t0 && matches!(ev, Ev::Started(..)))
+        .map(|(t, ev)| match ev {
+            Ev::Started(b, z) => format!("t={t} z{}-{} {b:?}", z.0, z.1),
+            _ => String::new(),
+        })
+        .collect();
+    let sent = walk.serve.sent() - sent0;
+    eprintln!(
+        "SMOKE wheel-loaded wheel_bytes={sent} wheel_cuts={}",
+        cut.len()
+    );
+    assert!(
+        cut.is_empty(),
+        "wheel steps over loaded ground cut boxes:\n{}",
+        cut.join("\n")
+    );
+    assert_eq!(sent, 0, "wheel steps over loaded ground fetched bytes");
+    for c in &walk.checks {
+        assert!(c.filled, "{} fills before the wheel phase", c.label);
+    }
+}
+
+/// 1933, the measurement standing for Morocco at z6: a zoomed-out view
+/// over wide coarse ground fills whole, coarse first, at 200 kB/s. The
+/// SMOKE line quotes the bytes and the time to full share.
+#[test]
+fn a_zoomed_out_view_fills_whole_coarse_first() {
+    let mut walk = tiered_walk(
+        "morocco-z6",
+        &[(MOROCCO_BOX, 3..=6)],
+        MOROCCO_BOX,
+        (31.5, -14.0),
+        6,
+        SLOW_RATE,
+        40,
+    );
+    walk.rest_bounded("z6", 60_000, true);
+    let c = walk.checks.last().expect("the pause");
+    eprintln!(
+        "SMOKE morocco-z6 filled={} took_ms={} bound_ms={} sent_bytes={} uncovered={:.3}",
+        c.filled,
+        c.fill_took_ms,
+        c.fill_bound_ms,
+        walk.serve.sent(),
+        c.uncovered
+    );
+    assert!(
+        c.filled,
+        "a z6 view fills whole (uncovered {:.3} after {} ms, {} bytes)",
+        c.uncovered,
+        c.fill_bound_ms,
+        walk.serve.sent()
+    );
 }
 
 /// The sessions of a set: `short` is the per-batch `cargo test` default,

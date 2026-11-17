@@ -103,11 +103,13 @@ not in the tree). Total about 166 KB beside today's 209 KB.
   Flash is ample by the last documented headroom (`free=6605664` of the
   8 MiB application, [the handheld messenger](handheld-messenger.md));
   the draw scratch in RAM is not measured.
-- Desktop users never see Protomaps' own Natural Earth zooms, since the
-  autoload starts at z7 at the earliest: nothing is asked for below
-  `MIN_ZOOM` (`loquax/src/ui/viewload.rs:57`), z10, and a view loads
-  `VIEW_BELOW` (`loquax/src/ui/map.rs:132`), three zooms above its own.
-  The world view is ours alone.
+- Since order 1933 desktop users do see Protomaps' own Natural Earth
+  zooms: the autoload asks from `MIN_ZOOM`
+  (`loquax/src/ui/viewload.rs:61`), z3, and a view loads `VIEW_BELOW`
+  (`loquax/src/ui/map.rs:132`), three zooms above its own, so a world
+  view fills with the source's coarse tiles. Only below z3, the pure
+  globe, is the world view ours alone. (Before 1933 nothing was asked
+  below z10 and the world view was always ours.)
 
 ### The world as a globe, flowing into Mercator
 
