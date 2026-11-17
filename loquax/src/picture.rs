@@ -2305,6 +2305,20 @@ mod tests {
             hidden_under(&view, &[(inside, true), (b(20, 0, 30, 10), true)]),
             vec![false, false]
         );
+        // The edges where a box is one unit wide still count: a region
+        // touching the view's west edge, a region box one unit wide and
+        // a view one unit wide are on screen, and hidden under a
+        // complete region over them.
+        let edge = b(-5, 2, 0, 8);
+        let thin = b(4, 2, 4, 8);
+        assert_eq!(
+            hidden_under(&view, &[(edge, true), (thin, true), (world, true)]),
+            vec![true, true, false]
+        );
+        assert_eq!(
+            hidden_under(&b(5, 0, 5, 10), &[(inside, true), (world, true)]),
+            vec![true, false]
+        );
     }
 
     /// Lew 2026-11-15, rule 8a of order 1836: a finished area went white.
