@@ -38,7 +38,7 @@ use leviculum_map::mercator::{lat_of_y, lon_of_x, project, unproject, LatLon, Wo
 use leviculum_map::region::{Bounds, Header};
 use leviculum_map::viewport::Viewport;
 
-use super::map::{LoadReason, MapWant, DEEPEST_LOAD, PLACE_ZOOMS, VIEW_BELOW};
+use super::map::{LoadReason, MapWant, DEEPEST_LOAD, VIEW_BELOW};
 
 /// A cell is a tile this many zooms above the view's: eight tiles of the
 /// view across, about a phone screen and a half. No deeper than
@@ -52,9 +52,13 @@ pub const CELL_DEEPEST: u8 = DEEPEST_LOAD + 1 - CELL_ABOVE;
 pub const GAP_SHARE: f64 = 0.10;
 /// While the view moves, one decision this often.
 pub const DECIDE_MS: u64 = 250;
-/// Below this zoom nothing is asked for by itself: a box there is a
-/// country, and the world outline draws.
-pub const MIN_ZOOM: u8 = PLACE_ZOOMS.0;
+/// Below this zoom nothing is asked for by itself: the view is the
+/// globe, drawn from the world outline. From here up every view loads
+/// its own levels, coarse and tiny at the world zooms (1933: the whole
+/// view fills at any zoom, no patchwork of visited boxes over the
+/// outline). Until 1933 this was z10, so a zoomed-out view showed only
+/// the boxes the reader had visited.
+pub const MIN_ZOOM: u8 = 3;
 /// Below this zoom only the cells on screen are asked for, none next to
 /// them.
 pub const AHEAD_MIN_ZOOM: u8 = 12;
@@ -283,13 +287,18 @@ fn along(from: World, to: World, heading: (f64, f64)) -> (f64, f64) {
     (dx * heading.0 + dy * heading.1, dx * dx + dy * dy)
 }
 
-/// The load asked for `cell` for a view at `zoom`: the cell's box, from
-/// [`VIEW_BELOW`] zooms above the view's to [`DEEPEST_LOAD`], the deepest
-/// lowered no further than the view's own (as [`super::map::want_view`]).
+/// The load asked for `cell` for a view at `zoom`: the cell's box, the
+/// view's levels alone — from [`VIEW_BELOW`] zooms above the view's to
+/// the view's own (1933, as [`super::map::want_view`]). The deep detail
+/// is cut only by deeper views, whose cells are small; no box bundles
+/// the coarse levels of a wide box with street detail, and a zoom out
+/// finds its levels already present. Before 1933 a cell reached to
+/// [`DEEPEST_LOAD`], which bundled z15 with z7 over degrees of land: one
+/// such box took 7 min 37 s at the source's rate (Lew, 2026-11-16).
 fn want(cell: &Cell, zoom: u8) -> MapWant {
     MapWant {
         bounds: cell.bounds(),
-        zooms: (zoom.saturating_sub(VIEW_BELOW), DEEPEST_LOAD),
+        zooms: (zoom.saturating_sub(VIEW_BELOW), zoom),
         floor: zoom,
         reason: LoadReason::View,
         centre: cell.centre(),
@@ -756,12 +765,20 @@ mod tests {
         assert_eq!(Cell::of(north.ahead[0].centre, 13), n);
     }
 
+    /// Below [`MIN_ZOOM`] the globe draws from the outline and nothing
+    /// is asked; from it up every view loads its own levels (1933).
     #[test]
     fn below_the_least_zoom_nothing_is_asked() {
-        let view = Viewport::new(project(LatLon::from_degrees(43.0, 11.0)), 9, 480, 320);
+        let view = Viewport::new(project(LatLon::from_degrees(43.0, 11.0)), 2, 480, 320);
         let w = wants(&view, &[], false, None);
         assert_eq!(w.share, 1.0);
         assert!(w.here.is_empty() && w.ahead.is_empty());
+        let world = Viewport::new(project(LatLon::from_degrees(43.0, 11.0)), 6, 480, 320);
+        let w = wants(&world, &[], false, None);
+        assert!(!w.here.is_empty(), "a z6 view loads its coarse levels");
+        for want in &w.here {
+            assert!(want.zooms.1 <= 6, "{:?}", want.zooms);
+        }
     }
 
     /// One decision every 250 ms while moving, counted from the last one,

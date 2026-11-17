@@ -3060,15 +3060,24 @@ async fn opening_the_map_at_a_place_loads_its_region_and_the_next_frame_draws_it
     let count = |word: &str| lines.iter().filter(|l| l.starts_with(word)).count();
     // Since 1527 the terminal runs the scheduler too: besides the place's
     // region and the zoomed-out area it loads the screen's neighbours
-    // (`MAPLOAD view ... here= ahead=`). Every load that starts lands, none
-    // fails, and there are at least the two this script asks for.
+    // (`MAPLOAD view ... here= ahead=`). Since 1933 it also asks coarse,
+    // from z3 up, for a zoomed-out view; this fixture is a city extract
+    // with no tiles below z10, so those coarse boxes fail with "holds no
+    // tiles there" (`Empty`) — the normal edge of a finite source, the
+    // outline draws there, and the loader speaks no toast for it. Every
+    // load that starts either lands or is one such empty box; no real
+    // failure, and there are at least the two this script asks for.
+    let empty_failed = lines
+        .iter()
+        .filter(|l| l.starts_with("MAPLOAD failed") && l.contains("holds no tiles there"))
+        .count();
     let (started, done, failed) = (
         count("MAPLOAD start"),
         count("MAPLOAD done"),
         count("MAPLOAD failed"),
     );
     assert!(
-        !en || started >= 2 && started == done && failed == 0,
+        !en || started >= 2 && started == done + empty_failed && failed == empty_failed,
         "{lines:#?}"
     );
     assert!(

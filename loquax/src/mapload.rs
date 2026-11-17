@@ -473,6 +473,11 @@ struct Failure {
     detail: String,
     unreachable: bool,
     too_large: bool,
+    /// The source holds no tiles in the box at those zooms ([`Empty`]).
+    /// The normal edge of a finite source: at coarse world zooms over a
+    /// city extract, or past the data's reach. The outline draws there,
+    /// so it is no user error and speaks no toast (1933).
+    empty: bool,
     /// The box itself cannot load (too large, no tiles there): retrying
     /// cannot help, the box is not requeued.
     permanent: bool,
@@ -1077,6 +1082,7 @@ impl Loader {
                     detail: "the load stopped".to_string(),
                     unreachable: false,
                     too_large: false,
+                    empty: false,
                     permanent: false,
                     stopped: false,
                 }),
@@ -1353,6 +1359,10 @@ impl Loader {
                         Some("map: no internet; the map shows what is here".to_string())
                     }
                     (false, true) => Some(format!("map: {}; zoom in", failure.detail)),
+                    // The source holds no tiles there (1933): the normal
+                    // edge of a finite source, the outline draws there,
+                    // no toast.
+                    _ if failure.empty => None,
                     (false, false) if failures > 1 => None,
                     (false, false) => Some(format!("map: {}", failure.detail)),
                 };
@@ -1605,10 +1615,12 @@ impl Job {
     fn run(self) -> Result<Landed, Failure> {
         self.load().map_err(|e| {
             let too_large = e.downcast_ref::<TooLarge>().is_some();
+            let empty = e.downcast_ref::<Empty>().is_some();
             Failure {
                 unreachable: http::unreachable(e.as_ref()),
                 too_large,
-                permanent: too_large || e.downcast_ref::<Empty>().is_some(),
+                empty,
+                permanent: too_large || empty,
                 stopped: e.downcast_ref::<Stopped>().is_some(),
                 detail: e.to_string(),
             }
@@ -2509,6 +2521,43 @@ mod tests {
         ));
         settle(&mut loader, 3 * SCREEN_RETRY_FIRST_MS);
         assert_eq!(maps.epoch(), 0, "nothing landed");
+        assert_eq!(std::fs::read_dir(dir.path()).expect("dir").count(), 0);
+    }
+
+    /// A box the source holds no tiles in (1933): the normal edge of a
+    /// finite source — a zoomed-out view asks coarse world levels a city
+    /// extract lacks. It fails permanently (nothing to fetch, not
+    /// requeued) and speaks no toast: the outline draws there, it is no
+    /// user error.
+    #[test]
+    fn a_box_with_no_tiles_there_fails_quietly() {
+        let serve = Serve::start(vec![("o.pmtiles".into(), FIXTURE.to_vec())]).expect("serve");
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut loader = Loader::new(maps.clone(), Source::Url(serve.url("o.pmtiles")), 1 << 30);
+        // Mid-Pacific: the Florence extract holds nothing there.
+        let pacific = MapWant {
+            bounds: Bounds {
+                west: -1_500_000_000,
+                south: -50_000,
+                east: -1_499_000_000,
+                north: 50_000,
+            },
+            zooms: (12, 15),
+            floor: 12,
+            reason: LoadReason::View,
+            centre: World { x: 0, y: 0 },
+        };
+        loader.ask(pacific, 0);
+        let steps = settle(&mut loader, 0);
+        let [Step::Failed { toast, detail, .. }] = steps.as_slice() else {
+            panic!("{steps:?}");
+        };
+        assert!(detail.contains("no tiles there"), "{detail}");
+        assert_eq!(*toast, None, "an empty box speaks no toast");
+        // Permanent: not requeued, not retried, nothing on disk.
+        assert!(loader.order().is_empty(), "the empty box is not requeued");
+        assert!(loader.poll(SCREEN_RETRY_MAX_MS).is_empty(), "no retry");
         assert_eq!(std::fs::read_dir(dir.path()).expect("dir").count(), 0);
     }
 
