@@ -263,6 +263,10 @@ pub enum Held {
     /// Too many waited paused: it stopped for good, its file removed and
     /// its box queued again.
     Dropped,
+    /// Queued for a view the reader left, deeper than anything the view
+    /// asks now: dropped at the decision, not started (the audit of
+    /// 1933). The view that wants its area again asks again.
+    Left,
 }
 
 impl Held {
@@ -272,6 +276,7 @@ impl Held {
             Self::Paused => "paused",
             Self::Resumed => "resumed",
             Self::Dropped => "dropped",
+            Self::Left => "left",
         }
     }
 }
@@ -1009,6 +1014,7 @@ impl Loader {
             }
         }
         let mut keyed: Vec<((Rank, usize), Queued)> = Vec::new();
+        let mut left: Vec<Step> = Vec::new();
         for (n, mut queued) in std::mem::take(&mut self.queue).into_iter().enumerate() {
             let key = match (queued.rank, place(&queued.want.bounds)) {
                 (Rank::Asked, _) => (Rank::Asked, n),
@@ -1018,8 +1024,16 @@ impl Loader {
                 // A box deeper than anything the view asks now was cut
                 // for a view the reader has left (the audit of 1933):
                 // started under this view it would fetch street detail
-                // no screen draws, competing with the coarse fill.
-                (_, None) if deepest_need.is_some_and(|d| queued.want.zooms.1 > d) => continue,
+                // no screen draws, competing with the coarse fill. The
+                // drop is said ([`Held::Left`]), so a watcher can tell
+                // it from a box lost.
+                (_, None) if deepest_need.is_some_and(|d| queued.want.zooms.1 > d) => {
+                    left.push(Step::Held {
+                        want: queued.want,
+                        how: Held::Left,
+                    });
+                    continue;
+                }
                 (_, None) => (Rank::Away, n),
             };
             queued.rank = key.0;
@@ -1068,7 +1082,8 @@ impl Loader {
             })
             .map(|k| k.1)
             .collect();
-        self.start_next(now_ms)
+        left.extend(self.start_next(now_ms));
+        left
     }
 
     /// Whether `want`, the screen's own box (1527), is what a load
@@ -2834,9 +2849,23 @@ mod tests {
                 .as_slice(),
             [Step::Started(_)]
         ));
-        // The reader zoomed out: the queued deep boxes are dropped, the
-        // running one pauses and keeps its place.
-        loader.schedule(vec![shallow(4), shallow(5)], Vec::new(), 250);
+        // The reader zoomed out: the queued deep boxes are dropped, and
+        // the drop is said; the running one pauses and keeps its place.
+        let steps = loader.schedule(vec![shallow(4), shallow(5)], Vec::new(), 250);
+        assert_eq!(
+            steps
+                .iter()
+                .filter(|s| matches!(
+                    s,
+                    Step::Held {
+                        how: Held::Left,
+                        ..
+                    }
+                ))
+                .count(),
+            2,
+            "both queued deep boxes say they were left: {steps:?}"
+        );
         assert_eq!(
             order(&loader),
             [
