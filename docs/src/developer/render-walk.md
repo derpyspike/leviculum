@@ -101,6 +101,19 @@ renderer.
   Each gesture records its frame times on the host and the live heap at
   its start, peak and end. A counting allocator in the walk measures the
   heap.
+- **The window's own map** (variant `window`, audit of 1943) runs the
+  window's real path headless: the App, its scheduler and its tile
+  cache with the curved memo on. It is released, since its rows judge
+  frame times. A store of 16 overlapping regions of mixed zoom spans is
+  cut first, and the pane is the desktop's 1800x1320 and 1440p, where
+  zoom 10 lies inside the blend window. Four sequences: a pan, a wheel
+  step out (z10 to z9), the step back in, and the pan again while
+  regions land and tiles arrive under every step. Every fourth moving
+  frame and the rest frame are kept, presented as the window presents
+  them (nearest while moving, the map's ground where the frame does not
+  reach). The test is `the_window_map_walks_inside_the_blend` in
+  `loquax/tests/support/load_walk.rs`; its rows go to
+  `rows-window-map.tsv`.
 - **The window's screens** are rendered by iced's software renderer:
   - the chats, light and dark
   - the settings
@@ -146,6 +159,10 @@ live in `loquax-android/src/render_walk.rs`.
 | `bare_paper` | a gesture frame | more than 10 % of the screen is bare paper where the same view, settled at rest after the gesture, shows map content (order 1853: a pan frame over Berlin was nearly empty and no rule saw it). Paper is counted in 16 px blocks, a block bare where 12 of its 16 samples are paper, and the rest frame's shown name boxes read as paper: names fade by design while a finger moves, so a gesture frame without them misses no map. Only frames with more than 10 % bare blocks are settled again; the others carry their share as the bound |
 | `view_only_by_input` | a settled frame, a gesture's rest held 120 s of held clock, the rotation's MapView made anew | a frame asked with no input shows another view than the one the last input left, by its centre or a thousandth of zoom (1819: the desktop's minute beat and the landed regions moved the view; the phone's recreated Activity fitted it anew) |
 | `zoom_keeps_the_place` | a zoom gesture's frame | the geographic point that started under the pinch focus is more than 2 px from it; the rest frame of an out-and-in pinch adds one row for "the start view is back" (order 1818, the Morocco-to-Spain jump) |
+| `frame_p95` (window) | a window map sequence | the 95th percentile step, drawing included, is over one frame at 30 Hz (33.3 ms; the shared coder host's load moves single steps by tens of milliseconds, so a 60 Hz gate judged the host) |
+| `input_rides_the_memo` | a window map sequence | a whole curved frame was drawn while a finger dragged |
+| `view_covered` (window) | a window map pan or rest frame | any of the screen lies outside the frame. A wheel step's frames are exempt: the glide scales the frame of the view it ends on, and stepping in that frame lies inside the screen with the ground round it by design (1441) |
+| `sea_strip` | a window map frame | more of the screen is the theme's water colour than the rest frame shows, plus 2 % (the strip a moving curved frame painted where the memo did not reach, before the audit of 1943) |
 | `screen_drawn` | a window or terminal screen | it drew nothing. For the window, that is at most two of four quarters with more than one colour. For the terminal, it is text on less than a tenth of its rows |
 | `screen_repeats` | a window or terminal screen | the same screen drawn twice differs |
 

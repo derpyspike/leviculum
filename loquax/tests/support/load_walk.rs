@@ -446,9 +446,15 @@ pub struct Walk {
     pub churn: bool,
     /// Pictures of moving frames ([`Walk::shoot`]): a label and the
     /// screen's pixels.
-    pub shots: Vec<(String, Vec<u8>)>,
+    pub shots: Vec<(String, Vec<u8>, f64)>,
     /// The last step's length, milliseconds, drawing included.
     pub last_step_ms: u64,
+    /// Every step's length, microseconds, drawing included: the render
+    /// walk's window variant takes its frame times from it.
+    pub step_us: Vec<u64>,
+    /// Keep every n-th drag step's frame as a picture named after the
+    /// prefix ([`Walk::shoot`]).
+    pub shoot_every: Option<(u32, String)>,
     /// The settle draws of [`settle_ladder`]: zoom and milliseconds.
     pub settles: Vec<(u8, u64)>,
     /// Whole curved frames drawn while a finger dragged: a moving frame
@@ -620,6 +626,8 @@ impl Walk {
             shots: Vec::new(),
             last_step_ms: 0,
             settles: Vec::new(),
+            step_us: Vec::new(),
+            shoot_every: None,
         }
     }
 
@@ -887,6 +895,8 @@ impl Walk {
         // step is a rule.
         let ms = u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX);
         self.last_step_ms = ms;
+        self.step_us
+            .push(u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX));
         if self.dragging {
             self.drag_steps += 1;
             self.drag_gap_max = self.drag_gap_max.max(ms);
@@ -947,12 +957,19 @@ impl Walk {
         self.wheeling = false;
     }
 
+    /// `frames` more steps of a wheel step's glide.
+    pub fn wheel_steps_run(&mut self, frames: u32) {
+        self.wheeling = true;
+        self.run(frames);
+        self.wheeling = false;
+    }
+
     /// The screen's pixels of the frame shown now, kept as `label`
     /// ([`Walk::shots`]): a moving frame's picture.
     pub fn shoot(&mut self, label: &str) {
         if let Some(shown) = self.app.shown.as_ref() {
-            let crop = present(shown, &self.app);
-            self.shots.push((label.to_string(), crop));
+            let (crop, bare) = present(shown, &self.app);
+            self.shots.push((label.to_string(), crop, bare));
         }
     }
 
@@ -971,6 +988,11 @@ impl Walk {
             self.app
                 .apply(Message::Pointer(Pointer::Move(Point::new(x, y))));
             self.step();
+            if let Some((n, prefix)) = self.shoot_every.clone() {
+                if k % n.max(1) == 0 {
+                    self.shoot(&format!("{prefix}-f{k:03}"));
+                }
+            }
             // The pointer stays inside the pane: lift and press again.
             let out = x < 10.0 || y < 10.0 || x > w as f32 - 10.0 || y > h as f32 - 10.0;
             if out && k + 1 < frames {
@@ -1463,25 +1485,38 @@ fn pieces_on_screen(shown: &super::Shown, pieces: &[loquax::ui::maploading::Piec
 }
 
 /// The screen's pixels as the window presents `shown` over `app`'s
-/// view: placed and scaled ([`loquax::mapframe::onto`]) and sampled
-/// linear, as the GPU samples the frame's texture while a zoom glides;
-/// magenta where the frame does not reach.
-fn present(shown: &super::Shown, app: &App) -> Vec<u8> {
+/// view (`MapCanvas::draw` in gui.rs): placed and scaled
+/// ([`loquax::mapframe::onto`]), nearest while the view moves or at
+/// scale one and linear at rest, and the map's ground where the frame
+/// does not reach (1441); with the share of the screen the frame does
+/// not reach.
+fn present(shown: &super::Shown, app: &App) -> (Vec<u8>, f64) {
     let (fw, fh) = shown.view.size();
     let pixels: Vec<u8> = match &shown.handle {
         super::Handle::Rgba { pixels, .. } => pixels.to_vec(),
         other => panic!("not raw pixels: {other:?}"),
     };
     let (x0, y0, k) = loquax::mapframe::onto(&shown.view, &app.view);
+    let nearest = (k - 1.0).abs() < 1e-9 || app.moving();
+    let [gr, gg, gb] = leviculum_mapfill::frame::rgb888(app.map_style().theme.palette().background);
     let (w, h) = app.view.size();
     let at = |x: usize, y: usize, c: usize| f64::from(pixels[(y * fw as usize + x) * 4 + c]);
     let mut out = Vec::with_capacity((w * h * 4) as usize);
+    let mut bare = 0usize;
     for sy in 0..h {
         let fy = (f64::from(sy) + 0.5 - y0) / k - 0.5;
         for sx in 0..w {
             let fx = (f64::from(sx) + 0.5 - x0) / k - 0.5;
             if fx <= -0.5 || fy <= -0.5 || fx >= f64::from(fw) - 0.5 || fy >= f64::from(fh) - 0.5 {
-                out.extend_from_slice(&[0xff, 0x00, 0xff, 0xff]);
+                out.extend_from_slice(&[gr, gg, gb, 0xff]);
+                bare += 1;
+                continue;
+            }
+            if nearest {
+                let (x, y) = (fx.round().max(0.0) as usize, fy.round().max(0.0) as usize);
+                let (x, y) = (x.min(fw as usize - 1), y.min(fh as usize - 1));
+                out.extend((0..3).map(|c| at(x, y, c) as u8));
+                out.push(0xff);
                 continue;
             }
             let (xa, ya) = (fx.floor().max(0.0) as usize, fy.floor().max(0.0) as usize);
@@ -1498,7 +1533,7 @@ fn present(shown: &super::Shown, app: &App) -> Vec<u8> {
             out.push(0xff);
         }
     }
-    out
+    (out, bare as f64 / f64::from(w * h))
 }
 
 fn crop_screen(shown: &super::Shown, app: &App) -> Vec<u8> {
@@ -2324,7 +2359,7 @@ pub fn write_out(
         std::fs::write(full.join(format!("{}.png", image_name(walk, n))), png)
             .expect("the picture");
     }
-    for (label, crop) in &walk.shots {
+    for (label, crop, _) in &walk.shots {
         write_png(
             &full.join(format!("{}-{label}.png", walk.name)),
             crop,
@@ -2865,6 +2900,11 @@ fn assert_curved(walk: &Walk, inject: Inject) {
 /// the autoload off ([`patchwork_sized`]); [`Inject::NoMemo`] turns the
 /// curved memo off.
 fn patchwork_store(name: &str, count: usize, inject: Inject) -> Walk {
+    patchwork_store_at(name, count, inject, (1800, 1320))
+}
+
+/// [`patchwork_store`] on a pane of `size`.
+fn patchwork_store_at(name: &str, count: usize, inject: Inject, size: (u32, u32)) -> Walk {
     let serve = Serve::start(vec![("w.pmtiles".into(), wide_archive())]).expect("serve");
     let at = project(LatLon::from_degrees(AREA_A.0, AREA_A.1));
     let ground = Ground {
@@ -2872,7 +2912,7 @@ fn patchwork_store(name: &str, count: usize, inject: Inject) -> Walk {
         zoom: 10,
         cache_bytes: 1 << 30,
         prefill: 0,
-        size: (1800, 1320),
+        size,
     };
     let mut walk = Walk::over(serve, name, 0, 0, ground, inject);
     let dir = walk.maps.dir().expect("the maps directory").to_path_buf();
@@ -3347,6 +3387,238 @@ fn write_png(path: &std::path::Path, rgba: &[u8], (w, h): (u32, u32)) {
 fn median(mut v: Vec<f64>) -> f64 {
     v.sort_by(f64::total_cmp);
     v.get(v.len() / 2).copied().unwrap_or(0.0)
+}
+
+/// The window variant's frame gate (audit of 1943): a moving frame of
+/// the desktop map, drawn on the window's path inside the blend window
+/// (the memo ridden, the names placed, the loads polled), within one
+/// frame of a 30 Hz display. The window shows the last frame until the
+/// next lands and draws on its own worker. Measured released on the
+/// shared coder host while other lanes built (order 1967): p50 3 to
+/// 9 ms, single steps up to 26 ms, varying run to run with the host's
+/// load; a 60 Hz gate (16.7 ms) failed one run in two on one step, so
+/// it would judge the host, not the map.
+pub const WINDOW_FRAME_MS: f64 = 1000.0 / 30.0;
+
+/// One window-variant row in the render walk's columns (variant, kind,
+/// sequence, size, centre, zoom, image, rule, value, limit, verdict,
+/// note).
+#[allow(clippy::too_many_arguments)]
+fn window_row(
+    rows: &mut String,
+    failed: &mut Vec<String>,
+    sequence: &str,
+    size: &str,
+    zoom: f64,
+    image: &str,
+    rule: &str,
+    value: f64,
+    limit: f64,
+    note: &str,
+) {
+    let pass = value <= limit;
+    if !pass {
+        failed.push(format!(
+            "{sequence} {size} {image} {rule}: {value:.3} > {limit:.3} {note}"
+        ));
+    }
+    rows.push_str(&format!(
+        "window\tframe\t{sequence}\t{size}\tpatchwork\t{zoom:.3}\t{image}\t{rule}\t{value:.3}\t{limit:.3}\t{}\t{note}\n",
+        if pass { "pass" } else { "FAIL" }
+    ));
+}
+
+/// The render walk's desktop `window` map variant (audit of 1943): the
+/// window's own path (the App, its tile cache with the curved memo on,
+/// headless), over the patchwork store, at the desktop pane and at
+/// 1440p, with zoom 10 inside the blend window. Sequences: a pan, a
+/// wheel step out (z10 to z9) and back in, and the pan again while
+/// regions land under it. Rules: `frame_p95` over the moving frames
+/// ([`WINDOW_FRAME_MS`]), `input_rides_the_memo` (no whole curved draw
+/// while a finger drags), and per kept picture `view_covered` (no pixel
+/// the frame does not reach) and `sea_strip` (no more of the screen in
+/// the theme's water colour than the same view at rest shows). Rows go
+/// to `rows-window-map.tsv`, pictures to `full/`, under `out`.
+pub fn window_variant(out: &std::path::Path) -> Vec<String> {
+    let full = out.join("full");
+    std::fs::create_dir_all(&full).expect("the pictures directory");
+    let mut rows = String::new();
+    let mut failed = Vec::new();
+    for (size, px, moves) in [
+        ("1800x1320", (1800, 1320), 23u32),
+        ("2560x1440", (2560, 1440), 32),
+    ] {
+        let mut walk = patchwork_store_at(&format!("window-{size}"), 16, Inject::None, px);
+        // The walk's window draws the light map.
+        let water = leviculum_mapfill::frame::rgb888(leviculum_map::outline::water(
+            leviculum_mapfill::style::MapTheme::Light,
+        ));
+        let share_of = |rgba: &[u8], c: [u8; 3]| {
+            let n = rgba.chunks_exact(4).filter(|p| p[..3] == c).count();
+            n as f64 / (rgba.len() / 4) as f64
+        };
+        let sequence = |walk: &mut Walk,
+                        name: &str,
+                        play: &mut dyn FnMut(&mut Walk),
+                        rows: &mut String,
+                        failed: &mut Vec<String>| {
+            walk.step_us.clear();
+            walk.shots.clear();
+            let drawn_before = walk.curved_drawn_now();
+            walk.shoot_every = Some((4, format!("window-{name}-{size}")));
+            play(walk);
+            walk.shoot_every = None;
+            let moving_ms: Vec<f64> = walk.step_us.iter().map(|&us| us as f64 / 1e3).collect();
+            eprintln!("WINDOW_STEPS {name} {size} {moving_ms:.1?}");
+            let drew = walk.drag_curved_drawn;
+            let drawn_moving = walk.curved_drawn_now() - drawn_before;
+            walk.run(SETTLE_STEPS);
+            walk.shoot(&format!("window-{name}-{size}-rest"));
+            let zoom = f64::from(walk.app.view.zoom_milli()) / 1000.0;
+            let mut sorted = moving_ms.clone();
+            sorted.sort_by(f64::total_cmp);
+            let q = |f: f64| {
+                sorted
+                    .get(((sorted.len().max(1) - 1) as f64 * f).round() as usize)
+                    .copied()
+                    .unwrap_or(0.0)
+            };
+            window_row(
+                rows,
+                failed,
+                name,
+                size,
+                zoom,
+                "",
+                "frame_p95",
+                q(0.95),
+                WINDOW_FRAME_MS,
+                &format!(
+                    "p50 {:.1} ms, p95 {:.1} ms, max {:.1} ms, {} frames, target 30 Hz, one frame {:.1} ms; {drawn_moving} whole curved draws among them",
+                    q(0.5),
+                    q(0.95),
+                    q(1.0),
+                    sorted.len(),
+                    WINDOW_FRAME_MS
+                ),
+            );
+            window_row(
+                rows,
+                failed,
+                name,
+                size,
+                zoom,
+                "",
+                "input_rides_the_memo",
+                drew as f64,
+                0.0,
+                "whole curved draws while a finger dragged, this walk so far",
+            );
+            let rest = walk
+                .shots
+                .last()
+                .map(|(_, c, _)| share_of(c, water))
+                .unwrap_or(0.0);
+            let (w, h) = walk.app.view.size();
+            for (label, crop, bare) in &walk.shots {
+                let zoom = f64::from(walk.app.view.zoom_milli()) / 1000.0;
+                write_png(&full.join(format!("{label}.png")), crop, (w, h));
+                // A wheel's glide scales the frame of the view it ends on
+                // towards the view (`App::order`): stepping in, that
+                // frame lies inside the screen and the ground shows
+                // round it by design (1441), so only pans and rests are
+                // held to full cover.
+                if !name.starts_with("wheel") || label.ends_with("-rest") {
+                    window_row(
+                        rows,
+                        failed,
+                        name,
+                        size,
+                        zoom,
+                        label,
+                        "view_covered",
+                        *bare,
+                        0.0,
+                        "share of the screen the frame does not reach",
+                    );
+                }
+                window_row(
+                    rows,
+                    failed,
+                    name,
+                    size,
+                    zoom,
+                    label,
+                    "sea_strip",
+                    share_of(crop, water),
+                    rest + 0.02,
+                    "share in the theme's water colour, at most the rest's and 2 %",
+                );
+            }
+        };
+        sequence(
+            &mut walk,
+            "pan",
+            &mut |w| w.drag(-40.0, 0.0, moves),
+            &mut rows,
+            &mut failed,
+        );
+        sequence(
+            &mut walk,
+            "wheel-out",
+            &mut |w| {
+                w.wheel(-1000, 2);
+                for i in 0..3 {
+                    w.shoot(&format!("window-wheel-out-{size}-f{i:03}"));
+                    w.wheel_steps_run(2);
+                }
+            },
+            &mut rows,
+            &mut failed,
+        );
+        sequence(
+            &mut walk,
+            "wheel-in",
+            &mut |w| {
+                w.wheel(1000, 2);
+                for i in 0..3 {
+                    w.shoot(&format!("window-wheel-in-{size}-f{i:03}"));
+                    w.wheel_steps_run(2);
+                }
+            },
+            &mut rows,
+            &mut failed,
+        );
+        walk.churn = true;
+        sequence(
+            &mut walk,
+            "pan-loading",
+            &mut |w| w.drag(40.0, 0.0, moves),
+            &mut rows,
+            &mut failed,
+        );
+        walk.churn = false;
+        assert_curved(&walk, Inject::None);
+    }
+    std::fs::write(out.join("rows-window-map.tsv"), rows).expect("the rows");
+    failed
+}
+
+/// The render walk's window variant, written when `LOQUAX_RENDER_WALK`
+/// names a directory (`just render-walk` runs it released); without it
+/// the test does nothing, since frame times of a debug build judge
+/// nothing.
+#[test]
+fn the_window_map_walks_inside_the_blend() {
+    let Some(out) = std::env::var_os("LOQUAX_RENDER_WALK").map(PathBuf::from) else {
+        return;
+    };
+    let failed = window_variant(&out);
+    assert!(
+        failed.is_empty(),
+        "the window variant's rules failed:\n{}",
+        failed.join("\n")
+    );
 }
 
 /// 1812's comparison, a measuring tool: real loading scenes (the walk's
