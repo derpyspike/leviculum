@@ -346,8 +346,11 @@ impl core::fmt::Display for AnnounceError {
 /// announce stream.
 ///
 /// Install one with [`crate::node::NodeCore::set_announce_control`]. The node
-/// consults it on every scheduled announce (the periodic management tick and
-/// the interface-recovery re-announce) before emitting; a destination for
+/// consults it on every scheduled announce before emitting, in three places:
+/// the periodic management tick, the interface-recovery re-announce, and the
+/// path self-repair beat of a shared-instance client (leviculum-std's
+/// `run_path_self_repair`, which repairs only what
+/// [`crate::node::NodeCore::announced_destination_hashes`] names). A destination for
 /// which [`should_suppress_announce`](AnnounceControl::should_suppress_announce)
 /// returns `true` stays fully **routable** (it remains registered, links and
 /// data still reach it) but is never gossiped.

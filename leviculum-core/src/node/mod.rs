@@ -3756,38 +3756,15 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         let mut sent = 0usize;
         let emission_secs = self.transport.announce_emission_secs(now_ms);
 
-        // Collect destination hashes first to avoid borrow conflict. Only
-        // destinations that have announced before (announce cache present)
-        // are re-announced: announcing is the application's decision, and a
-        // synthetic first announce would shadow the app's real one when both
-        // land in the same emission second (the peer drops the later one as a
-        // not-newer path).
-        let local_hashes: Vec<crate::destination::DestinationHash> = self
-            .destinations
-            .keys()
-            .filter(|h| {
-                self.transport.has_destination(h.as_bytes())
-                    && self
-                        .transport
-                        .storage()
-                        .get_announce_cache(h.as_bytes())
-                        .is_some()
-            })
-            .copied()
-            .collect();
+        // Collect destination hashes first to avoid borrow conflict: the
+        // destinations this node would announce again on its own
+        // (`Self::reannounces_on_its_own`, the set the owner's path
+        // self-repair watches as well).
+        let local_hashes: Vec<crate::destination::DestinationHash> =
+            self.announced_destination_hashes();
 
         for dest_hash in &local_hashes {
-            // Installed announce-suppression policy: skip silently.
-            if let Some(policy) = self.announce_control.as_ref() {
-                if policy.should_suppress_announce(dest_hash) {
-                    continue;
-                }
-            }
             if let Some(dest) = self.destinations.get_mut(dest_hash) {
-                // Explicit-hash destinations never announce (direct-link only).
-                if dest.is_explicit_hash() {
-                    continue;
-                }
                 match dest.announce(None, &mut self.rng, now_ms, emission_secs) {
                     Ok(packet) => {
                         let mut buf = [0u8; crate::constants::MTU];
@@ -3834,8 +3811,13 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
         let client_hashes: Vec<[u8; crate::constants::TRUNCATED_HASHBYTES]> =
             self.transport.local_client_known_dest_hashes();
         for hash in &client_hashes {
-            // Skip if this dest was already announced as a daemon-owned destination
-            if local_hashes.iter().any(|h| h.as_bytes() == hash) {
+            // Skip a daemon-owned destination: the loop above announced it
+            // when it should be announced, and its policy keeps it silent
+            // when it should not.
+            if self
+                .destinations
+                .contains_key(&crate::destination::DestinationHash::new(*hash))
+            {
                 continue;
             }
             if let Some(cached_raw) = self.transport.storage().get_announce_cache(hash).cloned() {
@@ -4049,22 +4031,34 @@ impl<R: CryptoRngCore, C: Clock, S: Storage> NodeCore<R, C, S> {
     /// repaired into the mesh either.
     pub fn announced_destination_hashes(&self) -> Vec<DestinationHash> {
         self.destinations
-            .iter()
-            .filter(|(h, dest)| {
-                !dest.is_explicit_hash()
-                    && self.transport.has_destination(h.as_bytes())
-                    && self
-                        .transport
-                        .storage()
-                        .get_announce_cache(h.as_bytes())
-                        .is_some()
-                    && !self
-                        .announce_control
-                        .as_ref()
-                        .is_some_and(|policy| policy.should_suppress_announce(h))
-            })
-            .map(|(h, _)| *h)
+            .keys()
+            .filter(|h| self.reannounces_on_its_own(h))
+            .copied()
             .collect()
+    }
+
+    /// The one predicate behind [`Self::announced_destination_hashes`]
+    /// and so behind both its users, the interface-up re-announce
+    /// (`announce_local_destinations`) and the owner's self-repair beat:
+    /// registered, not explicit-hash (direct-link only, never announced),
+    /// with a cached announce (announcing is the application's decision,
+    /// and a synthetic first announce would shadow the app's real one in
+    /// the same emission second), and not suppressed by the installed
+    /// [`AnnounceControl`].
+    fn reannounces_on_its_own(&self, hash: &DestinationHash) -> bool {
+        self.destinations
+            .get(hash)
+            .is_some_and(|dest| !dest.is_explicit_hash())
+            && self.transport.has_destination(hash.as_bytes())
+            && self
+                .transport
+                .storage()
+                .get_announce_cache(hash.as_bytes())
+                .is_some()
+            && !self
+                .announce_control
+                .as_ref()
+                .is_some_and(|policy| policy.should_suppress_announce(hash))
     }
 
     /// The `app_data` of the last announce heard for `dest_hash`, whenever it
