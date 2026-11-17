@@ -55,6 +55,28 @@ impl Hand for Network<'_> {
     }
 }
 
+/// A compose send's submission, kept under `home` ([`Pending`]) the
+/// moment it is made (order 1986 finding 2a, audit of 1881): the
+/// frontends queue sends and run one at a time, so one waiting behind
+/// another must be on disk before any runner starts, or it dies with the
+/// process. The frontend calls this where it queues and hands the
+/// submission to [`send_home`] when the send's turn comes.
+pub fn kept_submission(home: &Path, to: [u8; 16], body: String, fields: Vec<Field>) -> Submission {
+    let submission = Submission {
+        client_id: super::client::client_id(),
+        destination: to,
+        title: Vec::new(),
+        content: body.into_bytes(),
+        fields,
+    };
+    if let Err(error) = Pending::at(home).keep(&submission) {
+        // Not kept is no reason not to send: it is asked again as long as
+        // this run lasts, and only a restart in that time loses it.
+        tracing::warn!("HOME send not kept: {error}");
+    }
+    submission
+}
+
 /// One compose send on a client: handed to the home node with `/send`,
 /// which delivers it. The bubble is named after the id the home node gave
 /// it, and takes its later states from the archive's entries on each pull.
@@ -64,37 +86,22 @@ impl Hand for Network<'_> {
 /// submission that goes as a resource has gone (1662), as the event the
 /// screen folds ([`UiEvent::SendProgress`]).
 ///
-/// The submission is kept under `home` ([`Pending`]) before it is first
-/// asked, and asked again while the home node is out of reach (order
-/// 1881): the bubble stays sending and the runner waits, rather than
-/// ending in an error after three tries. Only a refusal ends it with an
-/// error; a run that ends first leaves the file for [`pull_watching`] of
-/// the next run to hand over.
-#[allow(clippy::too_many_arguments)]
+/// `submission` is already under `home` ([`kept_submission`]), and is
+/// asked again while the home node is out of reach (order 1881): the
+/// bubble stays sending and the runner waits, rather than ending in an
+/// error after three tries. Only a refusal ends it with an error; a run
+/// that ends first leaves the file for [`pull_watching`] of the next run
+/// to hand over.
 pub async fn send_home(
     tap: &mut impl Outbox,
     client: &HomeClient,
     home: &Path,
-    to: [u8; 16],
-    body: String,
-    fields: Vec<Field>,
+    submission: Submission,
     budget: Duration,
     settle: Duration,
     progress: &mut (dyn FnMut(UiEvent) + Send),
 ) -> UiEvent {
-    let submission = Submission {
-        client_id: super::client::client_id(),
-        destination: to,
-        title: Vec::new(),
-        content: body.into_bytes(),
-        fields,
-    };
     let pending = Pending::at(home);
-    if let Err(error) = pending.keep(&submission) {
-        // Not kept is no reason not to send: it is asked again as long as
-        // this run lasts, and only a restart in that time loses it.
-        tracing::warn!("HOME send not kept: {error}");
-    }
     let mut moved = |share: f32| {
         progress(UiEvent::SendProgress(
             crate::ui::transfer::Transfer::permille(share),
@@ -188,14 +195,23 @@ pub async fn pull_watching(
         imported,
     };
     // Sends an earlier run kept and never saw taken go first (order 1881),
-    // so this pull brings them back as the user's own sent messages.
+    // so this pull brings them back as the user's own sent messages. One
+    // the home refuses for good is told to the screen (order 1986 finding
+    // 2b): its own run's bubble is gone, so this event is the only way
+    // the user hears that the message is lost.
     let mut no_progress = |_: f32| {};
     let mut network = Network {
         client,
         budget,
         moved: &mut no_progress,
     };
-    let handed = hand_leftovers(&Pending::at(home), &mut network).await;
+    let mut refused = |submission: &Submission, error: &HomeError| {
+        progress(UiEvent::PendingRefused {
+            text: String::from_utf8_lossy(&submission.content).into_owned(),
+            error: error.to_string(),
+        });
+    };
+    let handed = hand_leftovers(&Pending::at(home), &mut network, &mut refused).await;
     if handed > 0 {
         tracing::info!("HOME pending sends handed over: {handed}");
     }

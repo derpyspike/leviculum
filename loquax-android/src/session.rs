@@ -18,7 +18,6 @@ use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use leviculum_lxmf::Field;
 use leviculum_ui::commands::Command as PaletteCommand;
 use leviculum_ui::input::{InputBuffer, KeyEvent};
 use loquax::engine::{attach_leaf, Attached, LeafConfig, Lender, Role};
@@ -225,7 +224,11 @@ struct Inner {
     offset: i32,
     /// The phone's language: the scene's words are said in it (1217).
     lang: Lang,
-    sends: VecDeque<([u8; 16], String, Vec<Field>)>,
+    /// Compose sends waiting their turn, oldest first, each already in
+    /// `home-pending/` (order 1986 finding 2a, audit of 1881): one queued
+    /// behind a waiting send must survive the process's end, so it goes
+    /// to disk when it is queued, not when its runner starts.
+    sends: VecDeque<loquax::home::wire::Submission>,
     /// What the Browse tab asked of the platform (1337), oldest first: the
     /// fetches, downloads and stores of lnomad's [`lnomad::Effect`]. The
     /// fetch through the mailbox's node is slice 3 of
@@ -3073,7 +3076,9 @@ impl Inner {
                 // this fell into the catch-all and the phone's chat ended
                 // after its first page.
                 UiEffect::Store(read) => answers.push(self.read(read)),
-                UiEffect::Send { to, body, fields } => self.sends.push_back((to, body, fields)),
+                UiEffect::Send { to, body, fields } => self
+                    .sends
+                    .push_back(runner::kept_submission(&self.home, to, body, fields)),
                 UiEffect::Fetch => self.pull_owed = true,
                 // Explore opened (1644): the mailbox's list asked again.
                 UiEffect::AskPages => self.ask_pages(),
@@ -3350,7 +3355,7 @@ impl Inner {
     /// The oldest send, if none runs; the owed pull, if none runs.
     fn start_next(&mut self) {
         if !self.sending {
-            if let Some((to, body, fields)) = self.sends.pop_front() {
+            if let Some(submission) = self.sends.pop_front() {
                 self.sending = true;
                 let mut tap = self.fanout.tap();
                 let client = self.client.clone();
@@ -3369,9 +3374,7 @@ impl Inner {
                         &mut tap,
                         &client,
                         &home,
-                        to,
-                        body,
-                        fields,
+                        submission,
                         BUDGET,
                         SETTLE,
                         &mut progress,

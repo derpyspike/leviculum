@@ -3194,6 +3194,13 @@ pub enum UiEvent {
     /// in thousandths (1662): a client's `/send` to its mailbox. The bubble
     /// says it, at most every [`transfer::EVERY_MS`].
     SendProgress(u16),
+    /// A send kept from an earlier run (`home-pending/`, order 1881) that
+    /// the home node refused when a pull's handover asked it to take it
+    /// (order 1986 finding 2b): the run that wrote it is over and its
+    /// bubble gone, so this is the only way the user hears that `text`,
+    /// the message's words, will not go. `error` is the refusal as the
+    /// runner worded it.
+    PendingRefused { text: String, error: String },
     /// How far the bubble `key` of `peer`'s conversation has gone, as the
     /// runner that moves its bytes measured it (1662).
     Transfer {
@@ -4264,6 +4271,10 @@ fn fold<B: InputBuffer + Default>(model: &mut UiModel<B>, event: UiEvent) -> Vec
             Vec::new()
         }
         UiEvent::SendDone(result) => on_send_done(model, result),
+        UiEvent::PendingRefused { text, error } => {
+            model.toast(ToastKind::Error, pending_refused_words(&text));
+            vec![UiEffect::Notice(format!("kept send refused: {error}"))]
+        }
         UiEvent::Earlier {
             peer,
             messages,
@@ -8149,6 +8160,18 @@ pub const SHARE_CLICK: &str = "click to stop";
 
 /// The toast of a send that failed: the legs' reasons are in its details.
 pub const NOT_SENT: &str = "Not sent. Its details say why.";
+
+/// The toast of a kept send a pull's handover saw refused (order 1986
+/// finding 2b): the message's own words, shortened, name which text is
+/// lost — its bubble is gone, so nothing else on the screen can.
+pub fn pending_refused_words(text: &str) -> String {
+    const SHOWN: usize = 40;
+    let mut words: String = text.chars().take(SHOWN).collect();
+    if text.chars().count() > SHOWN {
+        words.push('…');
+    }
+    format!("Not sent, the mailbox refused it: \u{201c}{words}\u{201d}")
+}
 
 /// The empty conversations pane's line, in the reader's language.
 fn no_conversations(lang: strings::Lang) -> &'static str {
@@ -23908,5 +23931,31 @@ pub(crate) mod tests {
             model.tracks.get(&ATK_ME).is_none_or(|t| t.is_empty()),
             "a stored word of another's joined the reader's track in the shells' order"
         );
+    }
+
+    /// Order 1986 finding 2b: a kept send a pull's handover saw refused
+    /// folds to an error toast naming the message's own words, and the
+    /// refusal goes to the log. The send's own run is over, so a running
+    /// send's bookkeeping (`sending`) is left alone.
+    #[test]
+    fn a_refused_kept_send_reaches_the_screen_without_touching_a_running_send() {
+        let mut model = UiModel::<Field>::new(&[]);
+        model.sending.push_back((0, 0));
+        let effects = update(
+            &mut model,
+            UiEvent::PendingRefused {
+                text: "ein alter Gruß aus den Bergen, geschrieben bevor die App schloss".into(),
+                error: "mailbox: the home node refused (NotAdmitted)".into(),
+            },
+        );
+        assert_eq!(model.sending.len(), 1, "a running send stays booked");
+        let toast = model.toasts.last().expect("a toast");
+        assert_eq!(toast.kind, ToastKind::Error);
+        assert!(toast.text.contains("ein alter Gruß"), "{}", toast.text);
+        assert!(toast.text.contains('…'), "shortened: {}", toast.text);
+        let [UiEffect::Notice(line)] = effects.as_slice() else {
+            panic!("the refusal for the log: {effects:?}");
+        };
+        assert!(line.contains("NotAdmitted"), "{line}");
     }
 }

@@ -34,6 +34,7 @@ use loquax::fanout::{Fanout, Tap};
 use loquax::fetch::{run_fetch, FetchError, FetchOptions};
 use loquax::home::runner::{self, HomeClient};
 use loquax::home::watch::{self, Fallback, WatchEvent};
+use loquax::home::wire::Submission;
 use loquax::mailbox::{Unanswered, UNANSWERED_EXCLUSION_MS, UNANSWERED_LIMIT};
 use loquax::mailbox_state::{self, short, Stored};
 use loquax::mapload::{Loader, Source, Step, Watch, CACHE_DEFAULT_MB};
@@ -152,6 +153,21 @@ pub(crate) struct RunContext {
     client: Option<HomeClient>,
 }
 
+/// A queued compose send, waiting its turn behind the running one.
+enum QueuedSend {
+    /// A client of a mailbox: the submission went to `home-pending/` the
+    /// moment it was queued (order 1986 finding 2a, audit of 1881), so
+    /// one waiting behind another survives the process's end.
+    Kept(Submission),
+    /// A send over the device's own node, built when its runner starts:
+    /// nothing keeps it, as before.
+    Direct {
+        to: [u8; 16],
+        body: String,
+        fields: Vec<Field>,
+    },
+}
+
 /// A runner that ended, as its task hands it to the shell.
 enum Finished {
     /// The running send, as the event the model folds.
@@ -224,7 +240,7 @@ pub(crate) struct Shell {
     context: RunContext,
     /// Sends not yet started, oldest first. They run one at a time: the
     /// model names a queued message after the oldest running send.
-    sends: VecDeque<([u8; 16], String, Vec<Field>)>,
+    sends: VecDeque<QueuedSend>,
     /// A fetch asked for and not yet started, with its reason's word. The
     /// model asks for one at a time.
     fetch_owed: Option<&'static str>,
@@ -368,7 +384,15 @@ impl Shell {
                 }
                 UiEffect::Send { to, body, fields } => {
                     self.log_receipt(&to, &body, &fields);
-                    self.sends.push_back((to, body, fields));
+                    self.sends.push_back(match self.context.client.is_some() {
+                        true => QueuedSend::Kept(runner::kept_submission(
+                            &self.context.home,
+                            to,
+                            body,
+                            fields,
+                        )),
+                        false => QueuedSend::Direct { to, body, fields },
+                    });
                 }
                 UiEffect::Fetch => {
                     let reason = self.model.fetch_reason.map_or("key", |r| r.word());
@@ -1095,7 +1119,7 @@ impl Shell {
     /// queued message after the oldest running send.
     fn start_next(&mut self) {
         if self.send_task.is_none() {
-            if let Some((to, body, fields)) = self.sends.pop_front() {
+            if let Some(queued) = self.sends.pop_front() {
                 let tap = self.fanout.tap();
                 let context = self.job_context();
                 let done = self.done_tx.clone();
@@ -1106,7 +1130,7 @@ impl Shell {
                     let mut progress = move |event: UiEvent| {
                         let _ = told.send(Finished::Event(event));
                     };
-                    let event = send(tap, context, to, body, fields, &mut progress).await;
+                    let event = send(tap, context, queued, &mut progress).await;
                     let _ = done.send(Finished::Send(event));
                 }));
             }
@@ -1620,30 +1644,43 @@ pub(crate) fn local_now() -> WallTime {
     }
 }
 
-/// One compose-line send, exactly as `loquax send --via auto` runs it.
+/// One compose-line send. On a client of a mailbox it waits the home node
+/// out ([`runner::send_home`], order 1881), where `loquax send --via
+/// auto` still ends on the first unreachable ask; on a device of its own
+/// it runs exactly as `loquax send --via auto` does.
 async fn send(
     mut tap: Tap,
     context: RunContext,
-    to: [u8; 16],
-    body: String,
-    fields: Vec<Field>,
+    queued: QueuedSend,
     progress: &mut (dyn FnMut(UiEvent) + Send),
 ) -> UiEvent {
-    if let Some(client) = &context.client {
-        let settle = Duration::from_millis(SETTLE_MS);
-        return runner::send_home(
-            &mut tap,
-            client,
-            &context.home,
-            to,
-            body,
-            fields,
-            context.timeout,
-            settle,
-            progress,
-        )
-        .await;
-    }
+    let (to, body, fields) = match (queued, &context.client) {
+        (QueuedSend::Kept(submission), Some(client)) => {
+            let settle = Duration::from_millis(SETTLE_MS);
+            return runner::send_home(
+                &mut tap,
+                client,
+                &context.home,
+                submission,
+                context.timeout,
+                settle,
+                progress,
+            )
+            .await;
+        }
+        // The client is set once at start, before any send is queued: a
+        // kept send always finds it above. Forgotten here so the file
+        // cannot outlive the error the bubble shows.
+        (QueuedSend::Kept(submission), None) => {
+            if let Err(error) =
+                loquax::home::pending::Pending::at(&context.home).taken(&submission.client_id)
+            {
+                tracing::warn!("HOME pending send not forgotten: {error}");
+            }
+            return UiEvent::SendDone(Err("mailbox: the client is gone".to_string()));
+        }
+        (QueuedSend::Direct { to, body, fields }, _) => (to, body, fields),
+    };
     let mut options = SendOptions::new(context.instance.clone(), context.timeout);
     let mut effects = context.effects.clone();
     let (home, config_dir, instance, pn, excluded) = (

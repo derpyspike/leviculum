@@ -3097,6 +3097,79 @@ async fn a_phone_session_rides_out_a_dead_home_node_and_a_dead_engine() {
     node.kill().await;
 }
 
+/// A compose send is kept on disk the moment it is queued (order 1986
+/// finding 2a, audit of 1881): two sends queued while the home node is
+/// away, the session dropped, and a new `Pending::at` on the same
+/// directory lists both, in the order written. Before, only the send
+/// whose runner had started was in `home-pending/`; one queued behind it
+/// lived in the session's memory and died with the process.
+#[tokio::test(flavor = "multi_thread")]
+async fn sends_queued_while_the_home_is_away_survive_the_sessions_end() {
+    let instance = instance();
+    let rns = tempfile::tempdir().expect("transport config dir");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+    let port = listener.local_addr().expect("its address").port();
+    let home = tempfile::tempdir().expect("home node dir");
+    let code = admit(home.path());
+    let node = HomeNode::start(listener, &instance, rns.path(), home.path()).await;
+
+    // The first start joins while the home node answers, then ends.
+    let phone = tempfile::tempdir().expect("app dir");
+    let dir = phone.path().display().to_string();
+    let first = Start {
+        dir: dir.clone(),
+        code: Some(format!("{code}@127.0.0.1:{port}")),
+        name: Some("Pixel".to_string()),
+        ..Start::default()
+    };
+    tokio::task::spawn_blocking(move || {
+        let session = Session::start(&first).unwrap_or_else(|error| panic!("{error:?}"));
+        session.stop();
+    })
+    .await
+    .expect("the joining session");
+    node.kill().await;
+
+    // The home node away: a session queues two sends and ends.
+    let again = Start {
+        dir,
+        ..Start::default()
+    };
+    let pending_dir = phone.path().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let session = Session::start(&again).unwrap_or_else(|error| panic!("{error:?}"));
+        let peer = loquax::address::to_hex(&[0x6b; 16]);
+        for body in ["an erster Stelle", "an zweiter Stelle"] {
+            session
+                .request(Request::Send {
+                    peer: peer.clone(),
+                    body: body.to_string(),
+                })
+                .expect("queue a send");
+        }
+        let pending = loquax::home::pending::Pending::at(&pending_dir);
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while pending.waiting().expect("the listing").len() < 2 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "both queued sends on disk, found {}",
+                pending.waiting().expect("the listing").len()
+            );
+            let _ = session.next_event(Duration::from_millis(200));
+        }
+        session.stop();
+        let texts: Vec<String> = pending
+            .waiting()
+            .expect("the listing")
+            .iter()
+            .map(|kept| String::from_utf8_lossy(&kept.content).into_owned())
+            .collect();
+        assert_eq!(texts, ["an erster Stelle", "an zweiter Stelle"]);
+    })
+    .await
+    .expect("the session with the home away");
+}
+
 /// A network change through the facade (1298): Java's `Core.network` with
 /// another network drops the session's connection to the mailbox and dials
 /// it at once; the line says "Reconnecting…" (`Event::Network`

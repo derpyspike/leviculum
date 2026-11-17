@@ -68,12 +68,17 @@ impl Pending {
 
     /// Keep `submission` until [`Self::taken`] is called for it. Written to
     /// a temporary file and renamed, so a crash leaves it whole or absent.
+    /// A process-wide counter follows the time in the name: two kept in
+    /// the same millisecond still list in the order written.
     pub fn keep(&self, submission: &Submission) -> std::io::Result<()> {
+        use core::sync::atomic::{AtomicU32, Ordering};
+        static SEQ: AtomicU32 = AtomicU32::new(0);
         std::fs::create_dir_all(&self.dir)?;
         let millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis());
-        let name = format!("{millis:020}-{}.send", hex(&submission.client_id));
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let name = format!("{millis:020}-{seq:010}-{}.send", hex(&submission.client_id));
         let temporary = self.dir.join(format!("{name}.part"));
         std::fs::write(&temporary, wire::send_request(submission))?;
         std::fs::rename(&temporary, self.dir.join(name))
@@ -168,8 +173,14 @@ pub async fn hand_until_taken(
 /// Hand every kept submission over once, oldest first, and stop at the
 /// first the home was out of reach for: the ones after it would fare no
 /// better, and the pull this runs before should not wait for each. The
-/// number the home took comes back.
-pub async fn hand_leftovers(pending: &Pending, hand: &mut impl Hand) -> usize {
+/// number the home took comes back. One the home refuses is forgotten and
+/// told to `refused` (order 1986 finding 2b): the run that wrote it is
+/// over, its bubble gone, so this is the only place the user can hear it.
+pub async fn hand_leftovers(
+    pending: &Pending,
+    hand: &mut impl Hand,
+    refused: &mut (dyn FnMut(&Submission, &HomeError) + Send),
+) -> usize {
     let waiting = match pending.waiting() {
         Ok(waiting) => waiting,
         Err(error) => {
@@ -194,6 +205,7 @@ pub async fn hand_leftovers(pending: &Pending, hand: &mut impl Hand) -> usize {
             }
             Err(error) => {
                 tracing::warn!("HOME pending send refused: {error}");
+                refused(&submission, &error);
                 forget(pending, &submission.client_id);
             }
         }
@@ -350,7 +362,7 @@ mod tests {
         pending.keep(&submission(2)).unwrap();
 
         let mut away = home(Duration::from_secs(60));
-        assert_eq!(hand_leftovers(&pending, &mut away).await, 0);
+        assert_eq!(hand_leftovers(&pending, &mut away, &mut |_, _| {}).await, 0);
         assert_eq!(
             *away.asks.lock().unwrap(),
             vec![[1; 16]],
@@ -360,7 +372,7 @@ mod tests {
 
         let mut back = home(Duration::ZERO);
         let taken = Arc::clone(&back.taken);
-        assert_eq!(hand_leftovers(&pending, &mut back).await, 2);
+        assert_eq!(hand_leftovers(&pending, &mut back, &mut |_, _| {}).await, 2);
         assert!(pending.waiting().unwrap().is_empty());
         // A runner that still held the second one asks for it again.
         let mut late = Home {
@@ -380,7 +392,57 @@ mod tests {
         pending.keep(&submission(3)).unwrap();
         let mut home = home(Duration::ZERO);
         home.refuse = true;
-        assert_eq!(hand_leftovers(&pending, &mut home).await, 0);
+        assert_eq!(hand_leftovers(&pending, &mut home, &mut |_, _| {}).await, 0);
         assert!(pending.waiting().unwrap().is_empty());
+    }
+
+    /// Finding 2b of order 1986 (audit of 1881): a leftover the home
+    /// finally refuses is told to the caller with its refusal, so the
+    /// user hears of a message that is now lost for good.
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_leftover_is_told_with_its_refusal() {
+        let dir = tempfile::tempdir().unwrap();
+        let pending = Pending::at(dir.path());
+        pending.keep(&submission(4)).unwrap();
+        let mut refusing = home(Duration::ZERO);
+        refusing.refuse = true;
+        let mut told = Vec::new();
+        let count = hand_leftovers(&pending, &mut refusing, &mut |refused, error| {
+            told.push((refused.clone(), error.to_string()))
+        })
+        .await;
+        assert_eq!(count, 0);
+        assert_eq!(told.len(), 1, "{told:?}");
+        assert_eq!(told[0].0, submission(4));
+        assert_eq!(
+            told[0].1,
+            HomeError::Refused(Status::NotAdmitted).to_string()
+        );
+        // An unreachable home is no refusal: nothing is told.
+        pending.keep(&submission(5)).unwrap();
+        let mut gone = home(Duration::from_secs(60));
+        let mut spoken = 0;
+        hand_leftovers(&pending, &mut gone, &mut |_, _| spoken += 1).await;
+        assert_eq!(spoken, 0);
+    }
+
+    /// Finding 2a's order half (order 1986): sends kept within the same
+    /// millisecond still list in the order written, by the counter in the
+    /// file name. Without it the tail of the name, the random client id,
+    /// decided.
+    #[test]
+    fn sends_kept_in_the_same_millisecond_list_in_the_order_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let pending = Pending::at(dir.path());
+        for id in 1..=9 {
+            pending.keep(&submission(id)).unwrap();
+        }
+        let kept: Vec<u8> = pending
+            .waiting()
+            .unwrap()
+            .iter()
+            .map(|s| s.client_id[0])
+            .collect();
+        assert_eq!(kept, (1..=9).collect::<Vec<u8>>());
     }
 }
