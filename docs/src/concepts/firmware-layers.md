@@ -31,7 +31,8 @@ persist-ack, media-state, motion, battery-scale, gnss-init, screen, ...)
 plus `leviculum-core` and `leviculum-lxmf` hold the behaviour. Five of
 the thirty-five are consumed by the host daemons too: `leviculum-std`
 lists ble-tx, channel-access, announce-policy, queue-budget and
-heap-budget (`leviculum-std/Cargo.toml:100`, `:95`, `:99`, `:103`, `:164`),
+heap-budget (`leviculum-std/Cargo.toml:100`, `:108`, `:112`, `:116`, and
+`:179` as a dev-dependency),
 and lnpnd takes announce-policy, one of the five
 (`lnpnd/Cargo.toml:166`). `leviculum-core` itself depends on
 telemetry-policy (`leviculum-core/Cargo.toml:55`). So "nRF" in their
