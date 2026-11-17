@@ -522,6 +522,8 @@ fn draw_ground(area: embedded_graphics::primitives::Rectangle, ground: &mut Pack
     px
 }
 
+/// Pins behaviour that existed before the merge f619d118a13c; it is
+/// green without that range's changes and is not proof of a change.
 #[test]
 fn a_ground_pack_drawn_through_the_view_paints_its_class_inside_the_area_only() {
     use embedded_graphics::prelude::{Point, Size};
@@ -544,6 +546,8 @@ fn a_ground_pack_drawn_through_the_view_paints_its_class_inside_the_area_only() 
     }
 }
 
+/// Pins behaviour that existed before the merge f619d118a13c; it is
+/// green without that range's changes and is not proof of a change.
 #[test]
 fn a_zero_width_area_paints_no_ground() {
     use embedded_graphics::prelude::{Point, Size};
@@ -577,6 +581,8 @@ impl ground::Ground for Nowhere {
     }
 }
 
+/// Pins behaviour that existed before the merge f619d118a13c; it is
+/// green without that range's changes and is not proof of a change.
 #[test]
 fn a_ground_without_a_pack_or_a_target_that_cannot_read_leaves_the_frame() {
     use embedded_graphics::prelude::{DrawTargetExt, Point, Size};
@@ -604,6 +610,8 @@ fn a_ground_without_a_pack_or_a_target_that_cannot_read_leaves_the_frame() {
     );
 }
 
+/// Pins behaviour that existed before the merge f619d118a13c; it is
+/// green without that range's changes and is not proof of a change.
 #[test]
 fn a_row_off_the_grid_has_no_ground() {
     // Rows past the last of the world at z11 (2^19 pixel rows).
@@ -618,6 +626,8 @@ fn a_row_off_the_grid_has_no_ground() {
     }
 }
 
+/// Pins behaviour that existed before the merge f619d118a13c; it is
+/// green without that range's changes and is not proof of a change.
 #[test]
 fn a_pack_knows_its_kind_and_refuses_wrong_buffers() {
     let file = pack(&[((250, 210), block(250, 210, stripes))]);

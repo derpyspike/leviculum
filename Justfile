@@ -2753,10 +2753,14 @@ m9-render-no-std:
 # 1167); where the reference is checked out they run.
 # build-integ-bins: tui_snapshot starts the checkout's release lnsd as the
 # messenger's daemon (1570), and refuses one older than its sources.
+# The library's tests under `screenmap` alone come last: the tui feature
+# leaves it out and `loquax-gui`, which has it, is in no gate, so the pins'
+# hue rules in `loquax/src/screenmap.rs` ran nowhere (1956).
 [doc('Lint and test loquax with its tui feature (#232)')]
 loquax-tui: build-integ-bins
     cargo clippy -p loquax --features tui --all-targets -- -D warnings
     {{manifest}} loquax-tui -- bash scripts/with-prerequisites.sh loquax/tui_snapshot loquax/home_node loquax/import loquax/wire_props loquax/scene_golden loquax/mailbox_receipts loquax/mailbox_setup loquax/mailbox_mesh loquax/device_receipts loquax/relay_group loquax/operation_counts loquax/mailbox_census loquax/mailbox_growth_soak loquax/store_newer -- cargo test -p loquax --features tui --bins --test tui_snapshot --test home_node --test import --test wire_props --test scene_golden --test mailbox_receipts --test mailbox_setup --test mailbox_mesh --test device_receipts --test relay_group --test operation_counts --test mailbox_census --test mailbox_growth_soak --test store_newer
+    {{manifest}} loquax-screenmap -- cargo test -p loquax --features screenmap --lib
 
 # 1084, #474: loquax's `gui` feature (the iced window) is off by default and
 # in no other feature, so neither the workspace runs nor `loquax-tui` compile
