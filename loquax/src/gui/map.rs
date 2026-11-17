@@ -12,9 +12,15 @@ pub use loquax::screenmap::{
 /// What the model's map functions are told in the window
 /// ([`loquax::screenmap::setup`]), with the radar's zooms (1386): deeper
 /// than the outline reaches where no region is, so the radar is there to
-/// zoom into.
-pub fn setup(painter: &loquax::picture::Painter) -> loquax::ui::map::MapSetup {
+/// zoom into. While the autoload may fetch, the offer reaches the
+/// source's depth first ([`loquax::ui::map::autoload_zooms`], the audit
+/// of 1933): the one ceiling rule, as the terminal and the phone apply
+/// it, so every frontend offers the same zooms.
+pub fn setup(painter: &loquax::picture::Painter, autoload: bool) -> loquax::ui::map::MapSetup {
     let mut setup = loquax::screenmap::setup(painter);
+    if autoload {
+        setup.zooms = loquax::ui::map::autoload_zooms(setup.zooms);
+    }
     setup.zooms = loquax::ui::radar::zooms(setup.zooms);
     setup
 }
@@ -142,7 +148,7 @@ pub(super) mod tests {
     #[test]
     fn the_map_frame_over_the_fixture_at_three_zooms() {
         let mut frames = florence();
-        let setup = setup(frames.painter());
+        let setup = setup(frames.painter(), false);
         // Three inside the region's box (11.2505,43.7728 to 11.2700,43.7785,
         // the fixture's README): the Duomo, San Lorenzo's market, east of
         // Piazza d'Azeglio's corner; and Pisa, far to the west.
@@ -215,7 +221,7 @@ pub(super) mod tests {
     fn the_window_never_shows_the_world_twice() {
         let mut frames = Frames::new(Maps::new(None));
         frames.set_names_off(true);
-        let setup = setup(frames.painter());
+        let setup = setup(frames.painter(), false);
         let size = (1280u32, 800u32);
         let centre = project(LatLon::from_degrees(30.0, 10.0));
         let asked = ExactView::new(centre, 0, size.0, size.1);
@@ -818,7 +824,7 @@ pub(super) mod tests {
         use loquax::ui::tracks::{scenes, tracks, TrackWindow};
         let out = std::env::var_os("LOQUAX_TRACK_PNG_DIR").map(PathBuf::from);
         let mut frames = florence();
-        let setup = setup(frames.painter());
+        let setup = setup(frames.painter(), false);
         let (w, h) = (480u32, 320u32);
         for scene in scenes::marks() {
             let fitted = match scene.name {
