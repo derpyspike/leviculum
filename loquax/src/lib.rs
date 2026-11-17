@@ -127,8 +127,6 @@ pub mod seen;
 pub mod send;
 #[cfg(feature = "history")]
 pub mod store;
-#[cfg(all(test, feature = "picture"))]
-mod store_bench;
 pub mod sync;
 pub mod telemetry;
 #[cfg(feature = "picture")]

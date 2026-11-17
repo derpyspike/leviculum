@@ -198,12 +198,6 @@ pub struct Stats {
     /// time summed: on one worker the CPU a cold frame's tiles cost; on
     /// more it is that or above, as the workers share cores.
     pub render_us: u64,
-    /// Curved frames drawn whole by a painter (order 1943).
-    pub curved_drawn: u64,
-    /// Curved frames answered from the memo: the same view at rest.
-    pub curved_memo: u64,
-    /// Moving curved frames blitted from the memo and owed.
-    pub curved_blit: u64,
 }
 
 /// One frame asked of the cache.
@@ -256,25 +250,6 @@ pub struct Composed {
     pub missing: usize,
 }
 
-/// The last curved frame drawn whole (order 1943): the whole-frame
-/// path has no tiles, so without this every ask — the same view at
-/// rest again (the window's refine passes), every frame of a pan —
-/// walked every region's geometry again, about 1 s a frame over Lew's
-/// store of 2026-11-16. Dropped with the cache (epoch, style), and on
-/// progress when it owed anything.
-struct CurvedMemo {
-    view: ExactView,
-    /// The screen it blended for ([`TileCache::set_screen`]): another
-    /// screen is another `t`.
-    screen: Option<(u32, u32)>,
-    smooth: bool,
-    /// What it owed (tiles pending and regions unreadable): only a
-    /// whole memo serves a frame at rest.
-    owed: usize,
-    attribution: String,
-    rgba: Vec<u8>,
-}
-
 /// The cache over one maps directory.
 pub struct TileCache {
     maps: Maps,
@@ -306,13 +281,6 @@ pub struct TileCache {
     /// a frame with margins blends at the screen's `t` (1796).
     screen: Option<(u32, u32)>,
     pub stats: Stats,
-    /// The last curved frame drawn whole (order 1943).
-    curved: Option<CurvedMemo>,
-    /// Whether a curved frame is kept as the memo: on by default; the
-    /// phone turns it off — a world frame there is drawn straight into
-    /// the Bitmap and allocates nothing frame-sized beside it (1797,
-    /// `map_heap`'s law), so its curved frames stay drawn whole.
-    memo_on: bool,
     /// A frame's buffer handed back ([`recycle`](Self::recycle)), composed
     /// into next.
     spare: Vec<u8>,
@@ -343,8 +311,6 @@ impl TileCache {
             world_blend: false,
             screen: None,
             stats: Stats::default(),
-            curved: None,
-            memo_on: true,
             spare: Vec::new(),
             #[cfg(test)]
             reference: false,
@@ -376,16 +342,6 @@ impl TileCache {
     /// is Mercator already, and be placed as a flat one.
     pub fn set_screen(&mut self, screen: Option<(u32, u32)>) {
         self.screen = screen;
-    }
-
-    /// Keep no curved memo (order 1943): the phone's path, whose world
-    /// frames may not allocate a frame of their own (1797); dropping it
-    /// also drops the one held.
-    pub fn set_curved_memo(&mut self, on: bool) {
-        self.memo_on = on;
-        if !on {
-            self.curved = None;
-        }
     }
 
     /// The blended mapping of `view` when the blend holds there: the
@@ -434,14 +390,13 @@ impl TileCache {
         self.bytes
     }
 
-    /// Drop every tile, and the curved memo with them (order 1943).
+    /// Drop every tile.
     pub fn clear(&mut self) {
         if !self.entries.is_empty() {
             self.stats.cleared += 1;
         }
         self.entries.clear();
         self.bytes = 0;
-        self.curved = None;
     }
 
     /// Whether the tile of `key` is held.
@@ -471,11 +426,6 @@ impl TileCache {
             self.entries.retain(|_, e| !e.provisional);
             self.bytes = self.entries.values().map(|e| e.rgba.len()).sum();
             self.stats.redrawn += (before - self.entries.len()) as u64;
-            // A curved memo that owed anything is drawn again as the
-            // regions gain tiles (order 1943); a whole one stands.
-            if self.curved.as_ref().is_some_and(|m| m.owed > 0) {
-                self.curved = None;
-            }
         }
         if self.style.is_some_and(|s| s != (style, percent)) {
             self.clear();
@@ -531,34 +481,6 @@ impl TileCache {
         if let Some(blend) = self.world_blend(&frame.view) {
             // Straight into `rgba` (1797): no frame-sized buffer beside it.
             let smooth = frame.smooth || frame.resmooth;
-            // The memo first (order 1943): the same whole view at rest
-            // is a copy, and a moving frame rides the memo shifted,
-            // owing the real one, so a pan under the blend never waits
-            // on a whole-frame draw.
-            if let Some(memo) = self.curved.as_ref().filter(|_| self.memo_on) {
-                if memo.screen == self.screen {
-                    if memo.view == frame.view
-                        && memo.smooth == smooth
-                        && memo.owed == 0
-                        && memo.rgba.len() == rgba.len()
-                    {
-                        rgba.copy_from_slice(&memo.rgba);
-                        let credit = memo.attribution.clone();
-                        self.stats.curved_memo += 1;
-                        if !frame.moving {
-                            self.keep_near(frame.zoom);
-                        }
-                        return Some((credit, 0));
-                    }
-                    if frame.moving {
-                        ride_memo(&memo.view, &memo.rgba, &frame.view, rgba, frame.style.theme);
-                        let credit = memo.attribution.clone();
-                        self.stats.curved_blit += 1;
-                        return Some((credit, 1));
-                    }
-                }
-            }
-            self.stats.curved_drawn += 1;
             let drawn = self.painters[0].draw_world_onto(
                 &blend,
                 Ink::Colour,
@@ -573,20 +495,7 @@ impl TileCache {
             // A region that could not be read leaves the frame owed, so
             // it is drawn again when the next progress or epoch moves
             // (order 1942 item 5).
-            return drawn.map(|(credit, owed, unreadable)| {
-                let owed = owed + unreadable;
-                if self.memo_on {
-                    self.curved = Some(CurvedMemo {
-                        view: frame.view,
-                        screen: self.screen,
-                        smooth,
-                        owed,
-                        attribution: credit.clone(),
-                        rgba: rgba.to_vec(),
-                    });
-                }
-                (credit, owed)
-            });
+            return drawn.map(|(credit, owed, unreadable)| (credit, owed + unreadable));
         }
         let grid = Grid::of(&frame.view, frame.zoom);
         let keys = grid.keys(frame.style, percent);
@@ -1015,48 +924,6 @@ impl TileCache {
         };
         self.stats.render_us = self.stats.render_us.saturating_add(us);
         drawn
-    }
-}
-
-/// The curved memo's picture carried into a moving frame's pixels
-/// (order 1943): nearest neighbour along the world-linear mapping of
-/// the two views' centres and zooms, the theme's water where the memo
-/// does not reach. The blend's own warp differs between the two views;
-/// while a finger moves that difference is taken, as the tile path
-/// takes a scaled stand-in (1163), and the frame is owed, so the real
-/// one is drawn at rest.
-fn ride_memo(from: &ExactView, src: &[u8], to: &ExactView, dst: &mut [u8], theme: MapTheme) {
-    let (fw, fh) = from.size();
-    let (tw, th) = to.size();
-    if src.len() != fw as usize * fh as usize * 4 || dst.len() != tw as usize * th as usize * 4 {
-        return;
-    }
-    // Memo pixels per target pixel, and the centres' offset in memo
-    // pixels; x wraps at the antimeridian, nearest copy taken.
-    let k = libm::exp2(from.zoom() - to.zoom());
-    let dx = f64::from(to.centre.x.wrapping_sub(from.centre.x) as i32) / from.unit();
-    let dy = (f64::from(to.centre.y) - f64::from(from.centre.y)) / from.unit();
-    let [r, g, b] = rgb888(outline::water(theme));
-    let water = [r, g, b, 0xff];
-    let x0 = (0.5 - f64::from(tw) / 2.0) * k + dx + f64::from(fw) / 2.0;
-    for y in 0..th {
-        let sy = (f64::from(y) + 0.5 - f64::from(th) / 2.0) * k + dy + f64::from(fh) / 2.0;
-        let row = (sy >= 0.0 && sy < f64::from(fh)).then(|| {
-            let at = sy as usize * fw as usize * 4;
-            &src[at..at + fw as usize * 4]
-        });
-        let out = &mut dst[y as usize * tw as usize * 4..][..tw as usize * 4];
-        let mut sx = x0;
-        for px in out.chunks_exact_mut(4) {
-            let got = row.and_then(|row| {
-                (sx >= 0.0 && sx < f64::from(fw)).then(|| {
-                    let at = sx as usize * 4;
-                    [row[at], row[at + 1], row[at + 2], row[at + 3]]
-                })
-            });
-            px.copy_from_slice(&got.unwrap_or(water));
-            sx += k;
-        }
     }
 }
 
@@ -1806,78 +1673,6 @@ mod tests {
         let share = differ as f64 / pixels as f64;
         assert!(share < 0.002, "{differ} pixels of {pixels} differ");
         assert_eq!(composed.attribution, whole.attribution);
-    }
-
-    /// Order 1943: the curved path drew the whole warped frame on one
-    /// painter for every ask — the same view at rest again (the window's
-    /// refine passes), and every frame of a pan — with nothing cached
-    /// (`cache=0` in Lew's gui.log, about 1 s a frame over his store).
-    /// The last curved frame is a memo: the same view at rest is a
-    /// copy, a moving frame rides the memo shifted and owes the real
-    /// one, and only a view the memo cannot serve is drawn.
-    #[test]
-    fn a_curved_frame_at_rest_is_drawn_once_and_a_pan_rides_the_memo() {
-        use leviculum_map::mercator::{project, LatLon};
-        let dir = tempfile::tempdir().expect("tmp");
-        let maps = Maps::new(Some(dir.path().to_path_buf()));
-        let mut cache = TileCache::new(maps, BUDGET_MB << 20);
-        cache.set_world_blend(true);
-        let (w, h) = (600u32, 400u32);
-        cache.set_screen(Some((w, h)));
-        // Zoom 7 at this screen lies in the blend window: the world
-        // picture is curved and drawn whole.
-        let centre = project(LatLon::from_degrees(50.0, 9.0));
-        let view = ExactView::new(centre, 7 * MILLI, w, h);
-        let rest = |view| Frame {
-            view,
-            zoom: 7,
-            style: Style::SCREEN,
-            scale: 1.0,
-            render_limit: None,
-            fallback: None,
-            moving: false,
-            asked: None,
-            smooth: true,
-            resmooth: false,
-        };
-        let first = cache.compose(&rest(view));
-        assert_eq!(first.missing, 0);
-        let again = cache.compose(&rest(view));
-        assert_eq!(
-            cache.stats.curved_drawn, 1,
-            "the same view at rest is the memo, not a second draw"
-        );
-        assert_eq!(again.rgba, first.rgba);
-        // Half a pan east while moving: the memo's pixels ride along,
-        // 50 px west on the screen, and the real frame is owed.
-        let east = World {
-            x: centre.x.wrapping_add(50 << (24 - 7)),
-            y: centre.y,
-        };
-        let moved = cache.compose(&Frame {
-            moving: true,
-            render_limit: Some(16),
-            ..rest(ExactView::new(east, 7 * MILLI, w, h))
-        });
-        assert_eq!(
-            cache.stats.curved_drawn, 1,
-            "a moving curved frame rides the memo, not a draw"
-        );
-        assert!(moved.missing > 0, "the blit owes the real frame");
-        for (x, y) in [(10u32, 200u32), (300, 100), (500, 399)] {
-            let src = ((y * w + x + 50) * 4) as usize;
-            let dst = ((y * w + x) * 4) as usize;
-            assert_eq!(
-                moved.rgba[dst..dst + 3],
-                first.rgba[src..src + 3],
-                "the memo's pixel rides to ({x},{y})"
-            );
-        }
-        // At rest on the new view the real frame is drawn and is the
-        // next memo.
-        let rested = cache.compose(&rest(ExactView::new(east, 7 * MILLI, w, h)));
-        assert_eq!(cache.stats.curved_drawn, 2);
-        assert_eq!(rested.missing, 0);
     }
 
     #[test]

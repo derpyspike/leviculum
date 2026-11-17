@@ -51,16 +51,6 @@ const PLANE_CACHE: usize = 24;
 /// How many tiles' ground statistics stay around: 12 bytes each.
 const GROUND_CACHE: usize = 1024;
 
-/// How many tiles are remembered to have no plane (order 1943): a key
-/// and a stamp each. A wide mid-zoom frame beside a pack asks the same
-/// empty planes once per pixel row; without the memory each ask walked
-/// the nine neighbour tiles again, and under a tile cache smaller than
-/// the row's working set every walk read and decoded whole blocks —
-/// 1.0 GB and 103 s for one zoom 9 frame over Lew's store of
-/// 2026-11-16. Emptiness does not depend on the sky radius, so the key
-/// is the tile alone.
-const EMPTY_PLANE_CACHE: usize = 4096;
-
 /// One indexed height pack: the file stays on disk, only its index is
 /// held.
 struct Pack {
@@ -130,9 +120,6 @@ struct Shared {
     grounds: HashMap<TileId, Used<Ground>>,
     /// Shade planes by tile and sky radius in metres.
     planes: HashMap<(u8, u32, u32, u32), Used<Arc<ShadePlane>>>,
-    /// Tiles known to have no plane (order 1943): no heights of their
-    /// own, or no ground to measure them against.
-    empties: HashMap<TileId, Used<()>>,
     stamp: u64,
     tile_cap: usize,
     plane_cap: usize,
@@ -200,7 +187,6 @@ impl ReliefStore {
                 tiles: HashMap::new(),
                 grounds: HashMap::new(),
                 planes: HashMap::new(),
-                empties: HashMap::new(),
                 stamp: 0,
                 tile_cap: tiles.max(1),
                 plane_cap: planes.max(1),
@@ -245,7 +231,6 @@ impl ReliefStore {
         s.tiles.clear();
         s.grounds.clear();
         s.planes.clear();
-        s.empties.clear();
     }
 
     /// Whether any pack is installed at all: the painter skips the
@@ -309,13 +294,6 @@ impl ReliefStore {
                 *used = stamp;
                 return Some(p.clone());
             }
-            // A tile remembered empty answers without a tile walk
-            // (order 1943): a wide view beside a pack asks it once per
-            // pixel row.
-            if let Some(((), used)) = s.empties.get_mut(&(rz, x, y)) {
-                *used = stamp;
-                return None;
-            }
             let grid = 1i64 << rz;
             let mut refs: [Option<Heights>; 9] = Default::default();
             for (i, slot) in refs.iter_mut().enumerate() {
@@ -329,10 +307,7 @@ impl ReliefStore {
             }
             (refs, s.generation)
         };
-        if refs[4].is_none() {
-            self.remember_empty((rz, x, y), generation);
-            return None;
-        }
+        refs[4].as_ref()?;
         // Ground metres per sample at the tile's centre row; each
         // neighbour's ground is measured at its own row's, so a tile's
         // ground is the same whichever plane asks first.
@@ -343,10 +318,7 @@ impl ReliefStore {
             let id = (rz, nx as u32, ny as u32);
             Some(self.ground(id, tile, tile_res(rz, id.2), generation))
         });
-        let Some(ground) = fill_ground(&grounds) else {
-            self.remember_empty((rz, x, y), generation);
-            return None;
-        };
+        let ground = fill_ground(&grounds)?;
         let borrowed: [Option<&[i16]>; 9] =
             core::array::from_fn(|i| refs[i].as_deref().map(|v| &v[..]));
         let dem = assemble(&borrowed);
@@ -366,21 +338,6 @@ impl ReliefStore {
         }
         s.planes.insert(key, (plane.clone(), stamp));
         Some(plane)
-    }
-
-    /// Remember that tile `id` has no plane (order 1943), unless the
-    /// pack set moved past `generation` meanwhile: the next ask answers
-    /// from the memory instead of walking the nine neighbour tiles.
-    fn remember_empty(&self, id: TileId, generation: u64) {
-        let mut s = self.lock();
-        if s.generation != generation {
-            return;
-        }
-        let stamp = s.tick();
-        if !s.empties.contains_key(&id) && s.empties.len() >= EMPTY_PLANE_CACHE {
-            evict(&mut s.empties);
-        }
-        s.empties.insert(id, ((), stamp));
     }
 
     /// The ground of tile `id`, measured once on its heights `tile` at
@@ -502,7 +459,7 @@ impl relief::Shade for Sampler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use leviculum_map::mercator::{project, LatLon, World};
+    use leviculum_map::mercator::{project, LatLon};
     use leviculum_map::relief::Shade;
 
     const CHEBBI: &[u8] = include_bytes!("../../leviculum-map/fixtures/erg-chebbi.lmh");
@@ -715,78 +672,6 @@ mod tests {
         store.plane(12, x, y, 12).expect("the plane again");
         assert_eq!(store.planes_computed(), before + 1);
         assert_eq!(store.lock().planes.len(), 1);
-    }
-
-    /// A pack of one tile row of blocks at `(x0..x0+n, y0)`, tile and
-    /// block zoom 10, every tile the fixture's first frame: ground truth
-    /// for a view whose own tile row holds no data while the row above
-    /// does — the shape of order 1943's store, where a wide mid-zoom
-    /// view lies beside a height pack.
-    fn stripe_pack(x0: u32, y0: u32, n: u32) -> Vec<u8> {
-        use leviculum_map::elevation::{split, write_block, write_directory, DirectoryInfo};
-        let (_, ranges) = split(CHEGAGA).expect("the fixture splits");
-        let (block, _) = leviculum_map::elevation::Block::parse_prefix(&CHEGAGA[ranges[1].clone()])
-            .expect("the fixture's first block");
-        let frame = block.frame(0).expect("one frame").to_vec();
-        let blocks: Vec<(u32, u32)> = (0..n).map(|i| (x0 + i, y0)).collect();
-        let info = DirectoryInfo {
-            tile_zoom: 10,
-            block_zoom: 10,
-            bounds: [0; 4],
-            attribution: "test",
-            notice: "test",
-        };
-        let mut file = write_directory(&info, &blocks).expect("directory");
-        for &(x, y) in &blocks {
-            file.extend(write_block(10, 10, x, y, std::slice::from_ref(&frame)).expect("block"));
-        }
-        file
-    }
-
-    /// A view row beside a pack asks the same uncovered planes again
-    /// and again: the miss must be remembered, not re-derived from the
-    /// pack on every row. Before order 1943 only computed planes were
-    /// cached; every pixel row re-asked the nine tiles of every
-    /// uncovered plane, and under a tile cache smaller than the row's
-    /// working set each ask read and decoded a whole block again —
-    /// 1.0 GB and 103 s for one wide zoom 9 frame over Lew's store.
-    #[test]
-    fn a_missing_plane_is_remembered_not_reread() {
-        let dir = tempfile::tempdir().expect("tmp");
-        let (x0, y0) = (300, 300);
-        std::fs::write(dir.path().join("stripe.lmh"), stripe_pack(x0, y0, 8))
-            .expect("write the pack");
-        // Caps as small against the stripe as the window's are against a
-        // desktop frame: the row's working set does not fit.
-        let store = ReliefStore::with_capacity(4, 2);
-        store.refresh(Some(dir.path()));
-        // Positive control: the pack serves z10 and a plane on the data
-        // row computes.
-        assert!(
-            store.plane(10, x0 + 1, y0, 10).is_some(),
-            "the stripe's own row shades"
-        );
-        // The view's rows lie one tile row south of the data: every
-        // plane there is empty, but its northern neighbours hold data.
-        let tile_units = 1u64 << 22;
-        let centre = World {
-            x: ((u64::from(x0) + 3) * tile_units + tile_units / 2) as u32,
-            y: ((u64::from(y0) + 1) * tile_units + tile_units / 2) as u32,
-        };
-        let view = Viewport::new(centre, 10, 6 * 256, 8);
-        let mut s = store.sampler(&view).expect("a sampler over the stripe");
-        let (mut t, mut ao) = (vec![0.0f32; 6 * 256], vec![1.0f32; 6 * 256]);
-        s.row(0, 0, &mut t, &mut ao);
-        let warm = store.bytes_read();
-        s.row(0, 1, &mut t, &mut ao);
-        let second = store.bytes_read();
-        s.row(0, 2, &mut t, &mut ao);
-        let third = store.bytes_read();
-        assert_eq!(
-            (second, third),
-            (warm, warm),
-            "a row beside the pack reads nothing the first row did not"
-        );
     }
 
     /// Clones share one store: a plane one painter's sampler computed is
