@@ -49,7 +49,7 @@ use leviculum_map::draw::{
 use leviculum_map::labels::ViewLabel;
 use leviculum_map::mercator::World;
 use leviculum_map::outline;
-use leviculum_map::region::{Header, Region, RegionError, TileId};
+use leviculum_map::region::{Bounds, Header, Region, RegionError, TileId};
 use leviculum_map::timezones;
 use leviculum_map::viewport::{ViewTile, Viewport, MAX_VIEW_ZOOM};
 use leviculum_mapfill::coverage::{Coverage, Hard};
@@ -626,6 +626,9 @@ pub struct Painter {
     /// The ground side (1743): the `*.lmg` ground packs beside the
     /// regions, laid under the areas where the style asks for it.
     ground: crate::ground::GroundStore,
+    /// Region passes the last draw ran (order 1943): what the bench and
+    /// the culling test read.
+    drawn_last: usize,
 }
 
 /// The filler's storage for one region drawn ([`region_into`]). The filler
@@ -682,12 +685,21 @@ impl Painter {
             world_blend: false,
             relief,
             ground,
+            drawn_last: 0,
         }
     }
 
     /// The relief store this painter shades from.
     pub fn relief(&self) -> &crate::relief::ReliefStore {
         &self.relief
+    }
+
+    /// Region passes the last [`draw`](Self::draw) (or its whole-view
+    /// siblings) ran: the regions that reached into the view, less the
+    /// unreadable and those wholly hidden under a complete region drawn
+    /// over them (`hidden_under`, order 1943).
+    pub fn regions_drawn(&self) -> usize {
+        self.drawn_last
     }
 
     /// Read the directory again when it changed since, or a region in it
@@ -927,21 +939,17 @@ impl Painter {
             &aux,
         );
         let mut shown: Vec<usize> = Vec::new();
-        let mut unreadable = 0usize;
-        for &i in &order {
+        let off_frame: Vec<bool> = order
+            .iter()
+            .map(|&i| {
+                let bounds = &self.regions[i].header.bounds;
+                warped_area(aux.area_of(bounds), &warp, frame).is_zero_sized()
+            })
+            .collect();
+        let (visible, mut unreadable) = self.layered(&order, &off_frame, &aux.bounds());
+        for (i, region) in visible {
             let installed = &self.regions[i];
             let area = warped_area(aux.area_of(&installed.header.bounds), &warp, frame);
-            if area.is_zero_sized() {
-                continue;
-            }
-            let region = match installed.open() {
-                Ok(region) => region,
-                Err(cause) => {
-                    self.maps.read_failed(&installed.name, &cause);
-                    unreadable += 1;
-                    continue;
-                }
-            };
             match region_into_warped(
                 &region,
                 &aux,
@@ -965,6 +973,7 @@ impl Painter {
                 }
             }
         }
+        self.drawn_last = shown.len();
         for i in shown {
             self.viewed(i);
         }
@@ -1021,6 +1030,9 @@ impl Painter {
             let Ok(_) =
                 outline::draw_world(&outline::WORLD, view, ink, style.theme, &mut Hard(frame));
         }
+        // [`drawn`] keeps only regions that reach into the view.
+        let on_frame = vec![false; order.len()];
+        let (visible, mut unreadable) = self.layered(&order, &on_frame, &view.bounds());
         // The relief shades the ground only where the style carries it,
         // in colour and in the light table — a dark ground lifted
         // toward warm white would glow (1741).
@@ -1039,18 +1051,9 @@ impl Painter {
         // there: a region still arriving draws no coarser stand-in over
         // them (audit of 1836, finding 2).
         let mut solid: Vec<(Rectangle, u8)> = Vec::new();
-        let mut unreadable = 0usize;
-        for &i in &order {
+        for (i, region) in visible {
             let installed = &self.regions[i];
             let area = installed.area(view);
-            let region = match installed.open() {
-                Ok(region) => region,
-                Err(cause) => {
-                    self.maps.read_failed(&installed.name, &cause);
-                    unreadable += 1;
-                    continue;
-                }
-            };
             match region_into(
                 &region,
                 view,
@@ -1081,6 +1084,7 @@ impl Painter {
                 }
             }
         }
+        self.drawn_last = shown.len();
         for i in shown {
             self.viewed(i);
         }
@@ -1210,6 +1214,56 @@ impl Painter {
             self.maps.read_failed(&installed.name, cause);
         }
         outcome
+    }
+
+    /// The regions of the draw `order` that are drawn, opened, in order,
+    /// and how many could not be read: the opening, layering and
+    /// hidden-probe both draw loops share (order 1943, its audit). A
+    /// region is opened first, since which are complete decides which
+    /// are visible at all ([`hidden_under`] over `view_box`); one marked
+    /// in `off` (nothing of it on the frame) is neither drawn, counted
+    /// nor probed. A region hidden under a complete one is not drawn,
+    /// but it is still counted and said when it does not read (1942
+    /// item 5: one index entry probes the file under the open handle),
+    /// and it is still marked viewed, so the cache does not evict a
+    /// region the user looks at only because another covers it.
+    fn layered(&mut self, order: &[usize], off: &[bool], view_box: &Bounds) -> (Vec<Layer>, usize) {
+        let opened: Vec<Opened> = order.iter().map(|&i| (i, self.regions[i].open())).collect();
+        let layers: Vec<(Bounds, bool)> = opened
+            .iter()
+            .map(|(i, r)| {
+                let complete = r.as_ref().is_ok_and(|r| r.is_complete());
+                (self.regions[*i].header.bounds, complete)
+            })
+            .collect();
+        let hide = hidden_under(view_box, &layers);
+        let mut visible = Vec::with_capacity(opened.len());
+        let mut unreadable = 0usize;
+        for (((i, opened), hidden), off) in opened.into_iter().zip(hide).zip(off) {
+            if *off {
+                continue;
+            }
+            let region = match opened {
+                Ok(region) => region,
+                Err(cause) => {
+                    self.maps.read_failed(&self.regions[i].name, &cause);
+                    unreadable += 1;
+                    continue;
+                }
+            };
+            if !hidden {
+                visible.push((i, region));
+                continue;
+            }
+            match probe(&region) {
+                Ok(()) => self.viewed(i),
+                Err(cause) => {
+                    self.maps.read_failed(&self.regions[i].name, &cause);
+                    unreadable += 1;
+                }
+            }
+        }
+        (visible, unreadable)
     }
 
     /// Mark the autoloaded region `i` viewed, at most every
@@ -1464,6 +1518,68 @@ where
         &mut NoClock,
     );
     Ok(pending)
+}
+
+/// Whether a region hidden under another still reads (order 1943, for
+/// 1942 item 5): a draw would notice a file broken under its open
+/// handle; a hidden region is probed with one index entry instead, so
+/// it is still counted and said, at the cost of one small read.
+fn probe(region: &Region<File>) -> Result<(), String> {
+    if region.header().tiles == 0 {
+        return Ok(());
+    }
+    region.entry(0).map(|_| ()).map_err(|e| format!("{e:?}"))
+}
+
+/// A region of the draw order as it opened: its index into the
+/// painter's regions, and the shared handle or the cause it did not
+/// open.
+type Opened = (usize, Result<Arc<Region<File>>, String>);
+
+/// A region of the draw order that is drawn: its index into the
+/// painter's regions and its open handle ([`Painter::layered`]).
+type Layer = (usize, Arc<Region<File>>);
+
+/// Which of a view's regions are invisible under those drawn over them
+/// (order 1943): for each of `layers` (bottom to top, [`drawn`]'s
+/// order; its box, and whether it is complete and readable), whether a
+/// complete region above holds its whole visible box, so every pixel
+/// it would draw is drawn over. Lew's store of 2026-11-16 holds 94
+/// heavily overlapping autoloaded regions; a zoom 10 view found 18,
+/// and every hidden pass walked its whole geometry again, about 1 s a
+/// frame on the curved path that redraws whole. Only a complete region
+/// covers: one still arriving leaves its missing tiles to the regions
+/// under it. A box across the antimeridian neither hides nor covers,
+/// and a view across it hides nothing: the clip below does not wrap.
+fn hidden_under(view_box: &Bounds, layers: &[(Bounds, bool)]) -> Vec<bool> {
+    let mut hide = vec![false; layers.len()];
+    if view_box.west > view_box.east {
+        return hide;
+    }
+    let mut covers: Vec<Bounds> = Vec::new();
+    for (k, (b, covering)) in layers.iter().enumerate().rev() {
+        if b.west > b.east {
+            continue;
+        }
+        let visible = Bounds {
+            west: b.west.max(view_box.west),
+            south: b.south.max(view_box.south),
+            east: b.east.min(view_box.east),
+            north: b.north.min(view_box.north),
+        };
+        if visible.west > visible.east || visible.south > visible.north {
+            // Nothing of it on screen; the draw's area check skips it.
+            continue;
+        }
+        if covers.iter().any(|c| c.holds(&visible)) {
+            hide[k] = true;
+            continue;
+        }
+        if *covering {
+            covers.push(*b);
+        }
+    }
+    hide
 }
 
 /// Draw `region`'s tiles of `view` into `area` of `frame`, with their
@@ -2018,6 +2134,190 @@ mod tests {
         assert_eq!(
             minus(r, Rectangle::new(Point::new(500, 500), Size::new(5, 5))),
             vec![r]
+        );
+    }
+
+    /// A region wholly hidden under a complete one drawn over it is not
+    /// drawn at all (order 1943): Lew's store of 94 overlapping
+    /// autoloaded regions walked up to 18 full passes a frame where the
+    /// top one covered the view, about 1 s a curved frame. Two complete
+    /// cuts of the same box at the shallow one's deepest zoom: the
+    /// deeper ranks under ([`draw_rank`]) and is hidden, and the
+    /// picture is the top's alone, byte for byte.
+    #[test]
+    fn a_region_hidden_under_a_complete_one_is_not_drawn() {
+        use leviculum_map::mercator::{project, LatLon};
+        let both = tempfile::tempdir().expect("tmp");
+        oltrarno_region(&both.path().join("auto-under.lmr"), 14..=15, usize::MAX);
+        oltrarno_region(&both.path().join("auto-over.lmr"), 14..=14, usize::MAX);
+        let top = tempfile::tempdir().expect("tmp");
+        std::fs::copy(
+            both.path().join("auto-over.lmr"),
+            top.path().join("auto-over.lmr"),
+        )
+        .expect("copy");
+        let centre = project(LatLon::from_degrees(43.7475, 11.272));
+        let view = Viewport::new(centre, 14, 200, 200);
+        let mut painter = Painter::new(Maps::new(Some(both.path().to_path_buf())));
+        let with_both = painter.draw(&view, Ink::Colour, Style::PC, 100);
+        assert_eq!(
+            painter.regions_drawn(),
+            1,
+            "the region hidden under the complete top is not drawn"
+        );
+        let mut alone = Painter::new(Maps::new(Some(top.path().to_path_buf())));
+        let only_top = alone.draw(&view, Ink::Colour, Style::PC, 100);
+        assert_eq!(with_both.fb, only_top.fb, "the picture is the top's alone");
+    }
+
+    /// The store of the culling tests (order 1943): two complete cuts of
+    /// the Oltrarno box, `auto-under` z14-15 and `auto-over` z14 alone
+    /// (`over_rounds` of its rounds written), and a z14 view of the
+    /// box's middle, where the over one ranks on top ([`draw_rank`]).
+    fn under_and_over(over_rounds: usize) -> (tempfile::TempDir, Viewport, World) {
+        use leviculum_map::mercator::{project, LatLon};
+        let dir = tempfile::tempdir().expect("tmp");
+        oltrarno_region(&dir.path().join("auto-under.lmr"), 14..=15, usize::MAX);
+        oltrarno_region(&dir.path().join("auto-over.lmr"), 14..=14, over_rounds);
+        let centre = project(LatLon::from_degrees(43.7475, 11.272));
+        (dir, Viewport::new(centre, 14, 200, 200), centre)
+    }
+
+    /// Set `path`'s modification time two days back: a region the
+    /// eviction would take first.
+    fn age(path: &Path) {
+        let old = SystemTime::now() - Duration::from_secs(2 * 86_400);
+        File::options()
+            .write(true)
+            .open(path)
+            .and_then(|f| f.set_modified(old))
+            .expect("age the file");
+    }
+
+    /// Whether `path` was modified within the last hour.
+    fn fresh(path: &Path) -> bool {
+        std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|d| d < Duration::from_secs(3_600))
+    }
+
+    /// The audit of 1943, round 1: a region hidden under a complete one
+    /// is not drawn, but the user still looks at its place, so it is
+    /// still marked viewed and the cache does not evict it first (its
+    /// file's modification time is the eviction order, `mapload`).
+    #[test]
+    fn audit_1943_a_hidden_autoloaded_region_is_still_marked_viewed() {
+        let (dir, view, _) = under_and_over(usize::MAX);
+        let under = dir.path().join("auto-under.lmr");
+        age(&under);
+        let mut painter = Painter::new(Maps::new(Some(dir.path().to_path_buf())));
+        painter.draw(&view, Ink::Colour, Style::PC, 100);
+        assert_eq!(painter.regions_drawn(), 1, "the under region is hidden");
+        assert!(fresh(&under), "the hidden region was not marked viewed");
+    }
+
+    /// The audit of 1943, round 1: only a complete region hides what lies
+    /// under it. A top still arriving (no round written yet) leaves its
+    /// missing tiles to the region under it, which is drawn.
+    #[test]
+    fn audit_1943_a_region_under_an_arriving_top_is_still_drawn() {
+        let (dir, view, _) = under_and_over(0);
+        let mut painter = Painter::new(Maps::new(Some(dir.path().to_path_buf())));
+        let drawn = painter.draw(&view, Ink::Colour, Style::PC, 100);
+        assert!(drawn.pending > 0, "the top is still arriving");
+        assert_eq!(
+            painter.regions_drawn(),
+            2,
+            "the region under an arriving top is drawn"
+        );
+    }
+
+    /// The culling on the curved path (order 1943, its audit), through
+    /// [`Painter::draw_world_onto`]: a region hidden under a complete one
+    /// is skipped there too and still marked viewed; broken under its
+    /// open handle it is counted unreadable on every frame, once a frame.
+    #[test]
+    fn a_hidden_region_on_the_curved_path_is_skipped_and_still_counted() {
+        let (dir, view, centre) = under_and_over(usize::MAX);
+        let under = dir.path().join("auto-under.lmr");
+        age(&under);
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut painter = Painter::new(maps.clone());
+        let (w, h) = view.size();
+        let blend = Blend::with_t(centre, 14.0, w, h, 0.5);
+        let mut rgba = vec![0u8; w as usize * h as usize * 4];
+        let mut draw = |painter: &mut Painter| {
+            painter
+                .draw_world_onto(&blend, Ink::Colour, Style::PC, 100, true, &mut rgba)
+                .expect("sized")
+        };
+        let (_, _, unreadable) = draw(&mut painter);
+        assert_eq!(unreadable, 0, "both regions read");
+        assert_eq!(painter.regions_drawn(), 1, "the under region is skipped");
+        assert!(fresh(&under), "the hidden region is still marked viewed");
+        std::fs::write(&under, b"not a region").expect("break");
+        for _ in 0..2 {
+            let (_, _, unreadable) = draw(&mut painter);
+            assert_eq!(unreadable, 1, "the hidden broken region is counted once");
+            assert_eq!(painter.regions_drawn(), 1);
+        }
+        let said = maps.read_failures();
+        assert_eq!(said.len(), 1, "said once: {said:?}");
+        assert_eq!(said[0].0, "auto-under.lmr");
+    }
+
+    /// [`hidden_under`] at its edges: a region with nothing of it on
+    /// screen is neither hidden nor a cover, whichever way it lies off
+    /// the view; a complete region holding another's visible box hides
+    /// it; one still arriving hides nothing.
+    #[test]
+    fn hidden_under_looks_only_at_what_is_on_screen() {
+        let b = |west, south, east, north| Bounds {
+            west,
+            south,
+            east,
+            north,
+        };
+        let view = b(0, 0, 10, 10);
+        let world = b(-100, -100, 100, 100);
+        // Off the view east, then north, each under a complete cover.
+        for off in [b(20, 0, 30, 10), b(0, 20, 10, 30)] {
+            assert_eq!(
+                hidden_under(&view, &[(off, true), (world, true)]),
+                vec![false, false],
+                "{off:?} is off screen, not hidden"
+            );
+        }
+        let inside = b(2, 2, 8, 8);
+        assert_eq!(
+            hidden_under(&view, &[(inside, true), (world, true)]),
+            vec![true, false]
+        );
+        assert_eq!(
+            hidden_under(&view, &[(inside, true), (world, false)]),
+            vec![false, false],
+            "an arriving top hides nothing"
+        );
+        // An off-screen complete region is no cover for what lies under.
+        assert_eq!(
+            hidden_under(&view, &[(inside, true), (b(20, 0, 30, 10), true)]),
+            vec![false, false]
+        );
+        // The edges where a box is one unit wide still count: a region
+        // touching the view's west edge, a region box one unit wide and
+        // a view one unit wide are on screen, and hidden under a
+        // complete region over them.
+        let edge = b(-5, 2, 0, 8);
+        let thin = b(4, 2, 4, 8);
+        assert_eq!(
+            hidden_under(&view, &[(edge, true), (thin, true), (world, true)]),
+            vec![true, true, false]
+        );
+        assert_eq!(
+            hidden_under(&b(5, 0, 5, 10), &[(inside, true), (world, true)]),
+            vec![true, false]
         );
     }
 

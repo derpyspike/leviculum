@@ -14,6 +14,12 @@ views, and checks each picture by named rules:
   sizes, and five gestures (a pan across tile seams, a pinch out to the
   world and back, a drag toward the pole and around, a jump from the street
   to Europe, a device rotation) with their frame times and heap;
+* the window's own map (`window` variant, audit of 1943): the App and
+  its tile cache with the curved memo on, headless and released, over a
+  store of overlapping regions at the desktop pane and 1440p, a pan, a
+  wheel step out and in and a pan while regions land, inside the blend
+  window (`loquax/tests/support/load_walk.rs`'s
+  `the_window_map_walks_inside_the_blend`), with frame times;
 * the window's screens (iced's software renderer, `loquax/src/gui.rs`'s
   `every_window_screen_draws_at_every_walk_size`) and the terminal's
   (`loquax/src/tui.rs`'s `every_terminal_screen_draws_at_every_walk_size`)
@@ -144,6 +150,25 @@ def screens(out, log):
         if done.returncode != 0 and "every_" not in done.stdout:
             sys.stderr.write(done.stderr[-4000:])
             raise RuntimeError(f"{' '.join(cmd)} did not run")
+
+
+def window_map(out, log):
+    """The window's own map path (audit of 1943): the desktop `window`
+    variant, the App and its tile cache with the curved memo on, over a
+    store of overlapping regions at the desktop pane and at 1440p, pan,
+    wheel and moving frames inside the blend window; released, since
+    its rows judge frame times. Rows in rows-window-map.tsv, pictures
+    in full/."""
+    env = dict(os.environ, LOQUAX_RENDER_WALK=os.path.abspath(out))
+    cmd = ["cargo", "test", "--release", "-p", "loquax", "--features", "gui", "--bins",
+           "--target", host(), "the_window_map_walks_inside_the_blend", "--", "--nocapture"]
+    done = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True)
+    log.write(done.stdout + done.stderr)
+    # A red rule fails the test after writing its rows: the rows say
+    # which. Anything else that stops it is the walk's failure.
+    if done.returncode != 0 and not os.path.exists(os.path.join(out, "rows-window-map.tsv")):
+        sys.stderr.write(done.stderr[-4000:])
+        raise RuntimeError(f"{' '.join(cmd)} did not run")
 
 
 def m9(out, log):
@@ -361,6 +386,7 @@ def main():
         mode = "--quick" if args.quick else None
         for variant, _ in VARIANTS:
             walk(bins[variant], out, variant, mode)
+        window_map(out, log)
         if not args.no_screens:
             screens(out, log)
         if args.m9:

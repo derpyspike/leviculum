@@ -342,7 +342,13 @@ impl Program for Idle {
     }
 
     fn idle(&self) -> bool {
-        if self.window.idle() && self.held.borrow().is_empty() {
+        // Idle only once a frame was drawn at or after the last message
+        // of the window's own (order 1943): a late picture released
+        // into an otherwise idle window (the curved memo leaves nothing
+        // else to do) must still be presented before the drive ends, as
+        // winit presents after every update.
+        let drew_last = self.drawn.get().is_some_and(|d| d >= self.own.get());
+        if self.window.idle() && self.held.borrow().is_empty() && drew_last {
             return true;
         }
         let late = self
