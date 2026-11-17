@@ -393,3 +393,40 @@ pub async fn run_columba<T: HciTransport>(
     .await;
     unreachable!("every joined arm loops forever")
 }
+
+/// Teardown for the process-shared link state the host tests exercise.
+///
+/// `TX_DRAIN`, the session registry, the per-link queues and the node
+/// channels are one set of statics per test binary, and the ring lock
+/// serialises the tests that touch them without ordering them. Any test
+/// that counts links or peers in absolute terms therefore starts from
+/// this reset, and the scripted-controller bench calls it from its
+/// `Drop` so the two live links it ends with by design never outlive it
+/// (order 1976: a leftover claim turned the flood tests' counts wrong
+/// in full workspace runs).
+#[cfg(test)]
+pub(crate) mod test_support {
+    use leviculum_ble_link::session;
+    use leviculum_ble_link::BleLinkEvent;
+
+    /// Put every shared link global back to its boot state: no claimed
+    /// drain slot, no registered peer or connection, empty per-link
+    /// queues, empty node-facing channels, incoming held bytes refunded.
+    pub(crate) fn reset_shared_links() {
+        for slot in 0..super::MAX_LINKS {
+            if let Some(handle) = super::TX_DRAIN.handle_at(slot) {
+                session::peer_link_down(slot);
+                session::conn_link_down(slot);
+                super::TX_DRAIN.release(handle);
+            }
+            while super::link_out(slot).try_receive().is_ok() {}
+        }
+        let chans = leviculum_ble_link::channels();
+        while chans.peer_event_rx.try_receive().is_ok() {}
+        while let Ok(event) = chans.incoming_rx.try_receive() {
+            if let BleLinkEvent::Inbound { packet, .. } = event {
+                leviculum_ble_link::incoming_held_sub(packet.capacity());
+            }
+        }
+    }
+}

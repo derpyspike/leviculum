@@ -405,6 +405,23 @@ struct Bench {
     log: String,
 }
 
+/// The bench's links live in process-shared statics (`TX_DRAIN`, the
+/// session registry, the per-link queues, the node channels), and the
+/// test ends with two of them up by design. The teardown runs here, on
+/// pass and on panic both, so no later test in this binary starts from
+/// this bench's leftovers — the class behind order 1976's workspace
+/// reds, where the flood tests inherited these claims as `links=3`.
+impl Drop for Bench {
+    fn drop(&mut self) {
+        // Retire the backend first: its sessions' own guards run their
+        // link-downs; the sweep below gets what a future cancelled
+        // mid-await never handed back.
+        self.run = Box::pin(core::future::ready(()));
+        crate::ble::test_support::reset_shared_links();
+        leviculum_ble_link::set_active(false);
+    }
+}
+
 impl Bench {
     /// Poll the backend once and collect what it handed the node.
     fn turn(&mut self) {
@@ -721,4 +738,33 @@ fn run_columba_against_a_scripted_h4_controller() {
     assert_eq!(b.peer_ups(pd), 1, "one PeerUp for D across both roles");
     assert_eq!(b.peer_losts(pd), 0, "D never went away");
     assert_eq!(columba::live_peer_count(), 2);
+
+    // The bench ends with A's and D's links live by design. Its death
+    // must put every shared global back to the boot state, or the next
+    // test that counts links in absolute terms inherits them (order
+    // 1976: in full workspace runs the flood tests saw this bench's
+    // claims as `links=3` and `slot 1 got a flood with no link
+    // claimed`).
+    drop(b);
+    assert_eq!(super::links_claimed(), 0, "the bench left a claim behind");
+    assert_eq!(
+        columba::live_peer_count(),
+        0,
+        "the bench left a peer behind"
+    );
+    for slot in 0..super::MAX_LINKS {
+        assert!(
+            super::link_out(slot).try_receive().is_err(),
+            "the bench left a packet queued on slot {slot}"
+        );
+    }
+    let chans = leviculum_ble_link::channels();
+    assert!(
+        chans.peer_event_rx.try_receive().is_err(),
+        "the bench left a peer event queued"
+    );
+    assert!(
+        chans.incoming_rx.try_receive().is_err(),
+        "the bench left an inbound packet queued"
+    );
 }

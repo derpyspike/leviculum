@@ -1542,27 +1542,17 @@ pub async fn central<T: HciTransport>(
 mod tests {
     use super::*;
 
-    /// Put the process-shared link state back to zero claims: the slot
-    /// table (`TX_DRAIN`), the session's peer and connection ends, the
-    /// per-link queues and the peer-event channel. The tests that count
-    /// absolute links over these globals call this first, because a test
-    /// that passes may still leave links up — the scripted-controller
-    /// bench ends with two live links by design, and whichever of these
-    /// tests took the ring lock next inherited them (order 1942's
-    /// workspace run caught the flood seeing links=3 where its own two
-    /// claims promise links=1; 5 of 25 stress runs).
-    fn reset_shared_links() {
-        let chans = leviculum_ble_link::channels();
-        for slot in 0..crate::ble::MAX_LINKS {
-            if let Some(handle) = crate::ble::TX_DRAIN.handle_at(slot) {
-                session::peer_link_down(slot);
-                session::conn_link_down(slot);
-                crate::ble::TX_DRAIN.release(handle);
-            }
-            while crate::ble::link_out(slot).try_receive().is_ok() {}
-        }
-        while chans.peer_event_rx.try_receive().is_ok() {}
-    }
+    /// The tests that count absolute links over the shared globals start
+    /// from [`crate::ble::test_support::reset_shared_links`], because a
+    /// test that passes may still leave links up — the scripted-
+    /// controller bench ends with two live links by design, and
+    /// whichever of these tests took the ring lock next inherited them
+    /// (order 1942's workspace run caught the flood seeing links=3 where
+    /// its own two claims promise links=1; 5 of 25 stress runs). Since
+    /// order 1976 the bench also resets from its own `Drop`, so the
+    /// reset here is each test's own guarantee, not a cleanup for the
+    /// bench.
+    use crate::ble::test_support::reset_shared_links;
 
     /// Positive control for the `expect` 1715 removed: the three
     /// advertisement records fill exactly the legacy budget, so the
@@ -1595,7 +1585,6 @@ mod tests {
             }
         };
         empty_all();
-        release_all();
         let mut link = crate::ble::TroubleLink;
 
         link.send(TxAim::Flood, vec![0xA5u8; 8]);
@@ -1634,21 +1623,6 @@ mod tests {
         crate::ble::TX_DRAIN.release(0x0101);
         crate::ble::TX_DRAIN.release(0x0202);
         empty_all();
-    }
-
-    /// Free every claimed drain slot: the scripted-controller test ends
-    /// with its last links still claimed (a live connection holds its
-    /// slot for life, and the bench tears no one down), so a test that
-    /// asserts on the whole claim table must start it empty, or a
-    /// leftover link takes its flood and turns the count wrong. Seen as
-    /// `slot 1 got a flood with no link claimed` and `links=3` in a full
-    /// workspace run, order 1940; one injected claim reproduces both.
-    fn release_all() {
-        for i in 0..crate::ble::MAX_LINKS {
-            if let Some(handle) = crate::ble::TX_DRAIN.handle_at(i) {
-                crate::ble::TX_DRAIN.release(handle);
-            }
-        }
     }
 
     /// Everything the ring holds now, as text (empties it).
@@ -1691,7 +1665,6 @@ mod tests {
             }
         };
         empty_all();
-        release_all();
         crate::log::open_runtime_drain();
         let _gate = GateRestore;
         let _ = ring_text();
