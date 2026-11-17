@@ -233,6 +233,7 @@ skip  leviculum-std   jldiff_compare             # spawns the jldiff binary
 skip  leviculum-std   link_establishment_timeout_parity # in-process timeout formula pin (#479); subject is the code
 skip  leviculum-std   local_path_python_rule     # in-process transport: a local path follows Python's rule, no exemption (reviewer decision 2026-11-16); subject is the code
 skip  leviculum-std   audit_1939_self_repair_policy # in-process daemon and client over IPC: the self-repair beat never announces a suppressed or never-announced destination (audit of 1939); subject is the code
+skip  leviculum-std   audit_1950_self_repair_events # in-process daemon and client over IPC: the self-repair beat's events keep single-token fields (audit of 1950); subject is the code
 skip  leviculum-std   audit_citation_guard_swap           # spawns python3 and git: the citation guard refuses a line citation swapped in for an old one (audit of 1928)
 skip  leviculum-std   audit_citation_guard_member_owner   # spawns python3 and git: the citation guard refuses a member cited without its owner (audit of 1928)
 skip  leviculum-std   audit_citation_guard_unreadable     # spawns python3 and git: the citation guard refuses a name into a file it cannot read (audit of 1928)

@@ -156,7 +156,7 @@ read the answers:
   stats, battery) and the post-1.3.5 key set a 1.5.2 `rnstatus`
   indexes unguarded (`mtu`, `txdrp`, the sort keys; pinned with types
   and defaults in `test_rpc_interface_stats_round_trip`,
-  `leviculum-std/src/rpc/mod.rs:869`). Display names reproduce the
+  `leviculum-std/src/rpc/mod.rs:883`). Display names reproduce the
   reference's `str(interface)` forms byte for byte, including the
   prefixes `rnstatus` hides rows by and the `Shared Instance[` prefix
   its client arithmetic keys on (`tcp_spawned_name`,
@@ -169,7 +169,7 @@ read the answers:
   `reference/Reticulum/RNS/Utilities/rnstatus.py:432`) reads the same
   against either daemon. Announce-rate defaults follow Python's
   transport branch (3600/0/5 when transport is on, None when off;
-  pinned in `leviculum-std/src/rpc/mod.rs:1173-1219`).
+  pinned in `leviculum-std/src/rpc/mod.rs:1187-1233`).
 * **`path_table`** — six keys, units, the direct-path `via` spelled as
   the destination hash exactly as Python's `received_from` makes it
   (`build_path_table`, `leviculum-std/src/rpc/handlers.rs:1220`,
@@ -194,7 +194,7 @@ read the answers:
   `source`/`until`/`reason`, and the membership bool
   (`build_blackholed_identities`,
   `leviculum-std/src/rpc/handlers.rs:2006`, round-tripped in
-  `test_rpc_blackhole_round_trip`, `leviculum-std/src/rpc/mod.rs:1299`;
+  `test_rpc_blackhole_round_trip`, `leviculum-std/src/rpc/mod.rs:1313`;
   consumed by `rnpath -b/-B/-U`,
   `reference/Reticulum/RNS/Utilities/rnpath.py:185-199`).
 * **`destination_data` and `identity_data`** — all five ops parsed and
@@ -686,7 +686,7 @@ tunes the ingress/egress limiters globally
 per-interface spellings (`leviculum-std/src/ini_config.rs:949-959`)
 but the global ones fall into the catch-all, so our
 transport-enabled defaults are the hardcoded 3600/0/5
-(`leviculum-std/src/rpc/mod.rs:980-991` pins them). A config that
+(`leviculum-std/src/rpc/mod.rs:994-1005` pins them). A config that
 raises the global target gets Python's enforcement and ours at the
 defaults — different rebroadcast rate limiting on the same mesh.
 Class: **silently ignored config**. Test: drop-in — a config with
