@@ -22,7 +22,9 @@ scripts/check-citations-by-name.py (the guard) on a scratch repository:
   repository and a marked fixture line pass. A cited line outside any item
   (blank, past the end, any line of a markdown file) is no item (order
   1965): a citation renumbered between two such lines is refused unless
-  it follows its line's non-blank text, and a rewritten line's citation
+  it follows its line's non-blank text and its file holds that text once
+  (order 1971: a code fence or a repeated comment line names none of its
+  copies), and a rewritten line's citation
   of a host, which the census never holds, is not judged.
 scripts/citation-census.py (the drift census) on the same repository:
   agree, drift, nolabel, each foreign reason, a shortened path the page spells
@@ -505,6 +507,7 @@ def no_item_controls(repo):
     control("guard: a label-less citation left on a line whose text the change moved "
             "away is refused", rc == 1 and "docs/src/noitem.md:7" in out, out)
     reset(repo)
+    repeated_line_controls(repo)
 
     # A line citation the census never holds (`host.tld:port`, verdict
     # notfile) on a rewritten line: the guard says nothing about it, and
@@ -522,6 +525,52 @@ def no_item_controls(repo):
             "not judged", rc == 0 and host not in out, out)
     reset(repo)
     git(repo, "reset", "-q", "--hard", "HEAD~2")
+
+
+def repeated_line_controls(repo):
+    """The text exception recognises a line by its text, so a text the file
+    holds more than once recognises nothing (audit of 1965, finding 2): a
+    citation moved from one code fence of a markdown file to another, or
+    from one of two identical comment lines of a Rust file to the other, is
+    refused; one that follows a line whose text is unique still passes."""
+    fences = "docs/src/fences.md"
+    # Lines 3, 5, 7 and 9 are all "```"; line 11, "Prose.", is there once.
+    fences_md = "# Fences\n\n```\none\n```\n\n```\ntwo\n```\n\nProse.\n"
+    rep = "crate/src/rep.rs"
+    # Lines 3 and 7 are both "// note.", outside any item.
+    rep_rs = "pub fn a() {}\n\n// note.\n\npub fn b() {}\n\n// note.\n"
+    # The same shape in a file whose only cited line is the unique one.
+    prose = "docs/src/prose.md"
+    base = page(f"Fenced (`{L(fences, 3)}`).", f"Noted (`{L(rep, 3)}`).",
+                f"Prose (`{L(prose, 11)}`).")
+    write(repo, "docs/src/repeated.md", base)
+    write(repo, fences, fences_md)
+    write(repo, prose, fences_md)
+    write(repo, rep, rep_rs)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "citations of repeated lines")
+
+    write(repo, "docs/src/repeated.md", base.replace(L(fences, 3), L(fences, 7)))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a label-less citation moved from one code fence of a markdown file "
+            "to an identical one is refused",
+            rc == 1 and "docs/src/repeated.md:3" in out, out)
+    reset(repo)
+
+    write(repo, "docs/src/repeated.md", base.replace(L(rep, 3), L(rep, 7)))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a label-less citation moved between two identical comment lines of "
+            "a Rust file is refused", rc == 1 and "docs/src/repeated.md:5" in out, out)
+    reset(repo)
+
+    # The unique line moves down by one inserted line; the citation follows.
+    write(repo, prose, fences_md.replace("\nProse.", "\nNew.\nProse.", 1))
+    write(repo, "docs/src/repeated.md", base.replace(L(prose, 11), L(prose, 12)))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a label-less citation that follows a unique line of a file with "
+            "repeated lines passes", rc == 0, out)
+    reset(repo)
+    git(repo, "reset", "-q", "--hard", "HEAD~1")
 
 
 def language_controls(repo):

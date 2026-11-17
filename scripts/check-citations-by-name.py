@@ -54,7 +54,9 @@ Two refusals, both over the living texts (scripts/citations.py, `is_living`):
    1959, order 1965). A head citation that is not `agree` and whose head
    or base partner cites such a line is refused, unless the text of its
    cited line at head is byte for byte the text of its partner's cited
-   line at the base and that line is neither past the end nor blank.
+   line at the base, that line is neither past the end nor blank, and
+   its file holds that text once, at head and at the base (a code fence
+   or a repeated comment line names none of its copies; order 1971).
 
    A bare name the tree cannot place (`foreign`, why `unplaced`) resolves
    no item; its own text is what it names, so one carried word for word
@@ -243,7 +245,7 @@ def identity(rec):
     return (cited_path(rec), rec["item"])
 
 
-def passes(head, base, head_text=None, base_text=None):
+def passes(head, base, head_text=None, base_text=None, head_once=True, base_once=True):
     """The verdict of a pair (the reviewer's decision of 2026-11-16 21:05).
     `base` is the head citation's partner, or None when it has none.
 
@@ -254,7 +256,12 @@ def passes(head, base, head_text=None, base_text=None):
     stands for a line past the end. A blank line has no text to recognise
     it by, and the order's control of a citation moved from one blank line
     to another must be refused, so a blank line never stays this way (a
-    narrowing of order 1965's one exception, not another exception)."""
+    narrowing of order 1965's one exception, not another exception).
+    Nor does a text its file holds more than once (`head_once`, `base_once`:
+    the cited text occurs once in the cited file at head, once at the base):
+    a code fence, a `|---|` row or a repeated comment line names none of
+    its copies, so a citation moved from one copy to another is refused
+    (audit of 1965, finding 2, order 1971)."""
     if head["verdict"] == "agree":
         return True
     if base is None or base["verdict"] == "agree":
@@ -262,8 +269,18 @@ def passes(head, base, head_text=None, base_text=None):
     mine, theirs = identity(head), identity(base)
     if mine is None or theirs is None:
         return (head_text is not None and head_text == base_text
-                and head_text.strip() != "")
+                and head_text.strip() != "" and head_once and base_once)
     return mine == theirs
+
+
+def cited_once(t, rec, text):
+    """True when `text`, the first line `rec` cites in tree `t`, stands
+    exactly once in the cited file."""
+    if text is None:
+        return False
+    path = rec["at"].rsplit(":", 1)[0]
+    whole = t.text(path)
+    return whole is not None and whole.split("\n").count(text) == 1
 
 
 def cited_line(t, rec):
@@ -427,7 +444,10 @@ def check_new_lines(tree, base):
         if FIXTURE_MARK in line_text(rel, n):
             continue
         b = partner(r)
-        if passes(r, b, cited_line(tree, r), b and cited_line(base_tree, b)):
+        head_text = cited_line(tree, r)
+        base_text = b and cited_line(base_tree, b)
+        if passes(r, b, head_text, base_text, cited_once(tree, r, head_text),
+                  bool(b) and cited_once(base_tree, b, base_text)):
             continue
         holder = f"; the line belongs to `{r['item']}`" if r.get("item", "-") != "-" else ""
         if b is None:
@@ -439,7 +459,7 @@ def check_new_lines(tree, base):
             why = (f"it stands in for `{b['cite']}` ({b['verdict']}, at "
                    f"`{b['item']}`); a line outside any item is no item, so a citation "
                    "that does not agree stays only on a non-blank line of the text its "
-                   "base cited")
+                   "base cited, a text its file holds once")
         else:
             why = (f"it stands in for `{b['cite']}` ({b['verdict']}, at "
                    f"`{b['item']}`), and a citation that does not agree must stay on "

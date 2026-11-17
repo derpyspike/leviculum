@@ -931,6 +931,24 @@ text, and one left on a line whose text the change moved away; one that
 follows its line's text passes ("guard: a label-less citation that
 follows its line's text into a markdown file passes"). A blank line has
 no text to recognise it by, so a citation of one stays only by agreeing.
+Nor does a text the file holds more than once, at head or at the base: a
+code fence, a `|---|` row or a repeated comment line names none of its
+copies, so a citation moved from one copy to another is refused, and so
+is one whose cited file changed while it stands on such a line ("guard: a
+label-less citation moved from one code fence of a markdown file to an
+identical one is refused", "guard: a label-less citation moved between
+two identical comment lines of a Rust file is refused"; audit of 1965,
+order 1971).
+
+**The rule for every pass (order 1971).** A pass that moves code moves
+the citations of that code, by name where this page allows it, and runs
+`just citation-guard` before it commits. A refusal is fixed, by pointing
+the citation at the item its text names or by restoring the base line
+where the change made it worse; it is not argued with, and it is never
+cleared by loosening the guard, moving its base or adding an exemption.
+Order 1971 cleared the 52 refusals that had piled up against the guard's
+base while other passes moved line citations, one by one, and its report
+lists them.
 
 The same pairing judges a citation on an unchanged line whose cited file
 changed. So a drifting citation renumbered with its item passes ("guard: a
