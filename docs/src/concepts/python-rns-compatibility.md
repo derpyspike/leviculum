@@ -127,6 +127,35 @@ resident set. `EmbeddedStorage` goes one further and implements only the
 first (`leviculum-core/src/embedded_storage.rs:1113`), because a board
 tracks no use-state at all.
 
+### Pinned deviation: the file keeps at most `identity_cap` entries it alone holds
+
+The reference never culls a pinned known destination: an entry whose
+fifth element is `-1` is retained (`reference/Reticulum/RNS/Identity.py:344-346`),
+and the cull only touches an entry that is neither retained nor has a
+path (`reference/Reticulum/RNS/Identity.py:350`). Our `known_destinations`
+file keeps, beside what this node holds in memory, at most
+`identity_cap` entries that only the file holds
+(`FileKnownDestinationsStore::merge_and_save`,
+`leviculum-std/src/file_known_destinations_store.rs:76`). Of those it
+ranks every retained (`-1`) entry ahead of all others, the newest
+announced first in each group (`Rank`,
+`leviculum-std/src/file_known_destinations_store.rs:297`); pins beyond the
+cap are dropped, the oldest announced first. Before order 1749 the file
+kept every destination ever heard, 52 825 entries and 9 MB in the
+Loquax Mailbox's home node, and every flush and load grew with it.
+
+The deviation rule, clause by clause:
+
+1. Wire format: the file stays the reference's msgpack map; every kept
+   entry is copied field for field, its fifth element included.
+2. Semantics: a pin within the cap survives every flush, so a
+   destination an application retained on rnsd stays retained. A pin
+   beyond the cap is gone from the file as from a culled rnsd: the
+   destination's next announce brings it back.
+3. Measured gain: the file, and with it the memory one flush or load
+   needs, is bounded by the caps instead of by the node's uptime
+   (`leviculum-std/tests/known_destinations_flush_memory.rs`).
+
 ### Pinned deviation: ingress-control default on dial-out links
 
 The reference gives every interface `ingress_control = True`
