@@ -202,20 +202,20 @@ loses outbound packets and events.
 
 | Field | Type | Source |
 |-------|------|--------|
-| `actions` | `Vec<Action>` — I/O for the driver to execute | `transport.rs:150` |
-| `events` | `Vec<NodeEvent>` — application-visible events | `transport.rs:152` |
-| `next_deadline_ms` | `Option<u64>` — when to next call `handle_timeout` | `transport.rs:155` |
+| `actions` | `Vec<Action>` — I/O for the driver to execute | `leviculum-core/src/transport.rs#TickOutput::actions` |
+| `events` | `Vec<NodeEvent>` — application-visible events | `leviculum-core/src/transport.rs#TickOutput::events` |
+| `next_deadline_ms` | `Option<u64>` — when to next call `handle_timeout` | `leviculum-core/src/transport.rs#TickOutput::next_deadline_ms` |
 
 `Action` is the I/O the driver performs, defined at `leviculum-core/src/transport.rs#Action`:
 
 | Variant | Fields | Source |
 |---------|--------|--------|
-| `SendPacket` | `iface: InterfaceId, data: Vec<u8>, peer: Option<[u8; 16]>` | `transport.rs:125` |
-| `Broadcast` | `data: Vec<u8>, exclude_iface: Option<InterfaceId>` | `transport.rs:132` |
+| `SendPacket` | `iface: InterfaceId, data: Vec<u8>, peer: Option<[u8; 16]>` | `leviculum-core/src/transport.rs#Action::SendPacket` |
+| `Broadcast` | `data: Vec<u8>, exclude_iface: Option<InterfaceId>` | `leviculum-core/src/transport.rs#Action::Broadcast` |
 
 The helper `dispatch_actions(interfaces: &mut [&mut dyn Interface], actions:
 Vec<Action>, ifac_configs: &BTreeMap<usize, IfacConfig>) -> DispatchResult`
-(`transport.rs:221`) routes `Action`s to interfaces with broadcast-exclusion and
+(`leviculum-core/src/transport.rs#dispatch_actions`) routes `Action`s to interfaces with broadcast-exclusion and
 IFAC wrapping handled in core, so every driver gets it for free.
 
 ### Value types
@@ -260,7 +260,7 @@ The three abstractions you implement to run the core on a platform. Defined in
 | Trait | Required methods (selected) | Source |
 |-------|------------------------------|--------|
 | `Clock` | `fn now_ms(&self) -> u64` | `traits.rs:531` |
-| `Storage` | key-value persistence: `has_packet_hash`, `get_path`/`set_path`, link/announce tables, identities, ratchets (large trait) | `traits.rs:196` |
+| `Storage` | key-value persistence: `has_packet_hash`, `get_path`/`set_path`, link/announce tables, identities, ratchets (large trait) | `leviculum-core/src/traits.rs#Storage` |
 | `Interface` | `id`, `name`, `mtu`, `is_online`, `fn try_send(&mut self, data: &[u8]) -> Result<(), InterfaceError>` | `traits.rs:359` |
 
 Provided `Storage` implementations: `NoStorage` (`traits.rs:1072`, zero-sized

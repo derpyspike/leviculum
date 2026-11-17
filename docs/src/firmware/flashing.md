@@ -309,7 +309,7 @@ The **WisMesh Pocket V2 (RAK4631)** running stock Meshtastic has no
 *first* flash needs either `just dfu-rak4631` (a Meshtastic admin
 command, below) or the manual needle double-tap in the hidden pinhole.
 Once our firmware is on the board, subsequent flashes use the touch path
-automatically. (`Justfile:2258-2260`, `Justfile:2350-2359`. See
+automatically. (`Justfile#flash-rak4631`, `Justfile#dfu-rak4631`. See
 [Recovery](recovery.md) for the pinhole detail.)
 
 ## The flash recipes
@@ -347,7 +347,7 @@ Expands to:
 LEVICULUM_FLASH_ONLY=<PORT> bash scripts/nrf-flash.sh t114 bsp-t114
 ```
 
-(`Justfile:2242-2247`; usage forms `leviculum-nrf/README.md:31-36`)
+(`Justfile#flash-one`; usage forms `leviculum-nrf/README.md#build-and-flash`)
 
 ### `just flash-rak4631` — every RAK4631
 
@@ -419,7 +419,7 @@ Runs:
 meshtastic --port /dev/ttyACM0 --enter-dfu
 ```
 
-(`Justfile:2350-2359`)
+(`Justfile#dfu-rak4631`)
 
 ### SenseCAP T1000-E: serial DFU
 

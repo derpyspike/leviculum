@@ -116,7 +116,7 @@
 //! appended to that handle's buffer:
 //!
 //! ```text
-//! EVENT_SCHEMA_VIOLATION event=PKT_RX missing=[hops,len] caller=transport.rs:1073 t=<rel-ms>
+//! EVENT_SCHEMA_VIOLATION event=PKT_RX missing=[hops,len] caller=<file>:<line> t=<rel-ms>
 //! ```
 //!
 //! ## Field-value validation (per-event, per-handle)
@@ -128,7 +128,7 @@
 //! into every active buffer:
 //!
 //! ```text
-//! EVENT_FIELD_VIOLATION event=PKT_RX field=note value_problem=whitespace caller=transport.rs:1073 t=<rel-ms>
+//! EVENT_FIELD_VIOLATION event=PKT_RX field=note value_problem=whitespace caller=<file>:<line> t=<rel-ms>
 //! ```
 //!
 //! `value_problem` ∈ {`whitespace`, `equals`, `non_printable`}.

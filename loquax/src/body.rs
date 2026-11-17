@@ -1,7 +1,7 @@
 //! Where the message body comes from.
 //!
 //! The named first consumer of `loquax send` is a health monitor running from
-//! cron (`docs/src/concepts/loquax-architecture.md:626`), and the shape it uses
+//! cron (`docs/src/concepts/loquax-architecture.md#6-decision-scriptability`), and the shape it uses
 //! is `echo "disk 91%" | loquax send <addr>`. So stdin is the default source,
 //! and a positional body is the convenience, not the other way round.
 
