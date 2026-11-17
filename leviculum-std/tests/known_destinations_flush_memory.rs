@@ -502,3 +502,334 @@ fn kill_during_flush_leaves_a_complete_file() {
         file.len()
     );
 }
+
+// ---------------------------------------------------------------------------
+// The audit's tests of order 1749 (order 1767), as the two auditors ran them
+// ---------------------------------------------------------------------------
+
+/// Auditor: the file is oldest-first, so once the stamp heap is full every
+/// later offer must replace its oldest stamp
+/// (`leviculum-std/src/file_known_destinations_store.rs#NewestStamps::offer`).
+/// Uses this file's helpers: store_dir, dest, entry, Use, write_file, read_file, now_secs.
+#[test]
+fn audit_disk_only_cap_keeps_the_newest_of_an_oldest_first_file() {
+    let cap = TableCaps::local_client().identity_cap as u64;
+    let dir = store_dir();
+    let key = Identity::generate(&mut rand_core::OsRng).public_key_bytes();
+    let now = now_secs();
+    let total = 4 * cap;
+    write_file(
+        dir.path(),
+        (0..total)
+            .map(|i| {
+                (
+                    dest(i, 0x0A),
+                    entry(&key, now - (total - i) as f64, Use::Retained),
+                )
+            })
+            .collect(),
+    );
+    let mut storage = StdStorage::new_with_caps(dir.path(), TableCaps::local_client()).unwrap();
+    storage.set_identity([0xEE; 16], Identity::generate(&mut rand_core::OsRng));
+    storage.flush();
+
+    let file = read_file(dir.path());
+    assert!(
+        file.contains_key(&[0xEE; 16]),
+        "the flush was abandoned: the new entry is not in the file"
+    );
+    assert_eq!(
+        file.len() as u64,
+        2 * cap + 1,
+        "memory + cap disk-only + new"
+    );
+    for i in 2 * cap..total {
+        assert!(
+            file.contains_key(&dest(i, 0x0A)),
+            "newest entry {i} dropped"
+        );
+    }
+}
+
+/// Auditor: neither newest- nor oldest-first, three entries per announce
+/// time, the cap boundary inside a tie group. The flush must not be
+/// abandoned by the count check, and no dropped entry may be newer than a kept one.
+/// Uses this file's helpers: store_dir, dest, entry, Use, write_file, read_file, now_secs.
+#[test]
+fn audit_disk_only_cap_with_ties_in_a_shuffled_file() {
+    fn gcd(a: u64, b: u64) -> u64 {
+        if b == 0 {
+            a
+        } else {
+            gcd(b, a % b)
+        }
+    }
+    let cap = TableCaps::local_client().identity_cap as u64;
+    let dir = store_dir();
+    let key = Identity::generate(&mut rand_core::OsRng).public_key_bytes();
+    let now = now_secs();
+    let total = 4 * cap + 7;
+    let mut stride = 7_919u64;
+    while gcd(stride, total) != 1 {
+        stride += 1;
+    }
+    let stamp = |i: u64| now - (i / 3) as f64;
+    write_file(
+        dir.path(),
+        (0..total)
+            .map(|j| {
+                let i = (j * stride) % total;
+                (dest(i, 0x0B), entry(&key, stamp(i), Use::Retained))
+            })
+            .collect(),
+    );
+    let mut storage = StdStorage::new_with_caps(dir.path(), TableCaps::local_client()).unwrap();
+    storage.set_identity([0xEE; 16], Identity::generate(&mut rand_core::OsRng));
+    storage.flush();
+
+    let file = read_file(dir.path());
+    assert!(
+        file.contains_key(&[0xEE; 16]),
+        "the flush was abandoned: the new entry is not in the file"
+    );
+    assert_eq!(
+        file.len() as u64,
+        2 * cap + 1,
+        "memory + cap disk-only + new"
+    );
+    let kept_oldest = (0..total)
+        .filter(|i| file.contains_key(&dest(*i, 0x0B)))
+        .map(stamp)
+        .fold(f64::INFINITY, f64::min);
+    let dropped_newest = (0..total)
+        .filter(|i| !file.contains_key(&dest(*i, 0x0B)))
+        .map(stamp)
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert!(
+        kept_oldest >= dropped_newest,
+        "a dropped entry ({dropped_newest}) is newer than a kept one ({kept_oldest})"
+    );
+}
+
+/// Auditor: a file whose first key claims a 1 GiB bin32 and then ends.
+/// Load and flush must stay in bounded memory and the flush must still write.
+/// Uses this file's helpers: store_dir, peak_of, read_file.
+#[test]
+fn audit_a_corrupt_bin32_length_costs_no_large_allocation() {
+    let dir = store_dir();
+    let mut bytes = vec![0x81u8, 0xc6];
+    bytes.extend_from_slice(&0x4000_0000u32.to_be_bytes());
+    bytes.extend_from_slice(&[0u8; 16]);
+    std::fs::write(dir.path().join("known_destinations"), &bytes).unwrap();
+
+    let (storage, load_peak) =
+        peak_of(|| StdStorage::new_with_caps(dir.path(), TableCaps::local_client()).unwrap());
+    assert!(
+        load_peak < 32 * 1024 * 1024,
+        "loading a corrupt file allocated {load_peak} bytes"
+    );
+    let mut storage = storage;
+    storage.set_identity([0xEE; 16], Identity::generate(&mut rand_core::OsRng));
+    let ((), flush_peak) = peak_of(|| storage.flush());
+    assert!(
+        flush_peak < 32 * 1024 * 1024,
+        "flushing over a corrupt file allocated {flush_peak} bytes"
+    );
+    assert!(read_file(dir.path()).contains_key(&[0xEE; 16]));
+}
+
+/// Auditor: a valid 16-byte key whose value claims an array32 of 2^30
+/// elements and then ends. Load and flush must neither abort nor allocate
+/// for the claimed length.
+/// Uses this file's helpers: store_dir, peak_of, read_file.
+#[test]
+fn audit_a_corrupt_array32_length_costs_no_large_allocation() {
+    let dir = store_dir();
+    let mut bytes = vec![0x81u8, 0xc4, 0x10];
+    bytes.extend_from_slice(&[0x33u8; 16]);
+    bytes.push(0xdd);
+    bytes.extend_from_slice(&0x4000_0000u32.to_be_bytes());
+    std::fs::write(dir.path().join("known_destinations"), &bytes).unwrap();
+
+    let (storage, load_peak) =
+        peak_of(|| StdStorage::new_with_caps(dir.path(), TableCaps::local_client()).unwrap());
+    assert!(
+        load_peak < 32 * 1024 * 1024,
+        "loading a corrupt file allocated {load_peak} bytes"
+    );
+    let mut storage = storage;
+    storage.set_identity([0xEE; 16], Identity::generate(&mut rand_core::OsRng));
+    let ((), flush_peak) = peak_of(|| storage.flush());
+    assert!(
+        flush_peak < 32 * 1024 * 1024,
+        "flushing over a corrupt file allocated {flush_peak} bytes"
+    );
+    assert!(read_file(dir.path()).contains_key(&[0xEE; 16]));
+}
+
+/// Audit attack: a file (written locally, or moved in from a peer through
+/// the mailbox `/move`) whose headers claim about 2^31 bytes or elements.
+/// The load and the flush must stay in bounded memory and leave a valid file.
+#[test]
+fn audit_hostile_lengths_cost_no_memory() {
+    const LIMIT: usize = 16 * 1024 * 1024;
+    // fixmap(1), key bin32 claiming 0x7fff_fff0 bytes, then 4 bytes and EOF.
+    let mut bin_key = vec![0x81u8, 0xc6, 0x7f, 0xff, 0xff, 0xf0];
+    bin_key.extend_from_slice(&[0u8; 4]);
+    // fixmap(1), a valid 16-byte key, value array32 claiming 0x7fff_ffff elements, EOF.
+    let mut arr_val = vec![0x81u8, 0xc4, 0x10];
+    arr_val.extend_from_slice(&[0x11u8; 16]);
+    arr_val.extend_from_slice(&[0xdd, 0x7f, 0xff, 0xff, 0xff]);
+    // fixmap(1), valid key, value array of 5 whose public key is bin32 claiming 0x7fff_fff0.
+    let mut bin_val = vec![0x81u8, 0xc4, 0x10];
+    bin_val.extend_from_slice(&[0x22u8; 16]);
+    bin_val.extend_from_slice(&[0x95, 0xcb]);
+    bin_val.extend_from_slice(&1_700_000_000f64.to_be_bytes());
+    bin_val.extend_from_slice(&[0xc4, 0x00, 0xc6, 0x7f, 0xff, 0xff, 0xf0, 0x00]);
+    for (name, bytes) in [
+        ("bin key", bin_key),
+        ("array value", arr_val),
+        ("bin value", bin_val),
+    ] {
+        let dir = store_dir();
+        std::fs::write(dir.path().join("known_destinations"), &bytes).unwrap();
+        let (storage, load_peak) =
+            peak_of(|| StdStorage::new_with_caps(dir.path(), TableCaps::local_client()).unwrap());
+        assert!(load_peak < LIMIT, "{name}: load peak {load_peak} bytes");
+        let mut storage = storage;
+        storage.set_identity([0xEE; 16], Identity::generate(&mut rand_core::OsRng));
+        let ((), flush_peak) = peak_of(|| storage.flush());
+        assert!(flush_peak < LIMIT, "{name}: flush peak {flush_peak} bytes");
+        let file = read_file(dir.path());
+        assert!(
+            file.contains_key(&[0xEE; 16]),
+            "{name}: the flush rewrote a valid file"
+        );
+    }
+}
+
+/// Audit: the disk-only ceiling keeps the NEWEST entries when the file holds
+/// them oldest first, so the heap must replace
+/// (`leviculum-std/src/file_known_destinations_store.rs#NewestStamps::offer`).
+#[test]
+fn audit_disk_only_newest_whatever_the_file_order() {
+    const CAP: u64 = 2_048;
+    let dir = store_dir();
+    let key = Identity::generate(&mut rand_core::OsRng).public_key_bytes();
+    let now = now_secs();
+    // 4 CAP pinned entries, OLDEST first in file order.
+    write_file(
+        dir.path(),
+        (0..4 * CAP)
+            .map(|i| {
+                (
+                    dest(i, 0x0A),
+                    entry(&key, now - (4 * CAP - i) as f64, Use::Retained),
+                )
+            })
+            .collect(),
+    );
+    let mut storage = StdStorage::new_with_caps(dir.path(), TableCaps::local_client()).unwrap();
+    storage.set_identity([0xEE; 16], Identity::generate(&mut rand_core::OsRng));
+    storage.flush();
+    let file = read_file(dir.path());
+    assert!(file.contains_key(&[0xEE; 16]), "the flush wrote");
+    assert_eq!(
+        file.len() as u64,
+        2 * CAP + 1,
+        "memory + cap disk-only + new"
+    );
+    // Memory holds 3CAP..4CAP; the newest CAP of the disk-only rest are 2CAP..3CAP.
+    for i in 2 * CAP..4 * CAP {
+        assert!(
+            file.contains_key(&dest(i, 0x0A)),
+            "newest entry {i} dropped"
+        );
+    }
+    for i in 0..2 * CAP {
+        assert!(
+            !file.contains_key(&dest(i, 0x0A)),
+            "old entry {i} kept over a newer one"
+        );
+    }
+}
+
+/// Audit: every disk-only entry shares one announce time; the two passes
+/// must agree on the count, or every flush is abandoned.
+#[test]
+fn audit_disk_only_ties_at_the_floor() {
+    const CAP: u64 = 2_048;
+    let dir = store_dir();
+    let key = Identity::generate(&mut rand_core::OsRng).public_key_bytes();
+    let t = now_secs() - 100.0;
+    write_file(
+        dir.path(),
+        (0..3 * CAP)
+            .map(|i| (dest(i, 0x0B), entry(&key, t, Use::Retained)))
+            .collect(),
+    );
+    let mut storage = StdStorage::new_with_caps(dir.path(), TableCaps::local_client()).unwrap();
+    storage.set_identity([0xEE; 16], Identity::generate(&mut rand_core::OsRng));
+    storage.flush();
+    let file = read_file(dir.path());
+    assert!(
+        file.contains_key(&[0xEE; 16]),
+        "the flush was not abandoned"
+    );
+    assert_eq!(
+        file.len() as u64,
+        2 * CAP + 1,
+        "memory + cap disk-only + new"
+    );
+}
+
+/// Audit: the streamed copy of an entry only the file holds keeps every
+/// field, including the public key and packet hash.
+#[test]
+fn audit_disk_only_entries_copied_bit_for_bit() {
+    const CAP: u64 = 2_048;
+    let dir = store_dir();
+    let key = Identity::generate(&mut rand_core::OsRng).public_key_bytes();
+    let now = now_secs();
+    let mut on_disk: Vec<([u8; 16], Value)> = (0..CAP)
+        .map(|i| (dest(i, 0x30), entry(&key, now - 10.0, Use::Never)))
+        .collect();
+    let mut foreign: Vec<([u8; 16], Value)> = Vec::new();
+    for i in 0..16u64 {
+        let v = Value::Array(vec![
+            Value::F64(now - 1000.0 - i as f64),
+            Value::Binary(vec![0x70 + i as u8; 32]),
+            Value::Binary(vec![0x90 + i as u8; 64]),
+            if i % 2 == 0 {
+                Value::Binary(vec![0x41 + i as u8; 7])
+            } else {
+                Value::Nil
+            },
+            if i % 3 == 0 {
+                Value::from(-1i64)
+            } else {
+                Value::F64(now - 3600.0 - i as f64)
+            },
+        ]);
+        foreign.push((dest(i, 0x31), v));
+    }
+    on_disk.extend(foreign.iter().cloned());
+    write_file(dir.path(), on_disk);
+    let mut storage = StdStorage::new_with_caps(dir.path(), TableCaps::local_client()).unwrap();
+    storage.set_identity([0xEE; 16], Identity::generate(&mut rand_core::OsRng));
+    storage.flush();
+    let file = read_file(dir.path());
+    assert!(file.contains_key(&[0xEE; 16]), "the flush wrote");
+    for (hash, value) in &foreign {
+        let Value::Array(want) = value else {
+            unreachable!()
+        };
+        assert!(
+            file.get(hash) == Some(want),
+            "disk-only entry {:02x?} changed: {:?} != {:?}",
+            hash,
+            file.get(hash),
+            want
+        );
+    }
+}
