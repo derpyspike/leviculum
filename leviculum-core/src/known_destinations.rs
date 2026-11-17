@@ -97,3 +97,35 @@ pub trait KnownDestinationsStore {
         entries: &BTreeMap<[u8; TRUNCATED_HASHBYTES], KnownDestEntry>,
     ) -> Result<(), Self::Error>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::KnownDestUseState;
+
+    /// The fifth element as the reference classifies it
+    /// (`reference/Reticulum/RNS/Identity.py:336-352`): only exactly `-1`
+    /// pins (`== -1`, :344), zero and NaN are never-used (NaN fails every
+    /// test there, so only the announce-time arm can cull it), and every
+    /// other number, a negative or an infinite one included, is a use.
+    #[test]
+    fn from_seconds_classifies_the_fifth_element_as_the_reference_does() {
+        assert_eq!(
+            KnownDestUseState::from_seconds(-1.0),
+            KnownDestUseState::Retained
+        );
+        for used in [-2.0, -0.5, f64::INFINITY, 1_800_000_000.0] {
+            assert_eq!(
+                KnownDestUseState::from_seconds(used),
+                KnownDestUseState::Used(used),
+                "{used} is a use"
+            );
+        }
+        for never in [0.0, -0.0, f64::NAN] {
+            assert_eq!(
+                KnownDestUseState::from_seconds(never),
+                KnownDestUseState::NeverUsed,
+                "{never} is never-used"
+            );
+        }
+    }
+}

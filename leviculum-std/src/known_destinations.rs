@@ -828,4 +828,36 @@ mod tests {
         assert_eq!(identities.len(), 1);
         assert_eq!(identities[0].0.into_bytes(), hash);
     }
+
+    /// Audit 1767: a NaN fifth element matches none of the reference's tests
+    /// (Identity.py:336-346), so only the announce-time arm (:351) can cull
+    /// it. It must read as never-used: kept within the linger, dropped after.
+    #[test]
+    fn a_nan_fifth_element_reads_as_never_used_and_lingers() {
+        use rmpv::Value;
+        const NOW: f64 = 1_800_000_000.0;
+        let read = |announced: f64| {
+            let key = Value::Binary(vec![0x2A; TRUNCATED_HASHBYTES]);
+            let val = Value::Array(vec![
+                Value::F64(announced),
+                Value::Binary(vec![0; PACKET_HASH_LEN]),
+                Value::Binary(vec![0x33; IDENTITY_KEY_SIZE]),
+                Value::Nil,
+                Value::F64(f64::NAN),
+            ]);
+            entry_from_values(&key, &val).expect("a valid entry").1
+        };
+        let fresh = read(NOW - 10.0);
+        assert_eq!(fresh.use_state, KnownDestUseState::NeverUsed);
+        assert!(
+            disk_only_entry_is_kept(&fresh, NOW),
+            "within the linger it stays"
+        );
+        let stale = read(NOW - UNUSED_DESTINATION_LINGER_SECS - 60.0);
+        assert_eq!(stale.use_state, KnownDestUseState::NeverUsed);
+        assert!(
+            !disk_only_entry_is_kept(&stale, NOW),
+            "past the linger the reference culls it, and so must we"
+        );
+    }
 }

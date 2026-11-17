@@ -26,7 +26,7 @@ use leviculum_core::traits::Storage as CoreStorage;
 use leviculum_core::Identity;
 
 use crate::error::{Error, Result};
-use crate::file_known_destinations_store::FileKnownDestinationsStore;
+use crate::file_known_destinations_store::{Announced, FileKnownDestinationsStore, NewestRanks};
 use crate::file_packet_hash_store::FilePacketHashStore;
 use crate::file_ratchet_store::FileRatchetStore;
 use crate::known_destinations::{KnownDestEntry, KnownDestUseState, PACKET_HASH_LEN};
@@ -390,11 +390,31 @@ pub fn create_secret_dir_all(path: &Path) -> std::io::Result<()> {
 /// Unix, the directory entry after it, so a power cut leaves the old key or
 /// the new one, never a short file a loader refuses to start on.
 pub fn atomic_write_secret(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    write_synced_then_rename(path, data, create_secret_file)
+}
+
+/// Durable atomic write of a file that is no secret: the data goes to a
+/// `.tmp` file beside `path`, reaches the disk, is renamed over `path`, and
+/// on Unix the directory entry is synced after it. A kill or power cut at
+/// any point leaves the old file or the new one, never a short one.
+/// The mailbox move-in writes the `known_destinations` it received through
+/// here (order 1972): a truncated file there made the next flush rewrite it
+/// with nothing the file alone held.
+pub fn atomic_write_durable(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    write_synced_then_rename(path, data, |temp: &Path| std::fs::File::create(temp))
+}
+
+/// The steps both durable writers share; `create` opens the temp file.
+fn write_synced_then_rename(
+    path: &Path,
+    data: &[u8],
+    create: impl FnOnce(&Path) -> std::io::Result<std::fs::File>,
+) -> std::io::Result<()> {
     use std::io::Write as _;
 
     let temp_path = path.with_extension("tmp");
     {
-        let mut file = create_secret_file(&temp_path)?;
+        let mut file = create(&temp_path)?;
         file.write_all(data)?;
         file.sync_all()?;
     }
@@ -532,31 +552,24 @@ type KnownDestTable = BTreeMap<[u8; TRUNCATED_HASHBYTES], KnownDestEntry>;
 /// and dropped none, so without this the table grew with uptime while the
 /// identity table beside it stayed at its ceiling. What goes here stays in
 /// the file: the next flush merges it back from disk.
+///
+/// The rule is the flush's ([`NewestRanks`], which
+/// [`FileKnownDestinationsStore::merge_and_save`] ranks disk-only entries
+/// by): ties at the floor are kept in table order until the cap is met,
+/// and announce times compare by `f64::total_cmp`, so a NaN floor keeps
+/// `cap` entries and not none (order 1972).
 fn newest_known_destinations(table: KnownDestTable, cap: usize) -> KnownDestTable {
     if table.len() <= cap {
         return table;
     }
-    if cap == 0 {
-        return KnownDestTable::new();
+    let mut newest = NewestRanks::new(cap);
+    for entry in table.values() {
+        newest.offer(Announced(entry.timestamp));
     }
-    let mut stamps: Vec<f64> = table.values().map(|entry| entry.timestamp).collect();
-    let cut = stamps.len() - cap;
-    stamps.select_nth_unstable_by(cut, f64::total_cmp);
-    let floor = stamps[cut];
-    // Entries at the floor's own time are kept until the cap is met.
-    let mut room = cap - table.values().filter(|e| e.timestamp > floor).count();
+    let mut selection = newest.selection();
     table
         .into_iter()
-        .filter(|(_, entry)| {
-            if entry.timestamp > floor {
-                return true;
-            }
-            if entry.timestamp == floor && room > 0 {
-                room -= 1;
-                return true;
-            }
-            false
-        })
+        .filter(|(_, entry)| selection.take(Announced(entry.timestamp)))
         .collect()
 }
 
@@ -1557,13 +1570,29 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
+    /// Order 1972: the mailbox move-in's writer replaces the file whole and
+    /// leaves no temp file behind; into a directory that is gone it fails
+    /// and leaves nothing either.
+    #[test]
+    fn atomic_write_durable_replaces_the_file_whole() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("known_destinations");
+        std::fs::write(&path, vec![0xAA; 4096]).expect("old file");
+        atomic_write_durable(&path, b"new").expect("written");
+        assert_eq!(std::fs::read(&path).expect("read back"), b"new");
+        assert!(!path.with_extension("tmp").exists(), "no temp file left");
+
+        let gone = dir.path().join("gone").join("known_destinations");
+        assert!(atomic_write_durable(&gone, b"new").is_err());
+        assert!(!gone.exists() && !gone.with_extension("tmp").exists());
+    }
+
     use crate::file_ratchet_store::{RATCHETKEYS_DIR, RATCHETS_DIR};
     use crate::known_destinations::{
         decode_known_destinations, disk_only_entry_is_kept, encode_known_destinations,
         write_known_destination, write_known_destinations_header, KNOWN_DESTINATIONS_FILE,
     };
     use crate::packet_hashlist::{encode_packet_hashlist, PACKET_HASHLIST_FILE};
-    use leviculum_core::known_destinations::KnownDestinationsStore;
 
     /// A storage in a directory of its own, with that directory; hold the
     /// second for as long as the first. Until 730 every caller shared one

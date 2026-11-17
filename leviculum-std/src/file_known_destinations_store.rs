@@ -1,6 +1,6 @@
 //! File-backed known destinations store (msgpack, Python-compatible).
 
-use std::cmp::Reverse;
+use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BinaryHeap};
 use std::io::{BufReader, BufWriter, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -66,6 +66,13 @@ impl FileKnownDestinationsStore {
     /// handle reads untouched. The new file goes to a temp file beside the
     /// old one, synced, then renamed over it, so a kill at any point leaves
     /// one complete file.
+    ///
+    /// The production writers of the file in this workspace are this one
+    /// (every flush of a node's storage) and loquax-android's mailbox
+    /// move-in (`loquax-android/src/mailbox.rs`, `take_over`), which puts
+    /// the file a `/move` delivered in place whole, through
+    /// [`crate::storage::atomic_write_durable`]. Outside it, an rnsd on the
+    /// same storage writes it too (`Identity.py:197-239`).
     pub(crate) fn merge_and_save(
         &self,
         held: &BTreeMap<[u8; TRUNCATED_HASHBYTES], KnownDestEntry>,
@@ -82,7 +89,7 @@ impl FileKnownDestinationsStore {
         };
 
         // Pass 1: the ranks of the highest `disk_only_cap` that stay.
-        let mut newest = NewestStamps::new(disk_only_cap);
+        let mut newest = NewestRanks::new(disk_only_cap);
         let mut old = old.and_then(|file| {
             let mut reader = BufReader::with_capacity(IO_BUFFER, file);
             let counted = for_each_known_destination(&mut reader, |hash, entry| {
@@ -97,7 +104,7 @@ impl FileKnownDestinationsStore {
                     // As before: an unreadable file contributes nothing,
                     // and the write replaces it with what this node holds.
                     tracing::warn!("known_destinations unreadable, rewriting it: {e}");
-                    newest = NewestStamps::new(disk_only_cap);
+                    newest = NewestRanks::new(disk_only_cap);
                     None
                 }
             }
@@ -156,19 +163,137 @@ impl FileKnownDestinationsStore {
     }
 }
 
-/// The ranks of the highest `cap` entries offered, held in a min-heap of
-/// `cap` ranks: memory in the cap, not in the file.
-struct NewestStamps {
+/// The rule both the load and the flush trim the table by: keep the `cap`
+/// highest ranks offered; at the lowest kept rank (the floor), as many as
+/// fill the cap, the first ones in the order they are offered again.
+///
+/// Pass 1 offers every candidate ([`NewestRanks::offer`]), which holds a
+/// min-heap of `cap` ranks: memory in the cap, not in what is offered.
+/// Pass 2 offers the same candidates in the same order to the resulting
+/// [`Selection::take`]. Both passes order AND compare by `R`'s `Ord`, so
+/// what pass 1 counted is exactly what pass 2 takes (order 1972: a derived
+/// `PartialEq` on an `f64` disagreed with a `total_cmp` order on NaN, and
+/// every flush of a file with NaN announce times at the floor was
+/// abandoned).
+pub(crate) struct NewestRanks<R> {
     cap: usize,
-    heap: BinaryHeap<Reverse<Rank>>,
+    heap: BinaryHeap<Reverse<R>>,
+}
+
+impl<R: Ord + Copy> NewestRanks<R> {
+    pub(crate) fn new(cap: usize) -> Self {
+        Self {
+            cap,
+            heap: BinaryHeap::new(),
+        }
+    }
+
+    pub(crate) fn offer(&mut self, rank: R) {
+        if self.cap == 0 {
+            return;
+        }
+        if self.heap.len() < self.cap {
+            self.heap.push(Reverse(rank));
+        } else if self
+            .heap
+            .peek()
+            .is_some_and(|Reverse(lowest)| rank.cmp(lowest) == Ordering::Greater)
+        {
+            self.heap.pop();
+            self.heap.push(Reverse(rank));
+        }
+    }
+
+    /// What pass 2 takes: everything offered while fewer than `cap` were;
+    /// otherwise everything ranked above the lowest kept rank, and as many
+    /// at that rank as fill the cap.
+    pub(crate) fn selection(self) -> Selection<R> {
+        if self.heap.len() < self.cap {
+            return Selection {
+                floor: None,
+                room_at_floor: 0,
+                count: self.heap.len(),
+            };
+        }
+        let Some(Reverse(floor)) = self.heap.peek().copied() else {
+            // Only a zero cap leaves a full heap empty: nothing is taken.
+            return Selection {
+                floor: None,
+                room_at_floor: 0,
+                count: 0,
+            };
+        };
+        let above = self
+            .heap
+            .iter()
+            .filter(|Reverse(r)| r.cmp(&floor) == Ordering::Greater)
+            .count();
+        Selection {
+            floor: Some(floor),
+            room_at_floor: self.cap - above,
+            count: self.cap,
+        }
+    }
+}
+
+/// Pass 2 of [`NewestRanks`]: takes exactly `count` of the ranks offered in
+/// pass 1, offered again in the same order.
+pub(crate) struct Selection<R> {
+    floor: Option<R>,
+    room_at_floor: usize,
+    /// How many [`Selection::take`] answers `true` for.
+    pub(crate) count: usize,
+}
+
+impl<R: Ord> Selection<R> {
+    /// Whether the next candidate, in pass-1 order, is taken.
+    pub(crate) fn take(&mut self, rank: R) -> bool {
+        let Some(floor) = &self.floor else {
+            return self.count > 0;
+        };
+        match rank.cmp(floor) {
+            Ordering::Greater => true,
+            Ordering::Equal if self.room_at_floor > 0 => {
+                self.room_at_floor -= 1;
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+/// An announce time as a rank: ordered and compared by `f64::total_cmp`,
+/// so a NaN read off disk equals itself and sorts above every number (a
+/// positive NaN) or below (a negative one), the same way in every pass.
+#[derive(Clone, Copy)]
+pub(crate) struct Announced(pub(crate) f64);
+
+impl PartialEq for Announced {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for Announced {}
+
+impl PartialOrd for Announced {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Announced {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0.total_cmp(&other.0)
+    }
 }
 
 /// Where a disk-only entry stands for the `disk_only_cap` places: every
 /// retained one above every other, and within each group the later
-/// announce above the earlier. The announce time orders by
-/// `f64::total_cmp`, so a NaN read off disk orders the same way in both
-/// passes.
-#[derive(Clone, Copy, PartialEq)]
+/// announce above the earlier. Ordering and equality both follow `Ord`,
+/// which compares the announce time with `f64::total_cmp`: two NaN
+/// announce times are equal in both passes of [`NewestRanks`].
+#[derive(Clone, Copy)]
 struct Rank {
     retained: bool,
     announced: f64,
@@ -183,122 +308,73 @@ impl Rank {
     }
 }
 
+impl PartialEq for Rank {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
 impl Eq for Rank {}
 
 impl PartialOrd for Rank {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for Rank {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         self.retained
             .cmp(&other.retained)
             .then(self.announced.total_cmp(&other.announced))
     }
 }
 
-impl NewestStamps {
-    fn new(cap: usize) -> Self {
-        Self {
-            cap,
-            heap: BinaryHeap::new(),
-        }
-    }
-
-    fn offer(&mut self, stamp: Rank) {
-        if self.cap == 0 {
-            return;
-        }
-        if self.heap.len() < self.cap {
-            self.heap.push(Reverse(stamp));
-        } else if self
-            .heap
-            .peek()
-            .is_some_and(|Reverse(oldest)| stamp > *oldest)
-        {
-            self.heap.pop();
-            self.heap.push(Reverse(stamp));
-        }
-    }
-
-    /// What pass 2 copies: everything offered while fewer than `cap` were;
-    /// otherwise everything ranked above the lowest kept rank, and as many
-    /// at that rank as fill the cap, the first ones in file order.
-    fn selection(self) -> Selection {
-        if self.heap.len() < self.cap {
-            return Selection {
-                floor: None,
-                room_at_floor: 0,
-                count: self.heap.len(),
-            };
-        }
-        let Some(Reverse(floor)) = self.heap.peek().copied() else {
-            // Only a zero cap leaves a full heap empty.
-            return Selection {
-                floor: None,
-                room_at_floor: 0,
-                count: 0,
-            };
-        };
-        let above = self.heap.iter().filter(|Reverse(s)| *s > floor).count();
-        Selection {
-            floor: Some(floor),
-            room_at_floor: self.cap - above,
-            count: self.cap,
-        }
-    }
-}
-
-struct Selection {
-    floor: Option<Rank>,
-    room_at_floor: usize,
-    count: usize,
-}
-
-impl Selection {
-    /// Whether the next eligible entry, in file order, is copied.
-    fn take(&mut self, stamp: Rank) -> bool {
-        let Some(floor) = self.floor else {
-            return true;
-        };
-        if stamp > floor {
-            return true;
-        }
-        if stamp == floor && self.room_at_floor > 0 {
-            self.room_at_floor -= 1;
-            return true;
-        }
-        false
-    }
-}
-
-/// The whole-file codec, for tests that read or seed the file in one piece.
-/// Production code has one writer of the file, [`merge_and_save`]
-/// (order 1767): this path holds the whole file in memory and replaced it
-/// without an fsync, which is what order 1749 took out of the flush.
-///
-/// [`merge_and_save`]: FileKnownDestinationsStore::merge_and_save
+/// The whole file decoded in one piece, for tests that read back what a
+/// flush wrote. Production reads the file one entry at a time
+/// ([`FileKnownDestinationsStore::for_each`]); this holds all of it.
 #[cfg(test)]
-impl leviculum_core::known_destinations::KnownDestinationsStore for FileKnownDestinationsStore {
-    type Error = Error;
-
-    fn load_all(
-        &mut self,
-    ) -> core::result::Result<BTreeMap<[u8; TRUNCATED_HASHBYTES], KnownDestEntry>, Error> {
+impl FileKnownDestinationsStore {
+    pub(crate) fn load_all(
+        &self,
+    ) -> Result<BTreeMap<[u8; TRUNCATED_HASHBYTES], KnownDestEntry>, Error> {
         match std::fs::read(&self.path) {
             Ok(bytes) => crate::known_destinations::decode_known_destinations(&bytes),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
             Err(e) => Err(Error::Storage(format!("{e}"))),
         }
     }
+}
 
-    fn save_all(
-        &mut self,
-        entries: &BTreeMap<[u8; TRUNCATED_HASHBYTES], KnownDestEntry>,
-    ) -> core::result::Result<(), Error> {
-        let encoded = crate::known_destinations::encode_known_destinations(entries)?;
-        crate::storage::atomic_write(&self.path, &encoded)
+#[cfg(test)]
+mod tests {
+    use super::{Announced, Rank};
+
+    /// Order 1972: equality agrees with `Ord` for every announce time, NaN
+    /// included, so `==` and `cmp` cannot disagree as the derived
+    /// `PartialEq` did (NaN != NaN under `total_cmp`'s Equal).
+    #[test]
+    fn rank_equality_follows_its_order_also_for_nan() {
+        for announced in [f64::NAN, -f64::NAN, 0.0, 1_800_000_000.0] {
+            let rank = Rank {
+                retained: true,
+                announced,
+            };
+            assert!(rank == rank, "{announced} equals itself");
+            assert!(Announced(announced) == Announced(announced));
+        }
+        let pin = Rank {
+            retained: true,
+            announced: f64::NAN,
+        };
+        let other = Rank {
+            retained: false,
+            announced: f64::NAN,
+        };
+        assert!(pin != other, "a pin is not another entry");
+        assert!(
+            Announced(0.0) != Announced(-0.0),
+            "total_cmp tells the zeros apart"
+        );
     }
 }

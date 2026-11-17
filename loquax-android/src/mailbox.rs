@@ -429,7 +429,9 @@ async fn take_over(
             .map_err(|error| MoveFailed::Here(error.to_string()))?;
     }
     if !taken.known.is_empty() {
-        std::fs::write(storage.join("known_destinations"), &taken.known)
+        // Through a synced temp file and a rename: a kill mid-write must not
+        // leave a short file the next flush rewrites as unreadable (1972).
+        leviculum_std::atomic_write_durable(&storage.join("known_destinations"), &taken.known)
             .map_err(|error| MoveFailed::Here(error.to_string()))?;
     }
     if !taken.name.is_empty() {
