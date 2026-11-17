@@ -242,13 +242,14 @@ skip  leviculum-std   audit_moved_transport_citations     # spawns python3: the 
 skip  leviculum-std   audit_citation_guard_sibling        # spawns python3 and git: an untouched sibling citation does not excuse a touched one (audit of 1940, order 1955)
 skip  leviculum-std   audit_citation_guard_add_beside     # spawns python3 and git: a drift added beside one the base keeps is refused (audit of 1940, order 1955)
 skip  leviculum-std   audit_citation_guard_nolabel_pool   # spawns python3 and git: label-less citations answer to the one each replaced, no pool (audit of 1955, order 1959)
-skip  leviculum-std   audit_1955_drift_follows_item       # spawns python3 and git: a drift renumbered with its item passes (audit of 1955, order 1959)
-skip  leviculum-std   audit_1955_drift_third_item         # spawns python3 and git: a drift whose file moves a third item under it is refused (audit of 1955, order 1959)
-skip  leviculum-std   audit_1955_nolabel_moved            # spawns python3 and git: a label-less citation renumbered onto another item is refused (audit of 1955, order 1959)
-skip  leviculum-std   audit_1955_verbatim_sibling_agree   # spawns python3 and git: an agreeing citation moved beside a drifting sibling is refused (audit of 1955, order 1959)
-skip  leviculum-std   audit_1955_verbatim_sibling_drift   # spawns python3 and git: a new drift beside an untouched drift is refused (audit of 1955, order 1959)
-skip  leviculum-std   audit_1955_verbatim_sibling_nolabel # spawns python3 and git: a new label-less citation beside an untouched one is refused (audit of 1955, order 1959)
-skip  leviculum-std   audit_1955_verbatim_add_beside      # spawns python3 and git: a citation added beside a standing drift is judged as new (audit of 1955, order 1959)
+skip  leviculum-std   audit_1959_r_drift_follows_item     # spawns python3 and git: a drift renumbered with its item passes, onto a third item it is refused (audit text of 1955, order 1965)
+skip  leviculum-std   audit_1959_r_drift_third_item       # spawns python3 and git: a drift whose file moves a third item under it is refused (audit text of 1955, order 1965)
+skip  leviculum-std   audit_1959_r_nolabel_moved          # spawns python3 and git: a label-less citation renumbered onto another item is refused (audit text of 1955, order 1965)
+skip  leviculum-std   audit_1959_r_sibling_agree          # spawns python3 and git: an agreeing citation moved beside a drifting sibling is refused (audit text of 1940, order 1965)
+skip  leviculum-std   audit_1959_r_sibling_drift          # spawns python3 and git: a new drift beside an untouched drift is refused (audit text of 1940, order 1965)
+skip  leviculum-std   audit_1959_r_sibling_nolabel        # spawns python3 and git: a new label-less citation beside an untouched one is refused (audit text of 1940, order 1965)
+skip  leviculum-std   audit_1959_r_add_beside             # spawns python3 and git: a citation added beside a standing drift is judged as new (audit text of 1940, order 1965)
+skip  leviculum-std   audit_1959_r_nolabel_pool           # spawns python3 and git: a removed label-less citation excuses none added elsewhere (audit text of 1955, order 1965)
 skip  leviculum-std   log_stream_split           # spawns a process to split its streams
 skip  leviculum-std   lxmd_messagestore_takeover # spawns lxmd against a temp-dir store
 skip  leviculum-std   lxmf_rapid_identical_messages # in-process dedup behaviour; subject is the code
