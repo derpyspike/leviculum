@@ -190,30 +190,84 @@ async fn a_new_interface_hears_an_announce_made_before_it() {
     );
 }
 
-/// Count the announces of `hash` a raw TCP peer reads on its one accepted
-/// connection within `window`.
+/// What one round's raw reader saw on the wire, every time an offset in
+/// microseconds from the round's epoch (taken just before the client
+/// spawns), so a red round names its whole timeline in one clock.
+struct WireTrace {
+    /// When the client's dial was accepted.
+    accept_us: u128,
+    /// Every announce of the destination, in arrival order.
+    arrivals_us: Vec<u128>,
+    /// Why reading stopped: `window` (the strict window elapsed with a
+    /// copy in), `grace` (the long grace elapsed with none), `closed`
+    /// (EOF), or the read error. Before order 1977 an error ended the
+    /// count silently and a red could not tell "nothing arrived" from
+    /// "the reader stopped listening".
+    ended: String,
+}
+
+/// Read the one accepted connection for announces of `hash`.
+///
+/// A copy inside `window` of the accept is on time. When the window ends
+/// empty, the reader keeps listening up to `grace`, so a red can tell a
+/// copy that was late (the 672/689 class, a busy host scheduling the
+/// event loop behind the reader's clock) from one that never came (a
+/// real loss). After a copy is in, reading still spans the full strict
+/// window, where the historical duplicate (187 µs apart) would show.
 fn announces_read(
     listener: std::net::TcpListener,
     hash: DestinationHash,
     window: Duration,
-) -> usize {
+    grace: Duration,
+    epoch: std::time::Instant,
+) -> WireTrace {
     use leviculum_core::framing::hdlc::{DeframeResult, Deframer};
     use leviculum_core::packet::{Packet, PacketType};
     use std::io::Read;
     listener.set_nonblocking(false).expect("blocking listener");
     let (mut stream, _) = listener.accept().expect("the client dials");
-    let end = std::time::Instant::now() + window;
+    let accept = std::time::Instant::now();
+    let mut trace = WireTrace {
+        accept_us: accept.duration_since(epoch).as_micros(),
+        arrivals_us: Vec::new(),
+        ended: String::new(),
+    };
     let mut deframer = Deframer::new();
-    let mut count = 0;
     let mut buf = [0u8; 4096];
-    while let Some(left) = end.checked_duration_since(std::time::Instant::now()) {
+    loop {
+        let deadline = if trace.arrivals_us.is_empty() {
+            accept + grace
+        } else {
+            accept + window
+        };
+        let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) else {
+            trace.ended = if trace.arrivals_us.is_empty() {
+                "grace".to_string()
+            } else {
+                "window".to_string()
+            };
+            break;
+        };
         stream
             .set_read_timeout(Some(left.max(Duration::from_millis(1))))
             .expect("read timeout");
         let n = match stream.read(&mut buf) {
-            Ok(0) => break,
+            Ok(0) => {
+                trace.ended = "closed".to_string();
+                break;
+            }
             Ok(n) => n,
-            Err(_) => break,
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut
+                    || e.kind() == std::io::ErrorKind::Interrupted =>
+            {
+                continue;
+            }
+            Err(e) => {
+                trace.ended = format!("read error: {e}");
+                break;
+            }
         };
         for result in deframer.process(&buf[..n]) {
             if let DeframeResult::Frame(raw) = result {
@@ -221,13 +275,13 @@ fn announces_read(
                     if p.flags.packet_type == PacketType::Announce
                         && &p.destination_hash == hash.as_bytes()
                     {
-                        count += 1;
+                        trace.arrivals_us.push(accept.elapsed().as_micros());
                     }
                 }
             }
         }
     }
-    count
+    trace
 }
 
 /// The facade's red, as 1656 found it in the mailbox's event log: the
@@ -243,12 +297,34 @@ fn announces_read(
 ///
 /// Each round spawns a client to a raw listener and announces once, a swept
 /// spin after the spawn so that some round lands in the window. Every round
-/// must put exactly one copy on the connection.
+/// must put exactly one copy on the connection, inside [`WINDOW`] of the
+/// accept.
+///
+/// A red round explains itself (order 1977, after an unexplained
+/// `[(52, 0)]` on a host at load 26, order 1881's report): its line carries
+/// the round's whole timeline (spawn, announce, accept, every arrival) and
+/// a verdict — `doubled` for the race this mvr exists for, `late` for a
+/// copy inside [`LATE_GRACE`] but past the window (the 672/689 class, the
+/// host scheduling the event loop behind the reader's clock), `lost` for
+/// none within the grace — followed by the node's own structured events
+/// (`ANN_TX`, `ANN_PACED`) for that round. Under a parallel test run other
+/// tests' events can interleave into those lines; standalone they are this
+/// round's alone.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_announce_racing_a_new_interface_reaches_it_once() {
     const ROUNDS: u32 = 120;
-    let mut doubled = Vec::new();
+    /// A copy inside this of the accept is on time: what the test has
+    /// asserted since 1656. 24 000 baseline rounds (order 1977: 50 runs
+    /// alone and 50 under a 25 % CPU quota on each of 95ecc0730 and
+    /// e2ccf9ff) all stayed inside it.
+    const WINDOW: Duration = Duration::from_millis(250);
+    /// How much longer the reader listens after an empty window, to tell
+    /// a late copy from a lost one. Costs nothing on a clean round.
+    const LATE_GRACE: Duration = Duration::from_secs(3);
+    let evlog = leviculum_std::test_support::event_log::init_event_log();
+    let mut anomalies = Vec::new();
     for round in 0..ROUNDS {
+        let events_before = evlog.dump().len();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         let node_dir = tempfile::tempdir().expect("tempdir");
@@ -263,10 +339,12 @@ async fn an_announce_racing_a_new_interface_reaches_it_once() {
         let hash: DestinationHash = *dest.hash();
         node.register_destination(dest);
 
+        let epoch = std::time::Instant::now();
         let reader =
-            std::thread::spawn(move || announces_read(listener, hash, Duration::from_millis(250)));
+            std::thread::spawn(move || announces_read(listener, hash, WINDOW, LATE_GRACE, epoch));
         node.spawn_interface(tcp_client_to(addr))
             .expect("spawn the client");
+        let spawned_us = epoch.elapsed().as_micros();
         // Sweep 0..=119 µs: the loop's wake-up, drain and registration
         // take tens of microseconds on the node's own thread.
         let spin = std::time::Instant::now() + Duration::from_micros(u64::from(round));
@@ -276,15 +354,38 @@ async fn an_announce_racing_a_new_interface_reaches_it_once() {
         node.announce_destination(&hash, None)
             .await
             .expect("announce");
-        let copies = reader.join().expect("reader");
+        let announced_us = epoch.elapsed().as_micros();
+        let trace = reader.join().expect("reader");
         node.stop().await.ok();
-        if copies != 1 {
-            doubled.push((round, copies));
+        let on_time = trace
+            .arrivals_us
+            .iter()
+            .filter(|&&a| a <= WINDOW.as_micros())
+            .count();
+        if on_time != 1 || trace.arrivals_us.len() != 1 {
+            let verdict = match (on_time, trace.arrivals_us.len()) {
+                (0, 0) => "lost",
+                (0, _) => "late",
+                _ => "doubled",
+            };
+            eprintln!(
+                "MVR1656_ROUND round={round} spin_us={round} verdict={verdict} \
+                 spawned_us={spawned_us} announced_us={announced_us} accept_us={} \
+                 arrivals_from_accept_us={:?} reader_ended={}",
+                trace.accept_us, trace.arrivals_us, trace.ended
+            );
+            let mut events = evlog.dump();
+            for ev in events.split_off(events_before.min(events.len())) {
+                eprintln!("  node: {ev}");
+            }
+            anomalies.push((round, verdict));
         }
     }
     assert!(
-        doubled.is_empty(),
-        "rounds (spin µs, copies) whose new connection carried the announce \
-         other than once: {doubled:?}"
+        anomalies.is_empty(),
+        "rounds (spin µs, verdict) whose new connection did not carry the \
+         announce exactly once within {WINDOW:?} of the accept: {anomalies:?} \
+         (timelines and node events above; `late` means the one copy arrived \
+         within {LATE_GRACE:?} of the accept, `lost` that none did)"
     );
 }
