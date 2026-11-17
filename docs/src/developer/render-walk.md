@@ -289,6 +289,38 @@ known count before and after (must not grow). The walk prints both on its
 judged)`. A pass that repairs a failure removes
 its line in the same commit, so the known count falls.
 
+## The film strip
+
+`just ux-film` draws a way, one recorded or scripted session, as a film
+strip: `film.png` and `film.html`. The frames run in order, each with its
+input marked (the pointer as a blue cross, the kind, button and wheel steps
+as a label). A frame where a rule failed is framed red, with the rule's line
+under it. Given a second run of the same way (`--before`), the two strips
+stand above each other with a difference strip under them. The difference
+cell is framed red and labelled when the after frame is the before frame
+moved (`moved -20,+0 px`) or when more than 1 % of it changed.
+
+A strip keeps at most 48 frames (24 with a second run), so a 20 s way fits
+one screen. It always keeps the first and the last frame, every failed
+frame, and the frame at each input with one frame either side. The rest of
+the budget samples the other frames evenly, and a cell after a gap says how
+many frames it skipped.
+
+```sh
+just ux-film WAY_DIR [--before DIR]          # frames.tsv, inputs.tsv, rules.tsv
+just ux-film --load-walk target/load-walk --session in-out-in \
+             [--before-load-walk OTHER]       # until stage 0a lands
+just ux-film-selftest                         # a 20 px jump must be marked
+```
+
+Until stage 0a writes a way's `frames.tsv`, `--load-walk` reads the load
+walk's output. That output keeps one picture per pause rather than every
+drawn frame, and its trace holds the view each input produced rather than
+the pointer, the button or the wheel's steps. The film marks those view
+changes as `view` inputs and says what is missing. The selftest builds
+synthetic ways: a 20 px jump between the before and the after run is marked
+and nothing else is, and a 1200-frame way is thinned to one screen.
+
 ## What it does not see
 
 - **Java's own state.** The rotation checks the library's half: the view

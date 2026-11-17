@@ -3035,6 +3035,27 @@ load-walk *ARGS:
 walk-ratchet-selftest:
     python3 -I scripts/walk_ratchet.py --selftest
 
+# Order 1994: a way's frames as a film strip a person can read (film.html,
+# film.png): the frames in order, the input on each, the frames a rule
+# failed on framed red with the rule's line, and with a second run the two
+# strips above each other over a difference strip that marks a move or a
+# change. Thinned to one screen (failures, inputs and their neighbours kept,
+# the rest sampled). Until stage 0a writes a way's frames.tsv, `--load-walk
+# OUT --session NAME` reads the load walk's pause pictures and trace. Needs
+# Pillow (python3-pil). A looking tool, never in `guards`.
+[doc('Draw a way as a film strip, before and after with a diff (1994)')]
+ux-film *ARGS:
+    python3 -I scripts/ux-film.py {{ARGS}}
+
+# The film's selftest: synthetic ways, a 20 px jump between the before and
+# the after run must be marked in the difference strip (and nothing else),
+# a failed frame framed red, a 1200-frame way thinned to one screen keeping
+# its failure and inputs. About 1.5 s; needs Pillow, which the forge's
+# install does not promise, so it stays off the push path.
+[doc('Check the film strip marks a 20 px jump and thins a long way (1994)')]
+ux-film-selftest:
+    python3 -I scripts/ux-film.py --selftest
+
 # 1422, #474: the map's frame budget measured (the eye candy study of
 # 2026-11-04, section 4). `REGION` is the Frankfurt region the study cut
 # (LMR3 with names and buildings, sha256 5022565b...a2b7c7a). One MAP_BENCH
