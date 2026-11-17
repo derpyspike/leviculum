@@ -559,7 +559,7 @@ impl TileCache {
                         }
                         return Some((credit, 0));
                     }
-                    if frame.moving {
+                    if frame.moving && on_globe(&blend) {
                         let exposed =
                             ride_memo(&memo.view, &memo.rgba, &frame.view, rgba, self.workers);
                         let credit = memo.attribution.clone();
@@ -1033,6 +1033,19 @@ impl TileCache {
         self.stats.render_us = self.stats.render_us.saturating_add(us);
         drawn
     }
+}
+
+/// Whether every corner of `blend`'s frame lies on the globe: no
+/// limb, no space on screen. Only such a frame rides the memo; where
+/// the disk shows, a drag turns it about its fixed centre (1799, the
+/// wobble P0) and the memo shifted would move the disk, so the frame is
+/// drawn whole (audit of 1943).
+fn on_globe(blend: &Blend) -> bool {
+    let (w, h) = blend.size();
+    let (x1, y1) = (f64::from(w.max(1)) - 0.5, f64::from(h.max(1)) - 0.5);
+    [(0.5, 0.5), (x1, 0.5), (0.5, y1), (x1, y1)]
+        .iter()
+        .all(|&(x, y)| blend.to_world(x, y).is_some())
 }
 
 /// The curved memo's picture carried into a moving frame's pixels
@@ -2195,6 +2208,24 @@ mod tests {
             outward.rgba.chunks_exact(4).all(|p| p[3] == 0xff),
             "the step out leaves no hole around the memo"
         );
+    }
+
+    /// Where the globe's disk is on screen a drag turns it about its
+    /// fixed centre (1799, the wobble P0): shifting the memo would move
+    /// the disk under the finger, so a moving frame there is drawn whole,
+    /// as before order 1943, and owes nothing. Zoom 2 on the 600x400
+    /// screen shows the whole disk with space round it.
+    #[test]
+    fn a_moving_frame_that_shows_the_disk_is_drawn_not_ridden() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut cache = curved(maps);
+        cache.compose(&curved_frame_at(europe(), 2, false));
+        assert_eq!(cache.stats.curved_drawn, 1, "zoom 2 is curved here");
+        let moved = cache.compose(&curved_frame_at(east_at(europe(), 20, 2), 2, true));
+        assert_eq!(cache.stats.curved_blit, 0, "the disk's frame rode the memo");
+        assert_eq!(cache.stats.curved_drawn, 2, "the turned frame is drawn");
+        assert_eq!(moved.missing, 0);
     }
 
     #[test]
