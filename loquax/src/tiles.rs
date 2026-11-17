@@ -560,13 +560,14 @@ impl TileCache {
                         return Some((credit, 0));
                     }
                     if frame.moving {
-                        let exposed = ride_memo(&memo.view, &memo.rgba, &frame.view, rgba);
+                        let exposed =
+                            ride_memo(&memo.view, &memo.rgba, &frame.view, rgba, self.workers);
                         let credit = memo.attribution.clone();
-                        if exposed {
+                        if !exposed.is_empty() {
                             // Where the memo does not reach, the world
                             // outline, as under a tile not drawn yet.
                             let theme = frame.style.theme;
-                            outline_under(&frame.view, theme, rgba, self.workers, None);
+                            outline_under(&frame.view, theme, rgba, self.workers, Some(&exposed));
                         }
                         self.stats.curved_blit += 1;
                         return Some((credit, 1));
@@ -1035,19 +1036,30 @@ impl TileCache {
 }
 
 /// The curved memo's picture carried into a moving frame's pixels
-/// (order 1943), sampled bilinear along the world-linear mapping of
-/// the two views' centres and zooms, so a wheel step in shows no
-/// nearest-neighbour blocks; a pixel the memo does not reach is left
-/// clear (alpha 0) for the outline under it, never a sea-coloured
-/// strip (audit of 1943). Whether any was left so. The blend's own
-/// warp differs between the two views; while a finger moves that
-/// difference is taken, as the tile path takes a scaled stand-in
-/// (1163), and the frame is owed, so the real one is drawn at rest.
-fn ride_memo(from: &ExactView, src: &[u8], to: &ExactView, dst: &mut [u8]) -> bool {
+/// (order 1943) along the world-linear mapping of the two views'
+/// centres and zooms, rows split over `workers`. A pan at the memo's
+/// zoom copies whole rows shifted; a zoom samples bilinear in fixed
+/// point, so a wheel step in shows no nearest-neighbour blocks. The
+/// pixels the memo does not reach are left clear (alpha 0) for the
+/// outline under them, never a sea-coloured strip (audit of 1943); the
+/// rectangles they lie in are returned. The blend's own warp differs
+/// between the two views; while a finger moves that difference is
+/// taken, as the tile path takes a scaled stand-in (1163), and the
+/// frame is owed, so the real one is drawn at rest.
+fn ride_memo(
+    from: &ExactView,
+    src: &[u8],
+    to: &ExactView,
+    dst: &mut [u8],
+    workers: usize,
+) -> Vec<Rect> {
     let (fw, fh) = from.size();
     let (tw, th) = to.size();
     if src.len() != fw as usize * fh as usize * 4 || dst.len() != tw as usize * th as usize * 4 {
-        return false;
+        return Vec::new();
+    }
+    if fw == 0 || fh == 0 {
+        return Vec::new();
     }
     // Memo pixels per target pixel, and the centres' offset in memo
     // pixels; x wraps at the antimeridian, nearest copy taken.
@@ -1058,34 +1070,96 @@ fn ride_memo(from: &ExactView, src: &[u8], to: &ExactView, dst: &mut [u8]) -> bo
     // pixel centres: 0.0 is the first memo pixel's centre.
     let x0 = (0.5 - f64::from(tw) / 2.0) * k + dx + f64::from(fw) / 2.0 - 0.5;
     let y0 = (0.5 - f64::from(th) / 2.0) * k + dy + f64::from(fh) / 2.0 - 0.5;
-    let (fwf, fhf) = (f64::from(fw), f64::from(fh));
+    // The target pixels the memo reaches, a rectangle: those whose
+    // memo coordinate lies inside (-0.5, n - 0.5).
+    let reach = |o: f64, n: u32, t: u32| {
+        let first = ((-0.5 - o) / k).floor() + 1.0;
+        let end = ((f64::from(n) - 0.5 - o) / k).ceil();
+        let first = first.clamp(0.0, f64::from(t)) as u32;
+        (first, (end.clamp(0.0, f64::from(t)) as u32).max(first))
+    };
+    let (cx0, cx1) = reach(x0, fw, tw);
+    let (cy0, cy1) = reach(y0, fh, th);
+    let exposed: Vec<Rect> = [
+        Rect {
+            x0: 0,
+            y0: 0,
+            x1: tw,
+            y1: cy0,
+        },
+        Rect {
+            x0: 0,
+            y0: cy1,
+            x1: tw,
+            y1: th,
+        },
+        Rect {
+            x0: 0,
+            y0: cy0,
+            x1: cx0,
+            y1: cy1,
+        },
+        Rect {
+            x0: cx1,
+            y0: cy0,
+            x1: tw,
+            y1: cy1,
+        },
+    ]
+    .into_iter()
+    .filter(|r| r.x0 < r.x1 && r.y0 < r.y1)
+    .collect();
     let stride = fw as usize * 4;
-    let mut exposed = false;
-    for (y, out) in dst.chunks_exact_mut(tw as usize * 4).enumerate() {
-        let sy = y0 + y as f64 * k;
-        let inside_y = sy > -0.5 && sy < fhf - 0.5;
-        let ya = sy.floor().clamp(0.0, fhf - 1.0) as usize;
-        let yb = (ya + 1).min(fh as usize - 1);
-        let fy = (sy - sy.floor()).clamp(0.0, 1.0);
-        for (x, px) in out.chunks_exact_mut(4).enumerate() {
-            let sx = x0 + x as f64 * k;
-            if !inside_y || sx <= -0.5 || sx >= fwf - 0.5 {
-                px.copy_from_slice(&[0, 0, 0, 0]);
-                exposed = true;
-                continue;
+    let shift = (k - 1.0).abs() < 1e-9;
+    // Per reached column: the memo columns either side and the weight
+    // of the right one, in 256ths.
+    let cols: Vec<(usize, usize, u32)> = (cx0..cx1)
+        .map(|x| {
+            let sx = x0 + f64::from(x) * k;
+            let a = sx.floor().clamp(0.0, f64::from(fw - 1));
+            let b = (a + 1.0).min(f64::from(fw - 1));
+            let f = ((sx - sx.floor()).clamp(0.0, 1.0) * 256.0).round() as u32;
+            (a as usize, b as usize, f)
+        })
+        .collect();
+    let one_row = |y: u32, out: &mut [u8]| {
+        if y < cy0 || y >= cy1 {
+            out.fill(0);
+            return;
+        }
+        out[..cx0 as usize * 4].fill(0);
+        out[cx1 as usize * 4..].fill(0);
+        if cx0 == cx1 {
+            return;
+        }
+        let sy = y0 + f64::from(y) * k;
+        let inside = &mut out[cx0 as usize * 4..cx1 as usize * 4];
+        if shift {
+            // A pan: the memo's row, shifted by whole pixels.
+            let row = (sy.round().clamp(0.0, f64::from(fh - 1))) as usize;
+            let from_x = (x0 + f64::from(cx0)).round().max(0.0) as usize;
+            let n = inside.len().min(stride.saturating_sub(from_x * 4));
+            inside[..n].copy_from_slice(&src[row * stride + from_x * 4..][..n]);
+            for px in inside.chunks_exact_mut(4) {
+                px[3] = 0xff;
             }
-            let xa = sx.floor().clamp(0.0, fwf - 1.0) as usize;
-            let xb = (xa + 1).min(fw as usize - 1);
-            let fx = (sx - sx.floor()).clamp(0.0, 1.0);
-            let at = |yy: usize, xx: usize, c: usize| f64::from(src[yy * stride + xx * 4 + c]);
-            for (c, out) in px.iter_mut().enumerate().take(3) {
-                let top = at(ya, xa, c) * (1.0 - fx) + at(ya, xb, c) * fx;
-                let bottom = at(yb, xa, c) * (1.0 - fx) + at(yb, xb, c) * fx;
-                *out = (top * (1.0 - fy) + bottom * fy).round() as u8;
+            return;
+        }
+        let ya = sy.floor().clamp(0.0, f64::from(fh - 1)) as usize;
+        let yb = (ya + 1).min(fh as usize - 1);
+        let fy = ((sy - sy.floor()).clamp(0.0, 1.0) * 256.0).round() as u32;
+        let (top, bottom) = (&src[ya * stride..][..stride], &src[yb * stride..][..stride]);
+        for (px, &(a, b, fx)) in inside.chunks_exact_mut(4).zip(&cols) {
+            for c in 0..3 {
+                let t = u32::from(top[a * 4 + c]) * (256 - fx) + u32::from(top[b * 4 + c]) * fx;
+                let u =
+                    u32::from(bottom[a * 4 + c]) * (256 - fx) + u32::from(bottom[b * 4 + c]) * fx;
+                px[c] = ((t * (256 - fy) + u * fy + (1 << 15)) >> 16) as u8;
             }
             px[3] = 0xff;
         }
-    }
+    };
+    by_rows(dst, tw, workers, one_row);
     exposed
 }
 
@@ -2086,6 +2160,40 @@ mod tests {
         assert!(
             sea * 2 < exposed,
             "the exposed strip is sea: {sea} of {exposed} pixels"
+        );
+    }
+
+    /// A wheel step in and one out under a moving frame ride the memo
+    /// too (audit of 1943): in, the memo's pixels are sampled bilinear,
+    /// no row or column doubled as nearest-neighbour would; out, the
+    /// memo shrinks into the middle and the outline shows around it,
+    /// never a hole.
+    #[test]
+    fn a_wheel_step_rides_the_memo_without_blocks_or_holes() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut cache = curved(maps);
+        cache.compose(&curved_frame(europe(), false));
+        let zoomed = |milli: u32| Frame {
+            view: ExactView::new(europe(), milli, 600, 400),
+            ..curved_frame(europe(), true)
+        };
+        let inward = cache.compose(&zoomed(7 * MILLI + 1000));
+        assert_eq!(cache.stats.curved_blit, 1, "the step in rode the memo");
+        assert!(
+            !rows_doubled(&inward.rgba, 600),
+            "rows doubled: nearest blocks"
+        );
+        assert!(
+            !cols_doubled(&inward.rgba, 600),
+            "columns doubled: nearest blocks"
+        );
+        let outward = cache.compose(&zoomed(7 * MILLI - 1000));
+        assert_eq!(cache.stats.curved_blit, 2, "the step out rode the memo");
+        assert_eq!(cache.stats.curved_drawn, 1, "neither step drew whole");
+        assert!(
+            outward.rgba.chunks_exact(4).all(|p| p[3] == 0xff),
+            "the step out leaves no hole around the memo"
         );
     }
 
