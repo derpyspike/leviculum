@@ -918,6 +918,23 @@ base for the base citation):
   `agree` or item(head) is item(base), the same item of the same file;
 - no partner: the head citation must be `agree`.
 
+A cited line the census resolves to no item (`-`, between items or in a
+file without any; `past-end`, beyond the file's last line) is not an
+item, and neither is a line of a markdown file, which the census places
+under the heading above it, a section of prose of any length: two such
+lines are never "the same item" (audit of 1959, order 1965). A head
+citation that is not `agree` and whose own cited line or its partner's is
+such a line is refused, with one exception: the text of its cited line at
+head is byte for byte the text of its partner's cited line at the base,
+and that line is neither past the end nor blank. So a label-less citation
+renumbered from one blank line of a Rust file to another is refused, as
+is a drifting citation renumbered from one past-end line to another and a
+label-less citation into a markdown file renumbered onto a line of other
+text, and one left on a line whose text the change moved away; one that
+follows its line's text passes ("guard: a label-less citation that
+follows its line's text into a markdown file passes"). A blank line has
+no text to recognise it by, so a citation of one stays only by agreeing.
+
 The same pairing judges a citation on an unchanged line whose cited file
 changed. So a drifting citation renumbered with its item passes ("guard: a
 drifting citation renumbered with its item passes"), and one renumbered

@@ -48,6 +48,14 @@ Two refusals, both over the living texts (scripts/citations.py, `is_living`):
      item(head) == item(base), the same item of the same file;
    - no partner: head must be `agree`.
 
+   A cited line the census resolves to no item ("-", "past-end"), or a
+   line of a markdown file (the census places it under the heading above
+   it), is no item: two such lines are never the same item (audit of
+   1959, order 1965). A head citation that is not `agree` and whose head
+   or base partner cites such a line is refused, unless the text of its
+   cited line at head is byte for byte the text of its partner's cited
+   line at the base and that line is neither past the end nor blank.
+
    A bare name the tree cannot place (`foreign`, why `unplaced`) resolves
    no item; its own text is what it names, so one carried word for word
    keeps its partner and a renumbered one is refused.
@@ -226,25 +234,66 @@ def cited_path(rec):
     return rec["at"].rsplit(":", 1)[0]
 
 
+NO_ITEM = ("-", "past-end")
+
+
 def identity(rec):
     """What a pair compares: the item the census resolves at a citation's
-    cited line, with its file. A bare name the census cannot place in this
-    tree (`foreign`, why `unplaced`) resolves no item; the only thing it
-    names is its own text, so that is its identity, and a renumbered one is
-    another citation."""
+    cited line, with its file, or None when the census resolves no item
+    there ("-", "past-end": scripts/citation-census.py, `judge`) or only
+    the heading of a markdown file. A bare
+    name the census cannot place in this tree (`foreign`, why `unplaced`)
+    resolves no item either; the only thing it names is its own text, so
+    that is its identity, and a renumbered one is another citation."""
     if rec["verdict"] == "foreign":
         return ("foreign", rec["cite"])
+    if rec["item"] in NO_ITEM:
+        return None
+    if cited_path(rec).endswith(".md"):
+        # The census places a markdown line under the heading above it, a
+        # section of prose of any length, so every line of it would be
+        # "the same item"; order 1965 refuses a label-less citation moved
+        # onto another line of a markdown file, so a markdown line is no
+        # item here either.
+        return None
     return (cited_path(rec), rec["item"])
 
 
-def passes(head, base):
+def passes(head, base, head_text=None, base_text=None):
     """The verdict of a pair (the reviewer's decision of 2026-11-16 21:05).
-    `base` is the head citation's partner, or None when it has none."""
+    `base` is the head citation's partner, or None when it has none.
+
+    A cited line that holds no item is no item: two such lines are not the
+    same item (audit of 1959, order 1965). Then the one way to stay is the
+    text: `head_text`, the head citation's cited line at head, equals
+    `base_text`, its partner's cited line at the base, byte for byte; None
+    stands for a line past the end. A blank line has no text to recognise
+    it by, and the order's control of a citation moved from one blank line
+    to another must be refused, so a blank line never stays this way (a
+    narrowing of order 1965's one exception, not another exception)."""
     if head["verdict"] == "agree":
         return True
     if base is None or base["verdict"] == "agree":
         return False
-    return identity(head) == identity(base)
+    mine, theirs = identity(head), identity(base)
+    if mine is None or theirs is None:
+        return (head_text is not None and head_text == base_text
+                and head_text.strip() != "")
+    return mine == theirs
+
+
+def cited_line(t, rec):
+    """The text of the first line `rec` cites in tree `t`, or None when it
+    lies past the end of the file (or the file cannot be read)."""
+    if rec["verdict"] == "foreign":
+        return None
+    path, spec = rec["at"].rsplit(":", 1)
+    first = C.spans(spec)[0][0]
+    text = t.text(path)
+    if text is None:
+        return None
+    lines = text.split("\n")
+    return lines[first - 1] if 0 < first <= len(lines) else None
 
 
 def base_line(hs, n):
@@ -394,7 +443,7 @@ def check_new_lines(tree, base):
         if FIXTURE_MARK in line_text(rel, n):
             continue
         b = partner(r)
-        if passes(r, b):
+        if passes(r, b, cited_line(tree, r), b and cited_line(base_tree, b)):
             continue
         holder = f"; the line belongs to `{r['item']}`" if r.get("item", "-") != "-" else ""
         if b is None:
@@ -402,6 +451,11 @@ def check_new_lines(tree, base):
         elif b["verdict"] == "agree":
             why = (f"it stands in for `{b['cite']}`, which agreed, so it must agree "
                    "with its label")
+        elif identity(r) is None or identity(b) is None:
+            why = (f"it stands in for `{b['cite']}` ({b['verdict']}, at "
+                   f"`{b['item']}`); a line outside any item is no item, so a citation "
+                   "that does not agree stays only on a non-blank line of the text its "
+                   "base cited")
         else:
             why = (f"it stands in for `{b['cite']}` ({b['verdict']}, at "
                    f"`{b['item']}`), and a citation that does not agree must stay on "

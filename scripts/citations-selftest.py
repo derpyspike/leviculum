@@ -19,7 +19,11 @@ scripts/check-citations-by-name.py (the guard) on a scratch repository:
   base's item, a label-less citation that follows its item, a citation
   turned into a name (its neighbours keep their partners), a moved
   paragraph, a merge's untouched drift, a new citation into another
-  repository and a marked fixture line pass.
+  repository and a marked fixture line pass. A cited line outside any item
+  (blank, past the end, any line of a markdown file) is no item (order
+  1965): a citation renumbered between two such lines is refused unless
+  it follows its line's non-blank text, and a rewritten line's citation
+  of a host, which the census never holds, is not judged.
 scripts/citation-census.py (the drift census) on the same repository:
   agree, drift, nolabel, each foreign reason, a shortened path the page spells
   out, the table-row rule, and the `//` comment-block rule (a `cfg(test)`
@@ -449,6 +453,75 @@ def pairing_controls(repo):
     control("guard: an added drifting citation is refused although a same-label base "
             "citation stands", rc == 1 and "a new line citation" in out, out)
     reset(repo)
+    no_item_controls(repo)
+
+
+def no_item_controls(repo):
+    """A cited line the census resolves to no item ("-", "past-end") is not
+    an item: two such lines are not "the same item" (audit of 1959, order
+    1965). A non-agreeing citation with such a partner stays only on a line
+    of the same, non-blank text."""
+    notes = "docs/src/notes.md"
+    notes_md = "# Notes\n\nFirst line of prose.\n\nSecond line of prose.\n\nThird line.\n"
+    base = page(f"Somewhere (`{L(LIB, 5)}`).",
+                f"Drifting: `beta` (`{L(LIB, 40)}`).",
+                f"See (`{L(notes, 3)}`).")
+    write(repo, "docs/src/noitem.md", base)
+    write(repo, notes, notes_md)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "citations of lines that hold no item")
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: untouched citations of no-item lines pass", rc == 0, out)
+
+    # LIB's lines 5 and 13 are both blank, outside any item.
+    write(repo, "docs/src/noitem.md", base.replace(L(LIB, 5), L(LIB, 13)))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a label-less citation renumbered from one blank line of a Rust file "
+            "to another is refused", rc == 1 and "docs/src/noitem.md:3" in out, out)
+    reset(repo)
+
+    # LIB has 31 lines: 40 and 90 are both past its end.
+    write(repo, "docs/src/noitem.md", base.replace(L(LIB, 40), L(LIB, 90)))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a drifting citation renumbered from one past-end line to another is "
+            "refused", rc == 1 and "docs/src/noitem.md:5" in out, out)
+    reset(repo)
+
+    # A markdown file has no items: line 7 holds other text than line 3.
+    write(repo, "docs/src/noitem.md", base.replace(L(notes, 3), L(notes, 7)))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a label-less citation into a markdown file renumbered onto a line of "
+            "other text is refused", rc == 1 and "docs/src/noitem.md:7" in out, out)
+    reset(repo)
+
+    # The one exception: the cited text moved, the citation follows it.
+    write(repo, notes, notes_md.replace("# Notes\n", "# Notes\n\nA new first line.\n", 1))
+    write(repo, "docs/src/noitem.md", base.replace(L(notes, 3), L(notes, 5)))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a label-less citation that follows its line's text into a markdown "
+            "file passes", rc == 0, out)
+    write(repo, "docs/src/noitem.md", base)
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a label-less citation left on a line whose text the change moved "
+            "away is refused", rc == 1 and "docs/src/noitem.md:7" in out, out)
+    reset(repo)
+
+    # A line citation the census never holds (`host.tld:port`, verdict
+    # notfile) on a rewritten line: the guard says nothing about it, and
+    # the drift beside it keeps its partner. Existence and length of cited
+    # files are doc_citations' guarantee, not the guard's.
+    host = "relay.example.org"
+    write(repo, "docs/src/noitem.md",
+          base + f"\nVia `{L(host, 4242)}` and `beta` (`{L(LIB, 2)}`).\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "a host citation")
+    write(repo, "docs/src/noitem.md",
+          base + f"\nNow via `{L(host, 4243)}` and `beta` (`{L(LIB, 2)}`).\n")
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a rewritten line's citation of a host, which the census skips, is "
+            "not judged", rc == 0 and host not in out, out)
+    reset(repo)
+    git(repo, "reset", "-q", "--hard", "HEAD~2")
 
 
 def language_controls(repo):
