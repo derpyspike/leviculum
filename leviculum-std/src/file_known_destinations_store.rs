@@ -6,15 +6,13 @@ use std::io::{BufReader, BufWriter, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use leviculum_core::constants::TRUNCATED_HASHBYTES;
-use leviculum_core::known_destinations::{KnownDestEntry, KnownDestinationsStore};
+use leviculum_core::known_destinations::{KnownDestEntry, KnownDestUseState};
 
 use crate::error::Error;
 use crate::known_destinations::{
-    decode_known_destinations, disk_only_entry_is_kept, encode_known_destinations,
-    for_each_known_destination, write_known_destination, write_known_destinations_header,
-    KNOWN_DESTINATIONS_FILE,
+    disk_only_entry_is_kept, for_each_known_destination, write_known_destination,
+    write_known_destinations_header, KNOWN_DESTINATIONS_FILE,
 };
-use crate::storage::atomic_write;
 
 /// Buffer size of the streaming reader and writer.
 const IO_BUFFER: usize = 64 * 1024;
@@ -52,9 +50,14 @@ impl FileKnownDestinationsStore {
     /// same storage wrote them (Python recombines the same way,
     /// `Identity.py:197-206`), or this node held them once and let go of
     /// them at its memory cap. Such an entry stays if the reference's cull
-    /// would keep it ([`disk_only_entry_is_kept`]), and of those the newest
-    /// `disk_only_cap` by announce time; a dropped one comes back with the
-    /// destination's next announce, as it would on an rnsd that culled it.
+    /// would keep it ([`disk_only_entry_is_kept`]), and of those at most
+    /// `disk_only_cap`: the retained (`-1`) ones first, then the rest, each
+    /// group newest by announce time first ([`Rank`]). The reference never
+    /// culls a pin while a use only buys `DESTINATION_TIMEOUT * 1.25`, so a
+    /// used or never-used entry never takes a pin's place (order 1767);
+    /// pins beyond the ceiling go, the oldest announced first. A dropped
+    /// entry comes back with the destination's next announce, as it would
+    /// on an rnsd that culled it.
     ///
     /// Two passes over one open handle of the old file: the first counts
     /// what stays, because the msgpack map header carries the count, the
@@ -78,13 +81,13 @@ impl FileKnownDestinationsStore {
             !held.contains_key(hash) && disk_only_entry_is_kept(entry, now)
         };
 
-        // Pass 1: the announce times of the newest `disk_only_cap` that stay.
+        // Pass 1: the ranks of the highest `disk_only_cap` that stay.
         let mut newest = NewestStamps::new(disk_only_cap);
         let mut old = old.and_then(|file| {
             let mut reader = BufReader::with_capacity(IO_BUFFER, file);
             let counted = for_each_known_destination(&mut reader, |hash, entry| {
                 if eligible(&hash, &entry) {
-                    newest.offer(entry.timestamp);
+                    newest.offer(Rank::of(&entry));
                 }
                 Ok(())
             });
@@ -122,7 +125,7 @@ impl FileKnownDestinationsStore {
                 let mut reader = BufReader::with_capacity(IO_BUFFER, file);
                 let mut copied = 0usize;
                 for_each_known_destination(&mut reader, |hash, entry| {
-                    if eligible(&hash, &entry) && selection.take(entry.timestamp) {
+                    if eligible(&hash, &entry) && selection.take(Rank::of(&entry)) {
                         write_known_destination(&mut writer, &hash, &entry)?;
                         copied += 1;
                     }
@@ -153,29 +156,46 @@ impl FileKnownDestinationsStore {
     }
 }
 
-/// The announce times of the newest `cap` entries offered, held in a
-/// min-heap of `cap` stamps: memory in the cap, not in the file.
+/// The ranks of the highest `cap` entries offered, held in a min-heap of
+/// `cap` ranks: memory in the cap, not in the file.
 struct NewestStamps {
     cap: usize,
-    heap: BinaryHeap<Reverse<Stamp>>,
+    heap: BinaryHeap<Reverse<Rank>>,
 }
 
-/// An announce time ordered by `f64::total_cmp`, so a NaN read off disk
-/// orders the same way in both passes.
+/// Where a disk-only entry stands for the `disk_only_cap` places: every
+/// retained one above every other, and within each group the later
+/// announce above the earlier. The announce time orders by
+/// `f64::total_cmp`, so a NaN read off disk orders the same way in both
+/// passes.
 #[derive(Clone, Copy, PartialEq)]
-struct Stamp(f64);
+struct Rank {
+    retained: bool,
+    announced: f64,
+}
 
-impl Eq for Stamp {}
+impl Rank {
+    fn of(entry: &KnownDestEntry) -> Self {
+        Self {
+            retained: matches!(entry.use_state, KnownDestUseState::Retained),
+            announced: entry.timestamp,
+        }
+    }
+}
 
-impl PartialOrd for Stamp {
+impl Eq for Rank {}
+
+impl PartialOrd for Rank {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for Stamp {
+impl Ord for Rank {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.0.total_cmp(&other.0)
+        self.retained
+            .cmp(&other.retained)
+            .then(self.announced.total_cmp(&other.announced))
     }
 }
 
@@ -187,11 +207,10 @@ impl NewestStamps {
         }
     }
 
-    fn offer(&mut self, stamp: f64) {
+    fn offer(&mut self, stamp: Rank) {
         if self.cap == 0 {
             return;
         }
-        let stamp = Stamp(stamp);
         if self.heap.len() < self.cap {
             self.heap.push(Reverse(stamp));
         } else if self
@@ -205,8 +224,8 @@ impl NewestStamps {
     }
 
     /// What pass 2 copies: everything offered while fewer than `cap` were;
-    /// otherwise everything newer than the oldest kept stamp, and as many
-    /// at that stamp as fill the cap, the first ones in file order.
+    /// otherwise everything ranked above the lowest kept rank, and as many
+    /// at that rank as fill the cap, the first ones in file order.
     fn selection(self) -> Selection {
         if self.heap.len() < self.cap {
             return Selection {
@@ -233,18 +252,17 @@ impl NewestStamps {
 }
 
 struct Selection {
-    floor: Option<Stamp>,
+    floor: Option<Rank>,
     room_at_floor: usize,
     count: usize,
 }
 
 impl Selection {
     /// Whether the next eligible entry, in file order, is copied.
-    fn take(&mut self, stamp: f64) -> bool {
+    fn take(&mut self, stamp: Rank) -> bool {
         let Some(floor) = self.floor else {
             return true;
         };
-        let stamp = Stamp(stamp);
         if stamp > floor {
             return true;
         }
@@ -256,14 +274,21 @@ impl Selection {
     }
 }
 
-impl KnownDestinationsStore for FileKnownDestinationsStore {
+/// The whole-file codec, for tests that read or seed the file in one piece.
+/// Production code has one writer of the file, [`merge_and_save`]
+/// (order 1767): this path holds the whole file in memory and replaced it
+/// without an fsync, which is what order 1749 took out of the flush.
+///
+/// [`merge_and_save`]: FileKnownDestinationsStore::merge_and_save
+#[cfg(test)]
+impl leviculum_core::known_destinations::KnownDestinationsStore for FileKnownDestinationsStore {
     type Error = Error;
 
     fn load_all(
         &mut self,
     ) -> core::result::Result<BTreeMap<[u8; TRUNCATED_HASHBYTES], KnownDestEntry>, Error> {
         match std::fs::read(&self.path) {
-            Ok(bytes) => decode_known_destinations(&bytes),
+            Ok(bytes) => crate::known_destinations::decode_known_destinations(&bytes),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
             Err(e) => Err(Error::Storage(format!("{e}"))),
         }
@@ -273,7 +298,7 @@ impl KnownDestinationsStore for FileKnownDestinationsStore {
         &mut self,
         entries: &BTreeMap<[u8; TRUNCATED_HASHBYTES], KnownDestEntry>,
     ) -> core::result::Result<(), Error> {
-        let encoded = encode_known_destinations(entries)?;
-        atomic_write(&self.path, &encoded)
+        let encoded = crate::known_destinations::encode_known_destinations(entries)?;
+        crate::storage::atomic_write(&self.path, &encoded)
     }
 }

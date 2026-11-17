@@ -6,6 +6,7 @@
 //! Python ref: `remember` (Identity.py:101-113), `save_known_destinations`
 //! (Identity.py:177-239), `load_known_destinations` (Identity.py:242-265)
 
+#[cfg(test)]
 use std::collections::BTreeMap;
 
 use crate::error::{Error, Result};
@@ -26,6 +27,10 @@ pub(crate) const UNUSED_DESTINATION_LINGER_SECS: f64 = 6.0 * 60.0;
 ///
 /// Python format: msgpack map where keys are 16-byte binary (dest hashes)
 /// and values are arrays: [f64, bin32, bin64, bin_or_nil, int_or_f64].
+///
+/// Whole-file, so test-only: production reads the file one entry at a time
+/// through [`for_each_known_destination`] (orders 1749, 1767).
+#[cfg(test)]
 pub(crate) fn decode_known_destinations(
     data: &[u8],
 ) -> Result<BTreeMap<[u8; TRUNCATED_HASHBYTES], KnownDestEntry>> {
@@ -127,6 +132,10 @@ fn entry_from_values(
 }
 
 /// Encode entries into Python-compatible msgpack format.
+///
+/// Whole-file, so test-only: production writes the file entry by entry in
+/// `FileKnownDestinationsStore::merge_and_save` (orders 1749, 1767).
+#[cfg(test)]
 pub(crate) fn encode_known_destinations(
     entries: &BTreeMap<[u8; TRUNCATED_HASHBYTES], KnownDestEntry>,
 ) -> Result<Vec<u8>> {
@@ -187,14 +196,36 @@ pub(crate) fn write_known_destination<W: std::io::Write>(
 
 /// Whether the file keeps an entry this node no longer holds in memory
 /// (order 1749): the three arms on which the reference's cull spares a
-/// pathless destination (`Identity.py:336-352`). A retained one always; a
+/// pathless destination (`Identity.py:336-352`). A retained one (exactly
+/// `-1`, see [`KnownDestUseState::from_seconds`]) by this rule always; a
 /// used one for `DESTINATION_TIMEOUT * 1.25` after its last use; a
 /// never-used one for `UNUSED_DESTINATION_LINGER` after its announce.
+///
+/// This rule says which entries may stay, not how many: the flush keeps at
+/// most `identity_cap` of them, retained ones ahead of every other and each
+/// group newest announced first, so a retained entry is dropped only when
+/// more retained entries than the ceiling compete, and then the oldest
+/// announced go first (`FileKnownDestinationsStore::merge_and_save`,
+/// order 1767).
 ///
 /// The reference reads a never-used entry's last use as `0`, so its second
 /// test (`unused_for > DESTINATION_TIMEOUT*1.25`) culls such an entry at
 /// once whatever its announce time; this keeps it for the linger, a superset
 /// of what the reference keeps.
+///
+/// The same cull runs on the table in memory, in
+/// `leviculum_core::memory_storage::MemoryStorage::clean_announce_cache`,
+/// and the two share the used arm's [`KNOWN_DEST_USED_LINGER_MS`]. They are
+/// two functions, not one, because their inputs differ (order 1767): the
+/// memory cull reads a last use the node stamped on its own monotonic
+/// millisecond clock and knows whether a path exists, while the file holds
+/// wall-clock seconds that any process on the storage (an rnsd included)
+/// may have written, and no path table, so every disk-only entry is judged
+/// pathless. And the memory cache stores no time an entry was heard, so
+/// its never-used arm drops at once where this one lingers. A change to the
+/// rule changes both.
+///
+/// [`KNOWN_DEST_USED_LINGER_MS`]: leviculum_core::constants::KNOWN_DEST_USED_LINGER_MS
 pub(crate) fn disk_only_entry_is_kept(entry: &KnownDestEntry, now: f64) -> bool {
     match entry.use_state {
         KnownDestUseState::Retained => true,
@@ -683,6 +714,48 @@ mod tests {
             &at(NOW - 361.0, KnownDestUseState::NeverUsed),
             NOW
         ));
+    }
+
+    /// Order 1767: only the `-1` sentinel pins (`Identity.py:344`). Any
+    /// other negative fifth element is, to the reference, a last-use stamp
+    /// far in the past (`unused_for = now - e[4]`, :348), so its cull drops
+    /// the entry; ours does the same, read as an integer or as a float, and
+    /// writes the value back as it found it.
+    #[test]
+    fn only_minus_one_pins_a_disk_only_entry() {
+        use rmpv::Value;
+        const NOW: f64 = 1_800_000_000.0;
+        let read = |fifth: Value| {
+            let key = Value::Binary(vec![0x21; TRUNCATED_HASHBYTES]);
+            let val = Value::Array(vec![
+                Value::F64(NOW),
+                Value::Binary(vec![0; PACKET_HASH_LEN]),
+                Value::Binary(vec![0x33; IDENTITY_KEY_SIZE]),
+                Value::Nil,
+                fifth,
+            ]);
+            entry_from_values(&key, &val).expect("a valid entry").1
+        };
+        assert!(disk_only_entry_is_kept(&read(Value::from(-1i64)), NOW));
+        assert!(disk_only_entry_is_kept(&read(Value::F64(-1.0)), NOW));
+        for fifth in [Value::from(-2i64), Value::F64(-2.0), Value::F64(-0.5)] {
+            let entry = read(fifth.clone());
+            assert!(
+                !disk_only_entry_is_kept(&entry, NOW),
+                "{fifth:?} is no pin, and the reference culls it"
+            );
+            let mut out = Vec::new();
+            write_known_destination(&mut out, &[0x21; TRUNCATED_HASHBYTES], &entry)
+                .expect("encode");
+            let mut rest = &out[..];
+            let _key = rmpv::decode::read_value(&mut rest).expect("key");
+            let val = rmpv::decode::read_value(&mut rest).expect("value");
+            assert_eq!(
+                val.as_array().and_then(|a| a[4].as_f64()),
+                fifth.as_f64(),
+                "{fifth:?} goes back to the file as the same number"
+            );
+        }
     }
 
     #[test]

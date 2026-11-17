@@ -1744,7 +1744,7 @@ pub struct AnnounceCacheExport {
     pub hash: [u8; TRUNCATED_HASHBYTES],
     /// Length in bytes of the cached raw announce.
     pub packet_length: usize,
-    /// Whether the entry is pinned against cache cleaning (`use_state < 0`).
+    /// Whether the entry is pinned against cache cleaning (the `-1` sentinel).
     pub retained: bool,
     /// Last recency touch (ms since clock epoch); `None` when never touched or
     /// while retained, matching `known_dest_last_used`.

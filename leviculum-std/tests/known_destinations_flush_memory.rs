@@ -833,3 +833,111 @@ fn audit_disk_only_entries_copied_bit_for_bit() {
         );
     }
 }
+
+/// Order 1767: within the identity cap a retained (pinned) disk-only entry
+/// ranks ahead of every used or never-used one, whatever their announce
+/// times, because the reference never culls a pin (`Identity.py:344-352`)
+/// while a use only buys `DESTINATION_TIMEOUT * 1.25`. Here `identity_cap`
+/// used entries, announced after every pin, compete with `identity_cap`
+/// older pins for the `identity_cap` disk-only places: the pins stay.
+#[test]
+fn retained_disk_only_entries_outrank_newer_used_ones_at_the_cap() {
+    let cap = TableCaps::local_client().identity_cap as u64;
+    let dir = store_dir();
+    let key = Identity::generate(&mut rand_core::OsRng).public_key_bytes();
+    let now = now_secs();
+    let day = 86_400.0;
+    let mut on_disk: Vec<([u8; 16], Value)> = Vec::new();
+    // The newest `cap`, which the load takes into memory.
+    for i in 0..cap {
+        on_disk.push((dest(i, 0x40), entry(&key, now - i as f64, Use::Never)));
+    }
+    // Used an hour ago, announced after every pin: kept by the cull.
+    for i in 0..cap {
+        on_disk.push((
+            dest(i, 0x41),
+            entry(&key, now - day - i as f64, Use::At(now - 3_600.0)),
+        ));
+    }
+    // Pinned, announced a month ago.
+    for i in 0..cap {
+        on_disk.push((
+            dest(i, 0x42),
+            entry(&key, now - 30.0 * day - i as f64, Use::Retained),
+        ));
+    }
+    write_file(dir.path(), on_disk);
+    let mut storage = StdStorage::new_with_caps(dir.path(), TableCaps::local_client()).unwrap();
+    storage.set_identity([0xEE; 16], Identity::generate(&mut rand_core::OsRng));
+    storage.flush();
+
+    let file = read_file(dir.path());
+    assert!(file.contains_key(&[0xEE; 16]), "the flush wrote");
+    assert_eq!(
+        file.len() as u64,
+        2 * cap + 1,
+        "memory + cap disk-only + new"
+    );
+    let pins_kept = (0..cap)
+        .filter(|i| file.contains_key(&dest(*i, 0x42)))
+        .count();
+    let used_kept = (0..cap)
+        .filter(|i| file.contains_key(&dest(*i, 0x41)))
+        .count();
+    assert_eq!(
+        (pins_kept as u64, used_kept),
+        (cap, 0),
+        "every pin stays and no used entry takes a pin's place"
+    );
+}
+
+/// Order 1767: fewer pins than places. Every pin stays, and the places left
+/// over go to the newest of the other disk-only entries by announce time.
+#[test]
+fn pins_first_then_the_newest_of_the_rest_fill_the_cap() {
+    let cap = TableCaps::local_client().identity_cap as u64;
+    let half = cap / 2;
+    let dir = store_dir();
+    let key = Identity::generate(&mut rand_core::OsRng).public_key_bytes();
+    let now = now_secs();
+    let day = 86_400.0;
+    let mut on_disk: Vec<([u8; 16], Value)> = Vec::new();
+    for i in 0..cap {
+        on_disk.push((dest(i, 0x50), entry(&key, now - i as f64, Use::Never)));
+    }
+    // Used ones oldest first in the file, so the selection has to replace.
+    for i in 0..cap {
+        on_disk.push((
+            dest(i, 0x51),
+            entry(&key, now - 2.0 * day + i as f64, Use::At(now - 3_600.0)),
+        ));
+    }
+    for i in 0..half {
+        on_disk.push((
+            dest(i, 0x52),
+            entry(&key, now - 30.0 * day - i as f64, Use::Retained),
+        ));
+    }
+    write_file(dir.path(), on_disk);
+    let mut storage = StdStorage::new_with_caps(dir.path(), TableCaps::local_client()).unwrap();
+    storage.set_identity([0xEE; 16], Identity::generate(&mut rand_core::OsRng));
+    storage.flush();
+
+    let file = read_file(dir.path());
+    assert_eq!(
+        file.len() as u64,
+        2 * cap + 1,
+        "memory + cap disk-only + new"
+    );
+    for i in 0..half {
+        assert!(file.contains_key(&dest(i, 0x52)), "pin {i} dropped");
+    }
+    // The newest `cap - half` used ones are the highest indices.
+    for i in 0..cap {
+        assert_eq!(
+            file.contains_key(&dest(i, 0x51)),
+            i >= half,
+            "used entry {i}"
+        );
+    }
+}

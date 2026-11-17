@@ -36,21 +36,26 @@ pub enum KnownDestUseState {
     NeverUsed,
     /// Pinned against the cull (Python `-1`).
     Retained,
-    /// Last use, seconds since the Unix epoch (Python `time.time()`).
+    /// Last use, seconds since the Unix epoch (Python `time.time()`), or
+    /// any other nonzero value the reference reads as one.
     Used(f64),
 }
 
 impl KnownDestUseState {
-    /// Read the field as Python classifies it: negative is the retain
-    /// sentinel, zero is never-used, positive is a recency stamp
-    /// (Identity.py:336-348).
+    /// Read the field as Python classifies it (Identity.py:336-348): exactly
+    /// `-1` is the retain sentinel (`== -1`, :344), zero is never-used, and
+    /// any other number is a last-use stamp, a negative one included, which
+    /// the reference's cull then ages out as a use long past
+    /// (`unused_for = now - e[4]`, :348). A NaN matches none of the
+    /// reference's tests and reads as never-used, which ages it out by its
+    /// announce time as the reference's first arm (:350) does.
     pub fn from_seconds(value: f64) -> Self {
-        if value < 0.0 {
+        if value == -1.0 {
             Self::Retained
-        } else if value > 0.0 {
-            Self::Used(value)
-        } else {
+        } else if value == 0.0 || value.is_nan() {
             Self::NeverUsed
+        } else {
+            Self::Used(value)
         }
     }
 }

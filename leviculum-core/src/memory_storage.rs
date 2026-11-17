@@ -1428,6 +1428,16 @@ impl Storage for MemoryStorage {
     ///   arm only ever protects a destination nothing has asked about, so
     ///   dropping it early costs a path request, not a fact.
     ///
+    /// The file applies the same rule to the entries only it holds, in
+    /// `leviculum_std`'s `disk_only_entry_is_kept`
+    /// (`leviculum-std/src/known_destinations.rs`), sharing
+    /// [`KNOWN_DEST_USED_LINGER_MS`]. It is a second function because its
+    /// inputs differ (order 1767): wall-clock seconds any process on the
+    /// storage may have written instead of this node's monotonic
+    /// milliseconds, no path table (every disk-only entry counts as
+    /// pathless), and an announce time, so its never-used arm can linger
+    /// where this one cannot. A change to the rule changes both.
+    ///
     /// The middle arm is the one #389 was about. Without it a recency stamp
     /// bought an entry nothing at all: a peer this node had used minutes
     /// before lost its cached announce on the first sweep after its path
