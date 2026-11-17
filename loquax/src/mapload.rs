@@ -982,12 +982,9 @@ impl Loader {
         // a queued box deeper than it was cut for a view the reader has
         // left — it would fetch street detail no screen draws — and is
         // dropped below; the view that wants its area again asks again.
-        let deepest_need = here
-            .iter()
-            .chain(ahead.iter())
-            .map(|w| w.zooms.1)
-            .max()
-            .unwrap_or(0);
+        // A decision with no wants says nothing about the view's depth
+        // (the view is fully held), so it drops nothing.
+        let deepest_need = here.iter().chain(ahead.iter()).map(|w| w.zooms.1).max();
         let place = |b: &Bounds| {
             here.iter()
                 .position(|w| w.bounds == *b)
@@ -1022,7 +1019,7 @@ impl Loader {
                 // for a view the reader has left (the audit of 1933):
                 // started under this view it would fetch street detail
                 // no screen draws, competing with the coarse fill.
-                (_, None) if queued.want.zooms.1 > deepest_need => continue,
+                (_, None) if deepest_need.is_some_and(|d| queued.want.zooms.1 > d) => continue,
                 (_, None) => (Rank::Away, n),
             };
             queued.rank = key.0;

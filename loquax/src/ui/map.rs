@@ -1002,7 +1002,7 @@ mod tests {
         let view = Viewport::new(project(LatLon::from_degrees(52.47, 13.3)), 13, 480, 320);
         let plain = want_view(&view, &[]).expect("nothing held");
         assert_eq!(plain.zooms, (10, 13));
-        let clipped = want_view(&view, &[held.clone()]).expect("z13 is not held");
+        let clipped = want_view(&view, &[held]).expect("z13 is not held");
         assert_eq!(clipped.zooms, (13, 13));
         // Held at the view's own zoom too: nothing to load at all.
         assert_eq!(
