@@ -436,6 +436,14 @@ def pairing_controls(repo):
     reset(repo)
     git(repo, "reset", "-q", "--hard", "HEAD~1")
 
+    write(repo, "docs/src/fresh.md", page(f"Drifting: `beta` (`{L(LIB, 2)}`).",
+                                          f"Agreeing: `beta` (`{L(LIB, 22)}`)."))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a drifting citation in a file the base does not hold is refused",
+            rc == 1 and "docs/src/fresh.md:3" in out and "pairs with no base citation" in out
+            and "docs/src/fresh.md:5" not in out, out)
+    reset(repo)
+
     write(repo, DRIFTY, DRIFTY_PAGE + f"\nAlso drifting: `beta` (`{L(LIB, 6)}`).\n")
     rc, out = run(GUARD, repo, "--base", "HEAD")
     control("guard: an added drifting citation is refused although a same-label base "
