@@ -35,8 +35,13 @@ The rules and their thresholds are documented in
 (`docs/src/developer/render-walk.md`).
 
 Writes `OUT/index.html` (the contact sheet: every picture with its rule
-results, the gestures' frame times and heap) and `OUT/summary.tsv`; exits 1
-on any failed rule. `--quick` walks a reduced ladder (two frame sizes, three
+results, the gestures' frame times and heap) and `OUT/summary.tsv`. A failed
+rule is judged against the known-failures ratchet
+(`scripts/walk-known-failures.tsv`, `scripts/walk_ratchet.py`, order 1994):
+exits 1 on a NEW failure, on a listed failure that now passes (the list
+only shrinks), and on a listed one no longer walked; a known
+failure is counted and printed and does not fail the run. Exits 2 when the
+walk could not run or the list is refused. `--quick` walks a reduced ladder (two frame sizes, three
 centres, eight zooms) and the gestures on Lew's phone's frame; `--selftest`
 runs the positive controls instead: each fault injected into a small walk
 must turn its rule red on a frame or gesture the clean walk has green.
@@ -56,6 +61,8 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+import walk_ratchet  # noqa: E402
 
 COLUMNS = [
     "variant", "kind", "sequence", "size", "centre", "zoom", "image",
@@ -231,10 +238,11 @@ def read_rows(out):
 
 
 def write_summary(out, rows):
+    """The rows, and the ratchet's cell for each (known, NEW, healed or empty)."""
     with open(os.path.join(out, "summary.tsv"), "w") as f:
-        f.write("\t".join(COLUMNS) + "\n")
+        f.write("\t".join(COLUMNS + ["ratchet"]) + "\n")
         for r in rows:
-            f.write("\t".join(r[c] for c in COLUMNS) + "\n")
+            f.write("\t".join([r[c] for c in COLUMNS] + [r.get("ratchet", "")]) + "\n")
 
 
 def image_link(out, image):
@@ -244,7 +252,7 @@ def image_link(out, image):
     return None
 
 
-def write_sheet(out, rows, title, seconds):
+def write_sheet(out, rows, title, seconds, ratchet=()):
     by_image = {}
     for r in rows:
         by_image.setdefault((r["variant"], r["sequence"], r["size"], r["image"]), []).append(r)
@@ -266,8 +274,10 @@ def write_sheet(out, rows, title, seconds):
         f"<p>{len(rows)} verdicts, {sum(f for _, f in rules.values())} failed, "
         f"in {seconds:.0f} s. Rules: loquax-android/src/render_walk.rs, "
         "docs/src/developer/render-walk.md. Magenta is screen no frame drew.</p>",
-        "<h2>Rules</h2><table><tr><th>rule</th><th>pass</th><th>fail</th></tr>",
     ]
+    if ratchet:
+        parts.append("<h2>Ratchet</h2><pre>" + e("\n".join(ratchet)) + "</pre>")
+    parts.append("<h2>Rules</h2><table><tr><th>rule</th><th>pass</th><th>fail</th></tr>")
     for rule, (p, f) in sorted(rules.items()):
         parts.append(f"<tr><td>{e(rule)}</td><td class=pass>{p}</td>"
                      f"<td class={'FAIL' if f else 'pass'}>{f}</td></tr>")
@@ -306,7 +316,7 @@ def write_sheet(out, rows, title, seconds):
                 parts.append(f"<a href='{e(link)}'><img loading=lazy src='{e(src)}'></a>")
             parts.append(f"<br>{e(image)}<br>{e(centre)} z{e(zoom)}")
             for r in bad:
-                parts.append(f"<br><span class=FAIL>{e(r['rule'])} = {e(r['value'])} "
+                parts.append(f"<br><span class=FAIL>{e(r.get('ratchet', ''))} {e(r['rule'])} = {e(r['value'])} "
                              f"(limit {e(r['limit'])})</span> {e(r['note'][:200])}")
             if not bad:
                 parts.append(f"<br><span class=pass>{len(rs)} rules pass</span>")
@@ -416,19 +426,34 @@ def main():
         if args.m9:
             m9(out, log)
     rows = read_rows(out)
+    # The quick set has its own entries (one picture name can hold another
+    # picture in each set); a run without the screens walks a part of its
+    # set, so an entry it did not walk is counted, not judged.
+    try:
+        ok, lines = walk_ratchet.apply("render-walk", "render-walk-quick" if args.quick else "render-walk",
+                                       rows, complete=not args.no_screens)
+    except walk_ratchet.ListError as err:
+        ok, lines = False, [f"render-walk: the known-failures list is refused:\n{err}"]
+        refused = True
+    else:
+        refused = False
     write_summary(out, rows)
     seconds = time.monotonic() - started
     title = f"render walk{' (quick)' if args.quick else ''}"
-    write_sheet(out, rows, title, seconds)
+    write_sheet(out, rows, title, seconds, lines)
     failed = [r for r in rows if r["verdict"] != "pass"]
     by_rule = {}
     for r in failed:
         by_rule[r["rule"]] = by_rule.get(r["rule"], 0) + 1
     for rule, n in sorted(by_rule.items()):
-        print(f"render-walk: FAIL {rule}: {n} verdicts")
-    print(f"render-walk: {'FAIL' if failed else 'PASS'} {len(rows)} verdicts, {len(failed)} failed, "
+        print(f"render-walk: failed {rule}: {n} verdicts")
+    for line in lines:
+        print(line)
+    print(f"render-walk: {'PASS' if ok else 'FAIL'} {len(rows)} verdicts, {len(failed)} failed, "
           f"{seconds:.0f} s, sheet {out}/index.html, summary {out}/summary.tsv")
-    return 1 if failed else 0
+    if refused:
+        return 2
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

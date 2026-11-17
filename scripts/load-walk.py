@@ -17,8 +17,13 @@ no_treatment_when_complete, idle_draws_nothing). The driver, sessions
 and rules live in `loquax/tests/support/load_walk.rs`.
 
 Writes `OUT/index.html` (the contact sheet: every pause's picture with
-its rule results), `OUT/summary.tsv`, and a per-frame trace per session;
-exits 1 on any failed rule. `--quick` walks the sessions that fit about
+its rule results), `OUT/summary.tsv`, and a per-frame trace per session.
+A failed rule is judged against the known-failures ratchet
+(`scripts/walk-known-failures.tsv`, `scripts/walk_ratchet.py`, order 1994):
+exits 1 on a NEW failure, on a listed failure that now passes, and on a
+listed one no longer walked (each set, full and `--quick`, has its own
+entries); a known failure is counted and
+printed and does not fail the run. Exits 2 when the list is refused. `--quick` walks the sessions that fit about
 two minutes; `--selftest` injects each fault class into the walk itself
 and each rule must fire.
 
@@ -35,6 +40,8 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+import walk_ratchet  # noqa: E402
 
 COLUMNS = [
     "variant", "kind", "sequence", "size", "centre", "zoom", "image",
@@ -96,13 +103,14 @@ def read_rows(out):
 
 
 def write_summary(out, rows):
+    """The rows, and the ratchet's cell for each (known, NEW, healed or empty)."""
     with open(os.path.join(out, "summary.tsv"), "w") as f:
-        f.write("\t".join(COLUMNS) + "\n")
+        f.write("\t".join(COLUMNS + ["ratchet"]) + "\n")
         for r in rows:
-            f.write("\t".join(r[c] for c in COLUMNS) + "\n")
+            f.write("\t".join([r[c] for c in COLUMNS] + [r.get("ratchet", "")]) + "\n")
 
 
-def write_sheet(out, rows, title, seconds):
+def write_sheet(out, rows, title, seconds, ratchet=()):
     rules = {}
     for r in rows:
         p, f = rules.get(r["rule"], (0, 0))
@@ -121,19 +129,22 @@ def write_sheet(out, rows, title, seconds):
         f"<p>{len(rows)} verdicts, {sum(f for _, f in rules.values())} failed, "
         f"in {seconds:.0f} s. Rules and sessions: "
         "loquax/tests/support/load_walk.rs.</p>",
-        "<h2>Rules</h2><table><tr><th>rule</th><th>pass</th><th>fail</th></tr>",
     ]
+    if ratchet:
+        parts.append("<h2>Ratchet</h2><pre>" + e("\n".join(ratchet)) + "</pre>")
+    parts.append("<h2>Rules</h2><table><tr><th>rule</th><th>pass</th><th>fail</th></tr>")
     for rule, (p, f) in sorted(rules.items()):
         parts.append(f"<tr><td>{e(rule)}</td><td class=pass>{p}</td>"
                      f"<td class={'FAIL' if f else 'pass'}>{f}</td></tr>")
     parts.append("</table>")
     parts.append("<h2>Verdicts</h2><table><tr><th>session</th><th>rule</th>"
-                 "<th>value</th><th>limit</th><th>verdict</th><th>note</th></tr>")
+                 "<th>value</th><th>limit</th><th>verdict</th><th>ratchet</th><th>note</th></tr>")
     for r in rows:
         parts.append(
             f"<tr><td>{e(r['sequence'])}</td><td>{e(r['rule'])}</td>"
             f"<td>{e(r['value'])}</td><td>{e(r['limit'])}</td>"
-            f"<td class={r['verdict']}>{r['verdict']}</td><td>{e(r['note'][:200])}</td></tr>")
+            f"<td class={r['verdict']}>{r['verdict']}</td><td>{e(r.get('ratchet', ''))}</td>"
+            f"<td>{e(r['note'][:200])}</td></tr>")
     parts.append("</table>")
     full = os.path.join(out, "full")
     images = sorted(os.listdir(full)) if os.path.isdir(full) else []
@@ -172,14 +183,29 @@ def main():
         if mode != "selftest":
             run_phone(out, log)
     rows = read_rows(out)
+    refused = False
+    if mode == "selftest":
+        # The selftest's faults are meant to fail; it judges itself.
+        ok, lines = not [r for r in rows if r["verdict"] != "pass"], []
+    else:
+        try:
+            walk = "load-walk-quick" if mode == "quick" else "load-walk"
+            ok, lines = walk_ratchet.apply("load-walk", walk, rows, complete=True)
+        except walk_ratchet.ListError as err:
+            ok, lines, refused = False, [f"load-walk: the known-failures list is refused:\n{err}"], True
     write_summary(out, rows)
-    write_sheet(out, rows, f"load walk ({mode})", time.time() - start)
+    write_sheet(out, rows, f"load walk ({mode})", time.time() - start, lines)
     failed = [r for r in rows if r["verdict"] != "pass"]
     for r in rows:
         mark = "FAIL" if r["verdict"] != "pass" else "pass"
-        print(f"{mark} {r['sequence']} {r['rule']}: {r['value']} (limit {r['limit']})")
-    print(f"{len(rows)} verdicts, {len(failed)} failed; {out}/index.html")
-    return 1 if failed else 0
+        tag = f" [{r['ratchet']}]" if r.get("ratchet") else ""
+        print(f"{mark}{tag} {r['sequence']} {r['rule']}: {r['value']} (limit {r['limit']})")
+    for line in lines:
+        print(line)
+    print(f"{'PASS' if ok else 'FAIL'} {len(rows)} verdicts, {len(failed)} failed; {out}/index.html")
+    if refused:
+        return 2
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

@@ -24,9 +24,13 @@ directory:
   thumbnails.
 - `summary.tsv` has one row per rule per frame, gesture or screen. Its
   columns are `variant kind sequence size centre zoom image rule value
-  limit verdict note`.
-- The exit status is 1 when any rule failed and 2 when the walk itself
-  could not run.
+  limit verdict note ratchet`. The `ratchet` cell says how a failed row was
+  judged against the known failures (below): `known`, `NEW`, `healed`, or
+  `wall-clock`.
+- The exit status is 1 when the ratchet fails (a new failure, a listed one
+  that passes, a listed one no longer walked) and 2 when the walk itself
+  could not run or the list of known failures is refused. A known failure
+  alone leaves it 0.
 
 The measured times are from schneckenschreck on 2026-11-13, with a warm
 build: quick 70 s and 94 s, full 259 s, selftest 103 s and 139 s. A cold release build of the
@@ -219,6 +223,71 @@ Three rules have no injection in the selftest: `world_spans_view`,
 `no_map_chip_over_data` and `label_on_world`. Their unit tests in
 `render_walk.rs` inject the fault. `loquax-android/tests/render_walk.rs`
 runs the Bitmap rules on a real Florence frame.
+
+## The known failures
+
+At 4fa1fe818 the full walk failed 1145 verdicts, every one of them older
+than any pass. With the walk red on every run, a pass that broke one more
+picture looked the same as a pass that broke nothing. Order 1994 made the
+walks ratchet against a list of the failures that are known:
+`scripts/walk-known-failures.tsv`, read by `scripts/walk_ratchet.py`,
+for `just render-walk`, `just load-walk`, and `just ux-walk` once it
+exists. One line per failure:
+
+| Column | Holds |
+|---|---|
+| `walk` | `render-walk`, `load-walk` or `ux-walk`, with `-quick` for the `--quick` set |
+| `rule` | the rule's name |
+| `subject` | the picture, or `variant:sequence:size` for a row without one |
+| `first_seen` | the commit it was measured failing at |
+| `ref` | the issue (`#N`) or order (`order N`) that owns its repair |
+
+A walk then judges every failed row:
+
+- **known**, on the list: printed and counted, the run stays green;
+- **NEW**, not on the list: the run fails;
+- **healed**, on the list and passing: the run fails until the line is
+  removed. The list only shrinks;
+- **gone**, on the list and not walked: the run fails, since a picture that
+  is no longer drawn can never heal. A run that leaves part of its set out
+  (`--no-screens`) only counts these.
+
+The full and the quick set are listed apart because one picture name holds
+another picture in each: the phone's jump from Berlin to z5 keeps 153
+overlapping street names on its first frame in the full walk and none in
+the quick one. A line without an owner is refused, and with it the whole
+list (exit 2): a known failure that nobody owns is one that nobody repairs.
+
+Wall-clock rules (`frame_p95`) are not ratcheted per picture. Their value
+is the host's clock around a draw, and the coder host is shared. The same
+pan measured 14.3 ms beside another lane's `cargo test --workspace` and
+4.4 ms a minute later. The quick set's 13 phone gestures failed 8, 9 and 8
+times in three runs, and the third run's 8 were a different 8. The window's
+`pan-loading` at 1800x1320 passed its 33.3 ms three times and failed the
+fourth. Listed per picture, these rules turned the walk red on most runs for
+a reason no commit had. Their failures are counted, printed and marked
+`wall-clock`, and they never decide the run. The list refuses a line for
+one. Frame time is measured where the comparison is controlled: `just
+map-bench`, A/B in one run.
+
+The first list came from one full and two quick render walks and a full
+and a quick load walk at 4fa1fe818 (`python3 -I scripts/walk_ratchet.py
+--generate WALK SUMMARY --commit C --ref REF` prints the lines for a
+summary). It holds 1294 lines. In the full render walk: `label_overlap` 622,
+`label_inside_view` 306, `label_clear_of_controls` 162,
+`label_current_zoom` 7, `frame_never_blank` 1, plus 47 `frame_p95` counted
+and not listed. In the quick render walk: `label_overlap` 127,
+`label_inside_view` 45, `label_clear_of_controls` 20, `label_current_zoom` 2.
+In both load walk sets: `screen_first` 1. `just walk-ratchet-selftest` holds the controls: a new
+failure fails, a healed entry fails, an entry without a number is refused,
+and a known failure alone passes. It is part of `guards`.
+
+**What a pass reports.** A pass quotes the NEW failures (must be 0) and the
+known count before and after (must not grow). The walk prints both on its
+`ratchet` line, for example `render-walk: ratchet PASS: new 0, known 194
+(listed 194), healed 0, unwalked 0; wall-clock failures 9 (counted, not
+judged)`. A pass that repairs a failure removes
+its line in the same commit, so the known count falls.
 
 ## What it does not see
 
