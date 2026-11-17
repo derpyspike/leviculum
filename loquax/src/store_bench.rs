@@ -102,6 +102,9 @@ fn store_bench_names_where_the_seconds_go() {
     if wants("outline") {
         outline_only(centre);
     }
+    if wants("shot") {
+        shot(&dir, centre);
+    }
     if wants("regions") {
         per_region(&dir, &regions, centre);
     }
@@ -227,6 +230,46 @@ fn flat_variants(dir: &std::path::Path, centre: World) {
                 out.unreadable,
             );
         }
+    }
+}
+
+/// One still of the freeze's view per zoom, written as PPM beside the
+/// store (`shot-z<zoom>.ppm`): what Lew's zoom 10 actually draws, for
+/// the eyes the render walk turns on every visual change.
+fn shot(dir: &std::path::Path, centre: World) {
+    let maps = Maps::new(Some(dir.to_path_buf()));
+    let mut cache = TileCache::new(maps, 96 << 20);
+    cache.set_world_blend(true);
+    let (sw, sh) = SIZES[2];
+    cache.set_screen(Some((sw, sh)));
+    for z in [9u8, 10, 11] {
+        let exact = ExactView::new(centre, u32::from(z) * MILLI, sw, sh);
+        let frame = Frame {
+            view: exact,
+            zoom: z,
+            style: Style::SCREEN,
+            scale: 1.0,
+            render_limit: None,
+            fallback: None,
+            moving: false,
+            asked: None,
+            smooth: true,
+            resmooth: false,
+        };
+        let composed = cache.compose(&frame);
+        let mut out = alloc::format!(
+            "P6
+{sw} {sh}
+255
+"
+        )
+        .into_bytes();
+        for px in composed.rgba.chunks_exact(4) {
+            out.extend_from_slice(&px[..3]);
+        }
+        let path = dir.join(alloc::format!("shot-z{z}.ppm"));
+        std::fs::write(&path, out).expect("the shot");
+        println!("STORE_BENCH_SHOT zoom={z} file={}", path.display());
     }
 }
 
