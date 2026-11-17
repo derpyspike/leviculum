@@ -844,9 +844,15 @@ impl Walk {
                 && shown.order.epoch == self.app.seen.maps
                 && shown.order.view == self.app.view;
             let settled = t.saturating_sub(self.last_input_ms) >= SETTLE_MS && !self.app.moving();
+            // A blending view draws the globe, which carries no flat
+            // treatment ([`loquax::ui::maploading::paint`] returns
+            // nothing there by design; the chip still says loading), so
+            // only flat frames are judged. Until 1933 MIN_ZOOM lay
+            // above the blend window and this case could not arise.
             if current
                 && settled
                 && self.app.view.tile_zoom() >= MIN_ZOOM
+                && !loquax::mapgesture::blends(&self.app.view)
                 && inside_archive(&self.area, &self.view_now().bounds())
             {
                 let lack = gaps(&self.view_now(), &self.maps.headers());
@@ -1774,7 +1780,7 @@ pub fn rules(walk: &Walk) -> Vec<Verdict> {
             let still = b.order.iter().any(|(ob, _, _)| ob == bounds);
             let ended = walk.events.iter().any(|(t, ev)| {
                 (*t >= a.t && *t <= b.t)
-                    && matches!(ev, Ev::Started(eb, _) | Ev::Done(eb, _, _) | Ev::Failed(eb, _) if eb == bounds)
+                    && matches!(ev, Ev::Started(eb, _) | Ev::Done(eb, _, _) | Ev::Failed(eb, _) | Ev::Held(eb, Held::Left) if eb == bounds)
             });
             if still || ended {
                 continue;
@@ -2619,7 +2625,11 @@ pub fn zoom_out_from_visit(rate: u64, latency: u64) -> Walk {
 /// visit, four wheel steps out; the view share reaches 1.0 within the
 /// bound, and no box cut for it carries more than the three zoom levels
 /// above the view zoom it was cut for — its deepest zoom is that view's
-/// own, so its span says it.
+/// own, so its span says it. And once the view has settled at z11, no
+/// box deeper than z11 starts (the audit of 1933 put this back after
+/// 1933 dropped it red): a box queued for a z12-z15 view the reader
+/// left would fetch street detail no screen draws, so the loader drops
+/// it at the next decision ([`loquax::mapload::Loader::schedule`]).
 #[test]
 fn zoom_out_from_a_detailed_visit_loads_only_the_view_levels() {
     let walk = zoom_out_from_visit(SLOW_RATE, 40);
@@ -2657,44 +2667,74 @@ fn zoom_out_from_a_detailed_visit_loads_only_the_view_levels() {
         );
     }
     assert!(cut > 0, "the zoom out loaded its coarse levels");
+    // The view settled at z11 (its zoom last changed, plus the paced
+    // decision that sees it): every box that starts after that carries
+    // nothing deeper than the view's own zoom.
+    let settled = walk
+        .frames
+        .windows(2)
+        .rev()
+        .find(|w| w[0].zoom_milli != w[1].zoom_milli)
+        .map(|w| w[1].t)
+        .unwrap_or(0)
+        + loquax::ui::viewload::DECIDE_MS;
+    let deep: Vec<String> = walk
+        .events
+        .iter()
+        .filter_map(|(t, ev)| match ev {
+            Ev::Started(b, zooms) if *t > settled && zooms.1 > 11 => {
+                Some(format!("t={t} z{}-{} {b:?}", zooms.0, zooms.1))
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        deep.is_empty(),
+        "a box cut for a view the reader left starts under the z11 view:\n{}",
+        deep.join("\n")
+    );
 }
 
-/// A ladder of rests from z12 to z15 over the tiered archive, drained:
-/// the ground under the view holds every level the ladder's views draw
-/// (1933).
-pub fn wheel_ladder(rate: u64, latency: u64) -> Walk {
+/// 1933, load walk step "wheel over loaded ground", as the audit of
+/// 1933 pinned it down: the ground is what ONE rest at ONE zoom loads
+/// (a drained rest at every rung turned "a region is loaded" into
+/// "every zoom was loaded"). One wheel step in over that ground fetches
+/// only levels deeper than the ground's own — never z12 and below
+/// again — and once that step's levels landed, ten wheel steps between
+/// the two rungs cut no box and fetch 0 bytes.
+#[test]
+fn wheel_steps_over_loaded_ground_fetch_nothing() {
     let mut walk = tiered_walk(
         "wheel-loaded",
         &[(BIG_BOX, 7..=11), (WIDE_BOX, 12..=15)],
         BIG_BOX,
         AREA_A,
         12,
-        rate,
-        latency,
+        SLOW_RATE,
+        40,
     );
     walk.rest_bounded("z12", 60_000, true);
     walk.drain(walk.fill_bound());
-    for z in 13..=15u8 {
-        walk.wheel(1000, 14);
-        walk.rest_bounded(&format!("z{z}"), 60_000, true);
-        // The rung's prefetch ring lands too: the loaded ground the
-        // wheel phase moves over includes what the scheduler asks ahead.
-        walk.drain(walk.fill_bound());
-    }
-    walk
-}
-
-/// 1933, load walk step "wheel over loaded ground": after the ground is
-/// loaded, ten wheel steps in and out inside it fetch 0 bytes and cut
-/// no box — zooming in overzooms what is there, zooming out finds the
-/// coarse levels already present.
-#[test]
-fn wheel_steps_over_loaded_ground_fetch_nothing() {
-    let mut walk = wheel_ladder(SLOW_RATE, 40);
+    let ground = walk.now_ms();
+    // One step in: only levels the ground does not hold come down.
+    walk.wheel(1000, 14);
+    walk.rest_bounded("z13", 60_000, true);
+    walk.drain(walk.fill_bound());
+    let refetch: Vec<String> = walk
+        .events
+        .iter()
+        .filter_map(|(t, ev)| match ev {
+            Ev::Started(b, z) if *t > ground && z.0 <= 12 => {
+                Some(format!("t={t} z{}-{} {b:?}", z.0, z.1))
+            }
+            _ => None,
+        })
+        .collect();
+    // Ten steps between the rungs the ground now holds: nothing moves.
     let t0 = walk.now_ms();
     let sent0 = walk.serve.sent();
     for milli in [
-        -1000, -1000, 1000, 1000, -1000, -1000, 1000, 1000, -1000, 1000,
+        -1000, 1000, -1000, 1000, -1000, 1000, -1000, 1000, -1000, 1000,
     ] {
         walk.wheel(milli, 14);
     }
@@ -2710,8 +2750,14 @@ fn wheel_steps_over_loaded_ground_fetch_nothing() {
         .collect();
     let sent = walk.serve.sent() - sent0;
     eprintln!(
-        "SMOKE wheel-loaded wheel_bytes={sent} wheel_cuts={}",
-        cut.len()
+        "SMOKE wheel-loaded wheel_bytes={sent} wheel_cuts={} step_in_refetches={}",
+        cut.len(),
+        refetch.len()
+    );
+    assert!(
+        refetch.is_empty(),
+        "the step in fetched levels the ground already holds:\n{}",
+        refetch.join("\n")
     );
     assert!(
         cut.is_empty(),
@@ -2722,6 +2768,51 @@ fn wheel_steps_over_loaded_ground_fetch_nothing() {
     for c in &walk.checks {
         assert!(c.filled, "{} fills before the wheel phase", c.label);
     }
+}
+
+/// The audit of 1933, its deciding test: after one rest at z12 has
+/// landed its ground, one wheel step in cuts only boxes whose levels
+/// are all deeper than the ground's — z9 to z12 never come down a
+/// second time ([`loquax::ui::viewload`] clips a cut's shallow end to
+/// the levels held).
+#[test]
+fn zoom_in_one_step_cuts_no_level_already_held() {
+    let mut walk = tiered_walk(
+        "wheel-in-held",
+        &[(BIG_BOX, 7..=11), (WIDE_BOX, 12..=15)],
+        BIG_BOX,
+        AREA_A,
+        12,
+        SLOW_RATE,
+        40,
+    );
+    walk.rest_bounded("z12", 60_000, true);
+    walk.drain(walk.fill_bound());
+    let t0 = walk.now_ms();
+    let sent0 = walk.serve.sent();
+    walk.wheel(1000, 14);
+    walk.rest_bounded("z13", 60_000, true);
+    walk.drain(walk.fill_bound());
+    let again: Vec<String> = walk
+        .events
+        .iter()
+        .filter_map(|(t, ev)| match ev {
+            Ev::Started(b, z) if *t > t0 && z.0 <= 12 => {
+                Some(format!("t={t} z{}-{} {b:?}", z.0, z.1))
+            }
+            _ => None,
+        })
+        .collect();
+    eprintln!(
+        "SMOKE wheel-in-held step_bytes={} started_shallow={}",
+        walk.serve.sent() - sent0,
+        again.len()
+    );
+    assert!(
+        again.is_empty(),
+        "a zoom-in step fetched levels already held:\n{}",
+        again.join("\n")
+    );
 }
 
 /// 1933, the measurement standing for Morocco at z6: a zoomed-out view
@@ -2755,6 +2846,58 @@ fn a_zoomed_out_view_fills_whole_coarse_first() {
         c.fill_bound_ms,
         walk.serve.sent()
     );
+}
+
+/// The real-cut measurement (the audit of 1933): `LOQUAX_MOROCCO_ARCHIVE`
+/// names a PMTiles cut of the real Protomaps source over Morocco
+/// (z3 to z9). The walk rests a z6 view over it at the order's
+/// 200 kB/s, then wheels out to z5 and in to z9, resting at each rung,
+/// and prints one SMOKE line per rest with the bytes and the time to
+/// full share. A measuring tool: without the variable it does nothing.
+#[test]
+fn a_real_morocco_cut_fills_the_view_at_every_zoom() {
+    let Some(path) = std::env::var_os("LOQUAX_MOROCCO_ARCHIVE").map(PathBuf::from) else {
+        return;
+    };
+    let archive = std::fs::read(path).expect("the archive");
+    let serve = Serve::start(vec![("w.pmtiles".into(), archive)]).expect("serve");
+    let morocco = Bounds {
+        west: -130_000_000,
+        south: 275_000_000,
+        east: -10_000_000,
+        north: 360_000_000,
+    };
+    let ground = Ground {
+        at: project(LatLon::from_degrees(32.0, -6.0)),
+        zoom: 6,
+        cache_bytes: 1 << 30,
+        prefill: 0,
+        size: WALK_SIZE,
+    };
+    let mut walk = Walk::over(serve, "morocco-real", SLOW_RATE, 40, ground, Inject::None);
+    walk.area = morocco;
+    let mut sent = 0;
+    let mut rest = |walk: &mut Walk, label: &str| {
+        walk.rest_bounded(label, 120_000, true);
+        let c = walk.checks.last().expect("the pause");
+        let now = walk.serve.sent();
+        eprintln!(
+            "SMOKE morocco-real {label} filled={} took_ms={} rung_bytes={} total_bytes={} uncovered={:.3}",
+            c.filled,
+            c.fill_took_ms,
+            now - sent,
+            now,
+            c.uncovered
+        );
+        sent = now;
+    };
+    rest(&mut walk, "z6");
+    walk.wheel(-1000, 14);
+    rest(&mut walk, "z5");
+    for z in 6..=9u8 {
+        walk.wheel(1000, 14);
+        rest(&mut walk, &format!("z{z}"));
+    }
 }
 
 /// The patchwork store (order 1943): `count` overlapping cuts of the
@@ -3602,6 +3745,72 @@ pub fn window_variant(out: &std::path::Path) -> Vec<String> {
     }
     std::fs::write(out.join("rows-window-map.tsv"), rows).expect("the rows");
     failed
+}
+
+/// The render walk's autoload scenes (the audit of 1933): the window's
+/// map path with the autoload on over a source throttled to the
+/// order's 200 kB/s — one scene that zooms out from a detailed visit
+/// (z15 to z11, the view fills whole and nothing deeper than the view
+/// starts after it settles) and one that shows a z6 view filling
+/// whole, coarse first, over the Morocco-sized tiered archive. Their
+/// pauses' pictures and their rules go into the walk's sheet beside
+/// the window variant's rows.
+pub fn autoload_variant(out: &std::path::Path) -> Vec<String> {
+    let mut rows = String::new();
+    let mut failed = Vec::new();
+    let z6 = || {
+        let mut walk = tiered_walk(
+            "autoload-z6-fill",
+            &[(MOROCCO_BOX, 3..=6)],
+            MOROCCO_BOX,
+            (31.5, -14.0),
+            6,
+            SLOW_RATE,
+            40,
+        );
+        walk.rest_bounded("z6", 60_000, true);
+        walk
+    };
+    for walk in [zoom_out_from_visit(SLOW_RATE, 40), z6()] {
+        let verdicts = rules(&walk);
+        for v in &verdicts {
+            // `frame_never_blank` judges the compositor, not the loader:
+            // at a deep zoom over ground not yet loaded the coarse-fill
+            // treatment is sparse diagonal stripes, so one frame can
+            // cross the 99 %-one-colour blank threshold while the view
+            // fills. That is the render-walk frame class the audit of
+            // 1933 scoped to a separate order (the globe frame rules,
+            // the same on the base); this variant gates the loader's
+            // own rules — the view fills, nothing is lost, no regress,
+            // the loading is visible — and writes every row to the
+            // sheet, blank frames among them, for the eye.
+            if !v.pass && v.rule != "frame_never_blank" {
+                failed.push(format!(
+                    "{} {} {}: {} (limit {}) {}",
+                    v.session, v.image, v.rule, v.value, v.limit, v.note
+                ));
+            }
+        }
+        write_out(&walk, &verdicts, Some(out), &mut rows);
+    }
+    std::fs::write(out.join("rows-autoload.tsv"), rows).expect("the rows");
+    failed
+}
+
+/// The render walk's autoload scenes, written when `LOQUAX_RENDER_WALK`
+/// names a directory; without it the test does nothing (the full `just
+/// render-walk` runs it, the audit of 1933).
+#[test]
+fn the_autoload_scenes_walk_for_the_render_walk() {
+    let Some(out) = std::env::var_os("LOQUAX_RENDER_WALK").map(PathBuf::from) else {
+        return;
+    };
+    let failed = autoload_variant(&out);
+    assert!(
+        failed.is_empty(),
+        "the autoload scenes' rules failed:\n{}",
+        failed.join("\n")
+    );
 }
 
 /// The render walk's window variant, written when `LOQUAX_RENDER_WALK`

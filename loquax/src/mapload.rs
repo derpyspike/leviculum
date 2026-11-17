@@ -263,6 +263,10 @@ pub enum Held {
     /// Too many waited paused: it stopped for good, its file removed and
     /// its box queued again.
     Dropped,
+    /// Queued for a view the reader left, deeper than anything the view
+    /// asks now: dropped at the decision, not started (the audit of
+    /// 1933). The view that wants its area again asks again.
+    Left,
 }
 
 impl Held {
@@ -272,6 +276,7 @@ impl Held {
             Self::Paused => "paused",
             Self::Resumed => "resumed",
             Self::Dropped => "dropped",
+            Self::Left => "left",
         }
     }
 }
@@ -478,6 +483,11 @@ struct Failure {
     /// city extract, or past the data's reach. The outline draws there,
     /// so it is no user error and speaks no toast (1933).
     empty: bool,
+    /// The box lies inside the source's declared bounds at zooms it
+    /// declares (the audit of 1933): a hole where the publisher says
+    /// tiles are, or a misconfigured `map_source` whose declaration
+    /// lies. That is worth one toast, unlike the edge above.
+    empty_covered: bool,
     /// The box itself cannot load (too large, no tiles there): retrying
     /// cannot help, the box is not requeued.
     permanent: bool,
@@ -961,7 +971,10 @@ impl Loader {
     /// order to load them. Every box queued or running takes the rank of
     /// the list it is in now, or is one the view left; the queue is
     /// ordered by rank, the lists' order within it, the boxes the view
-    /// left in the order they came, at most [`MAX_AWAY`]; then a load for
+    /// left in the order they came, at most [`MAX_AWAY`] — except one
+    /// deeper than anything the view asks now, which is dropped (the
+    /// audit of 1933: it was cut for a view the reader zoomed away
+    /// from, and would fetch detail no screen draws); then a load for
     /// the screen starts when nothing for it runs. A box asked for by
     /// hand keeps its place.
     pub fn schedule(&mut self, here: Vec<MapWant>, ahead: Vec<MapWant>, now_ms: u64) -> Vec<Step> {
@@ -970,6 +983,13 @@ impl Loader {
         if let Some(h) = self.heights.as_mut() {
             h.scan_asked = true;
         }
+        // The deepest level the view asks for now (the audit of 1933):
+        // a queued box deeper than it was cut for a view the reader has
+        // left — it would fetch street detail no screen draws — and is
+        // dropped below; the view that wants its area again asks again.
+        // A decision with no wants says nothing about the view's depth
+        // (the view is fully held), so it drops nothing.
+        let deepest_need = here.iter().chain(ahead.iter()).map(|w| w.zooms.1).max();
         let place = |b: &Bounds| {
             here.iter()
                 .position(|w| w.bounds == *b)
@@ -994,12 +1014,26 @@ impl Loader {
             }
         }
         let mut keyed: Vec<((Rank, usize), Queued)> = Vec::new();
+        let mut left: Vec<Step> = Vec::new();
         for (n, mut queued) in std::mem::take(&mut self.queue).into_iter().enumerate() {
             let key = match (queued.rank, place(&queued.want.bounds)) {
                 (Rank::Asked, _) => (Rank::Asked, n),
                 (_, Some(key)) => key,
                 // A screen's box the view left: the cells hold its area.
                 (_, None) if queued.want.reason == LoadReason::Screen => continue,
+                // A box deeper than anything the view asks now was cut
+                // for a view the reader has left (the audit of 1933):
+                // started under this view it would fetch street detail
+                // no screen draws, competing with the coarse fill. The
+                // drop is said ([`Held::Left`]), so a watcher can tell
+                // it from a box lost.
+                (_, None) if deepest_need.is_some_and(|d| queued.want.zooms.1 > d) => {
+                    left.push(Step::Held {
+                        want: queued.want,
+                        how: Held::Left,
+                    });
+                    continue;
+                }
                 (_, None) => (Rank::Away, n),
             };
             queued.rank = key.0;
@@ -1048,7 +1082,8 @@ impl Loader {
             })
             .map(|k| k.1)
             .collect();
-        self.start_next(now_ms)
+        left.extend(self.start_next(now_ms));
+        left
     }
 
     /// Whether `want`, the screen's own box (1527), is what a load
@@ -1083,6 +1118,7 @@ impl Loader {
                     unreachable: false,
                     too_large: false,
                     empty: false,
+                    empty_covered: false,
                     permanent: false,
                     stopped: false,
                 }),
@@ -1360,9 +1396,12 @@ impl Loader {
                     }
                     (false, true) => Some(format!("map: {}; zoom in", failure.detail)),
                     // The source holds no tiles there (1933): the normal
-                    // edge of a finite source, the outline draws there,
-                    // no toast.
-                    _ if failure.empty => None,
+                    // edge of a finite source — coarser than its own
+                    // minimum zoom, or outside its declared bounds —
+                    // the outline draws there, no toast. A hole inside
+                    // the declared coverage speaks once (the audit of
+                    // 1933): it falls through to the arms below.
+                    _ if failure.empty && !failure.empty_covered => None,
                     (false, false) if failures > 1 => None,
                     (false, false) => Some(format!("map: {}", failure.detail)),
                 };
@@ -1611,15 +1650,44 @@ struct Job {
     writing: Writing,
 }
 
+/// [`Empty`], inside the source's declared coverage (the audit of
+/// 1933): the publisher says tiles are there and there are none.
+#[derive(Debug)]
+struct EmptyCovered;
+
+impl core::fmt::Display for EmptyCovered {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "the map source holds no tiles there")
+    }
+}
+
+impl std::error::Error for EmptyCovered {}
+
+/// Whether the source's header declares coverage where `want` lies:
+/// its bounds touch the box, and the zooms asked reach into the zooms
+/// it holds. A box wholly coarser than the source's own minimum zoom,
+/// or wholly deeper than its maximum, is past its edge, not a hole.
+fn declares(header: &leviculum_mapcut::pmtiles::Header, want: &MapWant) -> bool {
+    let (b, w) = (&header.bounds, &want.bounds);
+    want.zooms.1 >= header.min_zoom
+        && want.zooms.0 <= header.max_zoom
+        && w.west <= b.east
+        && w.east >= b.west
+        && w.south <= b.north
+        && w.north >= b.south
+}
+
 impl Job {
     fn run(self) -> Result<Landed, Failure> {
         self.load().map_err(|e| {
             let too_large = e.downcast_ref::<TooLarge>().is_some();
-            let empty = e.downcast_ref::<Empty>().is_some();
+            let empty_covered = e.downcast_ref::<EmptyCovered>().is_some();
+            let empty = e.downcast_ref::<Empty>().is_some() || empty_covered;
             Failure {
                 unreachable: http::unreachable(e.as_ref()),
                 too_large,
                 empty,
+                empty_covered,
                 permanent: too_large || empty,
                 stopped: e.downcast_ref::<Stopped>().is_some(),
                 detail: e.to_string(),
@@ -1662,7 +1730,14 @@ impl Job {
             // that shows none skips for free (1685).
             pois: true,
         };
-        let planned = plan(&archive, &want)?;
+        let planned = plan(&archive, &want).map_err(|e| {
+            // An empty box inside the declared coverage is a hole, not
+            // the source's edge (the audit of 1933): it speaks.
+            match e.downcast_ref::<Empty>() {
+                Some(_) if declares(&archive.header, &self.want) => Box::new(EmptyCovered) as _,
+                _ => e,
+            }
+        })?;
         let zooms = (*planned.zooms.start(), *planned.zooms.end());
         let name = auto_name(&want.bounds, zooms);
         // Under its own name from the first byte (1291): a painter draws
@@ -2561,6 +2636,74 @@ mod tests {
         assert_eq!(std::fs::read_dir(dir.path()).expect("dir").count(), 0);
     }
 
+    /// The quiet test's twin (the audit of 1933): an `Empty` box INSIDE
+    /// the source's declared coverage, at zooms it declares, is a hole
+    /// where the publisher says tiles are — or a `map_source` whose
+    /// declaration lies. It fails permanently all the same, but it
+    /// speaks — once: the failure ladder keeps later asks quiet. A box
+    /// wholly coarser than the source's own minimum zoom stays quiet.
+    #[test]
+    fn a_box_with_no_tiles_inside_the_sources_coverage_speaks_once() {
+        use leviculum_map::region::TileId;
+        use leviculum_mapcut::cut::tile_range;
+        use leviculum_mapcut::pmtiles::write as write_archive;
+        use leviculum_mapcut::pmtiles::NONE;
+        // Two z14 clusters 0.7 degrees apart: the declared bounds (the
+        // tiles' union) cover the hole between them.
+        let mut tiles = std::collections::BTreeMap::new();
+        for west in [112_615_000, 119_615_000] {
+            let b = want(west).bounds;
+            let (xs, ys) = tile_range(&b, 14);
+            for x in xs.into_iter().flatten() {
+                for y in ys.clone() {
+                    tiles.insert(
+                        TileId { z: 14, x, y },
+                        b"the plan never reads this".to_vec(),
+                    );
+                }
+            }
+        }
+        let mut archive = Vec::new();
+        write_archive(&tiles, NONE, &serde_json::json!({}), &mut archive).expect("the archive");
+        let serve = Serve::start(vec![("h.pmtiles".into(), archive)]).expect("serve");
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut loader = Loader::new(maps, Source::Url(serve.url("h.pmtiles")), 1 << 30);
+        let hole = want(116_115_000);
+        loader.ask(hole.clone(), 0);
+        let steps = settle(&mut loader, 0);
+        let [Step::Failed { toast, detail, .. }] = steps.as_slice() else {
+            panic!("{steps:?}");
+        };
+        assert!(detail.contains("no tiles there"), "{detail}");
+        assert!(
+            toast
+                .as_deref()
+                .is_some_and(|t| t.contains("no tiles there")),
+            "a hole in the declared coverage speaks: {toast:?}"
+        );
+        assert!(loader.order().is_empty(), "permanent: not requeued");
+        // Asked again much later: one line per box, not one per ask.
+        loader.ask(hole, 60_000);
+        let again = settle(&mut loader, 60_000);
+        let [Step::Failed { toast, .. }] = again.as_slice() else {
+            panic!("{again:?}");
+        };
+        assert_eq!(*toast, None, "the second failure is quiet");
+        // Wholly coarser than the source's own minimum zoom: its edge.
+        let coarse = MapWant {
+            zooms: (3, 6),
+            floor: 6,
+            ..want(116_115_000)
+        };
+        loader.ask(coarse, 120_000);
+        let edge = settle(&mut loader, 120_000);
+        let [Step::Failed { toast, .. }] = edge.as_slice() else {
+            panic!("{edge:?}");
+        };
+        assert_eq!(*toast, None, "past the source's zooms: no toast");
+    }
+
     #[test]
     fn no_internet_is_said_once() {
         let serve = Serve::start(Vec::new()).expect("serve");
@@ -2675,6 +2818,74 @@ mod tests {
                 (2, Rank::Away, false)
             ],
             "the screen box the view left is gone: {s:?}"
+        );
+    }
+
+    /// The audit of 1933: a queued box deeper than anything the view
+    /// asks now was cut for a view the reader zoomed away from. The
+    /// next decision drops it instead of keeping it as left, so no
+    /// z12-z15 box starts under a z11 view and fetches street detail no
+    /// screen draws. A box the view left at the view's own depth stays
+    /// kept, for a pan back; a running deep load runs on (a load cannot
+    /// stop, it pauses).
+    #[test]
+    fn a_deeper_box_the_view_left_is_dropped_not_kept() {
+        let (_source, source) = stalling();
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut loader = Loader::new(Maps::new(Some(dir.path().to_path_buf())), source, 1 << 30);
+        let deep = |n: i32| MapWant {
+            zooms: (12, 15),
+            floor: 15,
+            ..nth(n)
+        };
+        let shallow = |n: i32| MapWant {
+            zooms: (8, 11),
+            floor: 11,
+            ..nth(n)
+        };
+        assert!(matches!(
+            loader
+                .schedule(vec![deep(1), deep(2), deep(3)], Vec::new(), 0)
+                .as_slice(),
+            [Step::Started(_)]
+        ));
+        // The reader zoomed out: the queued deep boxes are dropped, and
+        // the drop is said; the running one pauses and keeps its place.
+        let steps = loader.schedule(vec![shallow(4), shallow(5)], Vec::new(), 250);
+        assert_eq!(
+            steps
+                .iter()
+                .filter(|s| matches!(
+                    s,
+                    Step::Held {
+                        how: Held::Left,
+                        ..
+                    }
+                ))
+                .count(),
+            2,
+            "both queued deep boxes say they were left: {steps:?}"
+        );
+        assert_eq!(
+            order(&loader),
+            [
+                (1, Rank::Away, true),
+                (4, Rank::Here, true),
+                (5, Rank::Here, false)
+            ],
+            "the queued deep boxes are gone"
+        );
+        // A box at the view's own depth the view left is kept.
+        loader.schedule(vec![shallow(6)], Vec::new(), 500);
+        assert_eq!(
+            order(&loader),
+            [
+                (1, Rank::Away, true),
+                (4, Rank::Away, true),
+                (6, Rank::Here, true),
+                (5, Rank::Away, false)
+            ],
+            "the left box at the view's depth waits for a pan back"
         );
     }
 

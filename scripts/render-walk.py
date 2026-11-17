@@ -20,6 +20,10 @@ views, and checks each picture by named rules:
   wheel step out and in and a pan while regions land, inside the blend
   window (`loquax/tests/support/load_walk.rs`'s
   `the_window_map_walks_inside_the_blend`), with frame times;
+* the autoload scenes (the audit of 1933), full walk only: the same
+  window path with the autoload on over a 200 kB/s source — a zoom out
+  from a detailed visit and a z6 view filling whole, coarse first
+  (`the_autoload_scenes_walk_for_the_render_walk`);
 * the window's screens (iced's software renderer, `loquax/src/gui.rs`'s
   `every_window_screen_draws_at_every_walk_size`) and the terminal's
   (`loquax/src/tui.rs`'s `every_terminal_screen_draws_at_every_walk_size`)
@@ -167,6 +171,24 @@ def window_map(out, log):
     # A red rule fails the test after writing its rows: the rows say
     # which. Anything else that stops it is the walk's failure.
     if done.returncode != 0 and not os.path.exists(os.path.join(out, "rows-window-map.tsv")):
+        sys.stderr.write(done.stderr[-4000:])
+        raise RuntimeError(f"{' '.join(cmd)} did not run")
+
+
+def autoload_map(out, log):
+    """The autoload scenes (the audit of 1933): the window's map path
+    with map_autoload on over a source throttled to 200 kB/s — a zoom
+    out from a detailed visit, and a z6 view filling whole, coarse
+    first. Full walk only; rows in rows-autoload.tsv, pictures in
+    full/."""
+    env = dict(os.environ, LOQUAX_RENDER_WALK=os.path.abspath(out))
+    cmd = ["cargo", "test", "--release", "-p", "loquax", "--features", "gui", "--bins",
+           "--target", host(), "the_autoload_scenes_walk_for_the_render_walk", "--", "--nocapture"]
+    done = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True)
+    log.write(done.stdout + done.stderr)
+    # A red rule fails the test after writing its rows: the rows say
+    # which. Anything else that stops it is the walk's failure.
+    if done.returncode != 0 and not os.path.exists(os.path.join(out, "rows-autoload.tsv")):
         sys.stderr.write(done.stderr[-4000:])
         raise RuntimeError(f"{' '.join(cmd)} did not run")
 
@@ -387,6 +409,8 @@ def main():
         for variant, _ in VARIANTS:
             walk(bins[variant], out, variant, mode)
         window_map(out, log)
+        if not args.quick:
+            autoload_map(out, log)
         if not args.no_screens:
             screens(out, log)
         if args.m9:

@@ -1219,7 +1219,9 @@ impl App {
     }
 
     fn new(frames: Frames, asks: Option<Asks>) -> Self {
-        let setup = map::setup(frames.painter());
+        // The autoload state arrives with the first `Seen`; until then
+        // the offer is the regions' and the radar's.
+        let setup = map::setup(frames.painter(), false);
         let centre = fit(&[], map::area((1, 1)), &setup).0;
         let empty = crate::shell::Model::new(&[]).scene(LayoutClass::Wide);
         Self {
@@ -2552,6 +2554,9 @@ impl App {
         match message {
             Message::Seen(seen) => {
                 let landed = seen.maps != self.seen.maps;
+                // The autoload switched: the zoom offer follows it (the
+                // audit of 1933, `map::setup`).
+                let offer = seen.autoload != self.seen.autoload;
                 if let Some(photo) = seen
                     .photo
                     .as_ref()
@@ -2562,7 +2567,7 @@ impl App {
                 self.seen = *seen;
                 self.rescene();
                 self.restore_draft();
-                if landed {
+                if landed || offer {
                     self.regions_changed();
                 }
                 if self.first_pins() {
@@ -2981,7 +2986,7 @@ impl App {
         {
             let mut frames = self.frames.lock().unwrap_or_else(PoisonError::into_inner);
             frames.refresh();
-            self.setup = map::setup(frames.painter());
+            self.setup = map::setup(frames.painter(), self.seen.autoload);
         }
     }
 
@@ -4856,6 +4861,32 @@ mod tests {
         seen.autoload = app.asks.is_some();
         app.apply(Message::Seen(Box::new(seen)));
         (app, maps)
+    }
+
+    /// The audit of 1933: the window's zoom offer follows the autoload
+    /// through the one ceiling rule every frontend applies
+    /// (`loquax::ui::map::autoload_zooms`, as the terminal's shell and
+    /// the phone do). On, the offer reaches the source's depth; off, it
+    /// stays the regions', the outline's and the radar's.
+    #[test]
+    fn the_windows_offer_follows_the_autoload() {
+        let dir = tempfile::tempdir().expect("maps");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut app, maps) = window_over_empty(dir.path(), Some(tx));
+        let frames = Frames::new(maps);
+        let radar = loquax::ui::radar::zooms(loquax::screenmap::setup(frames.painter()).zooms);
+        let deep = loquax::ui::map::autoload_zooms(radar);
+        assert_eq!(app.setup.zooms, deep, "autoload on: the source's depth");
+        assert!(
+            app.setup.zooms.1 > radar.1,
+            "the autoload deepens the radar's ceiling: {:?}",
+            app.setup.zooms
+        );
+        // The autoload switched off: the next Seen shallows the offer.
+        let mut seen = app.seen.clone();
+        seen.autoload = false;
+        app.apply(Message::Seen(Box::new(seen)));
+        assert_eq!(app.setup.zooms, radar, "autoload off: the radar's");
     }
 
     /// 1819 (P0), the load-time family: a region that lands never moves

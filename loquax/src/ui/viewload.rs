@@ -287,18 +287,48 @@ fn along(from: World, to: World, heading: (f64, f64)) -> (f64, f64) {
     (dx * heading.0 + dy * heading.1, dx * dx + dy * dy)
 }
 
+/// The deepest zoom of the contiguous run up from `from` whose every
+/// level some one complete region of `regions` holds the whole of `b`
+/// at, to `to` at most (the audit of 1933): the levels a cut over `b`
+/// need not fetch again. `None` when even `from` is not held whole.
+/// Joint coverage by several regions none of which holds the whole box
+/// does not count: the cut then fetches a level partly on disk, which
+/// costs bytes but never correctness.
+fn held_through(regions: &[Header], b: &Bounds, from: u8, to: u8) -> Option<u8> {
+    let whole = |z: u8| {
+        regions.iter().any(|h| {
+            h.profile >= leviculum_map::profile::CUT_2
+                && !arriving(h)
+                && h.bounds.holds(b)
+                && h.min_zoom <= z
+                && h.max_zoom >= z
+        })
+    };
+    (from..=to).take_while(|&z| whole(z)).last()
+}
+
 /// The load asked for `cell` for a view at `zoom`: the cell's box, the
 /// view's levels alone — from [`VIEW_BELOW`] zooms above the view's to
-/// the view's own (1933, as [`super::map::want_view`]). The deep detail
-/// is cut only by deeper views, whose cells are small; no box bundles
-/// the coarse levels of a wide box with street detail, and a zoom out
-/// finds its levels already present. Before 1933 a cell reached to
-/// [`DEEPEST_LOAD`], which bundled z15 with z7 over degrees of land: one
-/// such box took 7 min 37 s at the source's rate (Lew, 2026-11-16).
-fn want(cell: &Cell, zoom: u8) -> MapWant {
+/// the view's own (1933, as [`super::map::want_view`]) — less every
+/// level `regions` already hold over the whole cell (the audit of 1933:
+/// a wheel step in over ground held at the coarser zoom fetches only
+/// the levels not yet held, never z9-z12 a second time). The deep
+/// detail is cut only by deeper views, whose cells are small; no box
+/// bundles the coarse levels of a wide box with street detail, and a
+/// zoom out finds its levels already present. Before 1933 a cell
+/// reached to [`DEEPEST_LOAD`], which bundled z15 with z7 over degrees
+/// of land: one such box took 7 min 37 s at the source's rate (Lew,
+/// 2026-11-16).
+fn want(cell: &Cell, zoom: u8, regions: &[Header]) -> MapWant {
+    let bounds = cell.bounds();
+    let from = zoom.saturating_sub(VIEW_BELOW);
+    let shallow = match held_through(regions, &bounds, from, zoom.saturating_sub(1)) {
+        Some(held) => (held + 1).min(zoom),
+        None => from,
+    };
     MapWant {
-        bounds: cell.bounds(),
-        zooms: (zoom.saturating_sub(VIEW_BELOW), zoom),
+        bounds,
+        zooms: (shallow, zoom),
         floor: zoom,
         reason: LoadReason::View,
         centre: cell.centre(),
@@ -346,14 +376,23 @@ pub fn screen_want(view: &Viewport, regions: &[Header]) -> Option<MapWant> {
     let ((west, _), (north, _)) = nw.span();
     let ((_, east), (_, south)) = se.span();
     let at = |v: u64| v.min(u64::from(u32::MAX)) as u32;
+    let bounds = Bounds {
+        west: lon_of_x(at(west)),
+        south: lat_of_y(at(south)),
+        east: lon_of_x(at(east)),
+        north: lat_of_y(at(north)),
+    };
+    // The zoom above the view's rides along for a zoom out — unless a
+    // region holds it over the whole box already (the audit of 1933):
+    // then only the view's own level is fetched.
+    let from = zoom.saturating_sub(1);
+    let shallow = match held_through(regions, &bounds, from, from) {
+        Some(held) => (held + 1).min(zoom),
+        None => from,
+    };
     Some(MapWant {
-        bounds: Bounds {
-            west: lon_of_x(at(west)),
-            south: lat_of_y(at(south)),
-            east: lon_of_x(at(east)),
-            north: lat_of_y(at(north)),
-        },
-        zooms: (zoom.saturating_sub(1), zoom),
+        bounds,
+        zooms: (shallow, zoom),
         floor: zoom,
         reason: LoadReason::Screen,
         centre: view.centre,
@@ -425,9 +464,9 @@ pub fn wants(
         here: screen
             .into_iter()
             .chain(renew)
-            .chain(here_cells.iter().map(|c| want(c, zoom)))
+            .chain(here_cells.iter().map(|c| want(c, zoom, regions)))
             .collect(),
-        ahead: ahead_cells.iter().map(|c| want(c, zoom)).collect(),
+        ahead: ahead_cells.iter().map(|c| want(c, zoom, regions)).collect(),
         share,
     }
 }
@@ -804,6 +843,78 @@ mod tests {
             loads.decide(&view, &[r], 710, false, None).is_some(),
             "a region landed"
         );
+    }
+
+    /// The audit of 1933: a cut for a deeper view over ground a region
+    /// holds at the coarser levels fetches only the levels not yet
+    /// held — never z10-z12 a second time.
+    #[test]
+    fn a_cut_over_held_ground_skips_the_levels_held() {
+        let at = project(LatLon::from_degrees(43.7756, 11.2600));
+        let cell = Cell::of(at, 10);
+        let ground = Cell::of(at, 9).bounds();
+        // Nothing held: the full three levels above the view's.
+        assert_eq!(want(&cell, 13, &[]).zooms, (10, 13));
+        // z10 to z12 held whole: only z13 is fetched.
+        let held = region(ground, (9, 12));
+        assert_eq!(want(&cell, 13, &[held]).zooms, (13, 13));
+        // The run counts only from the shallow end: a region holding
+        // z12 alone clips nothing, the cut still needs z10 and z11.
+        let deep_only = region(ground, (12, 12));
+        assert_eq!(want(&cell, 13, &[deep_only]).zooms, (10, 13));
+        // A region still arriving holds nothing yet.
+        let arriving = Header {
+            streamed: true,
+            len: 0,
+            ..region(ground, (9, 12))
+        };
+        assert_eq!(want(&cell, 13, &[arriving]).zooms, (10, 13));
+        // An old-profile region holds nothing either.
+        let old = Header {
+            profile: leviculum_map::profile::CUT_1,
+            ..region(ground, (9, 12))
+        };
+        assert_eq!(want(&cell, 13, &[old]).zooms, (10, 13));
+    }
+
+    /// The audit of 1933: the screen's own box too skips the zoom above
+    /// the view's when a region holds it whole.
+    #[test]
+    fn the_screens_box_skips_the_level_above_when_held() {
+        let world = Bounds {
+            west: -1_799_000_000,
+            south: -849_000_000,
+            east: 1_799_000_000,
+            north: 849_000_000,
+        };
+        let view = Viewport::new(project(LatLon::from_degrees(43.0, 11.0)), 13, 480, 320);
+        let plain = screen_want(&view, &[]).expect("uncovered");
+        assert_eq!(plain.zooms, (12, 13));
+        let clipped = screen_want(&view, &[region(world, (0, 12))]).expect("z13 is not held");
+        assert_eq!(clipped.zooms, (13, 13));
+    }
+
+    /// Audit of 1933: MIN_ZOOM fell to z3, so world-wide views now ask
+    /// for loads. Every box asked must be well formed (west <= east,
+    /// inside the world), or `reaches` can never hold it and it is
+    /// asked forever.
+    #[test]
+    fn a_z3_view_over_the_antimeridian_asks_well_formed_boxes() {
+        for lon in [179.0, -179.0, 0.0] {
+            let view = Viewport::new(project(LatLon::from_degrees(0.0, lon)), 3, 1224, 2197);
+            let w = wants(&view, &[], false, None);
+            assert!(!w.here.is_empty(), "a z3 view asks for its coarse levels");
+            for want in w.here.iter().chain(w.ahead.iter()) {
+                let b = want.bounds;
+                assert!(b.west <= b.east, "lon {lon}: {b:?}");
+                assert!(b.south <= b.north, "lon {lon}: {b:?}");
+                assert!(
+                    b.west >= -1_800_000_000 && b.east <= 1_800_000_000,
+                    "lon {lon}: {b:?}"
+                );
+                assert!(want.zooms.1 <= 3, "lon {lon}: {:?}", want.zooms);
+            }
+        }
     }
 
     #[test]
