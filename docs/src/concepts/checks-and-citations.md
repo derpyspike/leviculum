@@ -786,7 +786,7 @@ Built 2026-09-27. The proximity test had lived inline in the checker,
 closed over the current file's lines; it is now `ident_resolves`
 (`leviculum-std/tests/doc_citations.rs:702`), a function over the lines
 it is handed, and `place_citation` asks it a second time against the
-base copy of the file (`leviculum-std/tests/doc_citations.rs:3669`). A
+base copy of the file (`leviculum-std/tests/doc_citations.rs#place_citation`). A
 map repair is emitted only where both halves hold: the map proves the
 move, *and* the base resolved the citation's own identifier at the
 citation's own number. The refusal above is the other branch.
