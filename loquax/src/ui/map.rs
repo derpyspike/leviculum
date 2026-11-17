@@ -194,19 +194,26 @@ pub fn autoload_zooms((shallowest, deepest): (u8, u8)) -> (u8, u8) {
 }
 
 /// The region to load for `view`: its box, the view's levels alone —
-/// from [`VIEW_BELOW`] zooms above its zoom to the view's own (1933).
-/// Deeper detail is loaded by deeper views over their smaller boxes, so
-/// no box bundles the coarse levels of a wide box with street detail.
-/// `None` when `regions` hold the box at the view's zoom.
+/// from [`VIEW_BELOW`] zooms above its zoom to the view's own (1933) —
+/// less every level a region already holds over the whole box (the
+/// audit of 1933: a zoom-in step over ground held at the coarser zoom
+/// fetches only the levels not yet held). Deeper detail is loaded by
+/// deeper views over their smaller boxes, so no box bundles the coarse
+/// levels of a wide box with street detail. `None` when `regions` hold
+/// the box at the view's zoom.
 pub fn want_view(view: &Viewport, regions: &[Header]) -> Option<MapWant> {
     let zoom = view.zoom().min(DEEPEST_LOAD);
     let bounds = view.bounds();
     if covered(regions, &bounds, (zoom, zoom)) {
         return None;
     }
+    let mut shallow = zoom.saturating_sub(VIEW_BELOW);
+    while shallow < zoom && covered(regions, &bounds, (shallow, shallow)) {
+        shallow += 1;
+    }
     Some(MapWant {
         bounds,
-        zooms: (zoom.saturating_sub(VIEW_BELOW), zoom),
+        zooms: (shallow, zoom),
         floor: zoom,
         reason: LoadReason::View,
         centre: view.centre,
@@ -965,6 +972,49 @@ mod tests {
             anchor: (col * 2 * sub + sub, row * 4 * sub + sub),
             line: Vec::new(),
         }
+    }
+
+    /// The audit of 1933: the view's cut skips the levels a region
+    /// already holds over the whole box, so a zoom-in step fetches only
+    /// what is new, never z10-z12 a second time.
+    #[test]
+    fn a_views_want_skips_the_levels_already_held() {
+        let held = Header {
+            bounds: Bounds {
+                west: 100_000_000,
+                south: 510_000_000,
+                east: 160_000_000,
+                north: 540_000_000,
+            },
+            min_zoom: 10,
+            max_zoom: 12,
+            profile: leviculum_map::profile::CUT_2,
+            attribution: (0, 0),
+            notice: (0, 0),
+            tiles: 0,
+            index: 0,
+            len: 4096,
+            labels: None,
+            buildings: None,
+            pois: None,
+            streamed: false,
+        };
+        let view = Viewport::new(project(LatLon::from_degrees(52.47, 13.3)), 13, 480, 320);
+        let plain = want_view(&view, &[]).expect("nothing held");
+        assert_eq!(plain.zooms, (10, 13));
+        let clipped = want_view(&view, &[held.clone()]).expect("z13 is not held");
+        assert_eq!(clipped.zooms, (13, 13));
+        // Held at the view's own zoom too: nothing to load at all.
+        assert_eq!(
+            want_view(
+                &view,
+                &[Header {
+                    max_zoom: 13,
+                    ..held
+                }]
+            ),
+            None
+        );
     }
 
     /// The density rule in cells: one place a 20 x 6 block, the larger

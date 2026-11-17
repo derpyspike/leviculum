@@ -2619,7 +2619,11 @@ pub fn zoom_out_from_visit(rate: u64, latency: u64) -> Walk {
 /// visit, four wheel steps out; the view share reaches 1.0 within the
 /// bound, and no box cut for it carries more than the three zoom levels
 /// above the view zoom it was cut for — its deepest zoom is that view's
-/// own, so its span says it.
+/// own, so its span says it. And once the view has settled at z11, no
+/// box deeper than z11 starts (the audit of 1933 put this back after
+/// 1933 dropped it red): a box queued for a z12-z15 view the reader
+/// left would fetch street detail no screen draws, so the loader drops
+/// it at the next decision ([`loquax::mapload::Loader::schedule`]).
 #[test]
 fn zoom_out_from_a_detailed_visit_loads_only_the_view_levels() {
     let walk = zoom_out_from_visit(SLOW_RATE, 40);
@@ -2657,44 +2661,74 @@ fn zoom_out_from_a_detailed_visit_loads_only_the_view_levels() {
         );
     }
     assert!(cut > 0, "the zoom out loaded its coarse levels");
+    // The view settled at z11 (its zoom last changed, plus the paced
+    // decision that sees it): every box that starts after that carries
+    // nothing deeper than the view's own zoom.
+    let settled = walk
+        .frames
+        .windows(2)
+        .rev()
+        .find(|w| w[0].zoom_milli != w[1].zoom_milli)
+        .map(|w| w[1].t)
+        .unwrap_or(0)
+        + loquax::ui::viewload::DECIDE_MS;
+    let deep: Vec<String> = walk
+        .events
+        .iter()
+        .filter_map(|(t, ev)| match ev {
+            Ev::Started(b, zooms) if *t > settled && zooms.1 > 11 => {
+                Some(format!("t={t} z{}-{} {b:?}", zooms.0, zooms.1))
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        deep.is_empty(),
+        "a box cut for a view the reader left starts under the z11 view:\n{}",
+        deep.join("\n")
+    );
 }
 
-/// A ladder of rests from z12 to z15 over the tiered archive, drained:
-/// the ground under the view holds every level the ladder's views draw
-/// (1933).
-pub fn wheel_ladder(rate: u64, latency: u64) -> Walk {
+/// 1933, load walk step "wheel over loaded ground", as the audit of
+/// 1933 pinned it down: the ground is what ONE rest at ONE zoom loads
+/// (a drained rest at every rung turned "a region is loaded" into
+/// "every zoom was loaded"). One wheel step in over that ground fetches
+/// only levels deeper than the ground's own — never z12 and below
+/// again — and once that step's levels landed, ten wheel steps between
+/// the two rungs cut no box and fetch 0 bytes.
+#[test]
+fn wheel_steps_over_loaded_ground_fetch_nothing() {
     let mut walk = tiered_walk(
         "wheel-loaded",
         &[(BIG_BOX, 7..=11), (WIDE_BOX, 12..=15)],
         BIG_BOX,
         AREA_A,
         12,
-        rate,
-        latency,
+        SLOW_RATE,
+        40,
     );
     walk.rest_bounded("z12", 60_000, true);
     walk.drain(walk.fill_bound());
-    for z in 13..=15u8 {
-        walk.wheel(1000, 14);
-        walk.rest_bounded(&format!("z{z}"), 60_000, true);
-        // The rung's prefetch ring lands too: the loaded ground the
-        // wheel phase moves over includes what the scheduler asks ahead.
-        walk.drain(walk.fill_bound());
-    }
-    walk
-}
-
-/// 1933, load walk step "wheel over loaded ground": after the ground is
-/// loaded, ten wheel steps in and out inside it fetch 0 bytes and cut
-/// no box — zooming in overzooms what is there, zooming out finds the
-/// coarse levels already present.
-#[test]
-fn wheel_steps_over_loaded_ground_fetch_nothing() {
-    let mut walk = wheel_ladder(SLOW_RATE, 40);
+    let ground = walk.now_ms();
+    // One step in: only levels the ground does not hold come down.
+    walk.wheel(1000, 14);
+    walk.rest_bounded("z13", 60_000, true);
+    walk.drain(walk.fill_bound());
+    let refetch: Vec<String> = walk
+        .events
+        .iter()
+        .filter_map(|(t, ev)| match ev {
+            Ev::Started(b, z) if *t > ground && z.0 <= 12 => {
+                Some(format!("t={t} z{}-{} {b:?}", z.0, z.1))
+            }
+            _ => None,
+        })
+        .collect();
+    // Ten steps between the rungs the ground now holds: nothing moves.
     let t0 = walk.now_ms();
     let sent0 = walk.serve.sent();
     for milli in [
-        -1000, -1000, 1000, 1000, -1000, -1000, 1000, 1000, -1000, 1000,
+        -1000, 1000, -1000, 1000, -1000, 1000, -1000, 1000, -1000, 1000,
     ] {
         walk.wheel(milli, 14);
     }
@@ -2710,8 +2744,14 @@ fn wheel_steps_over_loaded_ground_fetch_nothing() {
         .collect();
     let sent = walk.serve.sent() - sent0;
     eprintln!(
-        "SMOKE wheel-loaded wheel_bytes={sent} wheel_cuts={}",
-        cut.len()
+        "SMOKE wheel-loaded wheel_bytes={sent} wheel_cuts={} step_in_refetches={}",
+        cut.len(),
+        refetch.len()
+    );
+    assert!(
+        refetch.is_empty(),
+        "the step in fetched levels the ground already holds:\n{}",
+        refetch.join("\n")
     );
     assert!(
         cut.is_empty(),
@@ -2722,6 +2762,51 @@ fn wheel_steps_over_loaded_ground_fetch_nothing() {
     for c in &walk.checks {
         assert!(c.filled, "{} fills before the wheel phase", c.label);
     }
+}
+
+/// The audit of 1933, its deciding test: after one rest at z12 has
+/// landed its ground, one wheel step in cuts only boxes whose levels
+/// are all deeper than the ground's — z9 to z12 never come down a
+/// second time ([`loquax::ui::viewload`] clips a cut's shallow end to
+/// the levels held).
+#[test]
+fn zoom_in_one_step_cuts_no_level_already_held() {
+    let mut walk = tiered_walk(
+        "wheel-in-held",
+        &[(BIG_BOX, 7..=11), (WIDE_BOX, 12..=15)],
+        BIG_BOX,
+        AREA_A,
+        12,
+        SLOW_RATE,
+        40,
+    );
+    walk.rest_bounded("z12", 60_000, true);
+    walk.drain(walk.fill_bound());
+    let t0 = walk.now_ms();
+    let sent0 = walk.serve.sent();
+    walk.wheel(1000, 14);
+    walk.rest_bounded("z13", 60_000, true);
+    walk.drain(walk.fill_bound());
+    let again: Vec<String> = walk
+        .events
+        .iter()
+        .filter_map(|(t, ev)| match ev {
+            Ev::Started(b, z) if *t > t0 && z.0 <= 12 => {
+                Some(format!("t={t} z{}-{} {b:?}", z.0, z.1))
+            }
+            _ => None,
+        })
+        .collect();
+    eprintln!(
+        "SMOKE wheel-in-held step_bytes={} started_shallow={}",
+        walk.serve.sent() - sent0,
+        again.len()
+    );
+    assert!(
+        again.is_empty(),
+        "a zoom-in step fetched levels already held:\n{}",
+        again.join("\n")
+    );
 }
 
 /// 1933, the measurement standing for Morocco at z6: a zoomed-out view

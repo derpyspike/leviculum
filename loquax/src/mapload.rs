@@ -961,7 +961,10 @@ impl Loader {
     /// order to load them. Every box queued or running takes the rank of
     /// the list it is in now, or is one the view left; the queue is
     /// ordered by rank, the lists' order within it, the boxes the view
-    /// left in the order they came, at most [`MAX_AWAY`]; then a load for
+    /// left in the order they came, at most [`MAX_AWAY`] — except one
+    /// deeper than anything the view asks now, which is dropped (the
+    /// audit of 1933: it was cut for a view the reader zoomed away
+    /// from, and would fetch detail no screen draws); then a load for
     /// the screen starts when nothing for it runs. A box asked for by
     /// hand keeps its place.
     pub fn schedule(&mut self, here: Vec<MapWant>, ahead: Vec<MapWant>, now_ms: u64) -> Vec<Step> {
@@ -970,6 +973,16 @@ impl Loader {
         if let Some(h) = self.heights.as_mut() {
             h.scan_asked = true;
         }
+        // The deepest level the view asks for now (the audit of 1933):
+        // a queued box deeper than it was cut for a view the reader has
+        // left — it would fetch street detail no screen draws — and is
+        // dropped below; the view that wants its area again asks again.
+        let deepest_need = here
+            .iter()
+            .chain(ahead.iter())
+            .map(|w| w.zooms.1)
+            .max()
+            .unwrap_or(0);
         let place = |b: &Bounds| {
             here.iter()
                 .position(|w| w.bounds == *b)
@@ -1000,6 +1013,11 @@ impl Loader {
                 (_, Some(key)) => key,
                 // A screen's box the view left: the cells hold its area.
                 (_, None) if queued.want.reason == LoadReason::Screen => continue,
+                // A box deeper than anything the view asks now was cut
+                // for a view the reader has left (the audit of 1933):
+                // started under this view it would fetch street detail
+                // no screen draws, competing with the coarse fill.
+                (_, None) if queued.want.zooms.1 > deepest_need => continue,
                 (_, None) => (Rank::Away, n),
             };
             queued.rank = key.0;
@@ -2675,6 +2693,60 @@ mod tests {
                 (2, Rank::Away, false)
             ],
             "the screen box the view left is gone: {s:?}"
+        );
+    }
+
+    /// The audit of 1933: a queued box deeper than anything the view
+    /// asks now was cut for a view the reader zoomed away from. The
+    /// next decision drops it instead of keeping it as left, so no
+    /// z12-z15 box starts under a z11 view and fetches street detail no
+    /// screen draws. A box the view left at the view's own depth stays
+    /// kept, for a pan back; a running deep load runs on (a load cannot
+    /// stop, it pauses).
+    #[test]
+    fn a_deeper_box_the_view_left_is_dropped_not_kept() {
+        let (_source, source) = stalling();
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut loader = Loader::new(Maps::new(Some(dir.path().to_path_buf())), source, 1 << 30);
+        let deep = |n: i32| MapWant {
+            zooms: (12, 15),
+            floor: 15,
+            ..nth(n)
+        };
+        let shallow = |n: i32| MapWant {
+            zooms: (8, 11),
+            floor: 11,
+            ..nth(n)
+        };
+        assert!(matches!(
+            loader
+                .schedule(vec![deep(1), deep(2), deep(3)], Vec::new(), 0)
+                .as_slice(),
+            [Step::Started(_)]
+        ));
+        // The reader zoomed out: the queued deep boxes are dropped, the
+        // running one pauses and keeps its place.
+        loader.schedule(vec![shallow(4), shallow(5)], Vec::new(), 250);
+        assert_eq!(
+            order(&loader),
+            [
+                (1, Rank::Away, true),
+                (4, Rank::Here, true),
+                (5, Rank::Here, false)
+            ],
+            "the queued deep boxes are gone"
+        );
+        // A box at the view's own depth the view left is kept.
+        loader.schedule(vec![shallow(6)], Vec::new(), 500);
+        assert_eq!(
+            order(&loader),
+            [
+                (1, Rank::Away, true),
+                (4, Rank::Away, true),
+                (6, Rank::Here, true),
+                (5, Rank::Away, false)
+            ],
+            "the left box at the view's depth waits for a pan back"
         );
     }
 
