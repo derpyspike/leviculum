@@ -1322,6 +1322,7 @@ pub fn tiered_walk(
         zoom,
         cache_bytes: 1 << 30,
         prefill: 0,
+        size: WALK_SIZE,
     };
     let mut walk = Walk::over(serve, name, rate, latency_ms, ground, Inject::None);
     walk.area = area;
