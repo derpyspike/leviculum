@@ -271,6 +271,11 @@ struct CurvedMemo {
     /// What it owed (tiles pending and regions unreadable): only a
     /// whole memo serves a frame at rest.
     owed: usize,
+    /// The maps changed since it was drawn (audit of 1943): it serves
+    /// no frame at rest, but a moving frame still rides it, so a region
+    /// landing under a finger never costs a whole curved draw while the
+    /// finger moves; the real frame is owed for rest.
+    stale: bool,
     attribution: String,
     rgba: Vec<u8>,
 }
@@ -462,7 +467,11 @@ impl TileCache {
         let epoch = self.maps.epoch();
         if epoch != self.epoch {
             self.epoch = epoch;
+            // The curved memo outlives the epoch as stale (audit of
+            // 1943): the tiles go, the memo only rides moving frames.
+            let memo = self.curved.take();
             self.clear();
+            self.curved = memo.map(|m| CurvedMemo { stale: true, ..m });
         }
         let progress = self.maps.progress();
         if progress != self.progress {
@@ -471,11 +480,10 @@ impl TileCache {
             self.entries.retain(|_, e| !e.provisional);
             self.bytes = self.entries.values().map(|e| e.rgba.len()).sum();
             self.stats.redrawn += (before - self.entries.len()) as u64;
-            // A curved memo that owed anything is drawn again as the
-            // regions gain tiles (order 1943); a whole one stands.
-            if self.curved.as_ref().is_some_and(|m| m.owed > 0) {
-                self.curved = None;
-            }
+            // A curved memo that owed anything stays: it serves no frame
+            // at rest anyway, which is drawn again as the regions gain
+            // tiles, and a moving frame rides it instead of a whole draw
+            // under the finger (audit of 1943).
         }
         if self.style.is_some_and(|s| s != (style, percent)) {
             self.clear();
@@ -540,6 +548,7 @@ impl TileCache {
                     if memo.view == frame.view
                         && memo.smooth == smooth
                         && memo.owed == 0
+                        && !memo.stale
                         && memo.rgba.len() == rgba.len()
                     {
                         rgba.copy_from_slice(&memo.rgba);
@@ -551,8 +560,14 @@ impl TileCache {
                         return Some((credit, 0));
                     }
                     if frame.moving {
-                        ride_memo(&memo.view, &memo.rgba, &frame.view, rgba, frame.style.theme);
+                        let exposed = ride_memo(&memo.view, &memo.rgba, &frame.view, rgba);
                         let credit = memo.attribution.clone();
+                        if exposed {
+                            // Where the memo does not reach, the world
+                            // outline, as under a tile not drawn yet.
+                            let theme = frame.style.theme;
+                            outline_under(&frame.view, theme, rgba, self.workers, None);
+                        }
                         self.stats.curved_blit += 1;
                         return Some((credit, 1));
                     }
@@ -581,6 +596,7 @@ impl TileCache {
                         screen: self.screen,
                         smooth,
                         owed,
+                        stale: false,
                         attribution: credit.clone(),
                         rgba: rgba.to_vec(),
                     });
@@ -1019,45 +1035,58 @@ impl TileCache {
 }
 
 /// The curved memo's picture carried into a moving frame's pixels
-/// (order 1943): nearest neighbour along the world-linear mapping of
-/// the two views' centres and zooms, the theme's water where the memo
-/// does not reach. The blend's own warp differs between the two views;
-/// while a finger moves that difference is taken, as the tile path
-/// takes a scaled stand-in (1163), and the frame is owed, so the real
-/// one is drawn at rest.
-fn ride_memo(from: &ExactView, src: &[u8], to: &ExactView, dst: &mut [u8], theme: MapTheme) {
+/// (order 1943), sampled bilinear along the world-linear mapping of
+/// the two views' centres and zooms, so a wheel step in shows no
+/// nearest-neighbour blocks; a pixel the memo does not reach is left
+/// clear (alpha 0) for the outline under it, never a sea-coloured
+/// strip (audit of 1943). Whether any was left so. The blend's own
+/// warp differs between the two views; while a finger moves that
+/// difference is taken, as the tile path takes a scaled stand-in
+/// (1163), and the frame is owed, so the real one is drawn at rest.
+fn ride_memo(from: &ExactView, src: &[u8], to: &ExactView, dst: &mut [u8]) -> bool {
     let (fw, fh) = from.size();
     let (tw, th) = to.size();
     if src.len() != fw as usize * fh as usize * 4 || dst.len() != tw as usize * th as usize * 4 {
-        return;
+        return false;
     }
     // Memo pixels per target pixel, and the centres' offset in memo
     // pixels; x wraps at the antimeridian, nearest copy taken.
     let k = libm::exp2(from.zoom() - to.zoom());
     let dx = f64::from(to.centre.x.wrapping_sub(from.centre.x) as i32) / from.unit();
     let dy = (f64::from(to.centre.y) - f64::from(from.centre.y)) / from.unit();
-    let [r, g, b] = rgb888(outline::water(theme));
-    let water = [r, g, b, 0xff];
-    let x0 = (0.5 - f64::from(tw) / 2.0) * k + dx + f64::from(fw) / 2.0;
-    for y in 0..th {
-        let sy = (f64::from(y) + 0.5 - f64::from(th) / 2.0) * k + dy + f64::from(fh) / 2.0;
-        let row = (sy >= 0.0 && sy < f64::from(fh)).then(|| {
-            let at = sy as usize * fw as usize * 4;
-            &src[at..at + fw as usize * 4]
-        });
-        let out = &mut dst[y as usize * tw as usize * 4..][..tw as usize * 4];
-        let mut sx = x0;
-        for px in out.chunks_exact_mut(4) {
-            let got = row.and_then(|row| {
-                (sx >= 0.0 && sx < f64::from(fw)).then(|| {
-                    let at = sx as usize * 4;
-                    [row[at], row[at + 1], row[at + 2], row[at + 3]]
-                })
-            });
-            px.copy_from_slice(&got.unwrap_or(water));
-            sx += k;
+    // Memo coordinates of a target pixel's centre, in units of memo
+    // pixel centres: 0.0 is the first memo pixel's centre.
+    let x0 = (0.5 - f64::from(tw) / 2.0) * k + dx + f64::from(fw) / 2.0 - 0.5;
+    let y0 = (0.5 - f64::from(th) / 2.0) * k + dy + f64::from(fh) / 2.0 - 0.5;
+    let (fwf, fhf) = (f64::from(fw), f64::from(fh));
+    let stride = fw as usize * 4;
+    let mut exposed = false;
+    for (y, out) in dst.chunks_exact_mut(tw as usize * 4).enumerate() {
+        let sy = y0 + y as f64 * k;
+        let inside_y = sy > -0.5 && sy < fhf - 0.5;
+        let ya = sy.floor().clamp(0.0, fhf - 1.0) as usize;
+        let yb = (ya + 1).min(fh as usize - 1);
+        let fy = (sy - sy.floor()).clamp(0.0, 1.0);
+        for (x, px) in out.chunks_exact_mut(4).enumerate() {
+            let sx = x0 + x as f64 * k;
+            if !inside_y || sx <= -0.5 || sx >= fwf - 0.5 {
+                px.copy_from_slice(&[0, 0, 0, 0]);
+                exposed = true;
+                continue;
+            }
+            let xa = sx.floor().clamp(0.0, fwf - 1.0) as usize;
+            let xb = (xa + 1).min(fw as usize - 1);
+            let fx = (sx - sx.floor()).clamp(0.0, 1.0);
+            let at = |yy: usize, xx: usize, c: usize| f64::from(src[yy * stride + xx * 4 + c]);
+            for (c, out) in px.iter_mut().enumerate().take(3) {
+                let top = at(ya, xa, c) * (1.0 - fx) + at(ya, xb, c) * fx;
+                let bottom = at(yb, xa, c) * (1.0 - fx) + at(yb, xb, c) * fx;
+                *out = (top * (1.0 - fy) + bottom * fy).round() as u8;
+            }
+            px[3] = 0xff;
         }
     }
+    exposed
 }
 
 /// The steps whose cached tiles stand in for those `frame` does not draw,
@@ -1878,6 +1907,186 @@ mod tests {
         let rested = cache.compose(&rest(ExactView::new(east, 7 * MILLI, w, h)));
         assert_eq!(cache.stats.curved_drawn, 2);
         assert_eq!(rested.missing, 0);
+    }
+
+    /// The curved test pane of order 1943's audit: a cache over `maps`
+    /// with the blend on and a 600x400 screen, on which a frame at zoom
+    /// 7 lies inside the blend window.
+    fn curved(maps: Maps) -> TileCache {
+        let mut cache = TileCache::new(maps, BUDGET_MB << 20);
+        cache.set_world_blend(true);
+        cache.set_screen(Some((600, 400)));
+        cache
+    }
+
+    fn curved_frame(centre: World, moving: bool) -> Frame {
+        curved_frame_at(centre, 7, moving)
+    }
+
+    /// A 600x400 frame over `centre` at `zoom`, moving or at rest.
+    fn curved_frame_at(centre: World, zoom: u8, moving: bool) -> Frame {
+        Frame {
+            view: ExactView::new(centre, u32::from(zoom) * MILLI, 600, 400),
+            zoom,
+            style: Style::SCREEN,
+            scale: 1.0,
+            render_limit: moving.then_some(16),
+            fallback: None,
+            moving,
+            asked: None,
+            smooth: true,
+            resmooth: false,
+        }
+    }
+
+    /// `centre` moved `px` pixels of zoom 7 east.
+    fn east_of(centre: World, px: u32) -> World {
+        east_at(centre, px, 7)
+    }
+
+    /// `centre` moved `px` pixels of `zoom` east.
+    fn east_at(centre: World, px: u32, zoom: u8) -> World {
+        World {
+            x: centre.x.wrapping_add(px << (24 - u32::from(zoom))),
+            y: centre.y,
+        }
+    }
+
+    fn europe() -> World {
+        project(LatLon::from_degrees(50.0, 9.0))
+    }
+
+    /// The audit of 1943, round 1: a region that lands while a finger
+    /// drags at a curved zoom moves the maps' epoch. The moving frame
+    /// keeps riding the memo it had, and the real frame is owed for
+    /// rest; it never draws the whole curved frame under the finger.
+    #[test]
+    fn audit_1943_a_maps_change_under_a_drag_does_not_draw_whole() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut cache = curved(maps.clone());
+        let first = cache.compose(&curved_frame(europe(), false));
+        assert_eq!(first.missing, 0);
+        assert_eq!(cache.stats.curved_drawn, 1);
+        std::fs::write(dir.path().join("landed.lmr"), FLORENCE).expect("write");
+        maps.changed();
+        let moved = cache.compose(&curved_frame(east_of(europe(), 40), true));
+        assert_eq!(
+            cache.stats.curved_drawn, 1,
+            "a maps change under a drag drew the whole curved frame"
+        );
+        assert_eq!(cache.stats.curved_blit, 1, "the drag rode the memo");
+        assert!(moved.missing > 0, "the real frame is owed");
+        // At rest the real frame is drawn, the region in it.
+        let rested = cache.compose(&curved_frame(east_of(europe(), 40), false));
+        assert_eq!(
+            cache.stats.curved_drawn, 2,
+            "the owed frame is drawn at rest"
+        );
+        assert_eq!(rested.missing, 0);
+    }
+
+    /// An owed curved memo: Florence's region (zooms 11 to 15) read for
+    /// a first frame at zoom 11 — a 6000 px screen puts zoom 11 inside
+    /// the blend window, the frame itself stays 600x400 — then broken
+    /// under its open handle, and a second view at rest drawn over it,
+    /// which counts it unreadable and so owes the frame.
+    fn owed_memo() -> (tempfile::TempDir, Maps, TileCache, World) {
+        let (dir, maps) = maps();
+        let mut cache = curved(maps.clone());
+        cache.set_screen(Some((6000, 6000)));
+        let at = duomo();
+        let whole = cache.compose(&curved_frame_at(at, 11, false));
+        assert_eq!(cache.stats.curved_drawn, 1, "zoom 11 is curved here");
+        assert_eq!(whole.missing, 0, "the region reads");
+        std::fs::write(dir.path().join("firenze.lmr"), b"not a region").expect("break");
+        let at = east_at(at, 20, 11);
+        let owed = cache.compose(&curved_frame_at(at, 11, false));
+        assert!(owed.missing > 0, "the broken region owes the frame");
+        assert_eq!(cache.stats.curved_drawn, 2);
+        (dir, maps, cache, at)
+    }
+
+    /// The twin for progress: tiles arriving under a drag (`Maps::arrived`)
+    /// while the memo owes something. The moving frame rides the owed
+    /// memo; it never draws the whole curved frame under the finger.
+    #[test]
+    fn audit_1943_progress_under_a_drag_with_an_owed_memo_does_not_draw_whole() {
+        let (_dir, maps, mut cache, at) = owed_memo();
+        for step in 1..=3u32 {
+            maps.arrived();
+            let moved = cache.compose(&curved_frame_at(east_at(at, 10 * step, 11), 11, true));
+            assert_eq!(
+                cache.stats.curved_drawn, 2,
+                "progress under drag step {step} drew the whole curved frame"
+            );
+            assert!(moved.missing > 0, "the real frame stays owed");
+        }
+        assert_eq!(cache.stats.curved_blit, 3, "every drag step rode the memo");
+    }
+
+    /// The audit of 1943, round 1: with the memo off (the phone, 1797)
+    /// every curved frame is drawn, at rest and moving alike, and none
+    /// rides a memo.
+    #[test]
+    fn audit_1943_with_the_memo_off_every_curved_frame_is_drawn() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut cache = curved(maps);
+        cache.set_curved_memo(false);
+        cache.compose(&curved_frame(europe(), false));
+        cache.compose(&curved_frame(europe(), false));
+        let moved = cache.compose(&curved_frame(east_of(europe(), 40), true));
+        assert_eq!(cache.stats.curved_drawn, 3, "every curved frame is drawn");
+        assert_eq!(cache.stats.curved_memo, 0);
+        assert_eq!(cache.stats.curved_blit, 0);
+        assert_eq!(moved.missing, 0, "a drawn frame owes nothing");
+    }
+
+    /// An owed memo never stands for a frame at rest: progress moves,
+    /// nothing moves on the screen, and the same view is drawn again.
+    #[test]
+    fn an_owed_memo_is_drawn_again_at_rest_when_progress_moves() {
+        let (_dir, maps, mut cache, at) = owed_memo();
+        maps.arrived();
+        let again = cache.compose(&curved_frame_at(at, 11, false));
+        assert_eq!(cache.stats.curved_drawn, 3, "the owed view is drawn again");
+        assert_eq!(cache.stats.curved_memo, 0, "an owed memo is never copied");
+        // The progress made the painter read the directory again, which
+        // no longer lists the broken file: the new frame owes nothing.
+        assert_eq!(again.missing, 0);
+    }
+
+    /// What a moving curved frame shows where the memo does not reach:
+    /// the world outline under it, as the tile path shows where a tile
+    /// is missing, never one sea-coloured strip. Half a screen east
+    /// over Europe leaves the right half exposed, and that half is land.
+    #[test]
+    fn a_moving_curved_frame_shows_the_outline_where_the_memo_ends() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let maps = Maps::new(Some(dir.path().to_path_buf()));
+        let mut cache = curved(maps);
+        cache.compose(&curved_frame(europe(), false));
+        let moved = cache.compose(&curved_frame(east_of(europe(), 300), true));
+        assert_eq!(cache.stats.curved_blit, 1, "the drag rode the memo");
+        let [r, g, b] = rgb888(outline::water(Style::SCREEN.theme));
+        let (w, h) = (600usize, 400usize);
+        let mut exposed = 0usize;
+        let mut sea = 0usize;
+        for y in 0..h {
+            for x in 320..w {
+                let at = (y * w + x) * 4;
+                exposed += 1;
+                if moved.rgba[at..at + 3] == [r, g, b] {
+                    sea += 1;
+                }
+                assert_eq!(moved.rgba[at + 3], 0xff, "never a hole at ({x},{y})");
+            }
+        }
+        assert!(
+            sea * 2 < exposed,
+            "the exposed strip is sea: {sea} of {exposed} pixels"
+        );
     }
 
     #[test]
