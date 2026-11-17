@@ -509,7 +509,7 @@ fn kill_during_flush_leaves_a_complete_file() {
 
 /// Auditor: the file is oldest-first, so once the stamp heap is full every
 /// later offer must replace its oldest stamp
-/// (`leviculum-std/src/file_known_destinations_store.rs#NewestStamps::offer`).
+/// (`leviculum-std/src/file_known_destinations_store.rs#NewestRanks::offer`).
 /// Uses this file's helpers: store_dir, dest, entry, Use, write_file, read_file, now_secs.
 #[test]
 fn audit_disk_only_cap_keeps_the_newest_of_an_oldest_first_file() {
@@ -710,7 +710,7 @@ fn audit_hostile_lengths_cost_no_memory() {
 
 /// Audit: the disk-only ceiling keeps the NEWEST entries when the file holds
 /// them oldest first, so the heap must replace
-/// (`leviculum-std/src/file_known_destinations_store.rs#NewestStamps::offer`).
+/// (`leviculum-std/src/file_known_destinations_store.rs#NewestRanks::offer`).
 #[test]
 fn audit_disk_only_newest_whatever_the_file_order() {
     const CAP: u64 = 2_048;
@@ -940,4 +940,138 @@ fn pins_first_then_the_newest_of_the_rest_fill_the_cap() {
             "used entry {i}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Order 1972: NaN announce times, from a corrupt file or one moved in from
+// elsewhere (the mailbox `/move`). Both passes of the flush and the load's
+// trim must use one equality, `f64::total_cmp`, or a NaN floor counts
+// entries it never copies (the flush is abandoned) or keeps none of them
+// (memory empties).
+// ---------------------------------------------------------------------------
+
+/// Audit 1767: a file (corrupt, or moved in from elsewhere) whose disk-only
+/// entries carry a NaN announce time at the cap's floor. Pass 1 counts them
+/// with `Ord` (total_cmp), pass 2 must copy them with the same equality, or
+/// the flush is abandoned and the newcomer never reaches the file.
+#[test]
+fn nan_announced_pins_at_the_cap_still_flush() {
+    let cap = TableCaps::local_client().identity_cap as u64;
+    let dir = store_dir();
+    let key = Identity::generate(&mut rand_core::OsRng).public_key_bytes();
+    write_file(
+        dir.path(),
+        (0..3 * cap)
+            .map(|i| (dest(i, 0x6E), entry(&key, f64::NAN, Use::Retained)))
+            .collect(),
+    );
+    let mut storage = StdStorage::new_with_caps(dir.path(), TableCaps::local_client()).unwrap();
+    storage.set_identity([0xEE; 16], Identity::generate(&mut rand_core::OsRng));
+    storage.flush();
+
+    let file = read_file(dir.path());
+    assert!(
+        file.contains_key(&[0xEE; 16]),
+        "the flush was abandoned over NaN announce times: the newcomer is not in the file"
+    );
+    assert!(
+        file.len() as u64 <= 2 * cap + 1,
+        "the file grew past memory + cap disk-only + new: {}",
+        file.len()
+    );
+}
+
+/// Second auditor, order 1767: more than `identity_cap` disk-only pins whose
+/// announce time is the same (negative) NaN, behind `identity_cap` fresh
+/// entries the load takes into memory. A hostile or corrupt file must not
+/// make the flush abandon itself: the newcomer is written and the
+/// disk-only places are filled. Positive control:
+/// `audit_disk_only_ties_at_the_floor` (same shape, real times).
+#[test]
+fn audit2_nan_announced_pins_do_not_abandon_the_flush() {
+    let cap = TableCaps::local_client().identity_cap as u64;
+    let dir = store_dir();
+    let key = Identity::generate(&mut rand_core::OsRng).public_key_bytes();
+    let now = now_secs();
+    let mut on_disk: Vec<([u8; 16], Value)> = Vec::new();
+    for i in 0..cap {
+        on_disk.push((dest(i, 0x60), entry(&key, now - i as f64, Use::Never)));
+    }
+    let negative_nan = -f64::NAN;
+    assert!(negative_nan.is_nan() && negative_nan.is_sign_negative());
+    for i in 0..=cap {
+        on_disk.push((dest(i, 0x61), entry(&key, negative_nan, Use::Retained)));
+    }
+    write_file(dir.path(), on_disk);
+    let mut storage = StdStorage::new_with_caps(dir.path(), TableCaps::local_client()).unwrap();
+    storage.set_identity([0xEE; 16], Identity::generate(&mut rand_core::OsRng));
+    storage.flush();
+
+    let file = read_file(dir.path());
+    assert!(
+        file.contains_key(&[0xEE; 16]),
+        "the flush was abandoned over NaN announce times: the newcomer is not in the file"
+    );
+    let pins_kept = (0..=cap)
+        .filter(|i| file.contains_key(&dest(*i, 0x61)))
+        .count() as u64;
+    assert_eq!(pins_kept, cap, "the disk-only places are filled with pins");
+}
+
+/// Second auditor, order 1767: `identity_cap` real entries followed by
+/// `identity_cap + 1` entries whose announce time is NaN. Whatever the load
+/// ranks first, memory must hold `identity_cap` identities afterwards, not
+/// one: a NaN floor must not empty the table.
+#[test]
+fn audit2_nan_announce_times_do_not_empty_memory_at_load() {
+    let cap = TableCaps::local_client().identity_cap as u64;
+    let dir = store_dir();
+    let now = now_secs();
+    let mut on_disk: Vec<([u8; 16], Value)> = Vec::new();
+    for i in 0..cap {
+        let key = Identity::generate(&mut rand_core::OsRng).public_key_bytes();
+        on_disk.push((
+            dest(i, 0x62),
+            entry(&key, now - i as f64, Use::At(now - 60.0)),
+        ));
+    }
+    for i in 0..=cap {
+        let key = Identity::generate(&mut rand_core::OsRng).public_key_bytes();
+        on_disk.push((dest(i, 0x63), entry(&key, f64::NAN, Use::Never)));
+    }
+    write_file(dir.path(), on_disk);
+    let storage = StdStorage::new_with_caps(dir.path(), TableCaps::local_client()).unwrap();
+    let held = (0..cap)
+        .filter(|i| storage.get_identity(&dest(*i, 0x62)).is_some())
+        .count()
+        + (0..=cap)
+            .filter(|i| storage.get_identity(&dest(*i, 0x63)).is_some())
+            .count();
+    assert_eq!(
+        held as u64, cap,
+        "memory holds identity_cap identities after the load, not {held}"
+    );
+}
+
+/// Audit 1767: a file of more than `identity_cap` entries, every one
+/// announced at NaN, loads `identity_cap` of them into memory, as the
+/// selection counted them.
+#[test]
+fn a_file_announced_at_nan_loads_identity_cap_into_memory() {
+    let cap = TableCaps::local_client().identity_cap as u64;
+    let dir = store_dir();
+    let mut on_disk: Vec<([u8; 16], Value)> = Vec::new();
+    for i in 0..2 * cap + 1 {
+        let key = Identity::generate(&mut rand_core::OsRng).public_key_bytes();
+        on_disk.push((dest(i, 0x66), entry(&key, f64::NAN, Use::Never)));
+    }
+    write_file(dir.path(), on_disk);
+    let storage = StdStorage::new_with_caps(dir.path(), TableCaps::local_client()).unwrap();
+    let held = (0..2 * cap + 1)
+        .filter(|i| storage.get_identity(&dest(*i, 0x66)).is_some())
+        .count() as u64;
+    assert_eq!(
+        held, cap,
+        "memory holds identity_cap NaN-announced identities"
+    );
 }

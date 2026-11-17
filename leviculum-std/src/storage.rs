@@ -26,7 +26,7 @@ use leviculum_core::traits::Storage as CoreStorage;
 use leviculum_core::Identity;
 
 use crate::error::{Error, Result};
-use crate::file_known_destinations_store::FileKnownDestinationsStore;
+use crate::file_known_destinations_store::{Announced, FileKnownDestinationsStore, NewestRanks};
 use crate::file_packet_hash_store::FilePacketHashStore;
 use crate::file_ratchet_store::FileRatchetStore;
 use crate::known_destinations::{KnownDestEntry, KnownDestUseState, PACKET_HASH_LEN};
@@ -532,31 +532,24 @@ type KnownDestTable = BTreeMap<[u8; TRUNCATED_HASHBYTES], KnownDestEntry>;
 /// and dropped none, so without this the table grew with uptime while the
 /// identity table beside it stayed at its ceiling. What goes here stays in
 /// the file: the next flush merges it back from disk.
+///
+/// The rule is the flush's ([`NewestRanks`], which
+/// [`FileKnownDestinationsStore::merge_and_save`] ranks disk-only entries
+/// by): ties at the floor are kept in table order until the cap is met,
+/// and announce times compare by `f64::total_cmp`, so a NaN floor keeps
+/// `cap` entries and not none (order 1972).
 fn newest_known_destinations(table: KnownDestTable, cap: usize) -> KnownDestTable {
     if table.len() <= cap {
         return table;
     }
-    if cap == 0 {
-        return KnownDestTable::new();
+    let mut newest = NewestRanks::new(cap);
+    for entry in table.values() {
+        newest.offer(Announced(entry.timestamp));
     }
-    let mut stamps: Vec<f64> = table.values().map(|entry| entry.timestamp).collect();
-    let cut = stamps.len() - cap;
-    stamps.select_nth_unstable_by(cut, f64::total_cmp);
-    let floor = stamps[cut];
-    // Entries at the floor's own time are kept until the cap is met.
-    let mut room = cap - table.values().filter(|e| e.timestamp > floor).count();
+    let mut selection = newest.selection();
     table
         .into_iter()
-        .filter(|(_, entry)| {
-            if entry.timestamp > floor {
-                return true;
-            }
-            if entry.timestamp == floor && room > 0 {
-                room -= 1;
-                return true;
-            }
-            false
-        })
+        .filter(|(_, entry)| selection.take(Announced(entry.timestamp)))
         .collect()
 }
 
@@ -1563,7 +1556,6 @@ mod tests {
         write_known_destination, write_known_destinations_header, KNOWN_DESTINATIONS_FILE,
     };
     use crate::packet_hashlist::{encode_packet_hashlist, PACKET_HASHLIST_FILE};
-    use leviculum_core::known_destinations::KnownDestinationsStore;
 
     /// A storage in a directory of its own, with that directory; hold the
     /// second for as long as the first. Until 730 every caller shared one
