@@ -42,6 +42,11 @@ pub struct Header {
     pub tile_compression: u8,
     pub min_zoom: u8,
     pub max_zoom: u8,
+    /// The coverage the archive declares (the spec's min and max
+    /// position, E7 degrees): where its publisher says it holds tiles.
+    /// A box outside it, or wholly above [`Header::min_zoom`], is the
+    /// normal edge of a finite source (the audit of 1933).
+    pub bounds: Bounds,
 }
 
 /// The spec's promise: the header and the root directory lie in the
@@ -133,6 +138,11 @@ pub fn parse_header(b: &[u8]) -> Res<Header> {
     if b[99] != MVT {
         return Err(format!("tile type {}, this reads MVT (1)", b[99]).into());
     }
+    let e7 = |at: usize| {
+        let mut v = [0u8; 4];
+        v.copy_from_slice(&b[at..at + 4]);
+        i32::from_le_bytes(v)
+    };
     Ok(Header {
         root: (u64_at(b, 8), u64_at(b, 16)),
         metadata: (u64_at(b, 24), u64_at(b, 32)),
@@ -142,6 +152,12 @@ pub fn parse_header(b: &[u8]) -> Res<Header> {
         tile_compression: b[98],
         min_zoom: b[100],
         max_zoom: b[101],
+        bounds: Bounds {
+            west: e7(102),
+            south: e7(106),
+            east: e7(110),
+            north: e7(114),
+        },
     })
 }
 
@@ -599,6 +615,29 @@ pub fn write<W: Write>(
     h[99] = MVT;
     h[100] = tiles.keys().map(|t| t.z).min().unwrap_or(0);
     h[101] = tiles.keys().map(|t| t.z).max().unwrap_or(0);
+    // The declared coverage (bytes 102..118, E7 degrees): the union of
+    // the tiles' boxes, as a publisher's tooling writes it. The loader
+    // tells a hole inside it from the normal edge past it (the audit of
+    // 1933), so the test archives this writes must declare theirs too.
+    let mut span: Option<(u64, u64, u64, u64)> = None;
+    for t in tiles.keys() {
+        let shift = 32 - u32::from(t.z);
+        let (x0, y0) = (u64::from(t.x) << shift, u64::from(t.y) << shift);
+        let (x1, y1) = (u64::from(t.x + 1) << shift, u64::from(t.y + 1) << shift);
+        span = Some(match span {
+            None => (x0, y0, x1, y1),
+            Some((a, b, c, d)) => (a.min(x0), b.min(y0), c.max(x1), d.max(y1)),
+        });
+    }
+    if let Some((x0, y0, x1, y1)) = span {
+        use leviculum_map::mercator::{lat_of_y, lon_of_x};
+        let at = |v: u64| v.min(u64::from(u32::MAX)) as u32;
+        let mut put_e7 = |o: usize, v: i32| h[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        put_e7(102, lon_of_x(at(x0)));
+        put_e7(106, lat_of_y(at(y1)));
+        put_e7(110, lon_of_x(at(x1)));
+        put_e7(114, lat_of_y(at(y0)));
+    }
     out.write_all(&h)?;
     out.write_all(&root)?;
     out.write_all(&meta)?;
