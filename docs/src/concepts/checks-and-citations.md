@@ -890,10 +890,7 @@ its base partner resolved (order 1940: the census is the judge of every
 citation move). Touched means the citing line is one the diff against the
 base adds or changes, or the cited file changed. The base is the merge
 base with `origin/master`, never older than the commit that added the
-guard nor than `RULE_FLOOR` in the guard (ac86baa29, the base of the range
-the occurrence rule was ordered for; the landings before it were written
-under the earlier rule and order 1959 counts them instead of refusing
-them). There is no "unchanged since a merged parent" exemption and no
+guard. There is no "unchanged since a merged parent" exemption and no
 line map to trust: a renumbered citation is right because the line it
 points at holds the item its text names, not because a map carried it
 there.

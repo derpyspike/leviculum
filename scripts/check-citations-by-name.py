@@ -19,7 +19,7 @@ Two refusals, both over the living texts (scripts/citations.py, `is_living`):
    guard computes the census for the touched citations at the base
    revision (--base, else $LEVICULUM_CITATION_BASE, else the merge base of
    HEAD and origin/master, but never older than the commit that added this
-   guard nor than RULE_FLOOR) and in the working tree. There is no
+   guard) and in the working tree. There is no
    "unchanged since a merged parent" exemption and no line map to trust: a
    renumbered citation is right because the line it points at now holds
    the item its text names, not because a map carried it there.
@@ -93,15 +93,6 @@ CEN = importlib.util.module_from_spec(_CSPEC)
 _CSPEC.loader.exec_module(CEN)
 
 RULE = "docs/src/concepts/checks-and-citations.md, \"A new citation names its item\""
-# The oldest commit the default base reaches back to under the occurrence
-# rule (the reviewer's decision of 2026-11-16 21:05): ac86baa29, the base of
-# the range that decision was ordered for (order 1959). The landings between
-# the guard's own commit and this one were written under the rule of 13:55;
-# order 1959 counts what the new rule finds in them and forbids fixing the
-# tree for that count, so they are measured, not refused. A clone without
-# the commit (another repository, a scratch test) falls back to the commit
-# that added this guard.
-RULE_FLOOR = "ac86baa296a552909324bf63db1bcc877c6dfda6"
 FIXTURE_MARK = "citation-guard: line-fixture"
 
 
@@ -128,17 +119,10 @@ def default_base(root):
     intro = guard_commit(root)
     if not intro:
         return "HEAD", "HEAD: this guard is not committed yet"
-    floor, how = intro, "the commit that added this guard"
-    if (git(root, "cat-file", "-e", f"{RULE_FLOOR}^{{commit}}", check=False).returncode == 0
-            and git(root, "merge-base", "--is-ancestor", intro, RULE_FLOOR,
-                    check=False).returncode == 0
-            and git(root, "merge-base", "--is-ancestor", RULE_FLOOR, "HEAD",
-                    check=False).returncode == 0):
-        floor, how = RULE_FLOOR, "the floor of the occurrence rule (RULE_FLOOR)"
     mb = git(root, "merge-base", "HEAD", "origin/master", check=False).stdout.strip()
-    if mb and git(root, "merge-base", "--is-ancestor", floor, mb, check=False).returncode == 0:
+    if mb and git(root, "merge-base", "--is-ancestor", intro, mb, check=False).returncode == 0:
         return mb, "merge base with origin/master"
-    return floor, how
+    return intro, "the commit that added this guard"
 
 
 def check_names(tree):
