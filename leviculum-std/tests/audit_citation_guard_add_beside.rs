@@ -19,7 +19,7 @@ use support::{line_cite, page, Scratch, LIB, PAGE};
 
 #[test]
 fn citation_guard_refuses_a_drift_added_beside_one_the_base_keeps() {
-    // `beta` is at line 20; line 2 is `alpha`.
+    // `beta` is at line 22; line 2 is `alpha`.
     let base = page(&[format!("Drifting: `beta` (`{}`).", line_cite(LIB, 2))]);
     let repo = Scratch::new(&base, &[]);
     // Line 9 is `Thing::new`, another item again.

@@ -885,49 +885,66 @@ one item: a renamed or deleted item, a name two items share, a path into
 another repository, and a base name or shortened path, which it never
 resolves, because order 1848 matched a citation into another repository
 by its base name. And a touched `path:line` citation whose verdict the
-census below does not call `agree` (order 1940: the census is the judge
-of every citation move). Touched means the citing line is one the diff
-against the base adds or changes — the merge base with `origin/master`,
-never older than the commit that added the guard — or the cited file
-changed. There is no "unchanged since a merged parent" exemption and no
+census below does not call `agree` and that does not stay on the item
+its base partner resolved (order 1940: the census is the judge of every
+citation move). Touched means the citing line is one the diff against the
+base adds or changes, or the cited file changed. The base is the merge
+base with `origin/master`, never older than the commit that added the
+guard nor than `RULE_FLOOR` in the guard (ac86baa29, the base of the range
+the occurrence rule was ordered for; the landings before it were written
+under the earlier rule and order 1959 counts them instead of refusing
+them). There is no "unchanged since a merged parent" exemption and no
 line map to trust: a renumbered citation is right because the line it
 points at holds the item its text names, not because a map carried it
 there.
 
-A touched citation that is not `agree` is paired with the base, and the
-pairing never lets one citation stand in for another (order 1955, after
-the audit of 1940 found an untouched sibling excusing a moved one). A
-citation whose citing line the diff left alone, but whose cited file
-changed, answers to its own base self and nothing else: it passes when
-its verdict is no better there in the order `agree`, `drift`, `nolabel`
-("guard: a merge with an untouched drifting citation passes"), and it is
-refused when it fell ("guard: a file moved under an agreeing citation is
-refused until renumbered"). A citation on a line the diff adds or
-changes is excused only by a base citation the change replaced or
-moved, that is, one on a line the diff removed or changed: of the same
-cited file and label, with a verdict no better (a base `drift` never
-excuses a head `nolabel`), and written the same, each excusing one. A
-base citation that still stands untouched keeps its own entry, so an
-agreeing citation moved onto another item is refused even when an
-untouched drifting citation of the same label into the same file stands
-beside it, and a new drifting or label-less citation added beside an
-untouched one of its key is refused (the controls "guard: an agreeing
-citation moved beside an untouched drifting sibling is refused", "guard:
-a new drifting citation beside an untouched one is refused", "guard: a
-new label-less citation beside an untouched one is refused"). Written the
-same means a drifting citation may move with its paragraph but not be
-renumbered while still drifting: a renumbering must land it on its item
-("guard: a drifting citation renumbered while still drifting is
-refused"; the reviewer's decision of 2026-11-16 13:55 says a citation a
-change moves must be `agree`). A citation with no label (`nolabel`)
-makes no claim the census can check and may be renumbered in place of a
-replaced label-less one of its file; a bare name the tree cannot place
-(`foreign`, `unplaced`) likewise, in place of a replaced one of the same
-name and label. A citation a merged pre-guard branch wrote against lines
-that then grew is refused ("guard: a merged pre-guard branch's stale
-number is refused"). Citations into `reference/` and other repositories
-keep the line form. A fixture line that must hold a citation-shaped
-string as data carries `citation-guard: line-fixture`.
+Each touched citation is paired with at most one base citation, by
+occurrence through the citing text's own diff (the reviewer's decision of
+2026-11-16 21:05, which replaces the decision of 13:55 and its pool of
+excuses). On a line the diff left alone, its partner is the citation at
+the same place on the base line it stands on. On a line the diff adds or
+changes, its partner is the citation it replaced, by position inside the
+hunk: the k-th citation of the hunk's new lines pairs with the k-th of the
+base lines the hunk replaced, line by line when the hunk writes as many
+lines as it replaces. A name citation holds its place in that count, so
+turning one line citation into a name moves no other citation's partner;
+a line citation that stands where a name citation stood has none. Each
+base citation pairs once. The verdict per pair, with item(x) the item the
+census resolves at x's cited line (at head for the head citation, at the
+base for the base citation):
+
+- base `agree`: the head citation must be `agree`;
+- base `drift` or `nolabel`: the head citation passes only if it is
+  `agree` or item(head) is item(base), the same item of the same file;
+- no partner: the head citation must be `agree`.
+
+The same pairing judges a citation on an unchanged line whose cited file
+changed. So a drifting citation renumbered with its item passes ("guard: a
+drifting citation renumbered with its item passes"), and one renumbered
+onto a third item is refused ("guard: a drifting citation renumbered onto
+a third item is refused"); a drifting citation whose line stands is
+refused when its file moves a third item under it ("guard: a drift on an
+untouched line is refused when its file moves a third item under it"); an
+agreeing citation moved by one line onto another item is refused, also
+beside a drifting citation of the same label into the same file, and a
+file moved under an agreeing citation refuses until the citation is
+renumbered onto its item; a citation added beside a base citation of its
+label that still stands has no partner and must agree ("guard: an added
+drifting citation is refused although a same-label base citation
+stands"); a repaired citation, now `agree`, passes. A label-less citation
+is held to the item at its line like any other: one that follows its item
+passes, one renumbered onto another item is refused ("guard: a label-less
+citation that follows its item passes", "guard: a label-less citation
+renumbered onto another item is refused"). A bare name the tree cannot
+place (`foreign`, `unplaced`) resolves no item, so its own text is all it
+names: one carried word for word into a rewritten line keeps its partner,
+a renumbered one is refused ("guard: a bare name the tree cannot place,
+renumbered, is refused"). A citation a merged pre-guard branch wrote
+against lines that then grew is refused ("guard: a merged pre-guard
+branch's stale number is refused"). Citations into `reference/` and other
+repositories keep the line form and are not checked. A fixture line that
+must hold a citation-shaped string as data carries `citation-guard:
+line-fixture`.
 
 The existing line citations are left alone on purpose. Order 1848
 converted 195 files in one pass and trusted numbers that had already

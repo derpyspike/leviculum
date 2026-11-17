@@ -176,12 +176,12 @@ Recorded 2026-07-10 against `reference/Reticulum` as vendored.
 | Rule | Reference | leviculum | Verdict |
 |------|-----------|-----------|---------|
 | Receipt increment | `:1498` | `transport.rs:3011` | matches |
-| IPC exception, instance side | `:1523` | `transport.rs:1750` | matches |
+| IPC exception, instance side | `:1523` | `leviculum-core/src/transport.rs#Transport::incoming_hop_count` (the `has_local_clients` arm) | matches |
 | IPC exception, client side | `:1525` | `leviculum-core/src/transport.rs#Transport::incoming_hop_count` (else-arm of the `has_local_clients` gate) | matches — **fixed 2026-07-10 (D2, commit `06aadaff`); was absent** |
 | Announce rebroadcast | `:2050` | `transport.rs:8549` | matches |
 | Path table store | `:1909`, `:2055` | `transport.rs:5157` | matches |
 | Path acceptance | `:1806`, `:2412` | `transport.rs:5253` (`should_update`) | matches |
-| Path-response hop emission | `:2997` (`packet.hops = path_table[dst][IDX_PT_HOPS]`), `:618` | `transport.rs:7293` (case 2b emits the stored path-table count) | matches — **fixed 2026-07-10 (D3, commit `path-response-hops`); previously emitted `cached_packet.hops` = the pre-increment wire byte (`stored - 1`)** |
+| Path-response hop emission | `:2997` (`packet.hops = path_table[dst][IDX_PT_HOPS]`), `:618` | `leviculum-core/src/transport.rs#Transport::handle_path_request` (case 2b emits the stored path-table count) | matches — **fixed 2026-07-10 (D3, commit `path-response-hops`); previously emitted `cached_packet.hops` = the pre-increment wire byte (`stored - 1`)** |
 | Link entry fields | `:1615-1625` | `storage_types.rs:60 (destination_hash at :76)` | matches, including the destination hash |
 | LRPROOF relay check | `:2215-2206` (single `== remaining_hops`, drop else; the `:1697` disjunction is gated OUT for LRPROOF at `:1687`) | `leviculum-core/src/transport.rs#Transport::handle_proof`; rewritten by default, DROPPED behind `lrproof_rewrite_on_asymmetry=false` | **deliberate deviation** (default); the flagged strict branch drops like the reference, but see the mapping caveat below |
 | Healing, no path | `:737` | `transport.rs:9764` | matches |

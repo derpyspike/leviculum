@@ -4,18 +4,22 @@ guards and expects the tool to say so.
 
 scripts/check-citations-by-name.py (the guard) on a scratch repository:
   a renamed fn, an ambiguous name, a path into another repository and a base
-  name are refused; a touched line citation must hold the census verdict
-  `agree` or be excused by its own base self, or by a base citation the
-  change replaced, written the same and no better (orders 1940, 1955): a
-  stale or label-less new number, an agreeing citation moved onto another
-  item (also beside an untouched drifting sibling), a new drifting or
-  label-less citation beside an untouched one, a drift renumbered while
-  still drifting, a moved drift that became nolabel, and a file moved under
-  an agreeing citation are refused; a citation fixed onto its item, one
-  that agrees, a drift carried word for word into a rewritten line, a
-  label-less citation renumbered in place, a moved paragraph, a merge's
-  untouched drift, a new citation into another repository and a marked
-  fixture line pass.
+  name are refused; a touched line citation pairs by occurrence with the
+  base citation it stands in for and must agree, or, when that partner did
+  not agree, stay on the item the partner resolved (the reviewer's decision
+  of 2026-11-16 21:05, order 1959): a stale or label-less new number, an
+  agreeing citation moved by one line onto another item (also beside a
+  drifting sibling of its label), a new drifting or label-less citation
+  beside an untouched one, a drift renumbered onto a third item, a drift on
+  an untouched line whose file moved a third item under it, a label-less
+  citation renumbered onto another item, a renumbered bare name and a file
+  moved under an agreeing citation are refused; a citation fixed onto its
+  item, one that agrees, a drift renumbered with its item, a drift carried
+  word for word into a rewritten line, a drift that became nolabel on its
+  base's item, a label-less citation that follows its item, a citation
+  turned into a name (its neighbours keep their partners), a moved
+  paragraph, a merge's untouched drift, a new citation into another
+  repository and a marked fixture line pass.
 scripts/citation-census.py (the drift census) on the same repository:
   agree, drift, nolabel, each foreign reason, a shortened path the page spells
   out, the table-row rule, and the `//` comment-block rule (a `cfg(test)`
@@ -236,7 +240,7 @@ def guard_controls(repo):
     control("guard: a drifting citation fixed onto its item passes", rc == 0, out)
     write(repo, DRIFTY, DRIFTY_PAGE.replace(L(LIB, 2), L(LIB, 6)))
     rc, out = run(GUARD, repo, "--base", "HEAD")
-    control("guard: a drifting citation renumbered while still drifting is refused",
+    control("guard: a drifting citation renumbered onto a third item is refused",
             rc == 1 and "a new line citation" in out, out)
     reset(repo)
     # The sentence is rewritten, so the citing line is one the diff
@@ -249,8 +253,8 @@ def guard_controls(repo):
     write(repo, LIB, LIB_RS.replace("fn beta", "fn gamma"))
     write(repo, "docs/src/page.md", page(f"The first is `alpha` (`{L(LIB, 2)}`)."))
     rc, out = run(GUARD, repo, "--base", "HEAD")
-    control("guard: a moved drift that became nolabel is not excused by its base drift",
-            rc == 1 and "a new line citation (verdict nolabel" in out, out)
+    control("guard: a drift that became nolabel on the item its base resolved passes",
+            rc == 0, out)
     reset(repo)
     sibling_controls(repo)
     write(repo, "docs/src/page.md", page(f"The last is `beta` (`{L(LIB, 20)}`).",
@@ -260,14 +264,17 @@ def guard_controls(repo):
             rc == 1 and "a new line citation" in out, out)
     write(repo, LIB, "// one\n// two\n// three\n" + LIB_RS)
     write(repo, "docs/src/page.md", BASE_PAGE.replace(L(LIB, 2), L(LIB, 5)))
+    write(repo, DRIFTY, DRIFTY_PAGE.replace(L(LIB, 2), L(LIB, 5)))
     rc, out = run(GUARD, repo, "--base", "HEAD")
     control("guard: lines inserted above the item and the number follows: passes", rc == 0, out)
     reset(repo)
 
     write(repo, LIB, "// one\n// two\n// three\n" + LIB_RS)
+    write(repo, DRIFTY, DRIFTY_PAGE.replace(L(LIB, 2), L(LIB, 5)))
     rc, out = run(GUARD, repo, "--base", "HEAD")
     control("guard: a file moved under an agreeing citation is refused until renumbered",
-            rc == 1 and "fell from agree" in out, out)
+            rc == 1 and "docs/src/page.md:3" in out and "changed under it" in out
+            and "which agreed" in out, out)
     reset(repo)
     write(repo, LIB, LIB_RS + "\npub fn gamma() {}\n")
     rc, out = run(GUARD, repo, "--base", "HEAD")
@@ -284,7 +291,11 @@ def guard_controls(repo):
     reset(repo)
     write(repo, BARE, BARE_PAGE.replace(L("lib.rs", 2), L("lib.rs", 3)))
     rc, out = run(GUARD, repo, "--base", "HEAD")
-    control("guard: a bare name the tree cannot place moves unjudged",
+    control("guard: a bare name the tree cannot place, renumbered, is refused (no item "
+            "to pair it by)", rc == 1 and "a new line citation" in out, out)
+    write(repo, BARE, page(f"Bare, reworded: `beta` (`{L('lib.rs', 2)}`)."))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a bare name carried word for word into a rewritten line passes",
             rc == 0, out)
     reset(repo)
 
@@ -335,10 +346,109 @@ def sibling_controls(repo):
             rc == 1 and "a new line citation" in out, out)
     write(repo, DRIFTY, DRIFTY_PAGE + f"\nSomewhere (`{L(LIB, 9)}`).\n")
     rc, out = run(GUARD, repo, "--base", "HEAD")
-    control("guard: a label-less citation renumbered in place passes (no label, no claim "
-            "to judge)", rc == 0, out)
+    control("guard: a label-less citation renumbered onto another item is refused",
+            rc == 1 and "a new line citation" in out, out)
+    write(repo, LIB, LIB_RS.replace("pub struct Thing;", "\n\n\npub struct Thing;"))
+    write(repo, DRIFTY, DRIFTY_PAGE + f"\nSomewhere (`{L(LIB, 9)}`).\n")
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a label-less citation that follows its item passes", rc == 0, out)
     reset(repo)
     git(repo, "reset", "-q", "--hard", "HEAD~1")
+    pairing_controls(repo)
+
+
+def pairing_controls(repo):
+    """Each touched citation pairs with the one base citation it stands in
+    for through its text's own diff, and answers to the item that one
+    resolved (the reviewer's decision of 2026-11-16 21:05)."""
+    # `Thing::new` (lines 9-11) agrees at 9; `Thing::new` drifts at 2.
+    two = page(f"Made by `Thing::new` (`{L(LIB, 9)}`).",
+               f"Again `Thing::new` (`{L(LIB, 2)}`).")
+    write(repo, "docs/src/two.md", two)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "an agreeing and a drifting `Thing::new`")
+    write(repo, "docs/src/two.md", two.replace(L(LIB, 9), L(LIB, 8), 1))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: an agreeing citation moved by one line onto another item is refused "
+            "beside a same-label drift into the same file",
+            rc == 1 and "a new line citation" in out, out)
+    reset(repo)
+    git(repo, "reset", "-q", "--hard", "HEAD~1")
+
+    write(repo, "docs/src/page.md", BASE_PAGE.replace(L(LIB, 2), L(LIB, 5)))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: an agreeing citation moved by one line onto another item is refused",
+            rc == 1 and "a new line citation" in out, out)
+    reset(repo)
+
+    # Three lines above `alpha`: it moves from 2 to 5, `beta` from 22 to 25.
+    shifted = "// one\n// two\n// three\n" + LIB_RS
+    write(repo, LIB, shifted)
+    write(repo, "docs/src/page.md", BASE_PAGE.replace(L(LIB, 2), L(LIB, 5)))
+    write(repo, DRIFTY, DRIFTY_PAGE.replace(L(LIB, 2), L(LIB, 5)))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a drifting citation renumbered with its item passes", rc == 0, out)
+    write(repo, DRIFTY, DRIFTY_PAGE.replace(L(LIB, 2), L(LIB, 25)))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a repaired citation (now agree) passes", rc == 0, out)
+    reset(repo)
+
+    # `gamma` takes lines 1-2 above `alpha`; the drifting page stands.
+    write(repo, LIB, "pub fn gamma() {\n}\n\n" + LIB_RS)
+    write(repo, "docs/src/page.md", BASE_PAGE.replace(L(LIB, 2), L(LIB, 5)))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a drift on an untouched line is refused when its file moves a third "
+            "item under it", rc == 1 and "gamma" in out and DRIFTY in out, out)
+    reset(repo)
+
+    # Two adjacent lines rewritten in one hunk: the first drops a citation,
+    # the second keeps its drift on `Thing`. Paired line by line, the drift
+    # keeps its partner; paired over the hunk, it would meet the dropped one.
+    two_lines = page(f"Here `alpha` (`{L(LIB, 2)}`) and `alpha` (`{L(LIB, 3)}`),\n"
+                     f"and `beta` (`{L(LIB, 6)}`).")
+    write(repo, "docs/src/lines.md", two_lines)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "two adjacent lines")
+    write(repo, "docs/src/lines.md", page(f"Here `alpha` (`{L(LIB, 2)}`) alone,\n"
+                                          f"and then `beta` (`{L(LIB, 6)}`)."))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a hunk that rewrites as many lines as it replaces pairs line by line",
+            rc == 0, out)
+    reset(repo)
+    git(repo, "reset", "-q", "--hard", "HEAD~1")
+
+    # One line, a drift into `alpha` then a drift into `Thing`; the first
+    # becomes a name. The second keeps its place, so it keeps its partner
+    # and passes; counted without the name it would pair with the first.
+    row = page(f"Both `beta` (`{L(LIB, 2)}`) and `Other` (`{L(LIB, 6)}`).")
+    write(repo, "docs/src/row.md", row)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "two drifts on one line")
+    write(repo, "docs/src/row.md", row.replace(f"`{L(LIB, 2)}`", f"`{N(LIB, 'beta')}`"))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a citation turned into a name holds its place in the pairing",
+            rc == 0, out)
+    write(repo, "docs/src/row.md", page(f"Both `beta` (`{N(LIB, 'beta')}`) and `Other` "
+                                        f"(`{L(LIB, 2)}`)."))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a line citation where a name stood pairs with the one at its own place",
+            rc == 1 and "a new line citation" in out, out)
+    reset(repo)
+    git(repo, "reset", "-q", "--hard", "HEAD~1")
+
+    write(repo, "docs/src/fresh.md", page(f"Drifting: `beta` (`{L(LIB, 2)}`).",
+                                          f"Agreeing: `beta` (`{L(LIB, 22)}`)."))
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: a drifting citation in a file the base does not hold is refused",
+            rc == 1 and "docs/src/fresh.md:3" in out and "pairs with no base citation" in out
+            and "docs/src/fresh.md:5" not in out, out)
+    reset(repo)
+
+    write(repo, DRIFTY, DRIFTY_PAGE + f"\nAlso drifting: `beta` (`{L(LIB, 6)}`).\n")
+    rc, out = run(GUARD, repo, "--base", "HEAD")
+    control("guard: an added drifting citation is refused although a same-label base "
+            "citation stands", rc == 1 and "a new line citation" in out, out)
+    reset(repo)
 
 
 def language_controls(repo):

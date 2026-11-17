@@ -15,7 +15,7 @@ use std::process::Command;
 /// The Rust file every scratch repository carries.
 pub const LIB: &str = "crate/src/lib.rs";
 
-/// Its text. Line 2 is `alpha`, line 20 is `beta`; `new` is a method of
+/// Its text. Line 2 is `alpha`, line 22 is `beta`; `new` is a method of
 /// `Thing` and of nothing else.
 pub const LIB_RS: &str = "\
 /// Alpha's doc.
