@@ -21,11 +21,13 @@ use leviculum_std::driver::StdStorage;
 
 const VENDOR_RNS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../reference/Reticulum");
 
-/// `write <age>:<use>...` remembers one fresh identity per argument through
+/// `write <age>:<use>...` remembers one fresh identity per argument, with a
+/// random 32-byte packet hash as an announce carries, through
 /// `Identity.remember`, sets its announce time `age` seconds back and its
 /// fifth element to `-1` (`pin`), `0` (`never`) or a use `<use>` seconds
 /// back, and saves. `dump` loads and prints every entry. Both print
-/// `ENTRY <hash> <announce> <use> <app_data>`.
+/// `ENTRY <hash> <announce> <use> <app_data> <packet_hash> <public_key>`,
+/// the last two in hex.
 const STREAM_PY: &str = r#"
 import sys, time
 import RNS
@@ -33,7 +35,7 @@ import RNS
 RNS.Reticulum.storagepath = sys.argv[1]
 
 def show(dest, e):
-    print("ENTRY " + dest.hex() + " " + repr(float(e[0])) + " " + repr(float(e[4])) + " " + (e[3].decode() if e[3] else "-"))
+    print("ENTRY " + dest.hex() + " " + repr(float(e[0])) + " " + repr(float(e[4])) + " " + (e[3].decode() if e[3] else "-") + " " + bytes(e[1]).hex() + " " + bytes(e[2]).hex())
 
 if sys.argv[2] == "write":
     now = time.time()
@@ -41,7 +43,8 @@ if sys.argv[2] == "write":
         age, use = spec.split(":")
         identity = RNS.Identity()
         dest = RNS.Destination.hash(identity, "kdstream", "rnsd")
-        RNS.Identity.remember(RNS.Identity.get_random_hash(), dest, identity.get_public_key(), ("app-" + spec).encode())
+        packet_hash = RNS.Identity.full_hash(RNS.Identity.get_random_hash())
+        RNS.Identity.remember(packet_hash, dest, identity.get_public_key(), ("app-" + spec).encode())
         e = RNS.Identity.known_destinations[dest]
         e[0] = now - float(age)
         e[4] = -1 if use == "pin" else (0 if use == "never" else now - float(use))
@@ -60,6 +63,8 @@ struct Entry {
     announce: f64,
     use_state: f64,
     app_data: String,
+    packet_hash: String,
+    public_key: String,
 }
 
 fn run_python(storage: &Path, args: &[&str]) -> BTreeMap<[u8; 16], Entry> {
@@ -94,6 +99,8 @@ fn run_python(storage: &Path, args: &[&str]) -> BTreeMap<[u8; 16], Entry> {
                     announce: parts[1].parse().expect("announce float"),
                     use_state: parts[2].parse().expect("use float"),
                     app_data: parts[3].to_string(),
+                    packet_hash: parts[4].to_string(),
+                    public_key: parts[5].to_string(),
                 },
             )
         })
@@ -104,7 +111,8 @@ fn run_python(storage: &Path, args: &[&str]) -> BTreeMap<[u8; 16], Entry> {
 /// with a memory cap of three) and three a week old that only the file will
 /// hold: one pinned, one used an hour ago, one never used. After our load
 /// and one flush with a newcomer, rnsd reads back the held three, the
-/// newcomer, and the pinned and the used one with every field to the bit;
+/// newcomer, and the pinned and the used one with all five fields equal
+/// (announce time, use state, app_data, packet hash and public key);
 /// the stale never-used one is gone, as rnsd's own cull removes it.
 #[test]
 fn rnsd_reads_our_streamed_flush_of_its_file() {
@@ -123,6 +131,13 @@ fn rnsd_reads_our_streamed_flush_of_its_file() {
         ],
     );
     assert_eq!(written.len(), 6);
+    for entry in written.values() {
+        assert_eq!(
+            (entry.packet_hash.len(), entry.public_key.len()),
+            (64, 128),
+            "rnsd wrote a 32-byte packet hash and a 64-byte key, in hex"
+        );
+    }
     let by_spec = |spec: &str| {
         *written
             .iter()
