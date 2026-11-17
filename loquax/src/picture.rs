@@ -1227,12 +1227,7 @@ impl Painter {
     /// item 5: one index entry probes the file under the open handle),
     /// and it is still marked viewed, so the cache does not evict a
     /// region the user looks at only because another covers it.
-    fn layered(
-        &mut self,
-        order: &[usize],
-        off: &[bool],
-        view_box: &Bounds,
-    ) -> (Vec<Layer>, usize) {
+    fn layered(&mut self, order: &[usize], off: &[bool], view_box: &Bounds) -> (Vec<Layer>, usize) {
         let opened: Vec<Opened> = order.iter().map(|&i| (i, self.regions[i].open())).collect();
         let layers: Vec<(Bounds, bool)> = opened
             .iter()
