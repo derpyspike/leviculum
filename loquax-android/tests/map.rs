@@ -2732,6 +2732,33 @@ fn a_region_fills_the_frame_in_while_it_downloads() {
         std::thread::sleep(Duration::from_millis(100));
     }
     let last = &frames[frames.len() - 1].1;
+    // The audit of 1933: the coarse-to-fine progression must be caught
+    // on a slow runner too, so the cadence is asserted, not hoped for.
+    // Every frame that changed the picture while loading — a cell
+    // arriving on screen — except the one that completed it must carry
+    // a quick-ask reason (`loading_here`: a load for the screen runs;
+    // `filling`; or `pending`), so `MapView` asks again a quarter
+    // second later, never on the idle 1.5 s clock, while cells arrive.
+    let changes: Vec<(usize, bool)> = frames
+        .windows(2)
+        .enumerate()
+        .filter(|(_, w)| w[0].1 != w[1].1 && w[1].0.loading)
+        .map(|(i, w)| {
+            let s = &w[1].0;
+            (i + 1, s.loading_here || s.filling || s.pending)
+        })
+        .collect();
+    if let Some(&(done_at, _)) = changes.last() {
+        let slow: Vec<usize> = changes
+            .iter()
+            .filter(|(i, quick)| *i != done_at && !quick)
+            .map(|(i, _)| *i)
+            .collect();
+        assert!(
+            slow.is_empty(),
+            "cells arrived while the phone was on the slow poll: frames {slow:?}"
+        );
+    }
     // The distinct pictures while the region loads, each with how like
     // the last it is, per cent.
     let mut states: Vec<(Vec<u8>, usize)> = Vec::new();
