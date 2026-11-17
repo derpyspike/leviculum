@@ -1269,22 +1269,28 @@ pub const EVENT_CATALOG: &[EventSchema] = &[
     },
     // Reviewer decision 2026-11-16: a shared-instance client found the
     // daemon's path to its own announced destination (`dest`) off its own
-    // attachment (`was` says what the daemon answered) and announced
-    // afresh (`leviculum-std/src/driver/mod.rs#run_path_self_repair`).
+    // attachment and announced afresh
+    // (`leviculum-std/src/driver/mod.rs#run_path_self_repair`). `was` says
+    // what the daemon answered, as one token: `no_path`,
+    // `relayed_via_<id>_on_<interface>`, `direct_on_<interface>_not_<own>`.
     EventSchema {
         name: "PATH_SELF_REPAIR",
         required_keys: &["dest", "was"],
     },
-    // Audit of 1939: the self-repair beat cannot ask its daemon (`reason`:
-    // no authkey, or the RPC failed). Logged at warn on the first failure
-    // and on each change of cause, never once per beat
+    // Audit of 1939: the self-repair beat cannot ask its daemon about
+    // `dest`. `reason` is a fixed code (audit of 1950): `no_authkey`,
+    // `auth_failed`, `refused` or `rpc_error`; the error's text follows on
+    // a plain warn line. Logged at warn on a destination's first failure
+    // and on each change of its cause, never once per beat; the rule holds
+    // per destination, so a healthy sibling does not re-arm it
     // (`leviculum-std/src/driver/mod.rs#report_beat_health`).
     EventSchema {
         name: "PATH_SELF_REPAIR_SKIP",
         required_keys: &["dest", "reason"],
     },
-    // Audit of 1939: the daemon answers the beat again after a reported
-    // failure (`after` names its cause); logged once at info.
+    // Audit of 1939: the daemon answers the beat about `dest` again after
+    // a reported failure (`after` is the failure's code, as `reason`
+    // above); logged once at info.
     EventSchema {
         name: "PATH_SELF_REPAIR_RESUMED",
         required_keys: &["dest", "after"],

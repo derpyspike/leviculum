@@ -103,6 +103,7 @@ fn dest_for(identity: Identity) -> Destination {
 /// owner's beat, and the mesh reaches the owner again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_owner_takes_back_a_relayed_capture() {
+    let evlog = leviculum_std::test_support::event_log::init_event_log();
     let daemon_identity = Identity::generate(&mut OsRng);
     let authkey = authkey_of(&daemon_identity);
     let instance = format!("mvr_relayedcap_{}", std::process::id());
@@ -236,6 +237,30 @@ async fn the_owner_takes_back_a_relayed_capture() {
         .await,
         "the owner must take its path back from the relayed capture within a few beats"
     );
+
+    // The repair is logged as one PATH_SELF_REPAIR record whose fields are
+    // single tokens (audit of 1950): no EVENT_FIELD_VIOLATION beside it.
+    let dest_field = format!("dest={dest_hash}");
+    let dump = evlog.dump();
+    let repairs: Vec<&String> = dump
+        .iter()
+        .filter(|l| l.starts_with("PATH_SELF_REPAIR ") && l.contains(&dest_field))
+        .collect();
+    assert!(
+        repairs.iter().any(|l| l.contains("was=relayed_via_")),
+        "the repair of the capture is logged with a single-token was: {repairs:?}"
+    );
+    let violations: Vec<&String> = dump
+        .iter()
+        .filter(|l| l.starts_with("EVENT_FIELD_VIOLATION event=PATH_SELF_REPAIR"))
+        .collect();
+    assert!(
+        violations.is_empty(),
+        "the PATH_SELF_REPAIR record keeps the single-token contract: {violations:?}"
+    );
+    for l in &repairs {
+        eprintln!("captured: {l}");
+    }
 
     // And the mesh reaches the owner: a link from the second node, routed
     // by the daemon, is proven by the client.

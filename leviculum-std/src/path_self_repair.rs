@@ -92,7 +92,9 @@ pub(crate) enum Verdict {
     /// The path is wrong, but the rate limit holds the repair back.
     Wait,
     /// Announce now. `was` says what the daemon answered, for the
-    /// `PATH_SELF_REPAIR` log line.
+    /// `PATH_SELF_REPAIR` log line, as one token: `no_path`,
+    /// `relayed_via_<id>_on_<interface>` or
+    /// `direct_on_<interface>_not_<own>`.
     Repair { was: String },
 }
 
@@ -126,8 +128,8 @@ impl SelfRepair {
     /// Judge one beat's sight of the daemon's path to our destination.
     pub(crate) fn assess(&mut self, now_ms: u64, sight: &PathSight) -> Verdict {
         let wrong = match sight {
-            PathSight::Missing => Some("no path".to_string()),
-            PathSight::Relayed { via, if_name } => Some(format!("relayed via {via} on {if_name}")),
+            PathSight::Missing => Some("no_path".to_string()),
+            PathSight::Relayed { via, if_name } => Some(format!("relayed_via_{via}_on_{if_name}")),
             PathSight::Direct { if_name } => match &self.baseline_if_name {
                 // The first direct sight after our announce IS our own
                 // attachment as far as the RPC can see: learn it.
@@ -136,7 +138,7 @@ impl SelfRepair {
                     None
                 }
                 Some(own) if own == if_name => None,
-                Some(own) => Some(format!("hops 0 on {if_name}, not {own}")),
+                Some(own) => Some(format!("direct_on_{if_name}_not_{own}")),
             },
         };
         let Some(was) = wrong else {
@@ -173,44 +175,108 @@ impl SelfRepair {
     }
 }
 
-/// What the beat says about its own ability to ask the daemon.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum HealthNotice {
-    /// The daemon cannot be asked, for a cause not reported before: warn.
-    Failing { reason: String },
-    /// The daemon answers again after a reported failure: say so once.
-    Resumed { after: String },
+/// Why one query of the beat could not ask the daemon, as the fixed code
+/// the `PATH_SELF_REPAIR_SKIP` and `PATH_SELF_REPAIR_RESUMED` events carry.
+/// The error's free text goes to a plain log line beside the event, never
+/// into an event field: the event log splits on whitespace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SkipCause {
+    /// No RPC authkey could be derived (no configured `rpc_key` and no
+    /// private key to derive one from).
+    NoAuthkey,
+    /// The daemon refused the authkey: a wrong `rpc_key`.
+    AuthFailed,
+    /// Nothing listens on the daemon's RPC endpoint: the daemon is down
+    /// or restarting.
+    Refused,
+    /// Any other RPC failure: a broken connection, a timeout, an answer
+    /// that did not decode.
+    RpcError,
 }
 
-/// Whether the beat can ask its daemon, so a beat that cannot is visible at
-/// the default log level without repeating itself every beat: one warning
-/// on the first failure and on each change of cause, one info line when the
-/// answers come back.
+impl SkipCause {
+    /// The single-token code for the event field.
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            SkipCause::NoAuthkey => "no_authkey",
+            SkipCause::AuthFailed => "auth_failed",
+            SkipCause::Refused => "refused",
+            SkipCause::RpcError => "rpc_error",
+        }
+    }
+
+    /// Classify one failed RPC call.
+    pub(crate) fn of_rpc(e: &crate::rpc::RpcError) -> Self {
+        use crate::rpc::RpcError;
+        match e {
+            RpcError::AuthFailed => SkipCause::AuthFailed,
+            RpcError::Io(io)
+                if matches!(
+                    io.kind(),
+                    std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+                ) =>
+            {
+                SkipCause::Refused
+            }
+            _ => SkipCause::RpcError,
+        }
+    }
+}
+
+/// What the beat says about its own ability to ask the daemon for one
+/// destination.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum HealthNotice {
+    /// The daemon cannot be asked about this destination, for a cause not
+    /// reported for it before: warn.
+    Failing { cause: SkipCause },
+    /// The daemon answers again about this destination after a reported
+    /// failure: say so once.
+    Resumed { after: SkipCause },
+}
+
+/// Whether the beat can ask its daemon, per destination, so a beat that
+/// cannot is visible at the default log level without repeating itself
+/// every beat: one warning on a destination's first failure and on each
+/// change of its cause, one info line when its answers come back.
+///
+/// Keyed per destination (audit of 1950): a healthy sibling's answer must
+/// not clear a failing destination's reported cause, or that destination
+/// would warn afresh on every beat.
 #[derive(Debug, Default)]
 pub(crate) struct BeatHealth {
-    /// The cause of the failure last reported, `None` while answers flow.
-    failing: Option<String>,
+    /// The cause last reported per destination; absent while answers flow.
+    failing: std::collections::HashMap<leviculum_core::DestinationHash, SkipCause>,
 }
 
 impl BeatHealth {
-    /// One query failed for `reason`. Returns the warning to log, or `None`
-    /// when the same cause was reported already.
-    pub(crate) fn failed(&mut self, reason: &str) -> Option<HealthNotice> {
-        if self.failing.as_deref() == Some(reason) {
+    /// One query about `dest` failed for `cause`. Returns the warning to
+    /// log, or `None` when the same cause was reported for `dest` already.
+    pub(crate) fn failed(
+        &mut self,
+        dest: leviculum_core::DestinationHash,
+        cause: SkipCause,
+    ) -> Option<HealthNotice> {
+        if self.failing.insert(dest, cause) == Some(cause) {
             return None;
         }
-        self.failing = Some(reason.to_string());
-        Some(HealthNotice::Failing {
-            reason: reason.to_string(),
-        })
+        Some(HealthNotice::Failing { cause })
     }
 
-    /// One query was answered. Returns the resume line to log, or `None`
-    /// when nothing failed before.
-    pub(crate) fn answered(&mut self) -> Option<HealthNotice> {
+    /// One query about `dest` was answered. Returns the resume line to
+    /// log, or `None` when nothing failed for `dest` before.
+    pub(crate) fn answered(
+        &mut self,
+        dest: &leviculum_core::DestinationHash,
+    ) -> Option<HealthNotice> {
         self.failing
-            .take()
+            .remove(dest)
             .map(|after| HealthNotice::Resumed { after })
+    }
+
+    /// Forget the destinations the beat no longer watches.
+    pub(crate) fn retain(&mut self, watched: &[leviculum_core::DestinationHash]) {
+        self.failing.retain(|h, _| watched.contains(h));
     }
 }
 
@@ -408,42 +474,174 @@ mod tests {
         ));
     }
 
+    fn hash(b: u8) -> leviculum_core::DestinationHash {
+        leviculum_core::DestinationHash::new([b; 16])
+    }
+
     /// Audit of 1939: a beat that cannot ask its daemon warns on the first
     /// failure, stays quiet while the cause repeats, warns again when the
     /// cause changes, and says once at info that answers resumed.
     #[test]
     fn a_failing_beat_warns_once_per_cause_and_once_on_resume() {
+        let a = hash(1);
         let mut h = BeatHealth::default();
-        assert_eq!(h.answered(), None, "nothing to resume before any failure");
+        assert_eq!(h.answered(&a), None, "nothing to resume before any failure");
         assert_eq!(
-            h.failed("RPC failed: auth"),
+            h.failed(a, SkipCause::AuthFailed),
             Some(HealthNotice::Failing {
-                reason: "RPC failed: auth".into()
+                cause: SkipCause::AuthFailed
             })
         );
-        assert_eq!(h.failed("RPC failed: auth"), None, "no repeat per beat");
-        assert_eq!(h.failed("RPC failed: auth"), None, "no repeat per beat");
         assert_eq!(
-            h.failed("RPC failed: refused"),
+            h.failed(a, SkipCause::AuthFailed),
+            None,
+            "no repeat per beat"
+        );
+        assert_eq!(
+            h.failed(a, SkipCause::AuthFailed),
+            None,
+            "no repeat per beat"
+        );
+        assert_eq!(
+            h.failed(a, SkipCause::Refused),
             Some(HealthNotice::Failing {
-                reason: "RPC failed: refused".into()
+                cause: SkipCause::Refused
             }),
             "a changed cause is reported"
         );
         assert_eq!(
-            h.answered(),
+            h.answered(&a),
             Some(HealthNotice::Resumed {
-                after: "RPC failed: refused".into()
+                after: SkipCause::Refused
             })
         );
-        assert_eq!(h.answered(), None, "the resume is said once");
+        assert_eq!(h.answered(&a), None, "the resume is said once");
         assert_eq!(
-            h.failed("RPC failed: auth"),
+            h.failed(a, SkipCause::AuthFailed),
             Some(HealthNotice::Failing {
-                reason: "RPC failed: auth".into()
+                cause: SkipCause::AuthFailed
             }),
             "a failure after a resume is reported afresh"
         );
+    }
+
+    /// Audit of 1950: a beat watching two destinations, one failing with a
+    /// constant cause and one healthy, warns exactly once over ten beats.
+    /// The healthy sibling's answers do not clear the failing one's cause.
+    #[test]
+    fn a_healthy_sibling_does_not_clear_a_failing_destinations_cause() {
+        let (failing, healthy) = (hash(1), hash(2));
+        let mut h = BeatHealth::default();
+        let mut warns = 0;
+        let mut resumes = 0;
+        for _beat in 0..10 {
+            for (dest, ok) in [(failing, false), (healthy, true)] {
+                let notice = if ok {
+                    h.answered(&dest)
+                } else {
+                    h.failed(dest, SkipCause::RpcError)
+                };
+                match notice {
+                    Some(HealthNotice::Failing { .. }) => warns += 1,
+                    Some(HealthNotice::Resumed { .. }) => resumes += 1,
+                    None => {}
+                }
+            }
+        }
+        assert_eq!(warns, 1, "one warn for the cause, not one per beat");
+        assert_eq!(resumes, 0, "the failing destination never resumed");
+    }
+
+    /// A destination the beat stops watching is forgotten: if it comes
+    /// back and fails, that is reported afresh.
+    #[test]
+    fn a_destination_no_longer_watched_is_forgotten() {
+        let (a, b) = (hash(1), hash(2));
+        let mut h = BeatHealth::default();
+        assert!(h.failed(a, SkipCause::Refused).is_some());
+        assert!(h.failed(b, SkipCause::Refused).is_some());
+        h.retain(&[b]);
+        assert!(
+            h.failed(b, SkipCause::Refused).is_none(),
+            "b is still known"
+        );
+        assert!(
+            h.failed(a, SkipCause::Refused).is_some(),
+            "a was forgotten and is reported afresh"
+        );
+    }
+
+    /// Every cause code is one token the event log takes as it is.
+    #[test]
+    fn skip_cause_codes_are_single_tokens() {
+        let codes = [
+            SkipCause::NoAuthkey,
+            SkipCause::AuthFailed,
+            SkipCause::Refused,
+            SkipCause::RpcError,
+        ]
+        .map(SkipCause::code);
+        assert_eq!(codes, ["no_authkey", "auth_failed", "refused", "rpc_error"]);
+    }
+
+    /// The RPC errors map onto their codes: a refused authkey, a missing
+    /// listener, and everything else.
+    #[test]
+    fn rpc_errors_classify_by_kind() {
+        use crate::rpc::RpcError;
+        use std::io::{Error, ErrorKind};
+        assert_eq!(
+            SkipCause::of_rpc(&RpcError::AuthFailed),
+            SkipCause::AuthFailed
+        );
+        assert_eq!(
+            SkipCause::of_rpc(&RpcError::Io(Error::from(ErrorKind::ConnectionRefused))),
+            SkipCause::Refused
+        );
+        assert_eq!(
+            SkipCause::of_rpc(&RpcError::Io(Error::from(ErrorKind::NotFound))),
+            SkipCause::Refused
+        );
+        assert_eq!(
+            SkipCause::of_rpc(&RpcError::Io(Error::from(ErrorKind::TimedOut))),
+            SkipCause::RpcError
+        );
+        assert_eq!(
+            SkipCause::of_rpc(&RpcError::Pickle("bad".into())),
+            SkipCause::RpcError
+        );
+    }
+
+    /// Every `was` the beat logs is one token (audit of 1950).
+    #[test]
+    fn repair_reasons_are_single_tokens() {
+        let mut s = SelfRepair::new();
+        assert_eq!(s.assess(T0, &direct()), Verdict::Healthy);
+        let Verdict::Repair { was } = s.assess(T0 + 30_000, &relayed()) else {
+            panic!("a relayed path repairs");
+        };
+        assert_eq!(
+            was,
+            "relayed_via_6f5a1b2c_on_TCPInterface[backbone/10.0.0.1:4242]"
+        );
+        assert_eq!(s.assess(T0 + 60_000, &direct()), Verdict::Healthy);
+        let Verdict::Repair { was } = s.assess(
+            T0 + 200_000,
+            &PathSight::Direct {
+                if_name: "LocalInterface[9999]".into(),
+            },
+        ) else {
+            panic!("a direct path on another attachment repairs");
+        };
+        assert_eq!(
+            was,
+            "direct_on_LocalInterface[9999]_not_LocalInterface[rns/test]"
+        );
+        let mut s = SelfRepair::new();
+        let Verdict::Repair { was } = s.assess(T0, &PathSight::Missing) else {
+            panic!("a missing path repairs");
+        };
+        assert_eq!(was, "no_path");
     }
 
     /// The two RPC answers of a healthy client read as a direct sight,

@@ -7177,9 +7177,16 @@ pub(crate) async fn shared_instance_first_hop_timeout_ms(
 /// A beat whose RPC fails (the daemon restarting, a wrong key) repairs
 /// nothing: announcing blind on every RPC hiccup would turn a daemon
 /// restart into an announce burst. It is visible at the default log level
-/// all the same: `PATH_SELF_REPAIR_SKIP` at warn on the first failure and
-/// again when the cause changes, `PATH_SELF_REPAIR_RESUMED` at info once
-/// when the daemon answers again (`crate::path_self_repair::BeatHealth`).
+/// all the same, per destination: `PATH_SELF_REPAIR_SKIP` at warn on a
+/// destination's first failure and again when its cause changes,
+/// `PATH_SELF_REPAIR_RESUMED` at info once when the daemon answers about
+/// it again (`crate::path_self_repair::BeatHealth`). Both carry a fixed
+/// cause code (`crate::path_self_repair::SkipCause`); the error's text
+/// follows on a plain warn line of its own.
+///
+/// The repair announce re-checks, under the core lock, that the
+/// destination is still one the node would announce on its own: a policy
+/// installed between the beat's snapshot and the announce wins.
 pub(crate) async fn run_path_self_repair(
     client: crate::rpc::SharedInstanceClient,
     inner: Arc<Mutex<StdNodeCore>>,
@@ -7187,7 +7194,7 @@ pub(crate) async fn run_path_self_repair(
     beat_ms: u64,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
-    use crate::path_self_repair::{sight_from_answers, BeatHealth, SelfRepair, Verdict};
+    use crate::path_self_repair::{sight_from_answers, BeatHealth, SelfRepair, SkipCause, Verdict};
     let started = std::time::Instant::now();
     let mut health = BeatHealth::default();
     let mut states: std::collections::HashMap<leviculum_core::DestinationHash, SelfRepair> =
@@ -7204,6 +7211,7 @@ pub(crate) async fn run_path_self_repair(
         }
         let dests = { inner.lock_recover().announced_destination_hashes() };
         states.retain(|h, _| dests.contains(h));
+        health.retain(&dests);
         for dest in dests {
             let authkey = {
                 let core = inner.lock_recover();
@@ -7212,12 +7220,13 @@ pub(crate) async fn run_path_self_repair(
             let authkey = match authkey {
                 Ok(k) => k,
                 Err(e) => {
-                    report_beat_health(&dest, health.failed(&format!("no RPC authkey: {e}")));
+                    let notice = health.failed(dest, SkipCause::NoAuthkey);
+                    report_beat_health(&dest, notice, &e.to_string());
                     continue;
                 }
             };
             let ask = |get: &'static str| {
-                crate::rpc::rpc_query_hash_param_at(
+                crate::rpc::rpc_query_hash_param_typed(
                     &client.transport,
                     &client.instance_name,
                     &authkey,
@@ -7228,17 +7237,13 @@ pub(crate) async fn run_path_self_repair(
             };
             let (next_hop, if_name) = match (ask("next_hop").await, ask("next_hop_if_name").await) {
                 (Ok(nh), Ok(ifn)) => (nh, ifn),
-                (nh, ifn) => {
-                    let e = nh
-                        .err()
-                        .or(ifn.err())
-                        .map(|e| e.to_string())
-                        .unwrap_or_default();
-                    report_beat_health(&dest, health.failed(&format!("RPC failed: {e}")));
+                (Err(e), _) | (_, Err(e)) => {
+                    let notice = health.failed(dest, SkipCause::of_rpc(&e));
+                    report_beat_health(&dest, notice, &e.to_string());
                     continue;
                 }
             };
-            report_beat_health(&dest, health.answered());
+            report_beat_health(&dest, health.answered(&dest), "");
             let dest_hex = crate::storage::hex_encode(dest.as_bytes());
             let sight = sight_from_answers(&dest_hex, &next_hop, &if_name);
             let now_ms = started.elapsed().as_millis() as u64;
@@ -7247,17 +7252,28 @@ pub(crate) async fn run_path_self_repair(
                 .or_insert_with(SelfRepair::new)
                 .assess(now_ms, &sight);
             if let Verdict::Repair { was } = verdict {
-                tracing::info!(event = "PATH_SELF_REPAIR", dest = %dest, was = %was);
                 let app_data = { inner.lock_recover().recall_app_data(&dest) };
                 let announced = dispatch_committed(&action_tx, || {
-                    let out = inner
-                        .lock_recover()
-                        .announce_destination(&dest, app_data.as_deref())?;
-                    Ok(((), out))
+                    let mut core = inner.lock_recover();
+                    // The snapshot above is a beat old: a policy installed
+                    // since, or a destination deregistered since, wins.
+                    if !core.announced_destination_hashes().contains(&dest) {
+                        return Ok((false, TickOutput::default()));
+                    }
+                    let out = core.announce_destination(&dest, app_data.as_deref())?;
+                    Ok((true, out))
                 })
                 .await;
-                if let Err(e) = announced {
-                    tracing::warn!("PATH_SELF_REPAIR dest={} announce failed: {e}", dest);
+                match announced {
+                    Ok(true) => tracing::info!(
+                        event = "PATH_SELF_REPAIR",
+                        dest = %dest,
+                        was = %crate::event_log::Scalar(&was),
+                    ),
+                    Ok(false) => {}
+                    Err(e) => {
+                        tracing::warn!("PATH_SELF_REPAIR dest={} announce failed: {e}", dest);
+                    }
                 }
             }
         }
@@ -7265,23 +7281,33 @@ pub(crate) async fn run_path_self_repair(
 }
 
 /// Log what [`crate::path_self_repair::BeatHealth`] decided for one query of
-/// the self-repair beat: a warning for a new failure cause, an info line
-/// when answers resume, nothing otherwise.
+/// the self-repair beat: a warning for a new failure cause with the error's
+/// text on a plain line beside it, an info line when answers resume,
+/// nothing otherwise.
 fn report_beat_health(
     dest: &leviculum_core::DestinationHash,
     notice: Option<crate::path_self_repair::HealthNotice>,
+    detail: &str,
 ) {
     use crate::path_self_repair::HealthNotice;
     match notice {
-        Some(HealthNotice::Failing { reason }) => tracing::warn!(
-            event = "PATH_SELF_REPAIR_SKIP",
-            dest = %dest,
-            reason = %reason,
-        ),
+        Some(HealthNotice::Failing { cause }) => {
+            tracing::warn!(
+                event = "PATH_SELF_REPAIR_SKIP",
+                dest = %dest,
+                reason = cause.code(),
+            );
+            tracing::warn!(
+                "path self-repair for {} skipped ({}): {}",
+                dest,
+                cause.code(),
+                detail
+            );
+        }
         Some(HealthNotice::Resumed { after }) => tracing::info!(
             event = "PATH_SELF_REPAIR_RESUMED",
             dest = %dest,
-            after = %after,
+            after = after.code(),
         ),
         None => {}
     }

@@ -134,6 +134,10 @@ fn destination(aspect: &str) -> Destination {
 /// The application announced the destination once, then installed a policy
 /// that suppresses it. The daemon loses the path; the beat must leave it
 /// lost, because announcing it would leak exactly what the policy hides.
+///
+/// In-test positive control (audit of 1950): an unsuppressed sibling on the
+/// same client loses its path in the same drop and IS repaired, so the
+/// watch window cannot pass because the beat never ran.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn audit_1939_a_suppressed_destination_is_never_repaired_into_the_mesh() {
     let mut p = pair("suppressed").await;
@@ -145,30 +149,44 @@ async fn audit_1939_a_suppressed_destination_is_never_repaired_into_the_mesh() {
         .announce_destination(&dest_hash, Some(b"once"))
         .await
         .expect("announce");
+    let loud = destination("loud");
+    let loud_hash = *loud.hash();
+    p.client.register_destination(loud);
+    p.client
+        .announce_destination(&loud_hash, None)
+        .await
+        .expect("announce sibling");
 
-    // Positive control: the announce reached the daemon.
+    // Positive control: both announces reached the daemon.
     assert!(
-        wait_until(Duration::from_secs(10), || p.daemon.has_path(&dest_hash)).await,
-        "baseline: the daemon must learn the destination from the one announce"
+        wait_until(Duration::from_secs(10), || p.daemon.has_path(&dest_hash)
+            && p.daemon.has_path(&loud_hash))
+        .await,
+        "baseline: the daemon must learn both destinations from their announces"
     );
 
-    // The policy goes in, and the path goes away over the real RPC surface.
+    // The policy goes in for the first one only; a couple of beats pass,
+    // and both paths go away over the real RPC surface.
     p.client
         .set_announce_control(Some(Box::new(SuppressOne(dest_hash))));
-    assert!(
-        leviculum_std::rpc_drop_path(&p.instance, &p.authkey, dest_hash.as_bytes())
-            .await
-            .expect("drop_path RPC"),
-        "the drop must remove a live path"
-    );
-    assert!(
-        !p.daemon.has_path(&dest_hash),
-        "positive control: the drop left the daemon without the path"
-    );
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    for h in [&dest_hash, &loud_hash] {
+        assert!(
+            leviculum_std::rpc_drop_path(&p.instance, &p.authkey, h.as_bytes())
+                .await
+                .expect("drop_path RPC"),
+            "the drop must remove a live path"
+        );
+    }
 
-    // Ten beats: an unfiltered beat repairs within two.
+    // The beat runs: the unsuppressed sibling is back.
     assert!(
-        !wait_until(WATCH, || p.daemon.has_path(&dest_hash)).await,
+        wait_until(Duration::from_secs(10), || p.daemon.has_path(&loud_hash)).await,
+        "positive control: the beat repairs the unsuppressed sibling"
+    );
+    // Three more seconds (six beats) after the sibling's repair.
+    assert!(
+        !wait_until(Duration::from_secs(3), || p.daemon.has_path(&dest_hash)).await,
         "a destination the installed AnnounceControl suppresses must never be \
          re-announced by the self-repair beat"
     );
@@ -294,9 +312,19 @@ async fn audit_1939_a_beat_with_a_wrong_rpc_key_warns_once() {
         "one PATH_SELF_REPAIR_SKIP for the cause, not one per beat: {skips:?}"
     );
     assert!(
-        skips[0].contains("reason=RPC_failed") && skips[0].contains("authentication_failed"),
-        "the line names the cause: {}",
+        skips[0].contains("reason=auth_failed"),
+        "the line names the cause as a code: {}",
         skips[0]
+    );
+    // The event log's single-token contract holds for the beat's events.
+    let violations: Vec<String> = evlog
+        .dump()
+        .into_iter()
+        .filter(|l| l.starts_with("EVENT_FIELD_VIOLATION event=PATH_SELF_REPAIR"))
+        .collect();
+    assert!(
+        violations.is_empty(),
+        "the beat's events keep every field a single token: {violations:?}"
     );
     let warned = warns.snapshot();
     assert!(
@@ -308,4 +336,50 @@ async fn audit_1939_a_beat_with_a_wrong_rpc_key_warns_once() {
 
     client.stop().await.expect("stop client");
     daemon.stop().await.expect("stop daemon");
+}
+
+/// Audit of 1950: one destination suppressed, its sibling not; only the
+/// sibling's path is dropped, and the beat repairs it while the policy is
+/// installed for the other one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn audit_1950_the_beat_repairs_the_unsuppressed_sibling() {
+    let mut p = pair("sibling").await;
+
+    let quiet = destination("quiet");
+    let quiet_hash = *quiet.hash();
+    p.client.register_destination(quiet);
+    p.client
+        .announce_destination(&quiet_hash, None)
+        .await
+        .expect("announce");
+    let loud = destination("loud");
+    let loud_hash = *loud.hash();
+    p.client.register_destination(loud);
+    p.client
+        .announce_destination(&loud_hash, None)
+        .await
+        .expect("announce sibling");
+    assert!(
+        wait_until(Duration::from_secs(10), || p.daemon.has_path(&quiet_hash)
+            && p.daemon.has_path(&loud_hash))
+        .await,
+        "baseline: the daemon must learn both destinations"
+    );
+
+    p.client
+        .set_announce_control(Some(Box::new(SuppressOne(quiet_hash))));
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    assert!(
+        leviculum_std::rpc_drop_path(&p.instance, &p.authkey, loud_hash.as_bytes())
+            .await
+            .expect("drop_path RPC"),
+        "the drop must remove the sibling's live path"
+    );
+    assert!(
+        wait_until(Duration::from_secs(10), || p.daemon.has_path(&loud_hash)).await,
+        "the beat must repair the unsuppressed sibling while the other is suppressed"
+    );
+
+    p.client.stop().await.expect("stop client");
+    p.daemon.stop().await.expect("stop daemon");
 }

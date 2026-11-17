@@ -31,7 +31,7 @@ use crate::driver::{AutoPeerCount, StdNodeCore};
 use crate::interfaces::inventory::SharedInventory;
 use crate::interfaces::InterfaceStatsMap;
 use connection::{read_message, read_message_bounded, server_handshake, write_message};
-use error::RpcError;
+pub(crate) use error::RpcError;
 use handlers::handle_request;
 use pickle::parse_requests;
 use radio_cache::SharedPacketRadioCache;
@@ -630,6 +630,25 @@ pub(crate) async fn rpc_query_hash_param_at(
     param_key: &str,
     param: &[u8],
 ) -> Result<serde_json::Value, crate::Error> {
+    rpc_query_hash_param_typed(transport, instance_name, authkey, get_key, param_key, param)
+        .await
+        .map_err(|e| match e {
+            RpcError::Io(io) => crate::Error::Io(io),
+            other => crate::Error::Config(format!("shared-instance RPC error: {other}")),
+        })
+}
+
+/// [`rpc_query_hash_param_at`] with the RPC error kept typed, for a caller
+/// that tells a wrong key from a daemon that is down (the self-repair
+/// beat's cause codes, `crate::path_self_repair::SkipCause::of_rpc`).
+pub(crate) async fn rpc_query_hash_param_typed(
+    transport: &SharedInstanceTransport,
+    instance_name: &str,
+    authkey: &[u8],
+    get_key: &str,
+    param_key: &str,
+    param: &[u8],
+) -> Result<serde_json::Value, RpcError> {
     let endpoint = transport.endpoint(&format!("rns/{}/rpc", instance_name));
     let entries = vec![
         (pickle::pickle_str_key("get"), pickle::pickle_str(get_key)),
@@ -639,12 +658,7 @@ pub(crate) async fn rpc_query_hash_param_at(
         ),
     ];
     let request = pickle::pickle_dict(entries);
-    let response = rpc_client_call_at(&endpoint, authkey, &request)
-        .await
-        .map_err(|e| match e {
-            RpcError::Io(io) => crate::Error::Io(io),
-            other => crate::Error::Config(format!("shared-instance RPC error: {other}")),
-        })?;
+    let response = rpc_client_call_at(&endpoint, authkey, &request).await?;
     Ok(pickle_value_to_json(&response))
 }
 
