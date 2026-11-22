@@ -1107,6 +1107,7 @@ render-walk	label_overlap	globe-erg-pinch-12-14-2197x1224-rest	4fa1fe818	order 1
 render-walk	label_overlap	globe-jump-street-to-z5-1224x2197-f000	4fa1fe818	order 1994
 render-walk	label_overlap	globe-jump-street-to-z5-1600x2560-f000	4fa1fe818	order 1994
 render-walk-quick	label_clear_of_controls	globe-jump-street-to-z5-1224x2197-rest	4fa1fe818	order 1994
+render-walk-quick	label_overlap	globe-jump-street-to-z5-1224x2197-f000	4fa1fe818	order 1994
 render-walk-quick	label_clear_of_controls	globe-ladder-1224x2197-berlin-z16000	4fa1fe818	order 1994
 render-walk-quick	label_clear_of_controls	globe-ladder-900x560-berlin-z04000	4fa1fe818	order 1994
 render-walk-quick	label_clear_of_controls	globe-ladder-900x560-germany-z04000	4fa1fe818	order 1994

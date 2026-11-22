@@ -29,8 +29,9 @@ pub const FIRST_WAIT: Duration = Duration::from_secs(15);
 /// The longest wait between two asks: two minutes, so a home that comes
 /// back has the message within about two minutes plus one ask.
 pub const LONGEST_WAIT: Duration = Duration::from_secs(120);
-/// How many doubted answers ([`doubted`]) a send takes before it ends
-/// with that error (order 1986 finding 3a; `Malformed` joined by the
+/// How many doubted answers (`Refused(Failed)`, `Malformed`) a send
+/// takes before it ends with that error (order 1986 finding 3a;
+/// `Malformed` joined by the
 /// audit of 1986): a store failure or a mangled answer is usually
 /// passing (a busy database, a lost frame), so it is asked again like an
 /// unreachable home, but a home that keeps answering so must not be
@@ -359,8 +360,9 @@ pub async fn hand_until_taken(
 /// and told to `refused` (order 1986 finding 2b): the run that wrote it
 /// is over, and a bubble the history restored for it does not hear the
 /// refusal yet, so this is the only place the user can hear it. One
-/// given a doubted answer ([`doubted`]) is neither taken nor refused:
-/// it stays for the next pull, the ones behind it go on, and at
+/// given a doubted answer (`Refused(Failed)`, `Malformed`) is neither
+/// taken nor refused: it stays for the next pull, the ones behind it
+/// go on, and at
 /// [`STORE_FAILED_ASKS`] such answers across this run's pulls it ends
 /// as refused after all.
 pub async fn hand_leftovers(
@@ -726,10 +728,13 @@ mod tests {
         );
     }
 
+    /// What a [`Script`] answers one ask with: an error, or `None`, taken.
+    type Answer = Box<dyn FnMut(&[u8; 16]) -> Option<HomeError> + Send>;
+
     /// A home that answers each ask as the script says (`None` is taken),
     /// and keeps one message per `client_id` as `server.rs` does.
     struct Script {
-        answers: Box<dyn FnMut(&[u8; 16]) -> Option<HomeError> + Send>,
+        answers: Answer,
         asks: Arc<Mutex<Vec<[u8; 16]>>>,
         taken: Arc<Mutex<Vec<[u8; 16]>>>,
     }
