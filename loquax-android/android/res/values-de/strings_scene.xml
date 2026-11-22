@@ -656,4 +656,9 @@
     <string name="map_load_waiting">Karte wartet, bis sie dran ist</string>
     <string name="map_load_offline">Offline · die Karte lädt, sobald das Netz zurück ist</string>
     <string name="map_load_try_now">Jetzt versuchen</string>
+    <string name="pending_refused_words">Nicht gesendet, das Postfach hat es abgelehnt: „%1$s“</string>
+    <string name="pending_refused_plain">Nicht gesendet, das Postfach hat es abgelehnt.</string>
+    <string name="pending_refused_picture">Nicht gesendet, das Postfach hat es abgelehnt: ein Bild.</string>
+    <string name="pending_refused_voice">Nicht gesendet, das Postfach hat es abgelehnt: eine Sprachnachricht.</string>
+    <string name="pending_refused_file">Nicht gesendet, das Postfach hat es abgelehnt: eine Datei.</string>
 </resources>

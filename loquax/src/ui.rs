@@ -3196,11 +3196,14 @@ pub enum UiEvent {
     SendProgress(u16),
     /// A send kept from an earlier run (`home-pending/`, order 1881) that
     /// the home node refused when a pull's handover asked it to take it
-    /// (order 1986 finding 2b): the run that wrote it is over and its
-    /// bubble gone, so this is the only way the user hears that `text`,
-    /// the message's words, will not go. `error` is the refusal as the
-    /// runner worded it.
-    PendingRefused { text: String, error: String },
+    /// (order 1986 finding 2b): the run that wrote it is over, and a
+    /// bubble the history restored for it does not hear the refusal yet,
+    /// so this is the only way the user hears that `what` — the
+    /// message's words, or the kind of a media-only one — will not go.
+    /// `error` is the refusal as the runner worded it. A refused receipt
+    /// or group state never reaches here ([`refused_what`]): the log
+    /// keeps those.
+    PendingRefused { what: RefusedSend, error: String },
     /// How far the bubble `key` of `peer`'s conversation has gone, as the
     /// runner that moves its bytes measured it (1662).
     Transfer {
@@ -4271,8 +4274,8 @@ fn fold<B: InputBuffer + Default>(model: &mut UiModel<B>, event: UiEvent) -> Vec
             Vec::new()
         }
         UiEvent::SendDone(result) => on_send_done(model, result),
-        UiEvent::PendingRefused { text, error } => {
-            model.toast(ToastKind::Error, pending_refused_words(&text));
+        UiEvent::PendingRefused { what, error } => {
+            model.toast(ToastKind::Error, pending_refused_toast(&what, model.lang));
             vec![UiEffect::Notice(format!("kept send refused: {error}"))]
         }
         UiEvent::Earlier {
@@ -8161,16 +8164,63 @@ pub const SHARE_CLICK: &str = "click to stop";
 /// The toast of a send that failed: the legs' reasons are in its details.
 pub const NOT_SENT: &str = "Not sent. Its details say why.";
 
-/// The toast of a kept send a pull's handover saw refused (order 1986
-/// finding 2b): the message's own words, shortened, name which text is
-/// lost — its bubble is gone, so nothing else on the screen can.
-pub fn pending_refused_words(text: &str) -> String {
-    const SHOWN: usize = 40;
-    let mut words: String = text.chars().take(SHOWN).collect();
-    if text.chars().count() > SHOWN {
-        words.push('…');
+/// What a kept send the home refused held, for the toast that says it is
+/// lost ([`UiEvent::PendingRefused`]): the message's own words, or the
+/// kind of one that had none. The toast's texts are the catalogue's
+/// ([`strings::pending_refused_words`] and the kind entries), English
+/// and German alike.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RefusedSend {
+    /// A message with words: the toast quotes them, shortened.
+    Words(String),
+    /// A picture and nothing else ([`photos::photo_fields`]).
+    Picture,
+    /// A voice message and nothing else ([`voice::voice_fields`]).
+    Voice,
+    /// Attached files and nothing else.
+    File,
+}
+
+/// What a refused kept send was, if the user should hear of it at all
+/// (audit of 1986): `None` for a receipt or a group's state — protocol
+/// bookkeeping that never was a bubble, so a toast would name nothing
+/// the user wrote — words or a media kind for everything else.
+pub fn refused_what(content: &[u8], fields: &[Field]) -> Option<RefusedSend> {
+    use leviculum_lxmf::constants::{FIELD_AUDIO, FIELD_FILE_ATTACHMENTS, FIELD_IMAGE};
+    let words = String::from_utf8_lossy(content);
+    if groups::is_state(&words, fields) {
+        return None;
     }
-    format!("Not sent, the mailbox refused it: \u{201c}{words}\u{201d}")
+    if leviculum_lxmf::lev::Lev::from_fields(fields)
+        .is_some_and(|lev| receipts::alone(content, fields, &lev))
+    {
+        return None;
+    }
+    let trimmed = words.trim();
+    if !trimmed.is_empty() {
+        return Some(RefusedSend::Words(trimmed.to_string()));
+    }
+    if fields.iter().any(|(key, _)| *key == FIELD_IMAGE) {
+        return Some(RefusedSend::Picture);
+    }
+    if fields.iter().any(|(key, _)| *key == FIELD_AUDIO) {
+        return Some(RefusedSend::Voice);
+    }
+    if fields.iter().any(|(key, _)| *key == FIELD_FILE_ATTACHMENTS) {
+        return Some(RefusedSend::File);
+    }
+    Some(RefusedSend::Words(String::new()))
+}
+
+/// The toast for a refused kept send, in the reader's language: the
+/// catalogue's texts ([`strings::pending_refused_words`]).
+fn pending_refused_toast(what: &RefusedSend, lang: strings::Lang) -> String {
+    match what {
+        RefusedSend::Words(text) => strings::pending_refused_words(text, lang),
+        RefusedSend::Picture => strings::StrId::PendingRefusedPicture.text(lang).into(),
+        RefusedSend::Voice => strings::StrId::PendingRefusedVoice.text(lang).into(),
+        RefusedSend::File => strings::StrId::PendingRefusedFile.text(lang).into(),
+    }
 }
 
 /// The empty conversations pane's line, in the reader's language.
@@ -23944,7 +23994,9 @@ pub(crate) mod tests {
         let effects = update(
             &mut model,
             UiEvent::PendingRefused {
-                text: "ein alter Gruß aus den Bergen, geschrieben bevor die App schloss".into(),
+                what: RefusedSend::Words(
+                    "ein alter Gruß aus den Bergen, geschrieben bevor die App schloss".into(),
+                ),
                 error: "mailbox: the home node refused (NotAdmitted)".into(),
             },
         );
@@ -23957,5 +24009,77 @@ pub(crate) mod tests {
             panic!("the refusal for the log: {effects:?}");
         };
         assert!(line.contains("NotAdmitted"), "{line}");
+    }
+
+    /// Audit of 1986: the refused-send toast is the catalogue's, so a
+    /// German reader gets German words, and a media-only send is named
+    /// by its kind instead of empty quotes.
+    #[test]
+    fn a_refused_kept_send_speaks_the_readers_language_and_names_a_kind() {
+        let mut model = UiModel::<Field>::new(&[]);
+        model.lang = strings::Lang::De;
+        update(
+            &mut model,
+            UiEvent::PendingRefused {
+                what: RefusedSend::Words("bis gleich am See".into()),
+                error: "mailbox: refused".into(),
+            },
+        );
+        let toast = model.toasts.last().expect("a toast");
+        assert_eq!(
+            toast.text,
+            "Nicht gesendet, das Postfach hat es abgelehnt: „bis gleich am See“"
+        );
+        update(
+            &mut model,
+            UiEvent::PendingRefused {
+                what: RefusedSend::Picture,
+                error: "mailbox: refused".into(),
+            },
+        );
+        let toast = model.toasts.last().expect("a toast");
+        assert_eq!(
+            toast.text,
+            "Nicht gesendet, das Postfach hat es abgelehnt: ein Bild."
+        );
+        // Empty words never show as empty quotes, in either language.
+        for lang in [strings::Lang::En, strings::Lang::De] {
+            let plain = strings::pending_refused_words("", lang);
+            assert!(!plain.contains('\u{201c}'), "{plain}");
+            assert!(!plain.contains('\u{201e}'), "{plain}");
+            assert!(!plain.is_empty());
+        }
+    }
+
+    /// Audit of 1986: what a refused kept send is judged to be — a
+    /// receipt or a group state stays off the screen, words are words,
+    /// and a media-only send is its kind.
+    #[test]
+    fn a_refused_receipt_or_group_state_is_nobodys_toast() {
+        use leviculum_lxmf::constants::{FIELD_AUDIO, FIELD_FILE_ATTACHMENTS, FIELD_IMAGE};
+        let mut fields = Vec::new();
+        receipt(1, &[[9; 32]]).put_into(&mut fields);
+        assert_eq!(refused_what(b"", &fields), None, "a receipt alone");
+        assert_eq!(
+            refused_what(b"hello", &[]),
+            Some(RefusedSend::Words("hello".into()))
+        );
+        assert_eq!(
+            refused_what(b"", &[(FIELD_IMAGE, vec![1])]),
+            Some(RefusedSend::Picture)
+        );
+        assert_eq!(
+            refused_what(b"", &[(FIELD_AUDIO, vec![1])]),
+            Some(RefusedSend::Voice)
+        );
+        assert_eq!(
+            refused_what(b"", &[(FIELD_FILE_ATTACHMENTS, vec![1])]),
+            Some(RefusedSend::File)
+        );
+        assert_eq!(
+            refused_what(b"", &[]),
+            Some(RefusedSend::Words(String::new())),
+            "nothing nameable still reaches the plain toast"
+        );
     }
 }

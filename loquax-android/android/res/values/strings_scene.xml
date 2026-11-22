@@ -656,4 +656,9 @@
     <string name="map_load_waiting">The map waits its turn</string>
     <string name="map_load_offline">Offline · the map loads when the network is back</string>
     <string name="map_load_try_now">Try now</string>
+    <string name="pending_refused_words">Not sent, the mailbox refused it: “%1$s”</string>
+    <string name="pending_refused_plain">Not sent, the mailbox refused it.</string>
+    <string name="pending_refused_picture">Not sent, the mailbox refused it: a picture.</string>
+    <string name="pending_refused_voice">Not sent, the mailbox refused it: a voice message.</string>
+    <string name="pending_refused_file">Not sent, the mailbox refused it: a file.</string>
 </resources>

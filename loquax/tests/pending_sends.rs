@@ -10,6 +10,7 @@
 use std::time::Duration;
 
 use loquax::home::runner::{self, HomeClient};
+use loquax::home::wire::Submission;
 use loquax::home::{client, pending};
 use loquax::outbox::{Command, Outbox, OutboxEvent, OutboxGone};
 use loquax::ui::UiEvent;
@@ -69,12 +70,23 @@ async fn a_send_waits_out_the_real_mailbox_and_arrives_exactly_once() {
         device: phone.device.clone(),
         node: node.clone(),
     };
-    let submission = runner::kept_submission(
-        &home_dir,
-        [0x5a; 16],
-        "kept while the mailbox was away".to_string(),
-        Vec::new(),
-    );
+    // Kept as an earlier run of the process would leave it — on disk and
+    // in no runner's hold — and then ALSO given to a running `send_home`:
+    // the pull's handover and that runner ask for the same submission,
+    // which is exactly the two-runners case the store's `outbox_by_client`
+    // folds into one message. (A submission `kept_submission` queues is
+    // held by this process and the handover leaves it alone; phase two
+    // below proves that.)
+    let submission = Submission {
+        client_id: client::client_id(),
+        destination: [0x5a; 16],
+        title: Vec::new(),
+        content: b"kept while the mailbox was away".to_vec(),
+        fields: Vec::new(),
+    };
+    pending::Pending::at(&home_dir)
+        .keep(&submission)
+        .expect("kept");
     let client_id = submission.client_id;
     let send = {
         let (client, home_dir) = (home_client.clone(), home_dir.clone());
@@ -129,18 +141,68 @@ async fn a_send_waits_out_the_real_mailbox_and_arrives_exactly_once() {
     assert!(matches!(event, UiEvent::SendDone(Ok(()))), "{event:?}");
     assert!(kept.waiting().expect("the listing").is_empty());
 
+    // Phase two (audit of 1986): two sends this process queues
+    // (`kept_submission`, as both frontends do) and one true leftover of
+    // an earlier run. The pull's handover brings only the leftover; the
+    // queued sends are left to their own runners, so each message gets
+    // exactly one bubble's worth of events — one `SendDone(Ok)` each,
+    // nothing refused — and one stored message per client id.
+    let leftover = Submission {
+        client_id: client::client_id(),
+        destination: [0x5a; 16],
+        title: Vec::new(),
+        content: b"left by an earlier run".to_vec(),
+        fields: Vec::new(),
+    };
+    kept.keep(&leftover).expect("the leftover kept");
+    let one = runner::kept_submission(&home_dir, [0x5a; 16], "queued one".to_string(), Vec::new());
+    let two = runner::kept_submission(&home_dir, [0x5a; 16], "queued two".to_string(), Vec::new());
+    let mut tap = NullTap;
+    let mut refused = Vec::new();
+    let end = runner::pull_watching(&mut tap, &home_client, &home_dir, budget, &mut |event| {
+        if let UiEvent::PendingRefused { error, .. } = event {
+            refused.push(error);
+        }
+    })
+    .await;
+    assert!(end.result.is_ok(), "the pull: {:?}", end.result);
+    assert!(refused.is_empty(), "nothing was refused: {refused:?}");
+    let waiting = kept.waiting().expect("the listing");
+    assert_eq!(
+        waiting,
+        vec![one.clone(), two.clone()],
+        "the handover took the leftover and left the queued sends alone"
+    );
+    for queued in [one.clone(), two.clone()] {
+        let mut tap = NullTap;
+        let event = runner::send_home(
+            &mut tap,
+            &home_client,
+            &home_dir,
+            queued,
+            budget,
+            Duration::ZERO,
+            &mut |_| {},
+        )
+        .await;
+        assert!(matches!(event, UiEvent::SendDone(Ok(()))), "{event:?}");
+    }
+    assert!(kept.waiting().expect("the listing").is_empty());
+
     drop(node);
     phone.attached.stop().await;
     let dir = mailbox.stop_keeping().await;
     relay.stop().await;
 
-    // The mailbox's own store holds exactly one message for the client id.
+    // The mailbox's own store holds exactly one message per client id.
     let identity =
         loquax::identity::load_or_create(&dir.path().join("identity")).expect("identity");
     let address = loquax::engine::delivery_address(&identity).expect("address");
     let store = loquax::store::Store::open_in(dir.path(), address).expect("the store");
-    store
-        .outbox_by_client(&client_id)
-        .expect("the lookup")
-        .expect("the one message");
+    for id in [client_id, leftover.client_id, one.client_id, two.client_id] {
+        store
+            .outbox_by_client(&id)
+            .expect("the lookup")
+            .expect("the one message");
+    }
 }

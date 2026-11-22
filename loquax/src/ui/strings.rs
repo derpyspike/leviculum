@@ -839,6 +839,34 @@ leviculum_ui::catalogue! {
     MapLoadWaiting = "map_load_waiting", "The map waits its turn", "Karte wartet, bis sie dran ist";
     MapLoadOffline = "map_load_offline", "Offline · the map loads when the network is back", "Offline · die Karte lädt, sobald das Netz zurück ist";
     MapLoadTryNow = "map_load_try_now", "Try now", "Jetzt versuchen";
+    // Audit of 1986: a kept send a pull's handover saw refused, by what
+    // it held — its words, a media kind, or nothing nameable.
+    PendingRefusedWords = "pending_refused_words", "Not sent, the mailbox refused it: “%1$s”", "Nicht gesendet, das Postfach hat es abgelehnt: „%1$s“";
+    PendingRefusedPlain = "pending_refused_plain", "Not sent, the mailbox refused it.", "Nicht gesendet, das Postfach hat es abgelehnt.";
+    PendingRefusedPicture = "pending_refused_picture", "Not sent, the mailbox refused it: a picture.", "Nicht gesendet, das Postfach hat es abgelehnt: ein Bild.";
+    PendingRefusedVoice = "pending_refused_voice", "Not sent, the mailbox refused it: a voice message.", "Nicht gesendet, das Postfach hat es abgelehnt: eine Sprachnachricht.";
+    PendingRefusedFile = "pending_refused_file", "Not sent, the mailbox refused it: a file.", "Nicht gesendet, das Postfach hat es abgelehnt: eine Datei.";
+}
+
+/// The toast of a kept send a pull's handover saw refused (order 1986
+/// finding 2b): the message's own words, shortened, name which text is
+/// lost — its own run is over, so nothing else on the screen can. Words
+/// that are empty get the plain text, never empty quotes (audit of
+/// 1986).
+pub fn pending_refused_words(text: &str, lang: Lang) -> String {
+    const SHOWN: usize = 40;
+    if text.trim().is_empty() {
+        return StrId::PendingRefusedPlain.text(lang).into();
+    }
+    let mut words: String = text.chars().take(SHOWN).collect();
+    if text.chars().count() > SHOWN {
+        words.push('…');
+    }
+    format(
+        StrId::PendingRefusedWords.text(lang),
+        &[Arg::Str(words)],
+        lang,
+    )
 }
 
 /// [`leviculum_ui::strings::format`] over Loquax's catalogue.

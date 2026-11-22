@@ -69,7 +69,12 @@ pub fn kept_submission(home: &Path, to: [u8; 16], body: String, fields: Vec<Fiel
         content: body.into_bytes(),
         fields,
     };
-    if let Err(error) = Pending::at(home).keep(&submission) {
+    let pending = Pending::at(home);
+    // Held before the file exists: a pull listing the directory in this
+    // very moment must already leave the send to its runner (audit of
+    // 1986). The hold ends with the runner's end ([`Pending::taken`]).
+    pending.hold(submission.client_id);
+    if let Err(error) = pending.keep(&submission) {
         // Not kept is no reason not to send: it is asked again as long as
         // this run lasts, and only a restart in that time loses it.
         tracing::warn!("HOME send not kept: {error}");
@@ -194,22 +199,31 @@ pub async fn pull_watching(
         settled,
         imported,
     };
-    // Sends an earlier run kept and never saw taken go first (order 1881),
-    // so this pull brings them back as the user's own sent messages. One
-    // the home refuses for good is told to the screen (order 1986 finding
-    // 2b): its own run's bubble is gone, so this event is the only way
-    // the user hears that the message is lost.
+    // Sends an earlier run kept and never saw taken go first (order 1881);
+    // one this process still holds queued or running is left to its own
+    // runner (`hand_leftovers`, audit of 1986), so this pull brings back
+    // only true leftovers as the user's own sent messages. One the home
+    // refuses for good is told to the screen (order 1986 finding 2b):
+    // its own run is over, and a bubble the history restored for it does
+    // not hear the refusal yet, so this event is the only way the user
+    // hears that the message is lost. A refused receipt or group state
+    // was never a bubble: it goes to the log alone, and a media-only
+    // send is named by its kind (`refused_what`, audit of 1986).
     let mut no_progress = |_: f32| {};
     let mut network = Network {
         client,
         budget,
         moved: &mut no_progress,
     };
-    let mut refused = |submission: &Submission, error: &HomeError| {
-        progress(UiEvent::PendingRefused {
-            text: String::from_utf8_lossy(&submission.content).into_owned(),
+    let mut refused = |submission: &Submission, error: &HomeError| match crate::ui::refused_what(
+        &submission.content,
+        &submission.fields,
+    ) {
+        Some(what) => progress(UiEvent::PendingRefused {
+            what,
             error: error.to_string(),
-        });
+        }),
+        None => tracing::info!("HOME kept receipt or group state refused: {error}"),
     };
     let handed = hand_leftovers(&Pending::at(home), &mut network, &mut refused).await;
     if handed > 0 {
