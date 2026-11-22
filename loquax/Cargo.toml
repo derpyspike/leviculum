@@ -497,6 +497,12 @@ required-features = ["tui"]
 name = "mailbox_mesh"
 required-features = ["history"]
 
+# Order 1986 (audit of 1881): a kept send waits out the real mailbox and
+# arrives exactly once.
+[[test]]
+name = "pending_sends"
+required-features = ["history"]
+
 # 1266: `loquax mailbox setup`, the five steps, by flags and by typed answers.
 [[test]]
 name = "mailbox_setup"

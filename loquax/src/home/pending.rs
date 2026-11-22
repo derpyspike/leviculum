@@ -28,6 +28,15 @@ pub const FIRST_WAIT: Duration = Duration::from_secs(15);
 /// The longest wait between two asks: two minutes, so a home that comes
 /// back has the message within about two minutes plus one ask.
 pub const LONGEST_WAIT: Duration = Duration::from_secs(120);
+/// How many `Refused(Failed)` answers - the home's store failed - a send
+/// takes before it ends with that error (order 1986 finding 3a): a store
+/// failure is usually passing (a busy database, a full disk being
+/// cleared), so it is asked again like an unreachable home, but a home
+/// that keeps failing must not be asked forever with the bubble sending.
+/// Five asks are about four minutes under [`retry_wait`]. Only this
+/// refusal is bounded; an unreachable home (`NoPath`, `NoLink`,
+/// `Transfer`, `Timeout`) is waited out without bound.
+pub const STORE_FAILED_ASKS: u32 = 5;
 
 /// Whether a failed ask is worth asking again: the home was out of reach
 /// or the answer was lost, or its store failed this time. Any other
@@ -105,9 +114,25 @@ impl Pending {
     /// Every kept submission, oldest first. A file that does not decode is
     /// skipped and named in the log; it is left for a person to look at.
     pub fn waiting(&self) -> std::io::Result<Vec<Submission>> {
+        self.waiting_with(&mut |path| std::fs::read(path))
+    }
+
+    /// [`Self::waiting`] with `read` for a file's bytes, the seam its test
+    /// drives. A file gone between the listing and the read (order 1986
+    /// finding 3c) was taken by another runner handing the same sends
+    /// over, not an error of the listing: it is passed by.
+    fn waiting_with(
+        &self,
+        read: &mut dyn FnMut(&Path) -> std::io::Result<Vec<u8>>,
+    ) -> std::io::Result<Vec<Submission>> {
         let mut kept = Vec::new();
         for path in self.files()? {
-            match wire::read_send_request(&std::fs::read(&path)?) {
+            let bytes = match read(&path) {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            match wire::read_send_request(&bytes) {
                 Ok(submission) => kept.push(submission),
                 Err(_) => tracing::warn!("HOME pending send unreadable: {}", path.display()),
             }
@@ -154,9 +179,17 @@ pub async fn hand_until_taken(
     waiting: &mut (dyn FnMut(&HomeError, Duration) + Send),
 ) -> Result<[u8; 32], HomeError> {
     let mut failed = 0u32;
+    let mut store_failed = 0u32;
     loop {
         match hand.hand(submission).await {
             Err(error) if worth_retrying(&error) => {
+                if matches!(error, HomeError::Refused(Status::Failed)) {
+                    store_failed += 1;
+                    if store_failed >= STORE_FAILED_ASKS {
+                        forget(pending, &submission.client_id);
+                        return Err(error);
+                    }
+                }
                 failed = failed.saturating_add(1);
                 let wait = retry_wait(failed);
                 waiting(&error, wait);
@@ -245,6 +278,9 @@ mod tests {
         asks: Arc<Mutex<Vec<[u8; 16]>>>,
         taken: Arc<Mutex<Vec<[u8; 16]>>>,
         refuse: bool,
+        /// Answer `Refused(Failed)` once back, as a home whose store
+        /// fails on every ask does.
+        fail: bool,
     }
 
     impl Hand for Home {
@@ -255,6 +291,9 @@ mod tests {
             }
             if self.refuse {
                 return Err(HomeError::Refused(Status::NotAdmitted));
+            }
+            if self.fail {
+                return Err(HomeError::Refused(Status::Failed));
             }
             let mut taken = self.taken.lock().unwrap();
             if !taken.contains(&submission.client_id) {
@@ -272,6 +311,7 @@ mod tests {
             asks: Arc::default(),
             taken: Arc::default(),
             refuse: false,
+            fail: false,
         }
     }
 
@@ -396,6 +436,35 @@ mod tests {
         assert!(pending.waiting().unwrap().is_empty());
     }
 
+    /// Finding 3a of order 1986 (audit of 1881): a home that answers
+    /// `Refused(Failed)` - its store fails - is asked again, but not
+    /// forever: after [`STORE_FAILED_ASKS`] such answers the send ends
+    /// with that error, where an unreachable home (the 25-minute test
+    /// above) is waited out without bound.
+    #[tokio::test(start_paused = true)]
+    async fn a_home_that_keeps_failing_its_store_ends_the_send_with_its_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let pending = Pending::at(dir.path());
+        let reply = submission(6);
+        pending.keep(&reply).unwrap();
+        let mut failing = home(Duration::ZERO);
+        failing.fail = true;
+        let asks = Arc::clone(&failing.asks);
+        let end = tokio::time::timeout(
+            LONGEST_WAIT * 20,
+            hand_until_taken(&pending, &mut failing, &reply, &mut |_, _| {}),
+        )
+        .await
+        .expect("the send ends instead of asking forever");
+        assert!(
+            matches!(end, Err(HomeError::Refused(Status::Failed))),
+            "{end:?}"
+        );
+        // The bound itself: five asks, about four minutes of retry_wait.
+        assert_eq!(asks.lock().unwrap().len(), STORE_FAILED_ASKS as usize);
+        assert!(pending.waiting().unwrap().is_empty());
+    }
+
     /// Finding 2b of order 1986 (audit of 1881): a leftover the home
     /// finally refuses is told to the caller with its refusal, so the
     /// user hears of a message that is now lost for good.
@@ -444,5 +513,32 @@ mod tests {
             .map(|s| s.client_id[0])
             .collect();
         assert_eq!(kept, (1..=9).collect::<Vec<u8>>());
+    }
+
+    /// Finding 3c of order 1986 (audit of 1881): a file gone between the
+    /// listing and the read was taken by another runner handing the same
+    /// sends over - the listing passes it by instead of failing whole.
+    /// Any other read error still fails it.
+    #[test]
+    fn a_file_taken_between_listing_and_read_is_passed_by() {
+        let dir = tempfile::tempdir().unwrap();
+        let pending = Pending::at(dir.path());
+        pending.keep(&submission(1)).unwrap();
+        pending.keep(&submission(2)).unwrap();
+        let gone = format!("-{}.send", hex(&[1; 16]));
+        let kept = pending
+            .waiting_with(&mut |path| match path.to_string_lossy().ends_with(&gone) {
+                true => Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+                false => std::fs::read(path),
+            })
+            .unwrap();
+        assert_eq!(kept, vec![submission(2)]);
+        let denied = pending.waiting_with(&mut |_| {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        });
+        assert_eq!(
+            denied.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
     }
 }
