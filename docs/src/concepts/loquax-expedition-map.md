@@ -924,7 +924,7 @@ Additions (decided):
      pin moves for the relay or for the member — the member's own
      signed message is the only word about the member's position
      outside a vouched group copy. The rule is one function in LXMF,
-     `Lev::reading_writer` (`copy_writer`, `loquax/src/ui.rs:7088`, the
+     `Lev::reading_writer` (`copy_writer`, `loquax/src/ui.rs:7102`, the
      audits of 1757, 1787 and 1808), which the node helper's telemetry
      report and the liveness judgement go through too (rule 5: one
      definition of "this message names a copy's writer", so filing and
@@ -1005,7 +1005,7 @@ Additions (decided):
      in the conversation, marked as unverified, as LXMF shows it. The
      gate is one place, the single entry where a received message's
      position and group claims become state (`apply_message_claims`,
-     `loquax/src/ui.rs:6794`; the restore has the same gate at its own
+     `loquax/src/ui.rs:6808`; the restore has the same gate at its own
      entry, `learn_groups`); nothing behind the gate knows about
      verification. The held message is kept as received with its
      verdict pending: when the verdict says valid, its claims are
