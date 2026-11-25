@@ -40,6 +40,10 @@ mod stamp_runtime;
 use outbound::BuildEpochs;
 pub use outbound::OutboundEntry;
 use propagation_runtime::PropagationRuntime;
+/// Stamp cost assumed for a peer whose delivery announce app data can't be
+/// decoded (see `handle_event`). 10 satisfies recipients asking for up to 10;
+/// each step doubles the work (local dongie patch).
+pub const UNREADABLE_ANNOUNCE_STAMP_COST: u8 = 10;
 pub use propagation_runtime::{
     PropagationClientConfig, PropagationClientState, PropagationPathAttempts,
     PropagationSyncResult, PropagationSyncStatus,
@@ -1446,18 +1450,33 @@ impl LxmfRouter {
             if announce.name_hash() == &Destination::compute_name_hash(APP_NAME, &[DELIVERY_ASPECT])
             {
                 let data = announce.app_data();
-                if let Ok(decoded) = DeliveryAnnounce::decode(data) {
-                    if !data.is_empty() {
+                match DeliveryAnnounce::decode(data) {
+                    Ok(decoded) => {
+                        if !data.is_empty() {
+                            self.insert_bounded_stamp_cost(
+                                announce.destination_hash().into_bytes(),
+                                (now_unix, decoded.stamp_cost, decoded.compression_supported),
+                            );
+                        }
+                        output.events.push(RouterEvent::PeerAnnounced {
+                            destination: *announce.destination_hash(),
+                            announce: decoded,
+                            path_response: announce.is_path_response(),
+                        });
+                    }
+                    // App data we can't read may well carry a stamp cost (a
+                    // client with a newer format). Without one our messages go
+                    // out unstamped, and a recipient that wants stamps proves
+                    // receipt and then drops them. Assume a cost instead: a
+                    // stamp of this value also satisfies any lower requirement.
+                    // No compression, since support is unknown too. (dongie)
+                    Err(_) if !data.is_empty() => {
                         self.insert_bounded_stamp_cost(
                             announce.destination_hash().into_bytes(),
-                            (now_unix, decoded.stamp_cost, decoded.compression_supported),
+                            (now_unix, Some(UNREADABLE_ANNOUNCE_STAMP_COST), false),
                         );
                     }
-                    output.events.push(RouterEvent::PeerAnnounced {
-                        destination: *announce.destination_hash(),
-                        announce: decoded,
-                        path_response: announce.is_path_response(),
-                    });
+                    Err(_) => {}
                 }
             }
         }
