@@ -151,9 +151,13 @@ impl DeliveryAnnounce {
         for _ in 3..len {
             msgpack::skip(data, &mut pos)?;
         }
-        if pos != data.len() {
-            return Err(msgpack::Error::Trailing);
-        }
+        // Bytes after the array are ignored, as the reference does: Python's
+        // `umsgpack.unpackb` returns the first object and never looks at the
+        // rest, so LXMF peers accept such announces. Some clients (seen with a
+        // MeshChatX nightly) append data there; rejecting the whole announce
+        // lost the stamp cost, and messages then went out unstamped and were
+        // dropped by the recipient after its delivery proof.
+        let _ = pos;
         Ok(Self {
             display_name,
             stamp_cost,
@@ -193,6 +197,19 @@ mod tests {
         let decoded = DeliveryAnnounce::decode(&encoded).unwrap();
         assert_eq!(decoded.display_name(), Some("Alice".into()));
         assert!(decoded.compression_supported);
+    }
+
+    #[test]
+    fn trailing_bytes_after_the_array_are_ignored() {
+        // [b"Test", 8, [0], 8.0] followed by bytes that are not part of it
+        let data = [
+            0x94, 0xc4, 0x04, b'T', b'e', b's', b't', 0x08, 0x91, 0x00, // [b"Test", 8, [0],
+            0xcb, 0x40, 0x20, 0, 0, 0, 0, 0, 0, //                          8.0]
+            0xc1, 0x00, 0x40, 0x33, 0x14, //                                trailing bytes
+        ];
+        let decoded = DeliveryAnnounce::decode(&data).unwrap();
+        assert_eq!(decoded.display_name.as_deref(), Some(&b"Test"[..]));
+        assert_eq!(decoded.stamp_cost, Some(8));
     }
 
     #[test]
